@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -66,7 +67,9 @@ public class DistributedCrawlSessionStore {
             effectiveDataDir = System.getProperty("user.home") + "/.kompile";
         }
         this.sessionsDir = Paths.get(effectiveDataDir, "distributed-crawl", "sessions");
-        this.objectMapper = objectMapper;
+        // Keep the caller's naming/security configuration, but make the store self-contained for
+        // java.time fields even when constructed outside Spring Boot with a bare ObjectMapper.
+        this.objectMapper = objectMapper.copy().findAndRegisterModules();
     }
 
     /** Fire-and-forget persist on the store's writer thread; never throws into the caller. */
@@ -83,20 +86,38 @@ public class DistributedCrawlSessionStore {
         if (session == null || session.getSessionId() == null) {
             return;
         }
-        writeManifest(session.toManifest());
+        try {
+            DistributedCrawlSession.Manifest manifest = session.toManifest();
+            writer.submit(() -> writeManifest(manifest)).get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Failed to synchronously persist distributed-crawl session {}: {}",
+                    session.getSessionId(), e.getMessage());
+        }
     }
 
     private void writeManifest(DistributedCrawlSession.Manifest manifest) {
         try {
             Files.createDirectories(sessionsDir);
+            restrict(sessionsDir, "rwx------");
             Path target = sessionsDir.resolve(safe(manifest.getSessionId()) + SUFFIX);
-            Path tmp = sessionsDir.resolve(safe(manifest.getSessionId()) + SUFFIX + ".tmp");
+            if (Files.isRegularFile(target)) {
+                try {
+                    DistributedCrawlSession.Manifest current = objectMapper.readValue(
+                            target.toFile(), DistributedCrawlSession.Manifest.class);
+                    if (current.getPersistenceRevision() > manifest.getPersistenceRevision()) return;
+                } catch (Exception ignored) {
+                    // Replace unreadable state with the newest valid manifest.
+                }
+            }
+            Path tmp = Files.createTempFile(sessionsDir,
+                    safe(manifest.getSessionId()) + "-", ".tmp");
             objectMapper.writeValue(tmp.toFile(), manifest);
             try {
                 Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException atomicUnsupported) {
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
             }
+            restrict(target, "rw-------");
         } catch (Exception e) {
             log.warn("Failed to persist distributed-crawl session {}: {}",
                     manifest.getSessionId(), e.getMessage());
@@ -130,9 +151,15 @@ public class DistributedCrawlSessionStore {
             return;
         }
         try {
-            Files.deleteIfExists(sessionsDir.resolve(safe(sessionId) + SUFFIX));
-        } catch (IOException e) {
-            log.debug("Failed to delete distributed-crawl session {}: {}", sessionId, e.getMessage());
+            writer.submit(() -> {
+                try {
+                    Files.deleteIfExists(sessionsDir.resolve(safe(sessionId) + SUFFIX));
+                } catch (IOException e) {
+                    log.debug("Failed to delete distributed-crawl session {}: {}", sessionId, e.getMessage());
+                }
+            }).get(10, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.debug("Failed to queue distributed-crawl session deletion {}: {}", sessionId, e.getMessage());
         }
     }
 
@@ -148,6 +175,14 @@ public class DistributedCrawlSessionStore {
     /** Defensive filename sanitization (session ids are UUIDs, but never let one escape the dir). */
     private static String safe(String sessionId) {
         return sessionId.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
+
+    private static void restrict(Path path, String permissions) {
+        try {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(permissions));
+        } catch (IOException | UnsupportedOperationException ignored) {
+            // Non-POSIX platform; the configured data directory ACL remains authoritative.
+        }
     }
 
     @PreDestroy

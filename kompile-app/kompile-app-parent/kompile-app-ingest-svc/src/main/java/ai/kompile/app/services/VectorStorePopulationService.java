@@ -78,7 +78,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
-    @Autowired
+    @Autowired(required = false)
     private List<DocumentLoader> documentLoaders;
     @Autowired
     private IndexerService indexerService;
@@ -129,7 +129,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     @Autowired
     public VectorStorePopulationService(
             @Autowired(required = false) SimpMessagingTemplate messagingTemplate,
-            @Autowired List<DocumentLoader> documentLoaders,
+            @Autowired(required = false) List<DocumentLoader> documentLoaders,
             @Autowired List<IndexerService> indexerServices,
             @Autowired(required = false) List<EmbeddingModel> embeddingModels,
             @Autowired(required = false) List<VectorStore> vectorStores,
@@ -140,7 +140,7 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             @Autowired(required = false) ResourceAwareJobScheduler resourceScheduler,
             IngestConfiguration ingestConfiguration) {
         this.messagingTemplate = messagingTemplate;
-        this.documentLoaders = documentLoaders;
+        this.documentLoaders = documentLoaders != null ? documentLoaders : List.of();
         this.ingestConfiguration = ingestConfiguration;
         this.appIndexConfigService = appIndexConfigService;
         this.subprocessLauncher = subprocessLauncher;

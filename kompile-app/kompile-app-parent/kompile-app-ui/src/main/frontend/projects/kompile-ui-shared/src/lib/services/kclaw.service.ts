@@ -15,9 +15,9 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { Observable, BehaviorSubject, Subject } from 'rxjs';
-import { tap, catchError, map } from 'rxjs/operators';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { Observable, BehaviorSubject } from 'rxjs';
+import { tap, catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import {
   AgentDefinition,
@@ -25,8 +25,15 @@ import {
   KClawChatResponse,
   KClawSession,
   KClawConfig,
-  ChannelStatus,
-  ChannelConfig,
+  ChannelConnectionView,
+  ChannelConnectionWrite,
+  ChannelBrowserSession,
+  ChannelEngineDescriptor,
+  ChannelProviderDescriptor,
+  TelegramDiagnostics,
+  TelegramPairing,
+  TelegramPairingStart,
+  TelegramWebhookInfo,
   HeartbeatInfo,
   HeartbeatRequest,
   PermissionStatus
@@ -38,9 +45,11 @@ import {
 export class KClawService extends BaseService {
 
   private readonly apiUrl: string;
+  private readonly channelApiUrl: string;
+  private csrfToken: string | null = null;
 
   private agentsSubject = new BehaviorSubject<AgentDefinition[]>([]);
-  private channelsSubject = new BehaviorSubject<ChannelStatus[]>([]);
+  private channelsSubject = new BehaviorSubject<ChannelConnectionView[]>([]);
   private heartbeatsSubject = new BehaviorSubject<HeartbeatInfo[]>([]);
   private configSubject = new BehaviorSubject<KClawConfig | null>(null);
   private loadingSubject = new BehaviorSubject<boolean>(false);
@@ -56,6 +65,10 @@ export class KClawService extends BaseService {
   constructor(private http: HttpClient) {
     super();
     this.apiUrl = `${this.backendUrl}/kclaw`;
+    this.channelApiUrl = `${this.backendUrl}/channel-integrations`;
+    if (typeof sessionStorage !== 'undefined') {
+      this.csrfToken = sessionStorage.getItem('kompile.channel.csrf');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -63,13 +76,13 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   getConfig(): Observable<KClawConfig> {
-    return this.http.get<KClawConfig>(`${this.apiUrl}/config`).pipe(
+    return this.http.get<KClawConfig>(`${this.apiUrl}/config`, { headers: this.adminHeaders }).pipe(
       tap(config => this.configSubject.next(config))
     );
   }
 
   updateConfig(config: Partial<KClawConfig>): Observable<KClawConfig> {
-    return this.http.put<KClawConfig>(`${this.apiUrl}/config`, config).pipe(
+    return this.http.put<KClawConfig>(`${this.apiUrl}/config`, config, { headers: this.adminHeaders }).pipe(
       tap(config => this.configSubject.next(config))
     );
   }
@@ -80,7 +93,7 @@ export class KClawService extends BaseService {
 
   getAgents(): Observable<AgentDefinition[]> {
     this.loadingSubject.next(true);
-    return this.http.get<AgentDefinition[]>(`${this.apiUrl}/agents`).pipe(
+    return this.http.get<AgentDefinition[]>(`${this.apiUrl}/agents`, { headers: this.adminHeaders }).pipe(
       tap(agents => {
         this.agentsSubject.next(agents);
         this.loadingSubject.next(false);
@@ -94,23 +107,23 @@ export class KClawService extends BaseService {
   }
 
   getAgent(name: string): Observable<AgentDefinition> {
-    return this.http.get<AgentDefinition>(`${this.apiUrl}/agents/${name}`);
+    return this.http.get<AgentDefinition>(`${this.apiUrl}/agents/${name}`, { headers: this.adminHeaders });
   }
 
   createAgent(agent: AgentDefinition): Observable<AgentDefinition> {
-    return this.http.post<AgentDefinition>(`${this.apiUrl}/agents`, agent).pipe(
+    return this.http.post<AgentDefinition>(`${this.apiUrl}/agents`, agent, { headers: this.adminHeaders }).pipe(
       tap(() => this.getAgents().subscribe())
     );
   }
 
   updateAgent(name: string, agent: AgentDefinition): Observable<AgentDefinition> {
-    return this.http.put<AgentDefinition>(`${this.apiUrl}/agents/${name}`, agent).pipe(
+    return this.http.put<AgentDefinition>(`${this.apiUrl}/agents/${name}`, agent, { headers: this.adminHeaders }).pipe(
       tap(() => this.getAgents().subscribe())
     );
   }
 
   deleteAgent(name: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/agents/${name}`).pipe(
+    return this.http.delete<void>(`${this.apiUrl}/agents/${name}`, { headers: this.adminHeaders }).pipe(
       tap(() => this.getAgents().subscribe())
     );
   }
@@ -120,11 +133,12 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   chat(request: KClawChatRequest): Observable<KClawChatResponse> {
-    return this.http.post<KClawChatResponse>(`${this.apiUrl}/chat`, request);
+    return this.http.post<KClawChatResponse>(`${this.apiUrl}/chat`, request, { headers: this.adminHeaders });
   }
 
   chatStream(request: KClawChatRequest): Observable<string> {
     return this.http.post(`${this.apiUrl}/chat/stream`, request, {
+      headers: this.adminHeaders,
       responseType: 'text'
     }) as Observable<string>;
   }
@@ -134,49 +148,130 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   getSessions(): Observable<string[]> {
-    return this.http.get<string[]>(`${this.apiUrl}/sessions`);
+    return this.http.get<string[]>(`${this.apiUrl}/sessions`, { headers: this.adminHeaders });
   }
 
   getSessionHistory(sessionKey: string): Observable<KClawSession> {
-    return this.http.get<KClawSession>(`${this.apiUrl}/sessions/${encodeURIComponent(sessionKey)}/history`);
+    return this.http.get<KClawSession>(`${this.apiUrl}/sessions/${encodeURIComponent(sessionKey)}/history`,
+      { headers: this.adminHeaders });
   }
 
   clearSession(sessionKey: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/sessions/${encodeURIComponent(sessionKey)}`);
+    return this.http.delete<void>(`${this.apiUrl}/sessions/${encodeURIComponent(sessionKey)}`,
+      { headers: this.adminHeaders });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // CHANNELS
+  exchangeChannelBrowserSession(code: string): Observable<ChannelBrowserSession> {
+    return this.http.post<ChannelBrowserSession>(`${this.channelApiUrl}/browser-sessions/exchange`,
+      { code }, { withCredentials: true }).pipe(tap(session => {
+        this.csrfToken = session.csrfToken;
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('kompile.channel.csrf', session.csrfToken);
+        }
+      }));
+  }
+
+  hasChannelBrowserSession(): boolean {
+    return Boolean(this.csrfToken);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  getChannels(): Observable<ChannelStatus[]> {
-    return this.http.get<ChannelStatus[]>(`${this.apiUrl}/channels`).pipe(
+  getChannelProviders(): Observable<ChannelProviderDescriptor[]> {
+    return this.http.get<ChannelProviderDescriptor[]>(`${this.channelApiUrl}/providers`,
+      { headers: this.adminHeaders });
+  }
+
+  getChannelEngines(): Observable<ChannelEngineDescriptor[]> {
+    return this.http.get<ChannelEngineDescriptor[]>(`${this.channelApiUrl}/engines`,
+      { headers: this.adminHeaders });
+  }
+
+  getChannels(): Observable<ChannelConnectionView[]> {
+    return this.http.get<ChannelConnectionView[]>(`${this.channelApiUrl}/connections`,
+      { headers: this.adminHeaders }).pipe(
       tap(channels => this.channelsSubject.next(channels))
     );
   }
 
-  getChannelStatus(channelName: string): Observable<ChannelStatus> {
-    return this.http.get<ChannelStatus>(`${this.apiUrl}/channels/${channelName}`);
+  getChannel(name: string): Observable<ChannelConnectionView> {
+    return this.http.get<ChannelConnectionView>(this.channelPath(name), { headers: this.adminHeaders });
   }
 
-  startChannel(channelName: string): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/channels/${channelName}/start`, {}).pipe(
+  createChannel(request: ChannelConnectionWrite): Observable<ChannelConnectionView> {
+    return this.http.post<ChannelConnectionView>(`${this.channelApiUrl}/connections`, request,
+      { headers: this.adminHeaders }).pipe(
       tap(() => this.getChannels().subscribe())
     );
   }
 
-  stopChannel(channelName: string): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/channels/${channelName}/stop`, {}).pipe(
+  updateChannel(name: string, request: ChannelConnectionWrite): Observable<ChannelConnectionView> {
+    return this.http.put<ChannelConnectionView>(this.channelPath(name), request,
+      { headers: this.adminHeaders }).pipe(
       tap(() => this.getChannels().subscribe())
     );
   }
 
-  updateChannelConfig(channelName: string, config: ChannelConfig): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/channels/${channelName}/config`, config);
+  enableChannel(name: string): Observable<ChannelConnectionView> {
+    return this.http.post<ChannelConnectionView>(`${this.channelPath(name)}/enable`, {},
+      { headers: this.adminHeaders }).pipe(tap(() => this.getChannels().subscribe()));
   }
 
-  getSupportedChannelTypes(): Observable<string[]> {
-    return this.http.get<string[]>(`${this.apiUrl}/channels/types`);
+  disableChannel(name: string): Observable<ChannelConnectionView> {
+    return this.http.post<ChannelConnectionView>(`${this.channelPath(name)}/disable`, {},
+      { headers: this.adminHeaders }).pipe(tap(() => this.getChannels().subscribe()));
+  }
+
+  disconnectChannel(name: string): Observable<void> {
+    return this.http.delete<void>(this.channelPath(name), { headers: this.adminHeaders }).pipe(
+      tap(() => this.getChannels().subscribe()));
+  }
+
+  testChannel(name: string, target: string, message?: string): Observable<{accepted: boolean; message: string}> {
+    return this.http.post<{accepted: boolean; message: string}>(`${this.channelPath(name)}/test`,
+      { target, message }, { headers: this.adminHeaders });
+  }
+
+  startTelegramPairing(name: string): Observable<TelegramPairingStart> {
+    return this.http.post<TelegramPairingStart>(`${this.telegramPath(name)}/pairings`, {},
+      { headers: this.adminHeaders });
+  }
+
+  getTelegramPairing(name: string, pairingId: string): Observable<TelegramPairing> {
+    return this.http.get<TelegramPairing>(
+      `${this.telegramPath(name)}/pairings/${encodeURIComponent(pairingId)}`,
+      { headers: this.adminHeaders });
+  }
+
+  approveTelegramPairing(name: string, pairingId: string, expectedChatId: number): Observable<ChannelConnectionView> {
+    return this.http.post<ChannelConnectionView>(
+      `${this.telegramPath(name)}/pairings/${encodeURIComponent(pairingId)}/approve`,
+      { expectedChatId }, { headers: this.adminHeaders }).pipe(tap(() => this.getChannels().subscribe()));
+  }
+
+  cancelTelegramPairing(name: string, pairingId: string): Observable<void> {
+    return this.http.delete<void>(
+      `${this.telegramPath(name)}/pairings/${encodeURIComponent(pairingId)}`,
+      { headers: this.adminHeaders });
+  }
+
+  getTelegramDiagnostics(name: string): Observable<TelegramDiagnostics> {
+    return this.http.get<TelegramDiagnostics>(`${this.telegramPath(name)}/diagnostics`,
+      { headers: this.adminHeaders });
+  }
+
+  getTelegramWebhook(name: string): Observable<TelegramWebhookInfo> {
+    return this.http.get<TelegramWebhookInfo>(`${this.telegramPath(name)}/webhook`,
+      { headers: this.adminHeaders });
+  }
+
+  deleteTelegramWebhook(name: string, dropPendingUpdates: boolean): Observable<TelegramWebhookInfo> {
+    return this.http.delete<TelegramWebhookInfo>(`${this.telegramPath(name)}/webhook`, {
+      headers: this.adminHeaders,
+      params: { dropPendingUpdates }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -184,19 +279,19 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   getHeartbeats(): Observable<HeartbeatInfo[]> {
-    return this.http.get<HeartbeatInfo[]>(`${this.apiUrl}/heartbeats`).pipe(
+    return this.http.get<HeartbeatInfo[]>(`${this.apiUrl}/heartbeats`, { headers: this.adminHeaders }).pipe(
       tap(heartbeats => this.heartbeatsSubject.next(heartbeats))
     );
   }
 
   createHeartbeat(request: HeartbeatRequest): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/heartbeats`, request).pipe(
+    return this.http.post<void>(`${this.apiUrl}/heartbeats`, request, { headers: this.adminHeaders }).pipe(
       tap(() => this.getHeartbeats().subscribe())
     );
   }
 
   cancelHeartbeat(id: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/heartbeats/${id}`).pipe(
+    return this.http.delete<void>(`${this.apiUrl}/heartbeats/${id}`, { headers: this.adminHeaders }).pipe(
       tap(() => this.getHeartbeats().subscribe())
     );
   }
@@ -206,35 +301,17 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   getPermissions(): Observable<PermissionStatus> {
-    return this.http.get<PermissionStatus>(`${this.apiUrl}/permissions/commands`);
+    return this.http.get<PermissionStatus>(`${this.apiUrl}/permissions/commands`, { headers: this.adminHeaders });
   }
 
   allowCommand(command: string): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/permissions/commands/allow`, { command });
+    return this.http.post<void>(`${this.apiUrl}/permissions/commands/allow`, { command },
+      { headers: this.adminHeaders });
   }
 
   denyCommand(command: string): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/permissions/commands/deny`, { command });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // OAUTH
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  getOAuthStatus(provider: string): Observable<{connected: boolean, teamName?: string}> {
-    return this.http.get<{connected: boolean, teamName?: string}>(`${this.apiUrl}/oauth/${provider}/status`);
-  }
-
-  setOAuthConfig(provider: string, clientId: string, clientSecret: string): Observable<void> {
-    return this.http.post<void>(`${this.apiUrl}/oauth/config/${provider}`, { clientId, clientSecret });
-  }
-
-  startOAuth(provider: string): Observable<{authorizationUrl: string, state: string}> {
-    return this.http.get<{authorizationUrl: string, state: string}>(`${this.apiUrl}/oauth/${provider}/authorize`);
-  }
-
-  disconnectOAuth(provider: string): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/oauth/${provider}`);
+    return this.http.post<void>(`${this.apiUrl}/permissions/commands/deny`, { command },
+      { headers: this.adminHeaders });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -242,7 +319,8 @@ export class KClawService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   getAvailableTools(): Observable<{name: string, description: string}[]> {
-    return this.http.get<{name: string, description: string}[]>(`${this.apiUrl}/tools`);
+    return this.http.get<{name: string, description: string}[]>(`${this.apiUrl}/tools`,
+      { headers: this.adminHeaders });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -259,5 +337,21 @@ export class KClawService extends BaseService {
 
   getDefaultAgent(): AgentDefinition | undefined {
     return this.agentsSubject.value.find(a => a.isDefault);
+  }
+
+  private channelPath(name: string): string {
+    return `${this.channelApiUrl}/connections/${encodeURIComponent(name)}`;
+  }
+
+  private telegramPath(name: string): string {
+    return `${this.channelPath(name)}/telegram`;
+  }
+
+  private get adminHeaders(): HttpHeaders {
+    let headers = new HttpHeaders({ 'X-Kompile-Channel-Request': '1' });
+    if (this.csrfToken) {
+      headers = headers.set('X-Kompile-Channel-CSRF', this.csrfToken);
+    }
+    return headers;
   }
 }

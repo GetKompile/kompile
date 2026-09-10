@@ -461,6 +461,9 @@ public class PersistentAgentProcess implements AutoCloseable {
                 || lower.contains("credit limit") || lower.contains("insufficient credits")
                 || lower.contains("too many requests") || lower.contains("resource exhausted")
                 || lower.contains("429") || lower.contains("not authenticated")
+                || (lower.contains("401") && lower.contains("unauthorized"))
+                || lower.contains("error: closed") || lower.contains("error closed")
+                || lower.contains("error] closed")
                 || lower.contains("not logged in") || lower.contains("authentication required")
                 || lower.contains("login required") || lower.contains("agent disabled")
                 || lower.contains("command not found");

@@ -42,6 +42,7 @@ class ProjectArchiveServiceTest {
         write(root, "config/secrets/token.json", "secret");
         write(root, "config/x.secret.json", "secret");
         write(root, "config/oauth-encryption.key", "secret");
+        write(root, "config/channel-admin.token", "0123456789abcdef0123456789abcdef");
         write(root, "oauth-settings.json", "secret");
         write(root, "credentials.json", "secret");
         write(root, "config/service-account-prod.json", "secret");
@@ -72,7 +73,7 @@ class ProjectArchiveServiceTest {
                 p.startsWith("target/") || p.startsWith(".kompile/cache/") ||
                 p.equals(".kompile/project/open.json") || p.equals(".env") ||
                 p.startsWith("data/logs/") || p.endsWith("oauth-encryption.key") ||
-                p.endsWith("credentials.json") || p.endsWith(".pem") ||
+                p.endsWith("channel-admin.token") || p.endsWith("credentials.json") || p.endsWith(".pem") ||
                 p.equals(".aws/credentials") || p.contains("service-account")));
 
         Path target = temp.resolve("restored");

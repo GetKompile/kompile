@@ -37,13 +37,18 @@ import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.graph.KgraphArtifactValidator
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.model.AcceleratedChatModelAndroid
+import ai.kompile.chat.local.android.model.ClearedModelStorage
 import ai.kompile.chat.local.android.model.MobileModelArtifactResolver
+import ai.kompile.chat.local.android.model.SdxHashing
 import ai.kompile.chat.local.android.model.ModelPreparationOptions
 import ai.kompile.chat.local.android.model.OptimizedModelCacheRepository
 import ai.kompile.chat.local.android.model.OptimizedModelStorageSnapshot
 import ai.kompile.chat.local.android.model.PreparedModelInfo
 import ai.kompile.chat.local.android.model.PreparationStage
 import ai.kompile.chat.local.android.model.SdxGgufModelImporter
+import ai.kompile.chat.local.android.model.SdxStorageLayout
+import ai.kompile.chat.local.android.model.PlatformLocalChatModelFactory
+import ai.kompile.chat.local.android.model.retireSdxImporterWorkerForStorageMutation
 import ai.kompile.chat.local.android.prefs.ActiveProjectSelection
 import ai.kompile.chat.local.android.prefs.AppPreferences
 import ai.kompile.chat.local.android.prefs.HuggingFaceImportCheckpoint
@@ -81,7 +86,6 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
@@ -334,6 +338,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun publishModelPreparationStage(stage: PreparationStage) {
         _modelLoadProgress.value = when (stage) {
+            PreparationStage.MEMORY_PREFLIGHT -> ModelLoadProgressUi(
+                title = "Checking model memory…",
+                detail = "Recording current memory without delaying saved-model lookup",
+            )
+            PreparationStage.MEMORY_PRESSURE_WARNING -> ModelLoadProgressUi(
+                title = "Checking saved model…",
+                detail = "Memory is below the advisory reference or unavailable; this does not determine model fit.",
+            )
             PreparationStage.CONVERT_AND_CACHE_SDZ -> ModelLoadProgressUi(
                 title = "Converting and caching model…",
                 detail = "Building the canonical sharded SDZ and text assets",
@@ -343,14 +355,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 detail = "Canonical SDZ is ready; resolving the strict Tensor G3 target",
             )
             PreparationStage.LOAD_ACCELERATOR -> {
-                val driverCache = File(context.codeCacheDir, "sdx-device-compilation")
+                val driverCache = SdxStorageLayout.dspCacheRoot(context)
                 val cacheCandidatePresent = driverCache.list()?.isNotEmpty() == true
                 ModelLoadProgressUi(
                     title = "Compiling or restoring Edge TPU plan…",
                     detail = if (cacheCandidatePresent) {
-                        "NNAPI driver-cache files found; Android is validating the google-edgetpu plan"
+                        "DSP/NNAPI cache files found; Android is validating the google-edgetpu plan"
                     } else {
-                        "First load: compiling google-edgetpu segments; later loads reuse the driver cache"
+                        "First load: compiling google-edgetpu segments; later loads reuse the DSP disk cache"
                     },
                 )
             }
@@ -1108,7 +1120,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _errorStackTrace.value = null
                     refreshOptimizedModelStorage()
                     cleanupFailure?.let {
-                        Log.w(TAG, "Model ownership cleared after native cleanup reported a failure", it)
+                        Log.e(TAG, "Model ownership cleared but native teardown was not proven", it)
+                        throw it
                     }
                 }
             }
@@ -1117,6 +1130,74 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             throw cancellation
         } catch (failure: Throwable) {
             _error.value = failure.message ?: "The active model could not be unloaded."
+            _errorStackTrace.value = failure.stackTraceToString()
+            Result.failure(failure)
+        }
+    }
+
+    /** Clear only persistent DSP/NNAPI compilation state after proving no worker owns it. */
+    suspend fun clearDspDiskCache(): Result<Long> = runExclusiveImport(
+        operation = ImportOperationKind.DSP_CACHE_CLEAR,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) }
+    ) {
+        try {
+            val clearedBytes = withContext(Dispatchers.IO) {
+                engineMutex.withLock {
+                    check(localModel == null && engine == null) {
+                        "Unload the active model before clearing the DSP disk cache."
+                    }
+                    retireSdxImporterWorkerForStorageMutation(context)
+                    PlatformLocalChatModelFactory.prepareStorageMutation(context)
+                    optimizedModelCacheRepository.clearDspDiskCache()
+                }
+            }
+            refreshOptimizedModelStorage()
+            Result.success(clearedBytes)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Throwable) {
+            _error.value = failure.message ?: "The DSP disk cache could not be cleared."
+            _errorStackTrace.value = failure.stackTraceToString()
+            Result.failure(failure)
+        }
+    }
+
+    /** Delete app-retained model artifacts and the DSP cache as one ownership transaction. */
+    internal suspend fun clearStoredModelsAndDspCache(): Result<ClearedModelStorage> = runExclusiveImport(
+        operation = ImportOperationKind.MODEL_STORAGE_CLEAR,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) }
+    ) {
+        try {
+            val cleared = withContext(Dispatchers.IO) {
+                engineMutex.withLock {
+                    check(localModel == null && engine == null) {
+                        "Unload the active model before deleting stored models."
+                    }
+                    retireSdxImporterWorkerForStorageMutation(context)
+                    PlatformLocalChatModelFactory.prepareStorageMutation(context)
+                    check(prefs.deactivateModel()) {
+                        "Could not persist the cleared model selection."
+                    }
+                    val result = optimizedModelCacheRepository.clearStoredModelsAndDspCache()
+                    clearConversationLocked()
+                    _activeRoute.value = "NONE"
+                    _modelState.value = ModelUiState.Missing
+                    _modelSmokeState.value = ModelSmokeUiState.NotRun
+                    _graphState.value = GraphUiState.WaitingForModel
+                    _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
+                    _localModelOptimizationState.value = HuggingFaceImportUiState.Idle
+                    _huggingFaceDiscovery.value = null
+                    _huggingFaceSelection.value = null
+                    result
+                }
+            }
+            refreshLocalModelSources()
+            refreshOptimizedModelStorage()
+            Result.success(cleared)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Throwable) {
+            _error.value = failure.message ?: "Stored models and DSP cache could not be cleared."
             _errorStackTrace.value = failure.stackTraceToString()
             Result.failure(failure)
         }
@@ -1299,12 +1380,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val expectedHash = expectedHashes[relativePath]
                     ?: error("Bundled graph is absent from offline-assets.json: $relativePath")
                 val dest = File(graphsDir, name)
-                if (!dest.exists() || sha256(dest) != expectedHash) {
+                if (!dest.exists() || SdxHashing.sha256Hex(dest) != expectedHash) {
                     val pending = File(graphsDir, ".$name.pending")
                     assets.open(relativePath).use { src ->
                         pending.outputStream().use { src.copyTo(it) }
                     }
-                    check(sha256(pending) == expectedHash) {
+                    check(SdxHashing.sha256Hex(pending) == expectedHash) {
                         "Bundled graph checksum mismatch: $relativePath"
                     }
                     if (dest.exists()) {
@@ -1352,7 +1433,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         try {
             importBlockedReason(
                 importBusy = false,
-                generating = _thinking.value,
+                generating = _thinking.value && !operation.permitsGenerationDrain,
                 activeModelLoaded = operation.requiresUnloadedModel &&
                     _modelState.value is ModelUiState.Ready
             )?.let {
@@ -2589,21 +2670,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         storagePreflight = null,
     )
 
+    /**
+     * Preparation-profile trace fields. Delegates to the canonical field list on
+     * ModelPreparationOptions so the trace vocabulary cannot drift from the wire format.
+     */
     private fun modelPreparationTraceFields(
         options: ModelPreparationOptions,
         source: File,
-    ): Map<String, Any?> = mapOf(
-        "source_name" to source.name,
-        "source_bytes" to source.length(),
-        "profile_sha256" to options.profileSha256(),
-        "weight_optimization" to options.weightOptimization.name,
-        "conversion_mode" to options.weightOptimization.conversionMode,
-        "requantize_type" to options.weightOptimization.requantizeType,
-        "kv_cache_optimization" to options.kvCacheOptimization.name,
-        "tensor_batch_size" to options.tensorBatchSize,
-        "use_memory_mapping" to options.useMemoryMapping,
-        "diagnostic_mode" to options.diagnosticMode.name,
-    )
+    ): Map<String, Any?> = options.traceFields(source.name, source.length())
 
     private fun failLocalModelOptimization(
         failure: Throwable,
@@ -2686,7 +2760,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 totalBytes = source.length(),
             )
             _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
-            val sourceSha256 = sha256(source)
+            val sourceSha256 = SdxHashing.sha256Hex(source)
             val tokenizerPath = HuggingFaceGgmlAcquisition
                 .existingTokenizerJsonPath(source.toPath())
                 ?.toString()
@@ -2993,8 +3067,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     "hugging face model",
                     "preparation profile",
                     ImportDiagnosticSeverity.INFO,
-                    "Selected ${preparationOptions.weightOptimization.label}, ${preparationOptions.kvCacheOptimization.label}, " +
-                        "batch ${preparationOptions.tensorBatchSize}, diagnostics ${preparationOptions.diagnosticMode.label}.",
+                    "Selected ${preparationOptions.profileLabel()}.",
                     "These immutable settings are included in the conversion cache key and runtime trace.",
                     technicalDetails = preparationFields.entries.joinToString(separator = "\n") { (key, value) -> "$key=$value" },
                 )
@@ -3194,6 +3267,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ) { preparationStage ->
                 onImportStep(
                     when (preparationStage) {
+                        PreparationStage.MEMORY_PREFLIGHT,
+                        PreparationStage.MEMORY_PRESSURE_WARNING -> HuggingFaceImportStep.PREFLIGHT
                         PreparationStage.CONVERT_AND_CACHE_SDZ -> HuggingFaceImportStep.CONVERT_SDZ
                         PreparationStage.TARGET_CACHE_READY -> HuggingFaceImportStep.TARGET_CACHE
                         PreparationStage.LOAD_ACCELERATOR -> HuggingFaceImportStep.SDX_LOAD
@@ -3574,18 +3649,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().buffered().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
 
     // --- Helpers ---
 

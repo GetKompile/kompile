@@ -85,6 +85,7 @@ public class MessageQueueManager {
         }
 
         MessageQueue.QueuedMessage msg = messageQueue.enqueue(content);
+        if (msg == null) return;
         repl.requestStatusRedraw();
         System.out.println(renderer.green("Message queued [") + msg.getId() + renderer.green("]"));
         System.out.println(renderer.dim("  Use /queues to view, /queue-send to send now, /queue-remove <id> to cancel"));

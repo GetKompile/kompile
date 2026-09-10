@@ -23,35 +23,38 @@ interface MockAgent {
   available: boolean;
   isDefault: boolean;
   description: string;
-  agentType?: 'CLI' | 'API';
+  agentType?: 'CLI' | 'API' | 'HARNESS';
+  supportsVision?: boolean;
 }
 
 const DEFAULT_AGENTS: MockAgent[] = [
   {
-    name: 'claude-code',
-    displayName: 'Claude Code',
-    command: 'claude',
+    name: 'coder',
+    displayName: 'Coder',
+    command: 'kompile chat',
     skipPermissionsFlag: '--dangerously-skip-permissions',
-    skipPermissions: true,
+    skipPermissions: false,
     args: [],
     environment: {},
     available: true,
     isDefault: true,
-    description: 'Claude Code CLI agent',
-    agentType: 'CLI',
+    description: 'Kompile CLI development persona',
+    agentType: 'HARNESS',
+    supportsVision: true,
   },
   {
-    name: 'kompile',
-    displayName: 'Kompile',
-    command: 'kompile',
-    skipPermissionsFlag: '',
+    name: 'crawler',
+    displayName: 'Crawler',
+    command: 'kompile chat',
+    skipPermissionsFlag: '--dangerously-skip-permissions',
     skipPermissions: false,
     args: [],
     environment: {},
     available: true,
     isDefault: false,
-    description: 'Kompile CLI agent',
-    agentType: 'CLI',
+    description: 'Kompile CLI crawl and knowledge persona',
+    agentType: 'HARNESS',
+    supportsVision: true,
   },
 ];
 
@@ -69,6 +72,66 @@ export class KompileApiMock {
     await this.page.route('**/api/agents**', (route) => {
       const url = new URL(route.request().url());
       const path = url.pathname;
+
+      if (path.endsWith('/agents/chat/capabilities')) {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            engine: 'kompile-cli-main',
+            available: true,
+            status: 'ready',
+            provider: 'test-provider',
+            model: 'test-model',
+            chatMode: 'standard',
+            contextWindow: 32768,
+            maxOutputTokens: 4096,
+            inputBudgetTokens: 24576,
+            compactTriggerRatio: 0.85,
+            memoryEnabled: true,
+            ragEnabled: false,
+            workflowEnabled: true,
+            attachmentsSupported: true,
+            personas: agents.map(agent => ({
+              name: agent.name,
+              displayName: agent.displayName,
+              description: agent.description,
+              selectorType: agent.name.startsWith('role:') ? 'role' : 'agent',
+              selectorValue: agent.name.replace(/^role:/, ''),
+              defaultPersona: agent.isDefault,
+              custom: false,
+              available: agent.available,
+            })),
+          }),
+        });
+        return;
+      }
+
+      if (path.endsWith('/agents/chat/context-budget')) {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            agentName: agents[0]?.name || 'coder', model: 'test-model',
+            contextWindow: 32768, maxOutputTokens: 4096,
+            inputBudgetTokens: 24576, source: 'kompile-cli-main',
+            compactTriggerRatio: 0.85,
+          }),
+        });
+        return;
+      }
+
+      if (path.endsWith('/agents/kompile-local/status')) {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            connected: false, modelLoaded: false,
+            stagingUrl: null, message: 'Not connected',
+          }),
+        });
+        return;
+      }
 
       // Skip /api/agents/chat/* — those have their own handlers
       if (path.includes('/agents/chat/')) {
@@ -131,7 +194,7 @@ export class KompileApiMock {
 
   /** Mock chat history */
   async mockChatHistory(): Promise<void> {
-    await this.page.route('**/api/chat/sessions**', route =>
+    await this.page.route('**/api/chat-history/sessions**', route =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -139,6 +202,24 @@ export class KompileApiMock {
       })
     );
     await this.page.route('**/api/chat/history**', route =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      })
+    );
+  }
+
+  /** Mock collection-shaped auxiliary chat endpoints used during component startup. */
+  async mockChatCollections(): Promise<void> {
+    await this.page.route('**/api/folders**', route =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      })
+    );
+    await this.page.route('**/api/system-prompts**', route =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -255,6 +336,7 @@ export class KompileApiMock {
     await this.mockFactSheets();
     await this.mockConfig();
     await this.mockChatHistory();
+    await this.mockChatCollections();
     await this.mockModels();
     await this.mockIndexStatus();
     // Agents mock last so it's checked first (highest priority)

@@ -128,7 +128,7 @@ public class SessionListTool implements CliTool {
             appendProcesses(sb);
         }
 
-        // ── MCP agent sessions (local A2A-capable) ────────────────────
+        // ── Project-local agent sessions (including MCP stdio owners) ──
         if (showAll || "mcp_sessions".equals(section)) {
             appendMcpSessions(sb);
         }
@@ -217,7 +217,7 @@ public class SessionListTool implements CliTool {
             sb.append("  (none)\n");
         } else {
             for (var p : processes) {
-                String dur = FormatUtils.formatDuration(Duration.between(p.getStartedAt(), Instant.now()));
+                String dur = FormatUtils.formatDuration(p.getDuration());
                 sb.append(String.format("  %-12s %-10s %-30s %s\n",
                         p.getProcessId(), p.getState(),
                         StringUtils.truncate(p.getCommand(), 30), dur));
@@ -278,11 +278,40 @@ public class SessionListTool implements CliTool {
     }
 
     private void appendMcpSessions(StringBuilder sb) {
-        sb.append("MCP AGENT SESSIONS\n");
+        sb.append("PROJECT AGENT SESSIONS\n");
+        if (coordinator != null) {
+            var coordinated = coordinator.queryAgents();
+            if (!coordinated.isEmpty()) {
+                for (var info : coordinated) {
+                    sb.append(String.format("  %-35s [%-12s] pid=%-7d %s\n",
+                            StringUtils.truncate(info.getSessionId(), 35),
+                            StringUtils.truncate(info.getAgentName(), 12),
+                            info.getPid(),
+                            isProcessAlive(info.getPid()) ? "ALIVE" : "STALE"));
+                    if (info.getParentSessionId() != null) {
+                        sb.append("                                      parent: ")
+                                .append(info.getParentSessionId()).append("\n");
+                    }
+                    if (info.getWorkDir() != null) {
+                        sb.append("                                      dir: ")
+                                .append(info.getWorkDir()).append("\n");
+                    }
+                    if (info.getTask() != null && !info.getTask().isBlank()) {
+                        sb.append("                                      task: ")
+                                .append(StringUtils.truncate(info.getTask(), 80)).append("\n");
+                    }
+                }
+                sb.append("\n");
+                return;
+            }
+        }
+
+        // Compatibility fallback for installations that still publish the older
+        // user-global MCP registry instead of project-local coordination presence.
         try {
             List<McpSessionInfo> sessions = McpSessionRegistry.listAlive();
             if (sessions.isEmpty()) {
-                sb.append("  (no MCP sessions registered)\n");
+                sb.append("  (no project agent sessions registered)\n");
             } else {
                 for (McpSessionInfo info : sessions) {
                     sb.append(String.format("  %-35s [%-7s] pid=%-7d",

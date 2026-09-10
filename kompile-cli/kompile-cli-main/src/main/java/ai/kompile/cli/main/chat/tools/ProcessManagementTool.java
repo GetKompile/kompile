@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
+import ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.coordination.ProcessCoordEntry;
 import ai.kompile.utils.StringUtils;
@@ -77,6 +79,9 @@ public class ProcessManagementTool implements CliTool {
                                  CoordinationStateManager coordinator) {
         this.processManager = processManager;
         this.coordinator = coordinator;
+        if (processManager != null && coordinator != null) {
+            processManager.addExitListener(this::syncProcessState);
+        }
     }
 
     @Override
@@ -84,9 +89,12 @@ public class ProcessManagementTool implements CliTool {
 
     @Override
     public String description() {
-        return "Manage background processes. Launch long-running commands (builds, servers, tests) " +
-                "in the background and monitor their progress. Launched processes are also published " +
+        return "Manage background processes. Every launch detaches immediately and installs a one-shot " +
+                "completion monitor at the host boundary; multiple commands may run concurrently. " +
+                "Launched processes are also published " +
                 "to edit_coordinator when coordination is available, so other agents can see running builds. " +
+                "Shell content reads/writes require dedicated file or memory tools. Filesystem administration " +
+                "(rm, mv, mkdir, chmod) is risk-classified and subject to permissions and judge policy. " +
                 "Actions: list (show local and shared WIP processes), launch (start a background command), " +
                 "kill (stop a local process by ID), output (live tail snapshot), stream (follow output briefly), " +
                 "status (detailed info plus recent output), monitor (wake this agent when one local process exits), " +
@@ -121,7 +129,8 @@ public class ProcessManagementTool implements CliTool {
 
         ObjectNode monitor = props.putObject("monitor");
         monitor.put("type", "boolean");
-        monitor.put("description", "For launch, atomically create a one-shot monitor that wakes the agent when the process exits (default: false)");
+        monitor.put("default", true);
+        monitor.put("description", "Compatibility flag for launch. The harness always installs a one-shot completion monitor; false is ignored.");
 
         ObjectNode monitorMessage = props.putObject("monitor_message");
         monitorMessage.put("type", "string");
@@ -218,7 +227,7 @@ public class ProcessManagementTool implements CliTool {
         }
 
         for (ProcessCoordEntry entry : shared) {
-            String duration = formatDuration(durationSince(entry.getStartedAt()));
+            String duration = formatDuration(entry.getDuration());
             String pidStr = entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-";
             String owner = StringUtils.truncateToLength(firstNonBlank(entry.getAgentName(), entry.getSessionId(), "shared"), 10);
             sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
@@ -257,33 +266,42 @@ public class ProcessManagementTool implements CliTool {
             return ToolResult.error("command is required for launch action");
         }
 
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateCommand(id(), command);
+        if (mandate != null) {
+            return ToolResult.error(mandate.getCorrectionPrompt());
+        }
+
         // Require permission for launching processes
         context.checkPermission(permissionKey(), "Launch background process: " + description);
+        context.checkPermission(BashTool.commandPermissionKey(command), "Background command: " + command);
 
         try {
-            boolean monitored = params.path("monitor").asBoolean(false);
+            boolean monitorForced = params.has("monitor")
+                    && !params.path("monitor").asBoolean(true);
             String monitorMessage = params.path("monitor_message").asText("");
+            ResourcePolicy.Decision resource = ResourcePolicy.ACTIVE_LAUNCH.get();
+            if (resource == null) resource = ResourcePolicy.classify(
+                    coordinator != null ? coordinator.getProjectRoot() : context.getWorkingDirectory(), id(), params);
             BackgroundProcessManager.ProcessEntry entry =
-                    monitored
-                            ? processManager.launchMonitored(command, description,
-                                    context.getWorkingDirectory(), monitorMessage)
-                            : processManager.launch(command, description,
-                                    context.getWorkingDirectory());
-            publishProcess(entry, context);
+                    processManager.launchMonitored(command, description,
+                            context.getWorkingDirectory(), monitorMessage);
+            publishProcess(entry, context, resource.resourceClass());
 
             String output = String.format("Launched background process:\n" +
                             "  ID:      %s\n" +
                             "  PID:     %d\n" +
                             "  Command: %s\n" +
                             "  Output:  %s\n" +
-                            "  Desc:    %s%s",
+                            "  Desc:    %s\n" +
+                            "  Monitor: agent wake-up on exit (required by harness)%s",
                     entry.getId(), entry.getPid(), command,
                     entry.getOutputFile(), description,
-                    monitored ? "\n  Monitor: agent wake-up on exit" : "");
+                    monitorForced ? " — caller monitor=false ignored" : "");
 
             return ToolResult.success("launched " + entry.getId(), output,
                     Map.of("processId", entry.getId(), "pid", entry.getPid(),
-                            "monitored", monitored));
+                            "monitored", true, "monitorEnforced", true,
+                            "monitorForced", monitorForced));
 
         } catch (IOException e) {
             return ToolResult.error("Failed to launch process: " + e.getMessage());
@@ -468,7 +486,7 @@ public class ProcessManagementTool implements CliTool {
         sb.append("  Command:     ").append(firstNonBlank(shared.getCommand(), "-")).append("\n");
         sb.append("  Description: ").append(firstNonBlank(shared.getDescription(), "-")).append("\n");
         sb.append("  Started:     ").append(shared.getStartedAt()).append("\n");
-        sb.append("  Duration:    ").append(formatDuration(durationSince(shared.getStartedAt()))).append("\n");
+        sb.append("  Duration:    ").append(formatDuration(shared.getDuration())).append("\n");
         sb.append("  Output File: ").append(firstNonBlank(shared.getOutputFile(), "-")).append("\n");
         appendRecentOutputBlock(sb, pathOrNull(shared.getOutputFile()), tailLines);
 
@@ -550,16 +568,29 @@ public class ProcessManagementTool implements CliTool {
                 Map.of("removed", removed));
     }
 
-    private void publishProcess(BackgroundProcessManager.ProcessEntry entry, ToolContext context) {
+    private void publishProcess(BackgroundProcessManager.ProcessEntry entry, ToolContext context, String resourceClass) {
         if (coordinator == null || entry == null) return;
+        var agent = context != null ? context.getAgent() : null;
+        String roleName = null;
+        if (agent != null) {
+            roleName = agent.getRoleName() != null && !agent.getRoleName().isBlank()
+                    ? agent.getRoleName() : agent.getName();
+        }
         coordinator.publishProcess(entry.getId(), entry.getCommand(), entry.getDescription(),
-                entry.getPid(), entry.getState().name(), entry.getOutputFile().toString(),
-                context.getSessionId());
+                entry.getPid(), entry.getState().name(),
+                entry.getOutputFile() != null ? entry.getOutputFile().toString() : null,
+                null, roleName, entry.getKind().label(), entry.getStartTime(),
+                entry.getEndTime(), entry.getExitCode(), resourceClass);
+        // A very short command can exit between reading the state above and the
+        // coordination file becoming visible. One post-publication sync closes
+        // that race; later exits are covered by the registered listener.
+        syncProcessState(entry);
     }
 
     private void syncProcessState(BackgroundProcessManager.ProcessEntry entry) {
         if (coordinator == null || entry == null) return;
-        coordinator.updateProcessState(entry.getId(), entry.getState().name());
+        coordinator.updateProcessState(entry.getId(), entry.getState().name(),
+                entry.getEndTime(), entry.getExitCode());
     }
 
     private List<ProcessCoordEntry> sharedProcessEntries(List<BackgroundProcessManager.ProcessEntry> localEntries) {
@@ -816,7 +847,7 @@ public class ProcessManagementTool implements CliTool {
         return String.format("[%s] shared:%s | %s | %s | %s | %s\n---\n",
                 entry.getProcessId(), owner, pidText,
                 firstNonBlank(entry.getState(), "RUNNING"),
-                formatDuration(durationSince(entry.getStartedAt())), label);
+                formatDuration(entry.getDuration()), label);
     }
 
     private static void appendRecentOutputSummary(StringBuilder sb, String processId, Path outputFile, int lines) {
@@ -845,11 +876,6 @@ public class ProcessManagementTool implements CliTool {
             sb.append('\n');
         }
         sb.append(line).append('\n');
-    }
-
-    private static Duration durationSince(Instant startedAt) {
-        if (startedAt == null) return Duration.ZERO;
-        return Duration.between(startedAt, Instant.now());
     }
 
     private static Path pathOrNull(String value) {

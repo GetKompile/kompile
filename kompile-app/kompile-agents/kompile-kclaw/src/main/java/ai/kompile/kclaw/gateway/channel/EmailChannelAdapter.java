@@ -15,8 +15,8 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
-import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.gateway.core.gateway.channel.*;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
@@ -24,14 +24,15 @@ import java.util.Map;
 import java.util.Set;
 
 @Slf4j
-public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClient.EmailMessageHandler {
+public class EmailChannelAdapter extends ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter implements EmailClient.EmailMessageHandler {
 
     private EmailClient emailClient;
     private EmailClient.EmailConfig emailConfig;
     private final Set<String> allowedSenders = new HashSet<>();
+    private boolean allowAllInbound;
 
-    public EmailChannelAdapter(KClawAgentService agentService) {
-        super(agentService);
+    public EmailChannelAdapter(AgentExecutor agentExecutor) {
+        super(agentExecutor);
     }
 
     @Override
@@ -51,20 +52,26 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
         allowedSenders.add(email.toLowerCase());
     }
 
+    public void setAllowAllInbound(boolean allowAllInbound) {
+        this.allowAllInbound = allowAllInbound;
+    }
+
     @Override
     protected void doStart() {
         if (emailClient == null) {
-            log.warn("Email client not configured");
-            return;
+            throw new IllegalStateException("Email client is not configured");
         }
 
         if (emailConfig == null) {
-            log.warn("Email configuration not set");
-            return;
+            throw new IllegalStateException("Email configuration is not set");
         }
 
         emailClient.addMessageHandler(this);
         emailClient.start(emailConfig);
+        if (!emailClient.isRunning()) {
+            emailClient.removeMessageHandler(this);
+            throw new IllegalStateException("Email client could not connect");
+        }
     }
 
     @Override
@@ -77,8 +84,14 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
 
     @Override
     public void onMessage(EmailClient.EmailMessage message) {
+        if (!message.authenticatedSender()) {
+            log.warn("Ignoring email without aligned DMARC authentication");
+            emailClient.markAsRead(message.messageId());
+            return;
+        }
         if (!isAllowed(message.from())) {
             log.debug("Ignoring email from unauthorized sender: {}", message.from());
+            emailClient.markAsRead(message.messageId());
             return;
         }
 
@@ -87,6 +100,7 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
             body = message.bodyText();
         }
         if (body == null || body.isEmpty()) {
+            emailClient.markAsRead(message.messageId());
             return;
         }
 
@@ -100,7 +114,8 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
                 message.inReplyTo(),
                 Map.of(
                         "subject", message.subject() != null ? message.subject() : "",
-                        "reply_to", message.replyTo() != null ? message.replyTo() : message.from()
+                        "reply_to", message.from(),
+                        "conversation_key", emailConversationKey(message)
                 )
         );
 
@@ -108,7 +123,7 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
 
         ChannelAdapter.MessageResponder responder = new EmailMessageResponder(
                 emailClient,
-                message.replyTo() != null ? message.replyTo() : message.from(),
+                message.from(),
                 message.subject(),
                 message.messageId()
         );
@@ -132,11 +147,13 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
 
     @Override
     public void onReady() {
+        markReady();
         log.info("Email adapter ready");
     }
 
     @Override
     public void onError(Throwable error) {
+        recordError(error);
         log.error("Email adapter error", error);
     }
 
@@ -145,13 +162,24 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
         return channelConfigs.values().stream().findFirst().orElse(null);
     }
 
+    @Override
+    public DeliveryResult send(String target, String content) {
+        if (emailClient == null || !isRunning()) {
+            throw new IllegalStateException("Email connection is not running");
+        }
+        emailClient.sendEmail(target, "Kompile message", content);
+        return DeliveryResult.accepted("Email accepted the message");
+    }
+
     private boolean isAllowed(String from) {
-        if (allowedSenders.isEmpty()) {
+        if (allowAllInbound) {
             return true;
         }
-        String fromLower = from.toLowerCase();
-        return allowedSenders.stream()
-                .anyMatch(allowed -> fromLower.contains(allowed) || allowed.equals("*"));
+        if (from == null) {
+            return false;
+        }
+        String fromLower = from.trim().toLowerCase(java.util.Locale.ROOT);
+        return allowedSenders.contains(fromLower);
     }
 
     private String prependSubject(String subject, String body) {
@@ -159,5 +187,15 @@ public class EmailChannelAdapter extends BaseChannelAdapter implements EmailClie
             return "Subject: " + subject + "\n\n" + body;
         }
         return body;
+    }
+
+    private static String emailConversationKey(EmailClient.EmailMessage message) {
+        if (message.references() != null && !message.references().isBlank()) {
+            return message.references().trim().split("\\s+")[0];
+        }
+        if (message.inReplyTo() != null && !message.inReplyTo().isBlank()) {
+            return message.inReplyTo();
+        }
+        return message.messageId();
     }
 }

@@ -27,7 +27,9 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
@@ -105,27 +107,26 @@ public class ModelContextResolver {
      */
     public ModelLimits resolveLimits(String provider, String model, String baseUrl,
                                      int contextOverride, int outputOverride) {
-        String qualifiedModel = qualify(provider, model);
-        String metadataModel = ModelContextWindows.isKnown(qualifiedModel)
-                ? qualifiedModel : model;
-        boolean known = ModelContextWindows.isKnown(metadataModel);
+        // Pass provider and literal model id separately: flattening them loses provenance when
+        // an aggregator publishes ids such as "openai/gpt-6-astra" in its own namespace.
+        boolean known = ModelContextWindows.isKnown(provider, model);
 
         int context = contextOverride > 0 ? contextOverride : 0;
         int output = outputOverride > 0 ? outputOverride : 0;
 
         if (known) {
-            if (context == 0) context = ModelContextWindows.getContextWindow(metadataModel);
-            if (output == 0) output = ModelContextWindows.getMaxOutputTokens(metadataModel);
-        } else if (isLocalEndpoint(baseUrl)) {
-            Optional<ModelLimits> probed = probeLocalLimits(baseUrl, qualifiedModel);
+            if (context == 0) context = ModelContextWindows.getContextWindow(provider, model);
+            if (output == 0) output = ModelContextWindows.getMaxOutputTokens(provider, model);
+        } else if ((context == 0 || output == 0) && isLocalEndpoint(baseUrl)) {
+            Optional<ModelLimits> probed = probeLocalLimits(baseUrl, qualify(provider, model));
             if (probed.isPresent()) {
                 if (context == 0) context = probed.get().contextWindow();
                 if (output == 0) output = probed.get().maxOutputTokens();
             }
         }
 
-        if (context <= 0) context = ModelContextWindows.getContextWindow(metadataModel);
-        if (output <= 0) output = ModelContextWindows.getMaxOutputTokens(metadataModel);
+        if (context <= 0) context = ModelContextWindows.getContextWindow(provider, model);
+        if (output <= 0) output = ModelContextWindows.getMaxOutputTokens(provider, model);
         return new ModelLimits(context, output);
     }
 
@@ -208,7 +209,22 @@ public class ModelContextResolver {
                         .timeout(PROBE_TIMEOUT)
                         .GET()
                         .build();
-                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(
+                        request, HttpResponse.BodyHandlers.ofByteArray());
+                HttpResponse<byte[]> response;
+                try {
+                    response = pending.get(PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                } catch (InterruptedException interrupted) {
+                    pending.cancel(true);
+                    Thread.currentThread().interrupt();
+                    return Optional.empty();
+                } catch (Exception failure) {
+                    // HttpRequest.timeout does not reliably cover a response body that
+                    // sent headers/partial bytes and then stalled. Cancel the async
+                    // exchange at the explicit probe deadline so chat can continue.
+                    pending.cancel(true);
+                    return Optional.empty();
+                }
                 if (response.statusCode() >= 400) {
                     return Optional.empty();
                 }

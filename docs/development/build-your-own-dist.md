@@ -56,8 +56,14 @@ Either set the artifact directly:
 or use the root-pom alias profiles (`pom.xml`, `backend-*`):
 
 ```bash
--Dkompile.backend=cpu | cpu-compile | cpu-onednn-avx512 | cuda-12.6 | cuda-12.9 | zluda
+-Dkompile.backend=cpu | cpu-compile | cpu-onednn-avx512 | cuda-12.6 | cuda-12.9 \
+  | zluda-rocm-7.2.4 | zluda-rocm-10.0.0
 ```
+
+`amd-zluda` defaults to the qualified ROCm 7.2.4 profile. ROCm 10 is a
+Linux-only candidate and remains opt-in until its `nd4j-zluda-12.9` classifier
+is published; the legacy unversioned `zluda` profile remains available only for
+older repositories.
 
 `-Dkompile.cuda=true` is a script-level marker only — it activates **nothing**
 in the poms; the backend property is what selects the artifact. `build-dist.sh`
@@ -71,6 +77,9 @@ exec-jar, and all native-image steps).
 ./build-dist.sh full            # CLI native + all service exec JARs + jlink runtime
 ./build-dist.sh cpu-intel --jars-only    # shaded/exec JARs + JBang wrapper + jlink runtime
 ./build-dist.sh cuda --skip-java-build   # reuse ~/.m2, only native steps
+# Once the candidate DL4J lane is available:
+./build-dist.sh amd-zluda --backend-profile zluda-rocm-10.0.0 \
+  --sdx-assets /srv/dl4j-sdk/linux-x86_64-cuda-12.9-zluda-rocm-10.0.0
 ```
 
 The `--jars-only` lane is the JVM version of the distribution boundary: it skips
@@ -90,6 +99,8 @@ example `cpu-intel-linux-x86_64-avx2` and
 JavaCPP `.so`s — the images exclude native libs via `-H:ExcludeResources` and
 load them from `lib/` at runtime), `conf/`, `runtime/` (jlink), seed
 `data/`, and the validated `sdx-sdk/` companion for backend distributions.
+ROCm 10 archives also preserve the producer-manifest-owned
+`lib/.kpack/{blas,sparse}_lib_gfx1103.kpack` resources beside the shared runtime.
 JAR-only archives do not contain native binaries or side-loaded native libraries;
 they still include `runtime/` when the selected variant bundles a jlink runtime.
 The ZIP is installed locally as
@@ -110,9 +121,10 @@ build-scripts/build-kompile-platform.sh linux-x86_64 \
 ```
 
 `build-dist.sh` and the `kompile-dist` Maven assembly both call the same native
-stager. It emits a flat `lib/` for exactly one OS/architecture, applies a requested
-CPU flavor after the baseline set, and fails on conflicting basenames or an
-incomplete optimized ND4J pair. Distribution assembly never falls back to the
+stager. It emits flat shared libraries in `lib/` for exactly one OS/architecture,
+preserves manifest-owned resources such as ROCm Core SDK `.kpack/` beneath that
+directory, applies a requested CPU flavor after the baseline set, and fails on
+conflicting basenames or an incomplete optimized ND4J pair. Distribution assembly never falls back to the
 mutable JavaCPP user cache. Both routes also call
 `kompile-dist/src/main/build/normalize-elf-portability.sh` on staged executable
 copies. Module `target/` outputs remain untouched; Linux ELF publication requires

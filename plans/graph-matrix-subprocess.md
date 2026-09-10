@@ -47,7 +47,7 @@ All `AdjacencyMatrixGraph`-touching classes are in ONE module, `kompile-knowledg
 
 ## Invariant to verify (objective)
 After deploy with the toggle ON: `jmap -histo` on the MAIN pid shows ~0 `AdjacencyMatrixGraph` /
-`MatrixGraphNode` instances; main Old-gen stays low; the FP&A crawl writes + RAG reads succeed through
+`MatrixGraphNode` instances; main Old-gen stays low; the reference crawl writes + RAG reads succeed through
 the subprocess; the matrix lives only in the `graph-matrix` subprocess (its OOM is contained, app survives).
 
 ## CORRECTION (2026-06-26, proven by code review) — store-delegate does NOT fit; use SERVICE-layer

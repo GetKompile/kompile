@@ -8,5 +8,14 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
+      "verifiedAt": "2026-09-06",
+      "notice": "Higher per-token cost; requires fast-mode access/usage credits and organization approval. Supported Opus models only; availability and capacity are provider-owned."
+    },
+    "modelPatterns": ["^claude-opus-(?:5|4-8)(?:-[0-9]{8})?$"]
+  },
   "profiles": []
 }

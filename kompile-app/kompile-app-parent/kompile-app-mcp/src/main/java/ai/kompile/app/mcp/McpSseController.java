@@ -16,6 +16,9 @@
 
 package ai.kompile.app.mcp;
 
+import ai.kompile.app.services.mcp.ScopedMcpCapabilityService;
+import ai.kompile.app.services.mcp.ScopedMcpCapabilityService.ScopeUnavailableException;
+
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
@@ -30,9 +33,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.util.stream.Collectors;
+import java.nio.charset.StandardCharsets;
 
 /**
  * MCP Controller exposing the Model Context Protocol via SSE transport.
@@ -60,10 +62,14 @@ public class McpSseController {
     private static final Logger log = LoggerFactory.getLogger(McpSseController.class);
 
     private final SpringMvcSseServerTransport transport;
+    private final ScopedMcpCapabilityService scopedCapabilities;
 
     @Autowired
-    public McpSseController(SpringMvcSseServerTransport transport) {
+    public McpSseController(
+            SpringMvcSseServerTransport transport,
+            ScopedMcpCapabilityService scopedCapabilities) {
         this.transport = transport;
+        this.scopedCapabilities = scopedCapabilities;
     }
 
     /**
@@ -84,6 +90,28 @@ public class McpSseController {
         } catch (Exception e) {
             log.error("Failed to create MCP SSE connection", e);
             throw e;
+        }
+    }
+
+    /** Establish an SSE session against one short-lived, one-tool bearer capability. */
+    @GetMapping(path = "/scoped/{capability}/sse",
+            produces = {MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.ALL_VALUE})
+    public SseEmitter connectScoped(
+            @PathVariable String capability,
+            @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId) {
+        try {
+            return sessionId == null
+                    ? scopedCapabilities.connect(capability)
+                    : scopedCapabilities.openStream(capability, sessionId);
+        } catch (ScopeUnavailableException unavailable) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
+        } catch (IllegalArgumentException missing) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
+        } catch (IllegalStateException duplicate) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.CONFLICT, "Scoped MCP common stream is already open");
         }
     }
 
@@ -131,6 +159,48 @@ public class McpSseController {
         }
     }
 
+    /** Streamable HTTP transport for one short-lived bearer capability. */
+    @PostMapping(path = "/scoped/{capability}/sse",
+            produces = {MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.ALL_VALUE})
+    public Object handleScopedStreamableHttp(
+            @PathVariable String capability,
+            @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId,
+            HttpServletRequest request,
+            HttpServletResponse response) {
+        String body = readRequestBody(request, ScopedMcpCapabilityService.MAX_SCHEMA_BYTES * 8);
+        try {
+            boolean initialize = scopedCapabilities.isInitializeMessage(body);
+            if (initialize && sessionId == null) {
+                SpringMvcSseServerTransport.StreamableHttpResult result =
+                        scopedCapabilities.createStreamableConnection(capability, body);
+                response.setHeader("Mcp-Session-Id", result.sessionId());
+                return result.emitter();
+            }
+            if (sessionId == null) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "Scoped MCP session id is required");
+            }
+            if (!scopedCapabilities.hasSession(capability, sessionId)) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Scoped MCP session is unavailable");
+            }
+            if (scopedCapabilities.isNotificationMessage(body)) {
+                scopedCapabilities.handleStreamableMessage(capability, sessionId, body);
+                return ResponseEntity.accepted().build();
+            }
+            return scopedCapabilities.handleStreamableMessage(capability, sessionId, body);
+        } catch (ScopeUnavailableException unavailable) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Scoped MCP capability is unavailable");
+        } catch (IllegalArgumentException invalid) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Invalid scoped MCP request");
+        } catch (IllegalStateException concurrent) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.CONFLICT, "Scoped MCP session already has an in-flight request");
+        }
+    }
+
     /**
      * Message endpoint for receiving JSON-RPC messages from clients (SSE Transport).
      *
@@ -172,6 +242,27 @@ public class McpSseController {
         }
     }
 
+    /** Receive an SSE-transport message for one short-lived bearer capability. */
+    @PostMapping(path = "/scoped/{capability}/message")
+    public ResponseEntity<Void> handleScopedMessage(
+            @PathVariable String capability,
+            @RequestParam("sessionId") String sessionId,
+            HttpServletRequest request) {
+        String body = readRequestBody(request, ScopedMcpCapabilityService.MAX_SCHEMA_BYTES * 8);
+        try {
+            if (!scopedCapabilities.hasSession(capability, sessionId)) {
+                return ResponseEntity.notFound().build();
+            }
+            scopedCapabilities.handleMessage(capability, sessionId, body)
+                    .subscribeOn(Schedulers.boundedElastic()).subscribe(
+                            unused -> { },
+                            error -> log.warn("Scoped MCP message processing failed"));
+            return ResponseEntity.accepted().build();
+        } catch (ScopeUnavailableException unavailable) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
     /**
      * Session termination endpoint for MCP Streamable HTTP transport.
      *
@@ -208,6 +299,25 @@ public class McpSseController {
         }
     }
 
+    /** Terminate one streamable HTTP session without revealing bearer-token state. */
+    @DeleteMapping(path = "/scoped/{capability}/sse")
+    public ResponseEntity<Void> terminateScopedSession(
+            @PathVariable String capability,
+            @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        try {
+            if (!scopedCapabilities.hasSession(capability, sessionId)) {
+                return ResponseEntity.notFound().build();
+            }
+            scopedCapabilities.terminateSession(capability, sessionId);
+            return ResponseEntity.ok().build();
+        } catch (ScopeUnavailableException unavailable) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
     /**
      * Health check endpoint for MCP server status.
      */
@@ -228,19 +338,19 @@ public class McpSseController {
     private static final int MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
     private String readRequestBody(HttpServletRequest request) {
-        try (BufferedReader reader = request.getReader()) {
-            StringBuilder sb = new StringBuilder();
-            char[] buf = new char[8192];
-            int read;
-            int total = 0;
-            while ((read = reader.read(buf)) != -1) {
-                total += read;
-                if (total > MAX_REQUEST_BODY_BYTES) {
-                    throw new RuntimeException("Request body exceeds " + MAX_REQUEST_BODY_BYTES + " byte limit");
-                }
-                sb.append(buf, 0, read);
+        return readRequestBody(request, MAX_REQUEST_BODY_BYTES);
+    }
+
+    private String readRequestBody(HttpServletRequest request, int maximumBytes) {
+        try {
+            if (request.getContentLengthLong() > maximumBytes) {
+                throw new RuntimeException("Request body exceeds " + maximumBytes + " byte limit");
             }
-            return sb.toString();
+            byte[] body = request.getInputStream().readNBytes(maximumBytes + 1);
+            if (body.length > maximumBytes) {
+                throw new RuntimeException("Request body exceeds " + maximumBytes + " byte limit");
+            }
+            return new String(body, StandardCharsets.UTF_8);
         } catch (IOException e) {
             log.error("Failed to read request body", e);
             throw new RuntimeException("Failed to read request body", e);

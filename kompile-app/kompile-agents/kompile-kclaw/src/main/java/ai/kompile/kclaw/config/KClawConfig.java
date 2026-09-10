@@ -35,9 +35,15 @@ public class KClawConfig {
     }
 
     public static KClawConfig defaults() {
-        String home = System.getProperty("user.home");
+        String dataDir = System.getProperty(
+                "kompile.data.dir",
+                System.getProperty("user.home") + "/.kompile");
+        return defaults(dataDir);
+    }
+
+    public static KClawConfig defaults(String dataDir) {
         KClawConfig config = new KClawConfig();
-        config.setWorkspace(home + "/.kompile/kclaw");
+        config.setWorkspace(java.nio.file.Path.of(dataDir, "kclaw").toString());
         config.setDefaultAgentId("jarvis");
         
         GatewayConfig gateway = new GatewayConfig();

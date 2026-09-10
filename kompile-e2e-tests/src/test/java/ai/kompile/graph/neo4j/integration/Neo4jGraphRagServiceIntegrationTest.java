@@ -58,7 +58,10 @@ public class Neo4jGraphRagServiceIntegrationTest {
     private static final Neo4jContainer<?> neo4jContainer = new Neo4jContainer<>(
             DockerImageName.parse("neo4j:5.18-community"))
             .withAdminPassword("testpassword")
-            .withEnv("NEO4J_PLUGINS", "[\"apoc\"]");
+            .withEnv("NEO4J_PLUGINS", "[\"apoc\"]")
+            .withEnv("NEO4J_server_memory_heap_initial__size", "256m")
+            .withEnv("NEO4J_server_memory_heap_max__size", "512m")
+            .withEnv("NEO4J_server_memory_pagecache_size", "128m");
 
     private static Driver driver;
     private Neo4jGraphRagService service;
@@ -85,6 +88,9 @@ public class Neo4jGraphRagServiceIntegrationTest {
         try (Session session = driver.session()) {
             session.run("MATCH (n) DETACH DELETE n");
         }
+        // The service queries its shared entity-embeddings index on every request,
+        // including no-data and history cases. Keep the real fixture index online.
+        createEmbeddings();
     }
 
     @AfterEach
@@ -100,9 +106,9 @@ public class Neo4jGraphRagServiceIntegrationTest {
         try (Session session = driver.session()) {
             // Create company nodes
             session.run("""
-                CREATE (techcorp:Company {name: 'TechCorp', description: 'A leading AI technology company', industry: 'Technology'})
-                CREATE (acme:Company {name: 'Acme Inc', description: 'A manufacturing company', industry: 'Manufacturing'})
-                CREATE (globaldata:Company {name: 'GlobalData', description: 'A data analytics company', industry: 'Analytics'})
+                CREATE (techcorp:Company {id: 'techcorp', title: 'TechCorp', name: 'TechCorp', description: 'A leading AI technology company', industry: 'Technology'})
+                CREATE (acme:Company {id: 'acme', title: 'Acme Inc', name: 'Acme Inc', description: 'A manufacturing company', industry: 'Manufacturing'})
+                CREATE (globaldata:Company {id: 'globaldata', title: 'GlobalData', name: 'GlobalData', description: 'A data analytics company', industry: 'Analytics'})
                 """);
 
             // Create people nodes
@@ -144,6 +150,7 @@ public class Neo4jGraphRagServiceIntegrationTest {
                 CREATE (techcorp)-[:PARTNERS_WITH {since: 2020}]->(globaldata)
                 """);
         }
+        createEmbeddings();
     }
 
     /**
@@ -153,7 +160,7 @@ public class Neo4jGraphRagServiceIntegrationTest {
         try (Session session = driver.session()) {
             // Create vector index if it doesn't exist
             session.run("""
-                CREATE VECTOR INDEX company_embeddings IF NOT EXISTS
+                CREATE VECTOR INDEX `entity-embeddings` IF NOT EXISTS
                 FOR (c:Company)
                 ON c.embedding
                 OPTIONS {indexConfig: {
@@ -180,6 +187,8 @@ public class Neo4jGraphRagServiceIntegrationTest {
                         Map.of("name", name, "embedding", embedding)
                 );
             }
+
+            session.run("CALL db.awaitIndexes(30)").consume();
         }
     }
 
@@ -459,6 +468,9 @@ public class Neo4jGraphRagServiceIntegrationTest {
 
             // Assert
             assertNotNull(result);
+            assertEquals("Please provide a valid query.", result.getAnswer());
+            assertEquals("", result.getFormattedContext());
+            assertTrue(llmChat.getReceivedPrompts().isEmpty(), "Blank queries must not invoke the LLM");
         }
 
         @Test

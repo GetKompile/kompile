@@ -9,7 +9,7 @@ if [ -z "$COMMAND" ]; then
   # No explicit command set — fall back to the kompile CLI (discovers the installed component).
   if command -v kompile >/dev/null 2>&1; then
     cd "$ROOT"
-    COMMAND="kompile manage start staging"
+    COMMAND="kompile project serve --staging-only"
   else
     echo "Set KOMPILE_STAGING_COMMAND to start model staging for this project." >&2
     echo "  (or install the kompile CLI so this script can auto-discover and start it)" >&2

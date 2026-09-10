@@ -78,6 +78,7 @@ public class CodebaseIndexer {
     private ObjectMapper objectMapper;
 
     private final Map<String, IndexingStatus> activeJobs = new ConcurrentHashMap<>();
+    private final Map<String, Object> projectionLocks = new ConcurrentHashMap<>();
 
     public record IndexingStatus(
             String projectId,
@@ -233,11 +234,11 @@ public class CodebaseIndexer {
      */
     @Transactional
     public void pruneProjectGraph(String projectId, Long factSheetId) {
-        pruneGraphNodesForEntities(entityRepository.findByProjectId(projectId));
+        pruneGraphNodesForEntities(entityRepository.findByProjectId(projectId), factSheetId);
         if (knowledgeGraphService != null) {
             knowledgeGraphService.getNodeByExternalId(projectId, NodeLevel.SOURCE, factSheetId)
                     .ifPresent(node -> knowledgeGraphService.pruneNodes(
-                            List.of(node.getNodeId()), false, null, false));
+                            List.of(node.getNodeId()), false, null, false, factSheetId));
         }
     }
 
@@ -265,6 +266,14 @@ public class CodebaseIndexer {
      */
     @Transactional
     public IndexingStatus indexDirectory(String projectId, String absolutePath, boolean forceReindex) {
+        Object lock = projectionLocks.computeIfAbsent(projectId, ignored -> new Object());
+        synchronized (lock) {
+            return indexDirectoryLocked(projectId, absolutePath, forceReindex);
+        }
+    }
+
+    private IndexingStatus indexDirectoryLocked(String projectId, String absolutePath,
+                                                boolean forceReindex) {
         Path rootPath = Paths.get(absolutePath).toAbsolutePath();
 
         // Ensure directory is tracked
@@ -289,6 +298,34 @@ public class CodebaseIndexer {
         directoryRepository.save(dir);
 
         return status;
+    }
+
+    /**
+     * Strict, synchronous structural projection used as a managed-crawl correctness barrier.
+     * Manual/UI indexing continues to use the existing best-effort async entry points.
+     */
+    @Transactional
+    public IndexingStatus projectDirectoryToFactSheet(String projectId, String absolutePath,
+                                                      Long factSheetId, boolean forceReindex) {
+        if (factSheetId == null || factSheetId < 0) {
+            throw new IllegalArgumentException("factSheetId must be zero or greater");
+        }
+        Object lock = projectionLocks.computeIfAbsent(projectId, ignored -> new Object());
+        synchronized (lock) {
+            CodeProject project = projectRepository.findByProjectId(projectId)
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown code project: " + projectId));
+            project.setFactSheetId(factSheetId);
+            projectRepository.saveAndFlush(project);
+            IndexingStatus status = indexDirectory(projectId, absolutePath, forceReindex);
+            if (knowledgeGraphService != null) knowledgeGraphService.flushPendingNodes();
+            if (status == null || !status.completed().get() || status.errorMessage() != null
+                    || status.errors().get() > 0) {
+                throw new IllegalStateException("Structural code projection failed for " + projectId
+                        + (status != null ? ": errors=" + status.errors().get()
+                        + (status.errorMessage() != null ? ", " + status.errorMessage() : "") : ""));
+            }
+            return status;
+        }
     }
 
     /**
@@ -359,7 +396,7 @@ public class CodebaseIndexer {
 
         if (forceReindex) {
             // Full wipe for force-reindex
-            pruneProjectGraph(projectId);
+            pruneProjectGraph(projectId, factSheetId);
             entityRepository.deleteByProjectId(projectId);
             relationRepository.deleteByProjectId(projectId);
             fingerprintRepository.deleteByProjectId(projectId);
@@ -432,7 +469,7 @@ public class CodebaseIndexer {
                             .map(CodeEntity::getFullyQualifiedName)
                             .filter(Objects::nonNull)
                             .forEach(replacedTargetFqns::add);
-                    pruneGraphNodesForEntities(deletedEntities);
+                    pruneGraphNodesForEntities(deletedEntities, factSheetId);
                     deletedEntities.forEach(entity -> fqnToNodeId.remove(entity.getFullyQualifiedName()));
                     entityRepository.deleteByProjectIdAndFilePathIn(projectId, deletedFiles);
                     relationRepository.deleteByProjectIdAndFilePathIn(projectId, deletedFiles);
@@ -447,14 +484,14 @@ public class CodebaseIndexer {
                 try {
                     Path relativePath = rootPath.relativize(file);
                     String relativePathStr = relativePath.toString();
+                    int fileErrorsBefore = status.errors().get();
 
                     // Compute fingerprint and check if file changed
+                    String hash = computeFileHash(file);
+                    long size = Files.size(file);
+                    Instant mtime = Files.getLastModifiedTime(file).toInstant();
+                    FileFingerprint existing = existingFingerprints.get(relativePathStr);
                     if (incremental) {
-                        String hash = computeFileHash(file);
-                        long size = Files.size(file);
-                        Instant mtime = Files.getLastModifiedTime(file).toInstant();
-
-                        FileFingerprint existing = existingFingerprints.get(relativePathStr);
                         if (existing != null && existing.getContentHash().equals(hash)) {
                             // File unchanged — skip
                             status.filesSkipped().incrementAndGet();
@@ -471,25 +508,12 @@ public class CodebaseIndexer {
                                     .map(CodeEntity::getFullyQualifiedName)
                                     .filter(Objects::nonNull)
                                     .forEach(replacedTargetFqns::add);
-                            pruneGraphNodesForEntities(replacedEntities);
+                            pruneGraphNodesForEntities(replacedEntities, factSheetId);
                             replacedEntities.forEach(entity -> fqnToNodeId.remove(entity.getFullyQualifiedName()));
                             entityRepository.deleteByProjectIdAndFilePath(projectId, relativePathStr);
                             relationRepository.deleteByProjectIdAndFilePath(projectId, relativePathStr);
                         }
 
-                        // Queue new fingerprint
-                        FileFingerprint fp = FileFingerprint.builder()
-                                .projectId(projectId)
-                                .filePath(relativePathStr)
-                                .contentHash(hash)
-                                .fileSize(size)
-                                .lastModified(mtime)
-                                .indexedAt(Instant.now())
-                                .build();
-                        if (existing != null) {
-                            fp.setId(existing.getId());
-                        }
-                        fingerprintsToSave.add(fp);
                     }
 
                     CodeEntityExtractor.ExtractionResult result = extractor.extract(file, projectId);
@@ -532,6 +556,8 @@ public class CodebaseIndexer {
                             if (nodeId != null) {
                                 entity.setGraphNodeId(nodeId);
                                 fqnToNodeId.put(entity.getFullyQualifiedName(), nodeId);
+                            } else {
+                                status.errors().incrementAndGet();
                             }
                         }
 
@@ -540,12 +566,28 @@ public class CodebaseIndexer {
                             String srcId = fqnToNodeId.get(rel.sourceFqn());
                             String tgtId = fqnToNodeId.get(rel.targetFqn());
                             if (srcId != null && tgtId != null) {
-                                createGraphEdge(srcId, tgtId, rel.relationType());
-                                status.relationsCreated().incrementAndGet();
+                                if (createGraphEdge(srcId, tgtId, rel.relationType(), factSheetId)) {
+                                    status.relationsCreated().incrementAndGet();
+                                } else {
+                                    status.errors().incrementAndGet();
+                                }
                             } else {
                                 deferredRelations.add(rel);
                             }
                         }
+                    }
+
+                    if (status.errors().get() == fileErrorsBefore) {
+                        FileFingerprint fp = FileFingerprint.builder()
+                                .projectId(projectId)
+                                .filePath(relativePathStr)
+                                .contentHash(hash)
+                                .fileSize(size)
+                                .lastModified(mtime)
+                                .indexedAt(Instant.now())
+                                .build();
+                        if (existing != null) fp.setId(existing.getId());
+                        fingerprintsToSave.add(fp);
                     }
 
                     status.filesProcessed().incrementAndGet();
@@ -556,11 +598,6 @@ public class CodebaseIndexer {
                 }
             }
 
-            // Bulk-save fingerprints
-            if (!fingerprintsToSave.isEmpty()) {
-                fingerprintRepository.saveAll(fingerprintsToSave);
-            }
-
             // Bulk-save all relation records
             if (!allRelations.isEmpty()) {
                 relationRepository.saveAll(allRelations);
@@ -569,11 +606,12 @@ public class CodebaseIndexer {
 
             // Second pass — resolve deferred and incoming cross-file relations.
             if (knowledgeGraphService != null) {
-                int deferred = createDeferredEdges(deferredRelations, fqnToNodeId);
+                int deferred = createDeferredEdges(deferredRelations, fqnToNodeId, factSheetId);
                 status.relationsCreated().addAndGet(deferred);
                 if (incremental) {
                     int incoming = reconnectIncomingRelations(
-                            projectId, replacedTargetFqns, reprocessedFilePaths, fqnToNodeId);
+                            projectId, replacedTargetFqns, reprocessedFilePaths, fqnToNodeId,
+                            factSheetId);
                     status.relationsCreated().addAndGet(incoming);
                 }
 
@@ -582,8 +620,14 @@ public class CodebaseIndexer {
                 List<CodeEntity> hierarchyEntities = incremental
                         ? entityRepository.findByProjectId(projectId)
                         : allSavedEntities;
-                int hierarchy = connectHierarchy(hierarchyEntities, fqnToNodeId, sourceNodeId);
+                int hierarchy = connectHierarchy(
+                        hierarchyEntities, fqnToNodeId, sourceNodeId, factSheetId);
                 status.relationsCreated().addAndGet(hierarchy);
+            }
+
+            // Fingerprints commit only after every required structural graph phase succeeds.
+            if (!fingerprintsToSave.isEmpty() && status.errors().get() == 0) {
+                fingerprintRepository.saveAll(fingerprintsToSave);
             }
 
         } catch (IOException e) {
@@ -842,6 +886,14 @@ public class CodebaseIndexer {
     }
 
     private void pruneGraphNodesForEntities(Collection<CodeEntity> entities) {
+        Long factSheetId = entities == null ? null : entities.stream().findFirst()
+                .flatMap(entity -> projectRepository.findByProjectId(entity.getProjectId()))
+                .map(CodeProject::getFactSheetId)
+                .orElse(null);
+        pruneGraphNodesForEntities(entities, factSheetId);
+    }
+
+    private void pruneGraphNodesForEntities(Collection<CodeEntity> entities, Long factSheetId) {
         if (knowledgeGraphService == null || entities == null || entities.isEmpty()) {
             return;
         }
@@ -851,14 +903,15 @@ public class CodebaseIndexer {
                 .distinct()
                 .toList();
         if (!nodeIds.isEmpty()) {
-            knowledgeGraphService.pruneNodes(nodeIds, false, null, false);
+            knowledgeGraphService.pruneNodes(nodeIds, false, null, false, factSheetId);
         }
     }
 
     /**
      * Create a directed edge between two graph nodes identified by their String node IDs.
      */
-    private void createGraphEdge(String sourceId, String targetId, CodeRelationType relType) {
+    private boolean createGraphEdge(String sourceId, String targetId, CodeRelationType relType,
+                                    Long factSheetId) {
         EdgeType edgeType = switch (relType) {
             case CONTAINS -> EdgeType.HIERARCHICAL;
             case EXTENDS, IMPLEMENTS, OVERRIDES -> EdgeType.USER_DEFINED;
@@ -867,15 +920,11 @@ public class CodebaseIndexer {
         };
 
         try {
-            knowledgeGraphService.createEdge(
-                    sourceId,
-                    targetId,
-                    edgeType,
-                    1.0,
-                    relType.name().toLowerCase()
-            );
+            return createScopedEdge(sourceId, targetId, edgeType,
+                    relType.name(), relType.name().toLowerCase(), factSheetId);
         } catch (Exception e) {
             log.warn("Failed to create graph edge {}->{}: {}", sourceId, targetId, e.getMessage());
+            return false;
         }
     }
 
@@ -886,13 +935,17 @@ public class CodebaseIndexer {
      * @return number of edges successfully created.
      */
     private int createDeferredEdges(List<CodeEntityExtractor.RelationTriple> deferred,
-                                    Map<String, String> fqnToNodeId) {
+                                    Map<String, String> fqnToNodeId,
+                                    Long factSheetId) {
         int created = 0;
         for (CodeEntityExtractor.RelationTriple rel : deferred) {
             String srcId = fqnToNodeId.get(rel.sourceFqn());
             String tgtId = fqnToNodeId.get(rel.targetFqn());
             if (srcId != null && tgtId != null) {
-                createGraphEdge(srcId, tgtId, rel.relationType());
+                if (!createGraphEdge(srcId, tgtId, rel.relationType(), factSheetId)) {
+                    throw new IllegalStateException("Failed deferred edge "
+                            + rel.sourceFqn() + " -> " + rel.targetFqn());
+                }
                 created++;
             } else {
                 log.debug("Skipping deferred relation {}->{} ({}): node(s) not in graph",
@@ -913,7 +966,8 @@ public class CodebaseIndexer {
     int reconnectIncomingRelations(String projectId,
                                    Set<String> replacedTargetFqns,
                                    Set<String> reprocessedFilePaths,
-                                   Map<String, String> fqnToNodeId) {
+                                   Map<String, String> fqnToNodeId,
+                                   Long factSheetId) {
         if (replacedTargetFqns == null || replacedTargetFqns.isEmpty()) {
             return 0;
         }
@@ -926,7 +980,10 @@ public class CodebaseIndexer {
             String sourceId = fqnToNodeId.get(relation.getSourceFqn());
             String targetId = fqnToNodeId.get(relation.getTargetFqn());
             if (sourceId != null && targetId != null) {
-                createGraphEdge(sourceId, targetId, relation.getRelationType());
+                if (!createGraphEdge(sourceId, targetId, relation.getRelationType(), factSheetId)) {
+                    throw new IllegalStateException("Failed incoming edge "
+                            + relation.getSourceFqn() + " -> " + relation.getTargetFqn());
+                }
                 created++;
             }
         }
@@ -949,7 +1006,8 @@ public class CodebaseIndexer {
      */
     private int connectHierarchy(List<CodeEntity> entities,
                                  Map<String, String> fqnToNodeId,
-                                 String sourceNodeId) {
+                                 String sourceNodeId,
+                                 Long factSheetId) {
         int created = 0;
         for (CodeEntity entity : entities) {
             String childId = fqnToNodeId.get(entity.getFullyQualifiedName());
@@ -958,13 +1016,12 @@ public class CodebaseIndexer {
             // FILE → source node hierarchy
             if (entity.getEntityType() == CodeEntityType.FILE && sourceNodeId != null) {
                 try {
-                    if (!knowledgeGraphService.edgeExists(sourceNodeId, childId)) {
-                        knowledgeGraphService.createEdge(sourceNodeId, childId,
-                                EdgeType.HIERARCHICAL, 1.0, "source contains file");
-                        created++;
-                    }
+                    if (createScopedEdge(sourceNodeId, childId, EdgeType.HIERARCHICAL,
+                            "CONTAINS_FILE", "source contains file", factSheetId)) created++;
+                    else throw new IllegalStateException("edge not visible after write");
                 } catch (Exception e) {
-                    log.warn("Failed to create source->file edge for {}: {}", entity.getFullyQualifiedName(), e.getMessage());
+                    throw new IllegalStateException("Failed source->file edge for "
+                            + entity.getFullyQualifiedName(), e);
                 }
             }
 
@@ -973,14 +1030,12 @@ public class CodebaseIndexer {
                 String parentId = fqnToNodeId.get(entity.getParentFqn());
                 if (parentId != null) {
                     try {
-                        if (!knowledgeGraphService.edgeExists(parentId, childId)) {
-                            knowledgeGraphService.createEdge(parentId, childId,
-                                    EdgeType.HIERARCHICAL, 1.0, "contains");
-                            created++;
-                        }
+                        if (createScopedEdge(parentId, childId, EdgeType.HIERARCHICAL,
+                                "CONTAINS", "contains", factSheetId)) created++;
+                        else throw new IllegalStateException("edge not visible after write");
                     } catch (Exception e) {
-                        log.warn("Failed to create parent->child hierarchy edge {} -> {}: {}",
-                                entity.getParentFqn(), entity.getFullyQualifiedName(), e.getMessage());
+                        throw new IllegalStateException("Failed parent->child hierarchy edge "
+                                + entity.getParentFqn() + " -> " + entity.getFullyQualifiedName(), e);
                     }
                 }
             }
@@ -989,6 +1044,15 @@ public class CodebaseIndexer {
             log.info("Created {} hierarchy fixup edges", created);
         }
         return created;
+    }
+
+    private boolean createScopedEdge(String sourceId, String targetId, EdgeType edgeType,
+                                     String label, String description, Long factSheetId) {
+        int created = knowledgeGraphService.createEdgesBatch(List.of(
+                new KnowledgeGraphService.EdgeSpec(sourceId, targetId, edgeType, 1.0,
+                        description, label, null, null, factSheetId)));
+        return created > 0 || knowledgeGraphService.edgeExists(
+                sourceId, targetId, edgeType, label, factSheetId);
     }
 
     private String buildDescription(CodeEntity entity) {

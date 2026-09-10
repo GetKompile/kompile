@@ -14,6 +14,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
@@ -52,6 +54,7 @@ public class ManagedServiceEndpointsCorsConfiguration {
     }
 
     @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE + 10)
     CorsFilter managedServiceEndpointsCorsFilter() {
         CorsConfigurationSource source = this::configurationFor;
         return new CorsFilter(source);
@@ -71,7 +74,9 @@ public class ManagedServiceEndpointsCorsConfiguration {
         cors.setAllowedMethods(METHODS);
         cors.setAllowedHeaders(List.of("*"));
         cors.setExposedHeaders(List.of("Location", "Content-Disposition"));
-        cors.setAllowCredentials(false);
+        // Origins are exact values from the managed topology (never '*'), so path-scoped HttpOnly
+        // integration cookies can safely cross persona ports on the same deployment.
+        cors.setAllowCredentials(true);
         cors.setMaxAge(3600L);
         return cors;
     }

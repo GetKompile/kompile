@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DeterministicGraphSchemaInferencerTest {
 
@@ -33,13 +34,19 @@ class DeterministicGraphSchemaInferencerTest {
         assertEquals(List.of("EMITTED_BY"),
                 schema.getRelationshipTypes().stream()
                         .map(RelationshipType::getType).toList());
+        assertEquals("CONCEPT", schema.getNodeTypeMap()
+                .get("DETERMINISTIC_ACTOR").getParentType());
+        assertEquals("DOCUMENT", schema.getNodeTypeMap()
+                .get("EXTRACTOR_MESSAGE").getParentType());
+        assertEquals("ATTRIBUTION",
+                schema.getRelationshipTypes().get(0).getConnectionFamily());
         assertEquals(List.of(
                 "(EXTRACTOR_MESSAGE)-[:EMITTED_BY]->(DETERMINISTIC_ACTOR)"),
                 schema.getPatterns());
     }
 
     @Test
-    void preservesEveryTypeEmittedByTheDeterministicGraph() {
+    void preservesNodeTypesButDoesNotFreezeAnUnclassifiableGenericPredicate() {
         Graph graph = Graph.builder()
                 .entities(new ArrayList<>(List.of(
                         entity("left", "ENTITY"),
@@ -52,10 +59,9 @@ class DeterministicGraphSchemaInferencerTest {
 
         assertEquals(List.of("ENTITY", "UNKNOWN"),
                 schema.getNodeTypes().stream().map(NodeType::getLabel).toList());
-        assertEquals(List.of("RELATED_TO"),
-                schema.getRelationshipTypes().stream()
-                        .map(RelationshipType::getType).toList());
-        assertEquals(List.of("(ENTITY)-[:RELATED_TO]->(UNKNOWN)"), schema.getPatterns());
+        assertTrue(schema.getRelationshipTypes() == null
+                || schema.getRelationshipTypes().isEmpty());
+        assertTrue(schema.getPatterns() == null || schema.getPatterns().isEmpty());
     }
 
     private static Entity entity(String id, String type) {

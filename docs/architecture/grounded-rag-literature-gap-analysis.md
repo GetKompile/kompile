@@ -161,7 +161,7 @@ Kompile is unusually well positioned to ship that; it is Gap 1.
    feed recommendation 1. UI already renders source cards — link markers to them.
 5. **P1 — Turn evaluation on** (Gap 5). Async sampled scoring of live traffic (faithfulness,
    hallucination, context relevancy — already `async=true` capable), a golden QA set per corpus
-   (FP&A first), retrieval recall@k/MRR. Given the 64% claim-kill-rate in the literature itself,
+   (domain-planning first), retrieval recall@k/MRR. Given the 64% claim-kill-rate in the literature itself,
    in-house measurement is the only trustworthy arbiter of 1–4 (and of the graph-vs-dense
    question the review left open).
 6. **P2 —** wire the query transformers + decomposition via `ConjunctiveQueryEngine` (Gap 6);

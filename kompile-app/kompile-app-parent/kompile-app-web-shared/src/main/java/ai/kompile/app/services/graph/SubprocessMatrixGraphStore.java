@@ -17,6 +17,7 @@ package ai.kompile.app.services.graph;
 
 import ai.kompile.app.services.subprocess.GraphMatrixSubprocessLauncher;
 import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
@@ -351,7 +352,13 @@ public class SubprocessMatrixGraphStore implements MatrixGraphStore {
         try {
             // Build request JSON.
             ObjectNode req = objectMapper.createObjectNode();
+            req.put("protocolVersion", 2);
             req.put("method", method);
+            GraphGenerationContext.current().ifPresent(generation -> {
+                req.set("generation", objectMapper.valueToTree(generation.target()));
+                req.put("generationOwnerJobId",
+                        GraphGenerationContext.ownerJobId().orElse("unowned"));
+            });
             ArrayNode argTypesNode = objectMapper.createArrayNode();
             for (String t : argTypes) argTypesNode.add(t);
             req.set("argTypes", argTypesNode);
@@ -369,11 +376,15 @@ public class SubprocessMatrixGraphStore implements MatrixGraphStore {
             req.set("args", argsNode);
 
             String body = objectMapper.writeValueAsString(req);
-            HttpRequest httpReq = HttpRequest.newBuilder(URI.create(launcher.baseUrl() + "/invoke"))
+            GraphRpcEndpointResolver.Endpoint endpoint =
+                    GraphRpcEndpointResolver.resolve(launcher.baseUrl());
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(
+                            URI.create(endpoint.baseUrl() + "/invoke"))
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .header("Content-Type", "application/json")
-                    .timeout(INVOKE_TIMEOUT)
-                    .build();
+                    .timeout(INVOKE_TIMEOUT);
+            endpoint.headers().forEach(requestBuilder::header);
+            HttpRequest httpReq = requestBuilder.build();
 
             HttpResponse<String> resp = client().send(httpReq, HttpResponse.BodyHandlers.ofString());
             JsonNode respNode = objectMapper.readTree(resp.body());

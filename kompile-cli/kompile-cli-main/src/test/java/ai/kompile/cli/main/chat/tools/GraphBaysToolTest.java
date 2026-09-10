@@ -16,13 +16,18 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class GraphBaysToolTest {
 
     private static final ObjectMapper OM = new ObjectMapper();
+    private static final String BAYES_FIXTURE = "bayes-fixture";
 
     @TempDir
     Path tempDir;
@@ -43,8 +49,9 @@ class GraphBaysToolTest {
     private GraphBayesTool tool;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         tool = new GraphBayesTool("http://localhost:8080", OM);
+        writeBayesFixture();
     }
 
     // ── id / description / compactHint ──────────────────────────────────────────
@@ -102,6 +109,7 @@ class GraphBaysToolTest {
         assertTrue(props.has("node_id"));
         assertTrue(props.has("seed_node_ids"));
         assertTrue(props.has("fact_sheet_id"));
+        assertTrue(props.has("knowledgeBase"));
         assertTrue(props.has("evidence"));
         assertTrue(props.has("hypothetical_evidence"));
         assertTrue(props.has("max_depth"));
@@ -139,14 +147,20 @@ class GraphBaysToolTest {
     }
 
     @Test
-    void execute_nullBaseUrl_usesProjectLocalBackend() throws ToolExecutionException {
+    void execute_nullBaseUrl_usesProjectLocalBackend() throws Exception {
         GraphBayesTool noUrl = new GraphBayesTool(null, OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "query");
+        params.put("knowledgeBase", BAYES_FIXTURE);
         ToolResult result = noUrl.execute(params, ctx());
         assertFalse(result.isError(), result.getOutput());
         assertTrue(result.getOutput().contains("project-local"), result.getOutput());
         assertFalse(result.getOutput().contains("kompile-app"));
+        JsonNode json = OM.readTree(result.getOutput());
+        assertEquals(2, json.path("nodeCount").asInt(), result.getOutput());
+        assertEquals(1, json.path("edgeCount").asInt(), result.getOutput());
+        assertEquals(2, json.path("posteriors").size(), result.getOutput());
+        assertEquals(2, json.path("priors").size(), result.getOutput());
     }
 
     @Test
@@ -154,6 +168,7 @@ class GraphBaysToolTest {
         GraphBayesTool noUrl = new GraphBayesTool("", OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "stats");
+        params.put("knowledgeBase", BAYES_FIXTURE);
         ToolResult result = noUrl.execute(params, ctx());
         assertFalse(result.isError(), result.getOutput());
         assertTrue(result.getOutput().contains("project-local"), result.getOutput());
@@ -213,5 +228,16 @@ class GraphBaysToolTest {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_bayes", PermissionService.PermissionLevel.ALLOW);
         return new ToolContext("test-session", null, perms, tempDir, null);
+    }
+
+    private void writeBayesFixture() throws Exception {
+        Path graphPath = tempDir.resolve("data/crawls").resolve(BAYES_FIXTURE).resolve("graph.kgraph");
+        Files.createDirectories(graphPath.getParent());
+        new UnifiedGraph().graphId("local:test:" + BAYES_FIXTURE)
+                .addEntity(GraphEntity.builder("cause").type("FACT").label("Cause").confidence(0.8).build())
+                .addEntity(GraphEntity.builder("effect").type("FACT").label("Effect").confidence(0.2).build())
+                .addRelation(GraphRelation.builder("cause-effect", "cause", "effect")
+                        .type("CAUSES").weight(0.9).confidence(1.0).directed(true).build())
+                .saveCompact(graphPath);
     }
 }

@@ -103,6 +103,7 @@ class GraphEmbeddingsToolTest {
         var props = tool.parameterSchema().path("properties");
         assertTrue(props.has("action"));
         assertTrue(props.has("fact_sheet_id"));
+        assertTrue(props.has("knowledgeBase"));
         assertTrue(props.has("algorithm"));
         assertTrue(props.has("job_id"));
         assertTrue(props.has("head"));

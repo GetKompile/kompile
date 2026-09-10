@@ -22,11 +22,13 @@ The Azure plan contains every non-macOS classifier currently present in
 - Linux and Windows CUDA 12.6/12.9 base, cuDNN, and compile variants.
 - Windows CPU/oneDNN/compile and Windows Vulkan.
 - Android ARM64 CPU/Arm Compute/NNAPI/compile/Vulkan and Android x86_64.
-- Linux Vulkan, Vulkan MLIR compile, Hexagon, TPU, and Linux/Windows ZLUDA.
+- Linux Vulkan, Vulkan MLIR compile, Hexagon, TPU, Linux/Windows ROCm 7.2.4 ZLUDA, and the Linux-only ROCm 10.0.0 candidate.
 
 A selected DL4J lane reuses one VM and builds its variants serially. Each
 classifier runs `build-scripts/build-kompile-platform.sh` with the `full`
-distribution, all native targets where the target permits native-image, an
+distribution by default. The ROCm 10 candidate explicitly uses the `amd-zluda`
+variant while remaining non-default. Every lane builds all native targets where
+the target permits native-image, with an
 isolated Maven repository, and optimized native-image settings. The plan also
 contains dedicated `cli-only` distribution lanes for Linux x86_64, Linux
 ARM64, and Windows x86_64. Selecting one DL4J classifier, CLI distribution
@@ -34,8 +36,9 @@ classifier, or parent lane creates the corresponding focused execution.
 
 Both distribution shapes are Maven assemblies. Every build installs ZIP and
 `tar.gz` artifacts under `ai.kompile:kompile-dist`: CLI-light uses
-`cli-only-<platform>`, while complete builds use
-`full-<dl4j-classifier>`. The Azure collector promotes those coordinates and
+`cli-only-<platform>`, while complete builds normally use
+`full-<dl4j-classifier>`; the ROCm 10 candidate uses
+`amd-zluda-<dl4j-classifier>`. The Azure collector promotes those coordinates and
 their checksums with the rest of the `ai/kompile` Maven tree.
 
 Azure does not offer macOS VMs. Continue to build `macosx-arm64`/MPS on the

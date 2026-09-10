@@ -40,7 +40,9 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String TOKEN_ENDPOINT = "https://auth.atlassian.com/oauth/token";
     private static final String USERINFO_ENDPOINT = "https://api.atlassian.com/me";
     private static final String ACCESSIBLE_RESOURCES_ENDPOINT = "https://api.atlassian.com/oauth/token/accessible-resources";
-    private static final String DEFAULT_SCOPES = "read:confluence-content.all read:confluence-space.summary read:jira-work read:jira-user offline_access";
+    private static final String DEFAULT_SCOPES =
+            "read:confluence-content.all read:confluence-space.summary "
+                    + "read:jira-work read:jira-user offline_access";
 
     private OAuthSettingsService settingsService;
 
@@ -164,23 +166,24 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
     @Override
     public OAuthTokenResponse exchangeCodeForTokens(String code, String redirectUri) {
         OAuthTokenResponse response = performTokenExchange(code, redirectUri);
-
-        // Get accessible resources (cloud IDs) after successful token exchange
-        if (response.isSuccess()) {
-            try {
-                String resourcesJson = makeAuthenticatedGetRequest(ACCESSIBLE_RESOURCES_ENDPOINT, response.getAccessToken());
-                response.setProviderData(resourcesJson);
-            } catch (Exception e) {
-                log.warn("Failed to get Atlassian accessible resources: {}", e.getMessage());
-            }
-        }
-
-        return response;
+        return attachAccessibleResources(response);
     }
 
     @Override
     public OAuthTokenResponse refreshAccessToken(String refreshToken) {
-        return performTokenRefresh(refreshToken);
+        return attachAccessibleResources(performTokenRefresh(refreshToken));
+    }
+
+    private OAuthTokenResponse attachAccessibleResources(OAuthTokenResponse response) {
+        if (response.isSuccess()) {
+            try {
+                response.setProviderData(makeAuthenticatedGetRequest(
+                        ACCESSIBLE_RESOURCES_ENDPOINT, response.getAccessToken()));
+            } catch (Exception e) {
+                log.warn("Failed to get Atlassian accessible resources: {}", e.getMessage());
+            }
+        }
+        return response;
     }
 
     @Override

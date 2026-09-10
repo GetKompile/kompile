@@ -28,6 +28,7 @@ import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 
 import java.io.InputStream;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
@@ -76,6 +77,72 @@ public class SessionLifecycleManager {
     }
 
     // ========================================================================
+    // Session registry tracking (crash recovery)
+    // ========================================================================
+
+    /**
+     * Track this session in the persistent session registry so that
+     * {@code kompile resume-all} (and the {@code resume} tool's
+     * {@code recent}/{@code resume_all} actions) can restore it after a crash.
+     * <p>
+     * A live entry carries a real PID; a crashed session is detected as a
+     * {@code running} entry whose PID is gone ({@link SessionRegistry#refreshStatuses()}).
+     * Failures are non-fatal — registry tracking must never break chat startup.
+     */
+    public void registerSession() {
+        try {
+            SessionRegistry registry = SessionRegistry.load();
+            String trackedAgent = repl != null ? repl.getAgentName() : null;
+            if (trackedAgent == null || trackedAgent.isBlank()) {
+                trackedAgent = "kompile";
+            }
+            registry.register(
+                    sessionId,
+                    trackedAgent,
+                    workingDirectoryForRegistry(),
+                    localMode ? "local" : "server",
+                    ProcessHandle.current().pid());
+        } catch (Exception e) {
+            System.err.println("Warning: Could not track session in registry: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Mirror the session title into the registry when it is first set, so
+     * resume listings can show a human-readable label instead of a bare UUID.
+     */
+    void syncSessionTitle(String title) {
+        if (title == null || title.isBlank()) return;
+        try {
+            SessionRegistry registry = SessionRegistry.load();
+            registry.setTitle(sessionId, title);
+        } catch (Exception ignored) {
+            // Best-effort — title sync must never break the REPL.
+        }
+    }
+
+    /**
+     * Mark this session exited in the registry. Called from the REPL's clean
+     * shutdown path; a crashed session leaves its entry {@code running} and is
+     * detected later via dead-PID refresh.
+     */
+    void markSessionExited() {
+        try {
+            SessionRegistry registry = SessionRegistry.load();
+            registry.markExited(sessionId, ProcessHandle.current().pid());
+        } catch (Exception ignored) {
+            // Best-effort — exit marking must never break shutdown.
+        }
+    }
+
+    private String workingDirectoryForRegistry() {
+        if (repl != null && repl.getWorkingDirectory() != null) {
+            return repl.getWorkingDirectory().toAbsolutePath().normalize().toString();
+        }
+        return Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize().toString();
+    }
+
+    // ========================================================================
     // Session restore
     // ========================================================================
 
@@ -101,6 +168,13 @@ public class SessionLifecycleManager {
             List<ChatHistory.Turn> turns = history.readTurns();
 
             if (turns.isEmpty()) return;
+
+            // A non-empty transcript means this is a continuation in a fresh CLI runtime.
+            // Make that process boundary visible to the model on the first outbound turn;
+            // the ReminderManager consumes the notice once and never persists it.
+            if (repl != null && repl.getReminderManager() != null) {
+                repl.getReminderManager().scheduleSessionResumeReminder();
+            }
 
             // Render parsed turns rather than replaying the physical transcript file.
             // The file contains role prefixes and metadata for persistence; displaying
@@ -197,15 +271,17 @@ public class SessionLifecycleManager {
     // Session summary
     // ========================================================================
 
-    /**
-     * Prints comprehensive session summary on exit.
-     * Inspired by Claude Code /cost, Codex CLI stats, and Aider session metrics.
-     */
+    /** Prints live session statistics without changing registry lifecycle state. */
     public void printSessionSummary() {
-        printSessionSummary(true);
+        printSessionSummary(true, false);
     }
 
+    /** Prints the final summary and marks the current process-owned row exited. */
     void printSessionSummary(boolean includeResumeCommand) {
+        printSessionSummary(includeResumeCommand, true);
+    }
+
+    private void printSessionSummary(boolean includeResumeCommand, boolean endingSession) {
         Duration duration = sessionMetrics.getSessionDuration();
         StringBuilder body = new StringBuilder();
 
@@ -313,13 +389,18 @@ public class SessionLifecycleManager {
         System.out.println(ascii.panel("Session Summary", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
         System.out.println();
 
-        // Also log summary to transcript
-        chatHistory.logSystem("Session ended — " + sessionMetrics.formatDuration(duration) +
-                ", " + sessionMetrics.getTotalTurns() + " turns" +
-                (sessionMetrics.hasActualTokenCounts() ?
-                        ", " + formatNumber(sessionMetrics.getTotalTokens()) + " tokens" :
-                        ", ~" + formatNumber(sessionMetrics.getEstimatedInputTokens() + sessionMetrics.getEstimatedOutputTokens()) + " est. tokens") +
-                (sessionMetrics.getTotalToolCalls() > 0 ? ", " + sessionMetrics.getTotalToolCalls() + " tool calls" : ""));
+        if (endingSession) {
+            chatHistory.logSystem("Session ended — " + sessionMetrics.formatDuration(duration) +
+                    ", " + sessionMetrics.getTotalTurns() + " turns" +
+                    (sessionMetrics.hasActualTokenCounts() ?
+                            ", " + formatNumber(sessionMetrics.getTotalTokens()) + " tokens" :
+                            ", ~" + formatNumber(sessionMetrics.getEstimatedInputTokens() + sessionMetrics.getEstimatedOutputTokens()) + " est. tokens") +
+                    (sessionMetrics.getTotalToolCalls() > 0 ? ", " + sessionMetrics.getTotalToolCalls() + " tool calls" : ""));
+
+            // Both run() and runHeadless() use this final-summary overload. Crashed
+            // sessions never reach it and remain running until dead-PID refresh.
+            markSessionExited();
+        }
     }
 
     public String formatNumber(long n) {
@@ -339,7 +420,7 @@ public class SessionLifecycleManager {
         System.out.println(ascii.panel("Kompile Main Menu",
                 "  1. Chat        - Continue this conversation\n" +
                 "  2. Passthrough - Launch external CLI agent (Claude, Codex, Qwen, etc.)\n" +
-                "  3. Resume      - Browse & resume past conversations\n" +
+                "  3. Resume      - Browse one or restore recent crashed conversations\n" +
                 "  4. Setup       - Reconfigure LLM provider settings\n" +
                 "  5. Back        - Return to chat",
                 AsciiRenderer.ROUNDED, "cyan"));
@@ -464,6 +545,24 @@ public class SessionLifecycleManager {
         } catch (Exception e) {
             System.err.println("Error launching resume tool: " + e.getMessage());
             chatHistory.logSystem("Failed to launch resume tool: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Restore the configured number of recent exited or crash-detected chats
+     * directly from the standard chat REPL. The root CLI and in-chat command
+     * share one implementation and option set.
+     */
+    public void launchResumeAll(String args) {
+        try {
+            int exitCode = repl.executeResumeAll(args);
+            if (exitCode != 0) {
+                System.err.println("Resume-all exited with code " + exitCode);
+            }
+            chatHistory.logSystem("Resume-all command ended (exit: " + exitCode + ")");
+        } catch (RuntimeException e) {
+            System.err.println("Error restoring recent sessions: " + e.getMessage());
+            chatHistory.logSystem("Resume-all command failed: " + e.getMessage());
         }
     }
 

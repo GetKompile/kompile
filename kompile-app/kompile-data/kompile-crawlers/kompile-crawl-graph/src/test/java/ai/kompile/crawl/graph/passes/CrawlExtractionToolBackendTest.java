@@ -17,6 +17,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 import ai.kompile.crawl.graph.CrawlOntology;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
@@ -272,11 +273,12 @@ class CrawlExtractionToolBackendTest {
                 """
                 {
                   "nodeTypes":[
-                    {"label":"EMAIL_ADDRESS","description":"An email address identifying a graph entity"}
+                    {"label":"EMAIL_ADDRESS","description":"An email address identifying a graph entity",
+                     "parentType":"CONCEPT"}
                   ],
                   "relationshipTypes":[
                     {"type":"IDENTIFIES","description":"An email address identifies a person",
-                     "aliases":["email_for"]}
+                     "aliases":["email_for"],"connectionFamily":"IDENTITY"}
                   ],
                   "patterns":["(EMAIL_ADDRESS)-[:IDENTIFIES]->(PERSON)"]
                 }
@@ -293,6 +295,10 @@ class CrawlExtractionToolBackendTest {
                 .contains("EMAIL_ADDRESS"));
         assertTrue(context.path("graphSchema").path("relationTypes").toString()
                 .contains("IDENTIFIES"));
+        assertEquals("CONCEPT", context.path("graphSchema")
+                .path("entityTypeParents").path("EMAIL_ADDRESS").asText());
+        assertEquals("IDENTITY", context.path("graphSchema")
+                .path("relationTypeFamilies").path("IDENTIFIES").asText());
         assertTrue(context.path("graphSchema").path("relationPatterns").toString()
                 .contains("(EMAIL_ADDRESS)-[:IDENTIFIES]->(PERSON)"));
 
@@ -537,7 +543,7 @@ class CrawlExtractionToolBackendTest {
     void genericProductionConceptsDoNotFocusSchemaByLexicalOverlap() throws Exception {
         List<NodeType> nodeTypes = new ArrayList<>();
         nodeTypes.add(new NodeType(
-                "APPROVAL_ROLE", "Canonical approval role such as VP FP&A or Controller", null));
+                "APPROVAL_ROLE", "Canonical approval role such as VP Planning or Controller", null));
         nodeTypes.add(new NodeType(
                 "PERSON", "Named individual with organizational context", null));
         List<RelationshipType> relationTypes = new ArrayList<>();
@@ -562,8 +568,8 @@ class CrawlExtractionToolBackendTest {
                 "concept-prepass", "domain-neutral concepts found in source", 1.0,
                 "revision-1", null,
                 List.of(new ConceptHint(
-                        "VP, FP&A", "KEYWORD", "deterministic-statistical-prepass",
-                        "A named individual is identified as VP, FP&A")));
+                        "VP, Planning", "KEYWORD", "deterministic-statistical-prepass",
+                        "A named individual is identified as VP, Planning")));
 
         JsonNode graphSchema = MAPPER.readTree(
                 backend.toolContextJson(DecomposedPromptTier.COMPACT, task)).path("graphSchema");
@@ -578,7 +584,7 @@ class CrawlExtractionToolBackendTest {
                 .contains("HAS_ROLE") && graphSchema.path("relationTypes").toString().contains("NOISE_REL_00"));
         assertTrue(graphSchema.path("relationPatterns").isEmpty());
         assertEquals(21, graphSchema.path("fullCounts").path("relationPatterns").asInt());
-        assertFalse(graphSchema.toString().contains("VP FP&A"));
+        assertFalse(graphSchema.toString().contains("VP Planning"));
         assertFalse(graphSchema.toString().contains("Controller"));
         assertFalse(graphSchema.has("entityDefinitions"));
         assertFalse(graphSchema.has("relationDefinitions"));
@@ -598,7 +604,7 @@ class CrawlExtractionToolBackendTest {
         JsonNode rejected = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA, """
                 {"entities":[
                   {"id":"person","name":"M. Chen","type":"PERSON"},
-                  {"id":"role","name":"VP, FP&A","type":"JOB_TITLE"}
+                  {"id":"role","name":"VP, Planning","type":"JOB_TITLE"}
                 ],"relations":[
                   {"source":"person","target":"role","type":"OCCUPIES"}
                 ]}
@@ -620,12 +626,12 @@ class CrawlExtractionToolBackendTest {
                 List.of("(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)"));
         CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph(), schema);
         ExtractionTaskContext task = new ExtractionTaskContext(
-                "task-1", "partition-1", "snapshot-1", List.of("M. Chen", "VP FP&A"),
+                "task-1", "partition-1", "snapshot-1", List.of("M. Chen", "VP Planning"),
                 "chunk-1", "concept-prepass", "concepts found in source", 1.0,
                 "revision-1", null,
                 List.of(
                         new ConceptHint("M. Chen", "PERSON", "prepass", "M. Chen"),
-                        new ConceptHint("VP FP&A", "APPROVAL_ROLE", "prepass", "VP FP&A")));
+                        new ConceptHint("VP Planning", "APPROVAL_ROLE", "prepass", "VP Planning")));
         JsonNode originalContext = MAPPER.readTree(
                 backend.toolContextJson(DecomposedPromptTier.STANDARD, task));
 
@@ -633,7 +639,7 @@ class CrawlExtractionToolBackendTest {
                 {"entities":[
                   {"id":"michael.wong","name":"M. Chen","type":"PERSON"}
                 ],"relations":[
-                  {"source":"michael.wong","target":"VP FP&A","type":"APPROVAL_ROLE"}
+                  {"source":"michael.wong","target":"VP Planning","type":"APPROVAL_ROLE"}
                 ]}
                 """);
 
@@ -652,13 +658,13 @@ class CrawlExtractionToolBackendTest {
                 originalContext.path("graphSchema").path("relationPatterns").get(0).asText());
         assertFalse(originalContext.path("graphSchema").has("conceptCandidates"));
         assertFalse(originalContext.toString().contains("M. Chen"));
-        assertFalse(originalContext.toString().contains("VP FP&A"));
+        assertFalse(originalContext.toString().contains("VP Planning"));
         assertTrue(rejected.toString().length() < 2_500,
                 () -> "repair feedback must fit a short-context validation turn: "
                         + rejected.toString().length());
 
         JsonNode correction = rejected.path("correction");
-        assertEquals("VP FP&A", correction.path("missingEndpointIds").get(0).asText());
+        assertEquals("VP Planning", correction.path("missingEndpointIds").get(0).asText());
         JsonNode conflict = correction.path("typeDomainConflicts").get(0);
         assertEquals("relations[0].type", conflict.path("path").asText());
         assertEquals("APPROVAL_ROLE", conflict.path("value").asText());
@@ -688,12 +694,12 @@ class CrawlExtractionToolBackendTest {
                 {"entities":[
                   {"id":"M. Chen","name":"M. Chen","type":"PERSON"},
                   {"id":"J. Park","name":"J. Park","type":"PERSON"},
-                  {"id":"VP, FP&A","name":"VP, FP&A","type":"APPROVAL_ROLE"},
+                  {"id":"VP, Planning","name":"VP, Planning","type":"APPROVAL_ROLE"},
                   {"id":"Controller","name":"Controller","type":"APPROVAL_ROLE"},
                   {"id":"inventory","name":"Inventory","type":"VARIANCE_TRIAGE"}
                 ],"relations":[
-                  {"source":"M. Chen","target":"VP, FP&A","type":"HAS_ROLE"},
-                  {"source":"J. Park","target":"VP, FP&A","type":"HAS_ROLE"},
+                  {"source":"M. Chen","target":"VP, Planning","type":"HAS_ROLE"},
+                  {"source":"J. Park","target":"VP, Planning","type":"HAS_ROLE"},
                   {"source":"J. Park","target":"Controller","type":"ESCALATED_TO"},
                   {"source":"inventory","target":"VARIANCE_TRIAGE","type":"ESCALATED_TO"}
                 ]}
@@ -715,7 +721,7 @@ class CrawlExtractionToolBackendTest {
         assertEquals(2, seed.path("relations").size());
         assertEquals("M. Chen", seed.path("entities").get(0).path("id").asText());
         assertEquals("M. Chen", seed.path("relations").get(0).path("source").asText());
-        assertEquals("VP, FP&A", seed.path("relations").get(0).path("target").asText());
+        assertEquals("VP, Planning", seed.path("relations").get(0).path("target").asText());
         assertEquals(List.of(0, 1), MAPPER.convertValue(
                 correction.path("retainedRelationIndexes"),
                 MAPPER.getTypeFactory().constructCollectionType(List.class, Integer.class)));
@@ -748,8 +754,8 @@ class CrawlExtractionToolBackendTest {
                    "aliases":["Stock variance"],"confidence":0.95,
                    "properties":{"reviewed":"true"}}
                 ],"relations":[
-                  {"source":"inventory","target":"VP, FP&A","type":"ESCALATED_TO"},
-                  {"source":"M. Chen","target":"VP, FP&A","type":"HAS_ROLE",
+                  {"source":"inventory","target":"VP, Planning","type":"ESCALATED_TO"},
+                  {"source":"M. Chen","target":"VP, Planning","type":"HAS_ROLE",
                    "confidence":0.99,"properties":{"evidence":"second-pass"}}
                 ]}
                 """);
@@ -956,6 +962,34 @@ class CrawlExtractionToolBackendTest {
     }
 
     @Test
+    void strictEmptyRelationshipVocabularyForcesRelationAbstention() throws Exception {
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "chunk-1", "document-1", "lfm", "graph-1", null,
+                GraphExtractionValidationPolicy.defaults(),
+                new GraphSchema(
+                        List.of(new NodeType("PERSON", "A person", null)),
+                        List.of(), null),
+                corpus(), null, null, UnifiedGraph::new,
+                new GraphReasoningQueryService(null), ExtractionTarget.FULL_GRAPH,
+                null, false);
+
+        JsonNode parameters = MAPPER.valueToTree(
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).get(0).parameters());
+        assertEquals(0, parameters.path("properties").path("relations")
+                .path("maxItems").asInt());
+
+        JsonNode rejected = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA,
+                """
+                {"format":"indexed","entities":[
+                  {"name":"Alice","type":"PERSON"},
+                  {"name":"Bob","type":"PERSON"}],
+                 "relations":[{"source":0,"target":1,"type":"KNOWS"}]}
+                """);
+        assertFalse(rejected.path("accepted").asBoolean());
+        assertTrue(rejected.toString().contains("frozen relationship vocabulary is empty"));
+    }
+
+    @Test
     void compactOpenSchemaDiscoveryBoundsFreeTypeTokensWithoutInventingEnums() {
         CrawlExtractionToolBackend discovery = new CrawlExtractionToolBackend(
                 "chunk-1",
@@ -1122,6 +1156,140 @@ class CrawlExtractionToolBackendTest {
     }
 
     @Test
+    void compactTypedEntitySchemaKeepsABoundedEnumAfterBaselineExpansion() throws Exception {
+        GraphSchema schema = SchemaHierarchyVocabulary.withBaseline(new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "FOUNDED", "A person founded a company", null)),
+                List.of("(PERSON)-[:FOUNDED]->(COMPANY)")));
+        CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph(), schema);
+        backend.configureCompactProposalCardinality(2, 1);
+        backend.configureCompactEntityCandidates(
+                List.of("Alex Rivera", "Acme Robotics"),
+                List.of("PERSON", "COMPANY"));
+        backend.configureCompactProposalGuidance(
+                15, List.of("PERSON", "COMPANY"), List.of("FOUNDED"));
+        backend.configureStrictExtractionTypes(
+                List.of("PERSON", "COMPANY"), List.of("FOUNDED"));
+        backend.beginTypedEntityPhase();
+
+        ExtractionToolBackend.ToolDefinition submit =
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).stream()
+                        .filter(tool -> CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES
+                                .equals(tool.name()))
+                        .findFirst()
+                        .orElseThrow();
+        JsonNode type = MAPPER.valueToTree(submit.parameters())
+                .path("properties").path("entities").path("prefixItems")
+                .path(0).path("properties").path("type");
+        List<String> allowedTypes = MAPPER.convertValue(
+                type.path("enum"),
+                new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+
+        assertEquals(List.of("PERSON", "COMPANY"), allowedTypes,
+                "strict extraction types must constrain emission without removing baseline hierarchy metadata");
+        assertFalse(type.has("const"));
+
+        JsonNode shortTable = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[{"name":"Alex Rivera","type":"PERSON"}]}
+                """);
+        assertEquals("invalid_entities_phase_submission", shortTable.path("error").asText());
+
+        JsonNode swappedNames = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[
+                  {"name":"Acme Robotics","type":"COMPANY"},
+                  {"name":"Alex Rivera","type":"PERSON"}
+                ]}
+                """);
+        assertEquals("invalid_entities_phase_submission", swappedNames.path("error").asText());
+        assertTrue(swappedNames.path("detail").asText().contains("immutable source candidate"));
+
+        JsonNode rejected = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[
+                  {"name":"Alex Rivera","type":"ACTIVITY"},
+                  {"name":"Acme Robotics","type":"COMPANY"}
+                ]}
+                """);
+        assertFalse(rejected.path("accepted").asBoolean(), rejected.toString());
+        assertTrue(rejected.path("errors").toString().contains("ENTITY_TYPE_SCOPE"),
+                rejected.toString());
+
+        JsonNode contradicted = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[
+                  {"name":"Alex Rivera","type":"COMPANY"},
+                  {"name":"Acme Robotics","type":"PERSON"}
+                ]}
+                """);
+        assertFalse(contradicted.path("accepted").asBoolean(), contradicted.toString());
+        assertTrue(contradicted.path("errors").toString()
+                        .contains("SOURCE_ENTITY_TYPE_ASSERTION"),
+                contradicted.toString());
+
+        backend.beginTypedEntityPhase();
+        JsonNode firstPartial = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[
+                  {"name":"Alex Rivera","type":"PERSON"},
+                  {"name":"Acme Robotics","type":"PERSON"}
+                ]}
+                """);
+        assertFalse(firstPartial.path("ok").asBoolean(), firstPartial.toString());
+        assertEquals(List.of(0), MAPPER.convertValue(
+                firstPartial.path("correction").path("retainedEntityIndexes"),
+                new com.fasterxml.jackson.core.type.TypeReference<List<Integer>>() {}));
+        assertEquals(1, firstPartial.path("correction").path("rejectedEntities").size());
+        assertTrue(firstPartial.path("correction").path("rejectedEntities").get(0)
+                        .path("errors").toString().contains("SOURCE_ENTITY_TYPE_ASSERTION"));
+        assertTrue(backend.acceptedResult().isEmpty(),
+                "an exact bounded phase must not expose a partial retained table as usable");
+
+        JsonNode complementary = execute(backend, CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES, """
+                {"entities":[
+                  {"name":"Alex Rivera","type":"COMPANY"},
+                  {"name":"Acme Robotics","type":"COMPANY"}
+                ]}
+                """);
+        assertTrue(complementary.path("ok").asBoolean(), complementary.toString());
+        assertTrue(complementary.path("acceptedAcrossRepairRounds").asBoolean(),
+                complementary.toString());
+        assertEquals(List.of("PERSON", "COMPANY"),
+                backend.acceptedResult().orElseThrow().entities().stream()
+                        .map(ExtractedEntity::type).toList(),
+                "a later contradicted row must not overwrite a retained source-assertion-clean row");
+    }
+
+    @Test
+    void compactPhaseOmitsEnumRatherThanExcludingRequiredCandidateTypes() {
+        List<NodeType> nodeTypes = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        List<String> types = new ArrayList<>();
+        for (int index = 0; index < 9; index++) {
+            String type = "SOURCE_TYPE_" + index;
+            nodeTypes.add(new NodeType(type, "Source type " + index, null));
+            names.add("Source Entity " + index);
+            types.add(type);
+        }
+        CrawlExtractionToolBackend backend = backend(
+                corpus(), null, new UnifiedGraph(), new GraphSchema(nodeTypes, List.of(), List.of()));
+        backend.configureCompactProposalCardinality(9, 0);
+        backend.configureCompactEntityCandidates(names, types);
+        backend.configureCompactProposalGuidance(20, types, List.of());
+        backend.beginTypedEntityPhase();
+
+        ExtractionToolBackend.ToolDefinition submit = backend.toolDefinitions(
+                        DecomposedPromptTier.COMPACT).stream()
+                .filter(tool -> CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equals(tool.name()))
+                .findFirst().orElseThrow();
+        JsonNode typeSchema = MAPPER.valueToTree(submit.parameters())
+                .path("properties").path("entities").path("prefixItems")
+                .path(0).path("properties").path("type");
+
+        assertFalse(typeSchema.has("enum"),
+                "an incomplete eight-value enum would make the ninth required source type impossible");
+    }
+
+    @Test
     void relationCandidatesBindEndpointPairsPositionallyWhileTypesRemainModelSelected()
             throws Exception {
         GraphSchema schema = new GraphSchema(
@@ -1188,6 +1356,22 @@ class CrawlExtractionToolBackendTest {
                     type.path("enum"),
                     new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {}));
         }
+        JsonNode crossedPairs = execute(backend, CrawlExtractionToolBackend.SUBMIT_RELATIONS, """
+                {"relations":[
+                  {"source":0,"target":3,"type":"WORKS_AT"},
+                  {"source":1,"target":2,"type":"WORKS_AT"}
+                ]}
+                """);
+        assertEquals("invalid_relations_phase_submission", crossedPairs.path("error").asText());
+        assertTrue(crossedPairs.path("detail").asText().contains("immutable endpoints"));
+
+        JsonNode accepted = execute(backend, CrawlExtractionToolBackend.SUBMIT_RELATIONS, """
+                {"relations":[
+                  {"source":0,"target":2,"type":"WORKS_AT"},
+                  {"source":1,"target":3,"type":"WORKS_AT"}
+                ]}
+                """);
+        assertTrue(accepted.path("accepted").asBoolean(), accepted.toString());
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalArgumentException.class,
                 () -> backend.configureCompactProposalCardinality(4, 1));

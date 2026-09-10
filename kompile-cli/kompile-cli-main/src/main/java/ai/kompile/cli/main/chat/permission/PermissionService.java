@@ -105,6 +105,8 @@ public class PermissionService {
         d.put("bash.write", PermissionLevel.ALLOW);
         d.put("bash.destructive", PermissionLevel.ALLOW);
         d.put("external_directory", PermissionLevel.ALLOW);
+        // Operator control of supervision is not an ordinary auto-approved tool mutation.
+        d.put("judge_control", PermissionLevel.ASK);
 
         // Subagent spawning is allowed
         d.put("task", PermissionLevel.ALLOW);

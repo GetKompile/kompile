@@ -22,6 +22,7 @@ import ai.kompile.graph.reasoning.model.GraphRelation;
 import java.io.BufferedWriter;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
@@ -41,6 +42,7 @@ import java.util.Set;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.util.zip.CRC32;
 
 /**
  * Writes a {@link UnifiedGraph} to its single-file form (see {@link UnifiedGraphFormat} for the
@@ -57,6 +59,16 @@ final class UnifiedGraphWriter {
     private UnifiedGraphWriter() { }
 
     static void write(UnifiedGraph graph, Path file, Dtype primaryVectorDtype) throws IOException {
+        write(graph, file, primaryVectorDtype, false);
+    }
+
+    static void writeCompact(UnifiedGraph graph, Path file, Dtype primaryVectorDtype) throws IOException {
+        write(graph, file, primaryVectorDtype, true);
+    }
+
+    private static void write(
+            UnifiedGraph graph, Path file, Dtype primaryVectorDtype, boolean compactTopology)
+            throws IOException {
         Path target = file.toAbsolutePath();
         Path parent = target.getParent();
         if (parent != null) {
@@ -67,9 +79,10 @@ final class UnifiedGraphWriter {
         try {
             try (OutputStream out = Files.newOutputStream(
                     temporary, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-                write(graph, out, primaryVectorDtype);
+                write(graph, out, primaryVectorDtype, compactTopology);
             }
             moveAtomically(temporary, target);
+            UnifiedGraphMutationJournal.clear(target);
             published = true;
         } finally {
             if (!published) {
@@ -79,6 +92,17 @@ final class UnifiedGraphWriter {
     }
 
     static void write(UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype) throws IOException {
+        write(graph, out, primaryVectorDtype, false);
+    }
+
+    static void writeCompact(UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype)
+            throws IOException {
+        write(graph, out, primaryVectorDtype, true);
+    }
+
+    private static void write(
+            UnifiedGraph graph, OutputStream out, Dtype primaryVectorDtype, boolean compactTopology)
+            throws IOException {
         // Assemble the full ordered set of vector layers: primary embeddings synthesized from the
         // graph, then any additional layers.
         List<VectorLayer> layers = new ArrayList<>();
@@ -91,19 +115,33 @@ final class UnifiedGraphWriter {
                 graph.relations(), GraphRelation::id, GraphRelation::embedding);
         if (relationEmbeddings != null) layers.add(relationEmbeddings);
         layers.addAll(graph.vectorLayers().values());
-        validateEntryLayout(graph, layers);
+        CompactTopologyCodec.Plan topology = compactTopology ? CompactTopologyCodec.plan(graph) : null;
+        CompactAdjacencyCodec.Plan adjacency = topology == null
+                ? null : CompactAdjacencyCodec.plan(graph, topology);
+        validateEntryLayout(graph, layers, topology, adjacency);
 
         try (ZipOutputStream zip = new ZipOutputStream(new NonClosingOutputStream(out))) {
             zip.setLevel(Deflater.BEST_SPEED); // structural JSON compresses well even at level 1
 
             byte[] manifest = buildManifest(graph, layers,
-                    entityEmbeddings == null ? 0 : entityEmbeddings.dim()).getBytes(StandardCharsets.UTF_8);
+                    entityEmbeddings == null ? 0 : entityEmbeddings.dim(), topology, adjacency)
+                    .getBytes(StandardCharsets.UTF_8);
             putEntry(zip, UnifiedGraphFormat.ENTRY_MANIFEST, manifest);
             putEntry(zip, UnifiedGraphFormat.ENTRY_SCHEMA_INDEX,
                     buildSchemaIndex(graph).getBytes(StandardCharsets.UTF_8));
 
             writeEntities(zip, graph);
-            writeRelations(zip, graph);
+            if (topology == null) {
+                writeRelations(zip, graph);
+            } else {
+                writeCompactLinks(zip, graph, topology);
+                writeCompactAdjacency(zip, graph, topology, adjacency);
+                if (topology.hasProperties()) {
+                    putNextEntry(zip, UnifiedGraphFormat.ENTRY_RELATION_PROPERTIES);
+                    CompactTopologyCodec.writeProperties(graph, zip);
+                    zip.closeEntry();
+                }
+            }
             writeOrphanOpinions(zip, graph);
 
             if (!graph.weightMaps().isEmpty()) {
@@ -132,11 +170,11 @@ final class UnifiedGraphWriter {
         for (GraphEntity e : graph.entities()) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", e.id());
-            m.put("type", e.type());
+            if (e.type() != null && !e.type().isEmpty()) m.put("type", e.type());
             if (!e.typeMemberships().isEmpty()) m.put("typeMemberships", new ArrayList<>(e.typeMemberships()));
-            m.put("label", e.label());
-            m.put("weight", e.weight());
-            m.put("confidence", e.confidence());
+            if (e.label() != null && !e.label().isEmpty()) m.put("label", e.label());
+            if (e.weight() != 1.0) m.put("weight", e.weight());
+            if (e.confidence() != 1.0) m.put("confidence", e.confidence());
             if (!e.tags().isEmpty()) m.put("tags", new ArrayList<>(e.tags()));
             if (e.timestamp() != null) m.put("timestamp", e.timestamp().toString());
             if (!e.attributes().isEmpty()) m.put("attributes", e.attributes());
@@ -157,10 +195,10 @@ final class UnifiedGraphWriter {
             m.put("id", r.id());
             m.put("sourceId", r.sourceId());
             m.put("targetId", r.targetId());
-            m.put("type", r.type());
-            m.put("weight", r.weight());
-            m.put("confidence", r.confidence());
-            m.put("directed", r.directed());
+            if (r.type() != null && !r.type().isEmpty()) m.put("type", r.type());
+            if (r.weight() != 1.0) m.put("weight", r.weight());
+            if (r.confidence() != 1.0) m.put("confidence", r.confidence());
+            if (!r.directed()) m.put("directed", false);
             if (!r.tags().isEmpty()) m.put("tags", new ArrayList<>(r.tags()));
             if (r.timestamp() != null) m.put("timestamp", r.timestamp().toString());
             if (!r.attributes().isEmpty()) m.put("attributes", r.attributes());
@@ -170,6 +208,70 @@ final class UnifiedGraphWriter {
             w.write('\n');
         }
         w.flush();
+        zip.closeEntry();
+    }
+
+    private static void writeCompactLinks(
+            ZipOutputStream zip, UnifiedGraph graph, CompactTopologyCodec.Plan topology)
+            throws IOException {
+        Path staged = Files.createTempFile("kompile-kgraph-links-", ".bin");
+        try {
+            try (OutputStream out = Files.newOutputStream(
+                    staged, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                CompactTopologyCodec.writeLinks(topology, graph, out);
+            }
+            CRC32 crc = new CRC32();
+            try (InputStream in = Files.newInputStream(staged)) {
+                byte[] buffer = new byte[8_192];
+                int read;
+                while ((read = in.read(buffer)) != -1) crc.update(buffer, 0, read);
+            }
+            ZipEntry entry = new ZipEntry(UnifiedGraphFormat.ENTRY_COMPACT_LINKS);
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(Files.size(staged));
+            entry.setCompressedSize(Files.size(staged));
+            entry.setCrc(crc.getValue());
+            zip.putNextEntry(entry);
+            Files.copy(staged, zip);
+            zip.closeEntry();
+        } finally {
+            Files.deleteIfExists(staged);
+        }
+    }
+
+    private static void writeCompactAdjacency(
+            ZipOutputStream zip,
+            UnifiedGraph graph,
+            CompactTopologyCodec.Plan topology,
+            CompactAdjacencyCodec.Plan adjacency) throws IOException {
+        Path staged = Files.createTempFile("kompile-kgraph-adjacency-", ".bin");
+        try {
+            try (OutputStream out = Files.newOutputStream(
+                    staged, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                CompactAdjacencyCodec.write(
+                        adjacency, CompactAdjacencyCodec.graphPass(graph, topology), out);
+            }
+            putStoredFile(zip, UnifiedGraphFormat.ENTRY_COMPACT_ADJACENCY, staged);
+        } finally {
+            Files.deleteIfExists(staged);
+        }
+    }
+
+    private static void putStoredFile(ZipOutputStream zip, String name, Path file) throws IOException {
+        CRC32 crc = new CRC32();
+        try (InputStream in = Files.newInputStream(file)) {
+            byte[] buffer = new byte[8_192];
+            int read;
+            while ((read = in.read(buffer)) != -1) crc.update(buffer, 0, read);
+        }
+        long size = Files.size(file);
+        ZipEntry entry = new ZipEntry(name);
+        entry.setMethod(ZipEntry.STORED);
+        entry.setSize(size);
+        entry.setCompressedSize(size);
+        entry.setCrc(crc.getValue());
+        zip.putNextEntry(entry);
+        Files.copy(file, zip);
         zip.closeEntry();
     }
 
@@ -240,10 +342,16 @@ final class UnifiedGraphWriter {
     // Manifest
     // ═════════════════════════════════════════════════════════════════════════
 
-    private static String buildManifest(UnifiedGraph graph, List<VectorLayer> layers, int embeddingDim) {
+    private static String buildManifest(
+            UnifiedGraph graph,
+            List<VectorLayer> layers,
+            int embeddingDim,
+            CompactTopologyCodec.Plan topology,
+            CompactAdjacencyCodec.Plan adjacency) {
         Map<String, Object> manifest = new LinkedHashMap<>();
         manifest.put("format", UnifiedGraphFormat.FORMAT);
-        manifest.put("formatVersion", UnifiedGraphFormat.FORMAT_VERSION);
+        manifest.put("formatVersion", topology == null
+                ? UnifiedGraphFormat.FORMAT_VERSION : UnifiedGraphFormat.CURRENT_VERSION);
         manifest.put("generator", UnifiedGraphFormat.GENERATOR);
         manifest.put("createdAtEpochMs", System.currentTimeMillis());
 
@@ -259,10 +367,34 @@ final class UnifiedGraphWriter {
         List<Object> sections = new ArrayList<>();
         sections.add(UnifiedGraphFormat.ENTRY_SCHEMA_INDEX);
         sections.add(UnifiedGraphFormat.ENTRY_ENTITIES);
-        sections.add(UnifiedGraphFormat.ENTRY_RELATIONS);
+        sections.add(topology == null
+                ? UnifiedGraphFormat.ENTRY_RELATIONS : UnifiedGraphFormat.ENTRY_COMPACT_LINKS);
+        if (adjacency != null) sections.add(UnifiedGraphFormat.ENTRY_COMPACT_ADJACENCY);
+        if (topology != null && topology.hasProperties()) {
+            sections.add(UnifiedGraphFormat.ENTRY_RELATION_PROPERTIES);
+        }
         if (!graph.weightMaps().isEmpty()) sections.add(UnifiedGraphFormat.ENTRY_WEIGHTS);
         if (hasOrphanOpinions(graph)) sections.add(UnifiedGraphFormat.ENTRY_OPINIONS);
         manifest.put("sections", sections);
+
+        if (topology != null) {
+            Map<String, Object> descriptor = new LinkedHashMap<>();
+            descriptor.put("encoding", UnifiedGraphFormat.COMPACT_TOPOLOGY_ENCODING);
+            descriptor.put("encodingVersion", UnifiedGraphFormat.COMPACT_TOPOLOGY_VERSION);
+            descriptor.put("entry", UnifiedGraphFormat.ENTRY_COMPACT_LINKS);
+            descriptor.put("nodeCount", topology.nodeOrdinals().size());
+            descriptor.put("relationTypeCount", topology.typeOrdinals().size());
+            descriptor.put("linkCount", topology.linkCount());
+            if (adjacency != null) {
+                descriptor.put("adjacencyEntry", UnifiedGraphFormat.ENTRY_COMPACT_ADJACENCY);
+                descriptor.put("adjacencyEncodingVersion", CompactAdjacencyCodec.VERSION);
+                descriptor.put("adjacencyEntries", adjacency.adjacencyEntries());
+            }
+            if (topology.hasProperties()) {
+                descriptor.put("propertiesEntry", UnifiedGraphFormat.ENTRY_RELATION_PROPERTIES);
+            }
+            manifest.put("topology", descriptor);
+        }
 
         if (!graph.artifacts().isEmpty()) {
             manifest.put("artifacts", new ArrayList<>(graph.artifacts().keySet()));
@@ -342,11 +474,21 @@ final class UnifiedGraphWriter {
         zip.putNextEntry(new ZipEntry(name));
     }
 
-    private static void validateEntryLayout(UnifiedGraph graph, List<VectorLayer> layers) throws IOException {
+    private static void validateEntryLayout(
+            UnifiedGraph graph,
+            List<VectorLayer> layers,
+            CompactTopologyCodec.Plan topology,
+            CompactAdjacencyCodec.Plan adjacency)
+            throws IOException {
         Set<String> names = new LinkedHashSet<>();
         addEntryName(names, UnifiedGraphFormat.ENTRY_MANIFEST);
         addEntryName(names, UnifiedGraphFormat.ENTRY_ENTITIES);
-        addEntryName(names, UnifiedGraphFormat.ENTRY_RELATIONS);
+        addEntryName(names, topology == null
+                ? UnifiedGraphFormat.ENTRY_RELATIONS : UnifiedGraphFormat.ENTRY_COMPACT_LINKS);
+        if (adjacency != null) addEntryName(names, UnifiedGraphFormat.ENTRY_COMPACT_ADJACENCY);
+        if (topology != null && topology.hasProperties()) {
+            addEntryName(names, UnifiedGraphFormat.ENTRY_RELATION_PROPERTIES);
+        }
         if (!graph.weightMaps().isEmpty()) {
             addEntryName(names, UnifiedGraphFormat.ENTRY_WEIGHTS);
         }

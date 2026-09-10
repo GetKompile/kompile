@@ -34,14 +34,22 @@ public class GraphKnowledgeBase implements KnowledgeBase {
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final KnowledgeGraphService graphService;
+    private final Long factSheetId;
 
     /**
      * Cache of entity type assignments: type name → set of entity IDs.
      */
     private final Map<String, Set<String>> entityTypeCache = new HashMap<>();
+    private final Map<String, List<GraphEdge>> edgeCache = new HashMap<>();
 
     public GraphKnowledgeBase(KnowledgeGraphService graphService) {
+        this(graphService, null);
+    }
+
+    /** Create a knowledge-base view whose node and edge predicates are fact-sheet isolated. */
+    public GraphKnowledgeBase(KnowledgeGraphService graphService, Long factSheetId) {
         this.graphService = graphService;
+        this.factSheetId = factSheetId != null && factSheetId > 0 ? factSheetId : null;
     }
 
     /**
@@ -62,7 +70,7 @@ public class GraphKnowledgeBase implements KnowledgeBase {
     public void autoPopulate(Set<String> nodeIds) {
         Map<String, Set<String>> typeGroups = new HashMap<>();
         for (String nodeId : nodeIds) {
-            graphService.getNode(nodeId).ifPresent(node -> {
+            scopedNode(nodeId).ifPresent(node -> {
                 String typeName = node.getNodeType().name();
                 typeGroups.computeIfAbsent(typeName, k -> new LinkedHashSet<>()).add(nodeId);
             });
@@ -85,41 +93,41 @@ public class GraphKnowledgeBase implements KnowledgeBase {
 
     @Override
     public boolean entityExists(String entityId) {
-        return graphService.getNode(entityId).isPresent();
+        return scopedNode(entityId).isPresent();
     }
 
     @Override
     public boolean edgeExists(String sourceId, String targetId) {
-        return graphService.edgeExists(sourceId, targetId);
+        if (factSheetId == null) return graphService.edgeExists(sourceId, targetId);
+        return edgesForNode(sourceId).stream().anyMatch(edge ->
+                sourceId.equals(sourceId(edge)) && targetId.equals(targetId(edge)));
     }
 
     @Override
     public boolean edgeExistsOfType(String sourceId, String targetId, String edgeType) {
-        List<GraphEdge> edges = graphService.getEdgesForNode(sourceId);
+        List<GraphEdge> edges = edgesForNode(sourceId);
         return edges.stream().anyMatch(e ->
                 e.getEdgeType() != null && e.getEdgeType().name().equals(edgeType) &&
-                        e.getSourceNode() != null && e.getSourceNode().getNodeId().equals(sourceId) &&
-                        e.getTargetNode() != null && e.getTargetNode().getNodeId().equals(targetId));
+                        sourceId.equals(sourceId(e)) && targetId.equals(targetId(e)));
     }
 
     @Override
     public Optional<String> getEntityType(String entityId) {
-        return graphService.getNode(entityId)
+        return scopedNode(entityId)
                 .map(node -> node.getNodeType().name());
     }
 
     @Override
     public Optional<String> getMetadata(String entityId, String metadataKey) {
-        return graphService.getNode(entityId)
+        return scopedNode(entityId)
                 .flatMap(node -> extractMetadataValue(node.getMetadataJson(), metadataKey));
     }
 
     @Override
     public Optional<Double> getEdgeWeight(String sourceId, String targetId) {
-        List<GraphEdge> edges = graphService.getEdgesForNode(sourceId);
+        List<GraphEdge> edges = edgesForNode(sourceId);
         return edges.stream()
-                .filter(e -> e.getSourceNode() != null && e.getSourceNode().getNodeId().equals(sourceId) &&
-                        e.getTargetNode() != null && e.getTargetNode().getNodeId().equals(targetId))
+                .filter(e -> sourceId.equals(sourceId(e)) && targetId.equals(targetId(e)))
                 .map(GraphEdge::getWeight)
                 .filter(Objects::nonNull)
                 .findFirst();
@@ -132,16 +140,16 @@ public class GraphKnowledgeBase implements KnowledgeBase {
 
     @Override
     public Set<String> getConnectedEntities(String entityId) {
-        List<GraphEdge> edges = graphService.getEdgesForNode(entityId);
+        List<GraphEdge> edges = edgesForNode(entityId);
         Set<String> connected = new LinkedHashSet<>();
         for (GraphEdge edge : edges) {
-            if (edge.getSourceNode() != null && edge.getSourceNode().getNodeId().equals(entityId)
-                    && edge.getTargetNode() != null) {
-                connected.add(edge.getTargetNode().getNodeId());
+            String sourceId = sourceId(edge);
+            String targetId = targetId(edge);
+            if (entityId.equals(sourceId) && targetId != null) {
+                connected.add(targetId);
             }
-            if (edge.getTargetNode() != null && edge.getTargetNode().getNodeId().equals(entityId)
-                    && edge.getSourceNode() != null) {
-                connected.add(edge.getSourceNode().getNodeId());
+            if (entityId.equals(targetId) && sourceId != null) {
+                connected.add(sourceId);
             }
         }
         return connected;
@@ -152,6 +160,28 @@ public class GraphKnowledgeBase implements KnowledgeBase {
         Optional<String> val1 = getMetadata(entityId1, propertyKey);
         Optional<String> val2 = getMetadata(entityId2, propertyKey);
         return val1.isPresent() && val2.isPresent() && val1.get().equals(val2.get());
+    }
+
+    private Optional<GraphNode> scopedNode(String entityId) {
+        return graphService.getNode(entityId).filter(node -> factSheetId == null
+                || factSheetId.equals(node.getFactSheetId()));
+    }
+
+    private List<GraphEdge> edgesForNode(String entityId) {
+        return edgeCache.computeIfAbsent(entityId, id -> {
+            List<GraphEdge> edges = factSheetId == null
+                    ? graphService.getEdgesForNode(id)
+                    : graphService.getEdgesForNodeInFactSheet(id, factSheetId);
+            return edges == null ? List.of() : List.copyOf(edges);
+        });
+    }
+
+    private static String sourceId(GraphEdge edge) {
+        return edge.getSourceNode() != null ? edge.getSourceNode().getNodeId() : edge.getSourceNodeId();
+    }
+
+    private static String targetId(GraphEdge edge) {
+        return edge.getTargetNode() != null ? edge.getTargetNode().getNodeId() : edge.getTargetNodeId();
     }
 
     private Optional<String> extractMetadataValue(String metadataJson, String key) {

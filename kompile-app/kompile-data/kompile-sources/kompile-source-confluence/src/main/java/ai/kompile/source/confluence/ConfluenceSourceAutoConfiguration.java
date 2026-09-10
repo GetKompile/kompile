@@ -32,4 +32,11 @@ public class ConfluenceSourceAutoConfiguration {
             @Autowired(required = false) OAuthConnectionService oauthService) {
         return new ConfluenceSourceProvider(oauthService);
     }
+
+    /** Register the actual document loader as well as the UI/provider descriptor. */
+    @Bean
+    public ConfluenceDocumentLoader confluenceDocumentLoader(
+            @Autowired(required = false) OAuthConnectionService oauthService) {
+        return new ConfluenceDocumentLoader(oauthService);
+    }
 }

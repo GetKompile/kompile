@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
+import ai.kompile.pipeline.serving.definition.PipelineDefinitionValidator;
 import ai.kompile.pipeline.serving.registry.PipelineDefinitionStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,8 +23,9 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * Resolves and executes the single unified pipeline contract for a project-local crawl.
- * Process lifecycle and reuse are owned by {@link PipelineRuntimeSupervisor}.
+ * Resolves and executes model-backed processors for a project-local crawl.
+ * Artifact-backed definitions use {@link PipelineRuntimeSupervisor}; remote chat processors stay
+ * in the MCP host so provider credentials never cross a subprocess or persistence boundary.
  */
 public final class LocalModelPipelineRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
@@ -161,6 +163,15 @@ public final class LocalModelPipelineRunner {
         if (definition == null || !definition.isObject()) {
             return "Unified pipeline '" + id + "' definition must be a JSON object.";
         }
+        try {
+            UnifiedPipelineDefinition parsed = MAPPER.convertValue(definition, UnifiedPipelineDefinition.class);
+            if (PipelineDefinitionValidator.isChatModel(parsed)) {
+                var validation = PipelineDefinitionValidator.validate(parsed);
+                return validation.valid() ? null : String.join("; ", validation.errors());
+            }
+        } catch (IllegalArgumentException e) {
+            return "Invalid unified definition '" + id + "': " + e.getMessage();
+        }
         JsonNode spec = definition.get("pipelineSpec");
         if (spec == null || !spec.isObject() || spec.isEmpty()) {
             return "Unified pipeline '" + id + "' has no executable pipelineSpec. "
@@ -224,6 +235,10 @@ public final class LocalModelPipelineRunner {
                 definition != null || definitionPath != null || definitionId != null
                         ? "UNIFIED_PIPELINE" : null);
 
+        if (ChatModelPipelineRunner.PROCESSOR_TYPE.equalsIgnoreCase(type)) {
+            return ChatModelPipelineRunner.extract(
+                    projectRoot, file, pipeline, loadedText, progress);
+        }
         if ("UNIFIED_PIPELINE".equalsIgnoreCase(type)) {
             return runUnified(
                     projectRoot, file, pipeline, loadedText, definition, definitionPath, definitionId,
@@ -231,7 +246,7 @@ public final class LocalModelPipelineRunner {
         }
         throw new IllegalArgumentException(
                 "Pipeline '" + pipeline.pipelineId()
-                        + "' must use the UNIFIED_PIPELINE execution contract; got: " + type);
+                        + "' must use the UNIFIED_PIPELINE or CHAT_MODEL execution contract; got: " + type);
     }
 
     private static String runUnified(Path projectRoot,
@@ -262,6 +277,41 @@ public final class LocalModelPipelineRunner {
 
         if (definition.getPipelineId() == null || definition.getPipelineId().isBlank()) {
             definition.setPipelineId(pipeline.pipelineId());
+        }
+        if (PipelineDefinitionValidator.isChatModel(definition)) {
+            Map<String, String> bindings = new LinkedHashMap<>();
+            if (definition.getModelBindings() != null) bindings.putAll(definition.getModelBindings());
+            Map<String, Map<String, Object>> definitions = new LinkedHashMap<>();
+            mergeModelDefinitions(definitions, pipeline.processor().get("registeredModelDefinitions"));
+            if (definition.getModelDefinitions() != null) definitions.putAll(definition.getModelDefinitions());
+            for (Map<String, Object> options : List.of(pipeline.chunkerOptions(), pipeline.processor())) {
+                NativeChatModels.rejectInlineCredentials(options);
+                for (String unsupported : List.of("modelRuntime", "resolvedModels", "modelId", "modelSetId", "vlmModel", "modelRefs",
+                        "provider", "prompt", "systemPrompt", "operation", "jsonSchema")) {
+                    if (options.containsKey(unsupported)) throw new IllegalArgumentException("Host unified pipelines require per-stage options/bindings, not " + unsupported);
+                }
+                if (options.get("modelBindings") != null) {
+                    if (!(options.get("modelBindings") instanceof Map<?, ?> values)) throw new IllegalArgumentException("modelBindings must be an object");
+                    for (var entry : values.entrySet()) {
+                        if (!(entry.getKey() instanceof String role) || !(entry.getValue() instanceof String reference))
+                            throw new IllegalArgumentException("modelBindings must contain strings");
+                        bindings.put(role, reference);
+                    }
+                }
+                Object models = options.get("modelDefinitions");
+                if (models != null) {
+                    if (!(models instanceof Map<?, ?> values)) throw new IllegalArgumentException("modelDefinitions must be an object");
+                    for (var entry : values.entrySet()) {
+                        if (!(entry.getKey() instanceof String) || !(entry.getValue() instanceof Map<?, ?>))
+                            throw new IllegalArgumentException("Invalid modelDefinitions entry");
+                    }
+                    mergeModelDefinitions(definitions, models);
+                }
+            }
+            definition.setModelBindings(bindings);
+            definition.setModelDefinitions(definitions);
+            return ChatModelPipelineRunner.executeDefinition(projectRoot, definition,
+                    ChatModelPipelineRunner.crawlInput(file, pipeline, definition, loadedText), progress);
         }
         if (definition.getPipelineSpec() == null || definition.getPipelineSpec().isEmpty()) {
             throw new IllegalArgumentException(
@@ -457,7 +507,7 @@ public final class LocalModelPipelineRunner {
             Path projectRoot,
             LocalCrawlCapabilities.ResolvedPipeline pipeline,
             UnifiedPipelineDefinition definition) throws IOException, InterruptedException {
-        return resolveBoundModels(projectRoot, pipeline, definition, true);
+        return resolveBoundModels(projectRoot, pipeline, definition, false);
     }
 
     public static ResolvedModelContext resolveBoundModels(
@@ -465,6 +515,12 @@ public final class LocalModelPipelineRunner {
             LocalCrawlCapabilities.ResolvedPipeline pipeline,
             UnifiedPipelineDefinition definition,
             boolean allowProjectMutation) throws IOException, InterruptedException {
+        if (pipeline != null && ChatModelPipelineRunner.PROCESSOR_TYPE.equalsIgnoreCase(
+                stringValue(pipeline.processor().get("type")))) {
+            // Remote chat model identity and credentials belong to ChatConfig. They must never be
+            // interpreted as local artifact references or sent through model_runtime staging.
+            return ResolvedModelContext.empty();
+        }
         Map<String, String> bindings = new LinkedHashMap<>();
         if (definition != null) {
             mergeBindings(bindings, definition.getModelBindings());
@@ -534,8 +590,6 @@ public final class LocalModelPipelineRunner {
             descriptor.put("modelId", resolved.modelId());
             descriptor.put("modelPath", resolved.modelPath().toString());
             putIfNonNull(descriptor, "tokenizerPath", resolved.tokenizerPath());
-            putIfNonNull(descriptor, "stagingRuntime", resolved.stagingRuntime());
-            descriptor.put("bootstrapped", resolved.bootstrapped());
             descriptor.put("disposition", resolved.disposition());
             descriptor.put("role", first(
                     modelDefinition == null ? null : stringValue(modelDefinition.get("role")), role));

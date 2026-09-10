@@ -11,6 +11,10 @@ import android.content.Context
  */
 internal object PlatformLocalChatModelFactory {
 
+    fun prepareStorageMutation(context: Context) {
+        SdxPlatformChatSession.prepareStorageMutation(context)
+    }
+
     @Suppress("UNUSED_PARAMETER")
     fun open(
         context: Context,

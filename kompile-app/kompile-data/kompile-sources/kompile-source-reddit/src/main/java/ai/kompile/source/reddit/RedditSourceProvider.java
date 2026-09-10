@@ -30,25 +30,12 @@ import java.util.Map;
 
 /**
  * Source provider for Reddit posts and comments.
- * Supports both OAuth and manual credentials configuration.
- *
- * Reddit API authentication can use:
- * - OAuth2 for user-authenticated access
- * - Script app credentials (client ID + client secret) for app-only access
+ * Uses the centralized Reddit OAuth connection managed by {@code kompile auth source}.
  */
 public class RedditSourceProvider implements SourceProvider {
 
     @Value("${kompile.reddit.enabled:true}")
     private boolean enabled;
-
-    @Value("${kompile.reddit.client-id:}")
-    private String configuredClientId;
-
-    @Value("${kompile.reddit.client-secret:}")
-    private String configuredClientSecret;
-
-    @Value("${kompile.oauth.reddit.client-id:}")
-    private String oauthClientId;
 
     private final OAuthConnectionService oauthService;
 
@@ -102,19 +89,12 @@ public class RedditSourceProvider implements SourceProvider {
 
     @Override
     public boolean requiresAuth() {
-        if (oauthService != null && oauthService.getConnectionStatus("reddit").isConnected()) {
-            return false;
-        }
-        return (configuredClientId == null || configuredClientId.isEmpty())
-            || (configuredClientSecret == null || configuredClientSecret.isEmpty());
+        return oauthService == null || !oauthService.isConnectionUsable("reddit");
     }
 
     @Override
     public String getAuthType() {
-        if (oauthClientId != null && !oauthClientId.isEmpty()) {
-            return "oauth2";
-        }
-        return "api_key";
+        return "oauth2";
     }
 
     @Override
@@ -130,10 +110,7 @@ public class RedditSourceProvider implements SourceProvider {
     @Override
     public Map<String, Object> getConfiguration() {
         Map<String, Object> config = new HashMap<>();
-        config.put("oauthConfigured", oauthClientId != null && !oauthClientId.isEmpty());
-        config.put("credentialsConfigured",
-            (configuredClientId != null && !configuredClientId.isEmpty())
-            && (configuredClientSecret != null && !configuredClientSecret.isEmpty()));
+        config.put("oauthConfigured", oauthConfigured());
 
         if (oauthService != null) {
             OAuthConnectionStatus status = oauthService.getConnectionStatus("reddit");
@@ -157,6 +134,11 @@ public class RedditSourceProvider implements SourceProvider {
         return config;
     }
 
+    private boolean oauthConfigured() {
+        return oauthService != null && oauthService.getProviderInfo("reddit")
+                        .map(info -> info.isConfigured()).orElse(false);
+    }
+
     @Override
     public List<SourceFormField> getFormFields() {
         return Arrays.asList(
@@ -171,26 +153,6 @@ public class RedditSourceProvider implements SourceProvider {
                         .order(1)
                         .build(),
                 SourceFormField.builder()
-                        .id("clientId")
-                        .label("Client ID")
-                        .type(SourceFormField.FieldType.TEXT)
-                        .required(requiresAuth())
-                        .placeholder("Your Reddit App Client ID")
-                        .helpText("Reddit API client ID (from your Reddit app settings)")
-                        .prefixIcon("key")
-                        .order(2)
-                        .build(),
-                SourceFormField.builder()
-                        .id("clientSecret")
-                        .label("Client Secret")
-                        .type(SourceFormField.FieldType.PASSWORD)
-                        .required(requiresAuth())
-                        .placeholder("Your Reddit App Client Secret")
-                        .helpText("Reddit API client secret (optional if configured in settings)")
-                        .prefixIcon("lock")
-                        .order(3)
-                        .build(),
-                SourceFormField.builder()
                         .id("sortType")
                         .label("Sort By")
                         .type(SourceFormField.FieldType.SELECT)
@@ -203,7 +165,7 @@ public class RedditSourceProvider implements SourceProvider {
                                 SourceFormField.SelectOption.builder().value("controversial").label("Controversial").build()
                         ))
                         .helpText("How to sort the posts")
-                        .order(4)
+                        .order(2)
                         .build(),
                 SourceFormField.builder()
                         .id("timePeriod")
@@ -219,7 +181,7 @@ public class RedditSourceProvider implements SourceProvider {
                                 SourceFormField.SelectOption.builder().value("all").label("All Time").build()
                         ))
                         .helpText("Time period for top/controversial posts")
-                        .order(5)
+                        .order(3)
                         .showWhen(Map.of("sortType", Arrays.asList("top", "controversial")))
                         .build(),
                 SourceFormField.builder()
@@ -230,7 +192,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .min(1)
                         .max(1000)
                         .helpText("Maximum number of posts to import")
-                        .order(6)
+                        .order(4)
                         .build(),
                 SourceFormField.builder()
                         .id("includeComments")
@@ -238,7 +200,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .type(SourceFormField.FieldType.TOGGLE)
                         .defaultValue(true)
                         .helpText("Include comment threads on each post")
-                        .order(7)
+                        .order(5)
                         .build(),
                 SourceFormField.builder()
                         .id("commentDepth")
@@ -248,7 +210,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .min(1)
                         .max(10)
                         .helpText("Maximum depth of comment threads to fetch")
-                        .order(8)
+                        .order(6)
                         .group("advanced")
                         .showWhen(Map.of("includeComments", true))
                         .build(),
@@ -259,8 +221,8 @@ public class RedditSourceProvider implements SourceProvider {
                         .defaultValue(50)
                         .min(0)
                         .max(500)
-                        .helpText("Maximum comments per post (0 = unlimited)")
-                        .order(9)
+                        .helpText("Maximum comments per post (0 disables comment loading)")
+                        .order(7)
                         .group("advanced")
                         .showWhen(Map.of("includeComments", true))
                         .build(),
@@ -271,7 +233,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .defaultValue(0)
                         .min(0)
                         .helpText("Only include posts with this minimum score (upvotes)")
-                        .order(10)
+                        .order(8)
                         .group("advanced")
                         .build(),
                 SourceFormField.builder()
@@ -280,7 +242,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .type(SourceFormField.FieldType.TOGGLE)
                         .defaultValue(false)
                         .helpText("Include posts marked as NSFW")
-                        .order(11)
+                        .order(9)
                         .group("advanced")
                         .build(),
                 SourceFormField.builder()
@@ -290,7 +252,7 @@ public class RedditSourceProvider implements SourceProvider {
                         .required(false)
                         .placeholder("Optional search query")
                         .helpText("Filter posts by search query within the subreddit")
-                        .order(12)
+                        .order(10)
                         .group("advanced")
                         .build()
         );

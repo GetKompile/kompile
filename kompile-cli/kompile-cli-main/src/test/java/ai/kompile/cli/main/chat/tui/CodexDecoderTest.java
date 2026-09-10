@@ -245,6 +245,24 @@ class CodexDecoderTest {
     }
 
     @Test
+    void detectsTerseClosedAndUnauthorizedProviderFailuresWithoutMatchingProse() {
+        CodexDecoder decoder = new CodexDecoder();
+
+        VirtualTerminal closed = new VirtualTerminal(40, 120);
+        closed.feed("\033[10;1H■ Error: closed");
+        assertNotNull(decoder.detectBlockingNotice(closed));
+
+        VirtualTerminal unauthorized = new VirtualTerminal(40, 120);
+        unauthorized.feed("\033[10;1H■ Error: 401 Unauthorized from OpenAI");
+        assertNotNull(decoder.detectBlockingNotice(unauthorized));
+
+        VirtualTerminal prose = new VirtualTerminal(40, 120);
+        prose.feed("\033[10;1H• The provider may print Error: closed when a stream ends.");
+        assertNull(decoder.detectBlockingNotice(prose),
+                "ordinary assistant prose must not be mistaken for a terminal provider row");
+    }
+
+    @Test
     void detectsBlockAfterItScrollsOutOfViewportViaHistory() {
         // Regression: codex renders its quota error, then redraws its idle composer — the error
         // scrolls out of the fixed VT viewport. Detection must still find it via the accumulated

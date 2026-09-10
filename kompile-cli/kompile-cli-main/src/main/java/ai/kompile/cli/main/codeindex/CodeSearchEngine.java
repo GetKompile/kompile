@@ -226,12 +226,25 @@ public class CodeSearchEngine {
         ReplaceResult.IndexResult indexResult = null;
         if (!dryRun && !modifiedFiles.isEmpty()) {
             if (out != null) out.println("Re-indexing " + modifiedFiles.size() + " modified file(s)...");
-            LocalCodeIndexer.IndexResult ir = indexer.index(rootDir, projectId, null, null, out != null ? out : nullOut());
+            Map<String, Object> stats = indexer.getStats(projectId);
+            String includes = text(stats.get("includePatterns"));
+            String excludes = text(stats.get("excludePatterns"));
+            LocalCodeIndexer.IndexResult ir = indexer.index(rootDir, projectId,
+                    includes, excludes, out != null ? out : nullOut());
+            try {
+                LocalCodeKGraphPublisher.publish(rootDir, projectId, includes, excludes);
+            } catch (Exception e) {
+                throw new IOException("KGraph publication failed after replacement: " + e.getMessage(), e);
+            }
             indexResult = new ReplaceResult.IndexResult(ir.projectId(), ir.filesProcessed(), ir.entitiesFound());
         }
 
         return new ReplaceResult(query, replacement, replacements.size(),
                 modifiedFiles.size(), replacements, !dryRun, indexResult);
+    }
+
+    private static String text(Object value) {
+        return value == null || value.toString().isBlank() ? null : value.toString();
     }
 
     // -----------------------------------------------------------------------

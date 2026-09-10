@@ -60,15 +60,24 @@ public class ProcessSuggestionStore {
      * Persists a suggestion. If the suggestion has no {@code id}, one is generated.
      * If it has no {@code discoveredAt}, the current instant is set.
      */
-    public void save(ProcessSuggestion suggestion) {
+    public synchronized void save(ProcessSuggestion suggestion) {
+        String originalId = suggestion.getId();
+        Instant originalDiscoveredAt = suggestion.getDiscoveredAt();
         if (suggestion.getId() == null) {
             suggestion.setId("suggestion-" + UUID.randomUUID().toString().substring(0, 8));
         }
         if (suggestion.getDiscoveredAt() == null) {
             suggestion.setDiscoveredAt(Instant.now());
         }
-        suggestions.put(suggestion.getId(), suggestion);
-        writeToDisk(suggestion);
+        validateStoredId(suggestion.getId());
+        try {
+            writeToDisk(suggestion);
+            suggestions.put(suggestion.getId(), suggestion);
+        } catch (RuntimeException failure) {
+            suggestion.setId(originalId);
+            suggestion.setDiscoveredAt(originalDiscoveredAt);
+            throw failure;
+        }
     }
 
     /** Persists all suggestions in the list, assigning IDs and timestamps as needed. */
@@ -107,34 +116,47 @@ public class ProcessSuggestionStore {
      * that was created from it. Uses {@code computeIfPresent} to hold the bucket
      * lock during mutation, preventing concurrent reads of a partially-updated entry.
      */
-    public void markAccepted(String id, String processDefinitionId) {
-        suggestions.computeIfPresent(id, (key, s) -> {
-            s.setAccepted(true);
-            s.setAcceptedProcessDefinitionId(processDefinitionId);
-            writeToDisk(s);
-            return s;
-        });
+    public synchronized void markAccepted(String id, String processDefinitionId) {
+        ProcessSuggestion existing = suggestions.get(id);
+        if (existing == null) return;
+        ProcessSuggestion updated = MAPPER.convertValue(existing, ProcessSuggestion.class);
+        updated.setAccepted(true);
+        updated.setAcceptedProcessDefinitionId(processDefinitionId);
+        writeToDisk(updated);
+        suggestions.put(id, updated);
     }
 
     /** Removes a suggestion from memory and disk. */
-    public void delete(String id) {
-        suggestions.remove(id);
+    public synchronized void delete(String id) {
+        validateStoredId(id);
         try {
-            Files.deleteIfExists(storageDir.resolve(id + ".json"));
+            Files.deleteIfExists(storagePath(id));
+            suggestions.remove(id);
         } catch (IOException e) {
-            log.warn("Failed to delete suggestion file {}: {}", id, e.getMessage());
+            throw new IllegalStateException("Failed to delete process suggestion " + id, e);
         }
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
 
     private void writeToDisk(ProcessSuggestion suggestion) {
+        Path temp = null;
         try {
             Files.createDirectories(storageDir);
-            Path file = storageDir.resolve(suggestion.getId() + ".json");
-            MAPPER.writeValue(file.toFile(), suggestion);
+            Path file = storagePath(suggestion.getId());
+            temp = file.resolveSibling(file.getFileName() + ".tmp");
+            MAPPER.writeValue(temp.toFile(), suggestion);
+            try {
+                Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
-            log.warn("Failed to persist suggestion {}: {}", suggestion.getId(), e.getMessage());
+            throw new IllegalStateException("Failed to persist process suggestion " + suggestion.getId(), e);
+        } finally {
+            if (temp != null) {
+                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
         }
     }
 
@@ -145,15 +167,32 @@ public class ProcessSuggestionStore {
                 try {
                     ProcessSuggestion s = MAPPER.readValue(path.toFile(), ProcessSuggestion.class);
                     if (s.getId() != null) {
+                        validateStoredId(s.getId());
                         suggestions.put(s.getId(), s);
                     }
-                } catch (IOException e) {
+                } catch (IOException | IllegalArgumentException e) {
                     log.warn("Failed to load suggestion from {}: {}", path, e.getMessage());
                 }
             });
             log.info("Loaded {} process suggestions from disk", suggestions.size());
         } catch (IOException e) {
             log.warn("Failed to list suggestion directory: {}", e.getMessage());
+        }
+    }
+
+    private Path storagePath(String id) {
+        validateStoredId(id);
+        Path root = storageDir.toAbsolutePath().normalize();
+        Path file = root.resolve(id + ".json").normalize();
+        if (!file.startsWith(root)) {
+            throw new IllegalArgumentException("Process suggestion path escapes storage directory");
+        }
+        return file;
+    }
+
+    private static void validateStoredId(String id) {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,199}") || id.contains("..")) {
+            throw new IllegalArgumentException("Invalid process suggestion ID");
         }
     }
 }

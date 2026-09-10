@@ -65,6 +65,52 @@ Agents build and maintain definitions with the `pipeline` MCP tool; executable p
 subprocess modes are never part of the caller contract. The `VLM_DOCUMENT` step accepts PDF files
 (including scanned and image-heavy PDFs), not standalone raster-image paths.
 
+#### Managed connector sources: download then process
+
+`crawl_documents` accepts managed connector `sourceType` values that run in-process with explicit
+request credentials — no app server required. These split into two families:
+
+- **File-backed — GDRIVE and ONEDRIVE.** These download ORIGINAL FILES and then process each one
+  through its content-type pipeline, exactly like local files: PDFs get text extraction (or the
+  VLM OCR pipeline via `pipelineId`), spreadsheets get the excel loader, and so on. Never assume
+  connector payloads are text; a scanned PDF from Drive is rendered and OCR-processed, not
+  byte-mangled.
+- **Text connectors — GMAIL, GDOCS, GOOGLE_WORKSPACE, SLACK, SLACK_HISTORY, DISCORD,
+  DISCORD_HISTORY, NOTION, REDDIT, JIRA, CONFLUENCE, EMAIL, IMAP, POP3.** Payloads are text and
+  materialize directly; each accepts provider-native query properties (for example GMAIL
+  `gmailQuery: "in:inbox newer_than:7d"`, DISCORD `guildId`/`channelIds`, SLACK
+  `loadAllChannels`, REDDIT `subreddit` via path plus `sortType`/`timePeriod`).
+
+File-backed identification: set `properties.fileIds` / `properties.itemIds` (comma-separated or
+array), OR a single `properties.folderId` to load a folder's immediate file children (cap with
+`properties.maxFiles`, default 500; recursive traversal of deep trees belongs to the crawler
+source types). Credentials come from `properties.accessToken` or the connected OAuth account.
+Downloaded originals land under `data/knowledge-sources/<knowledgeBase>/external/` and are
+registered as per-file sources, so `pipelineId`, `chunkerName`, and other pipeline options on the
+document entry apply to them like any local file.
+
+Scanned-PDF example (download from Drive, then VLM OCR each file):
+
+```json
+{
+  "documents": [
+    {
+      "sourceType": "GDRIVE",
+      "properties": { "accessToken": "ya29...", "folderId": "<folder-id>", "maxFiles": 100 },
+      "pipelineId": "vlm-ocr-pdf"
+    }
+  ],
+  "pipelines": [
+    { "pipelineId": "vlm-ocr-pdf", "pipelineType": "VLM",
+      "modelBindings": { "default": "my-document-model" } }
+  ],
+  "knowledgeBase": { "name": "drive-scans" }
+}
+```
+
+Run `crawl_discover` with `section: "sources"` for the live connector list with per-type guidance;
+file-backed types are flagged in their descriptions.
+
 Use `modelBindings.default` as the authoritative model selector. The compatibility shorthands are
 resolved in this order: `modelId`, deprecated `vlmModel`, then `modelSetId`; conflicting
 `modelId` and `vlmModel` values are rejected. `model_runtime status` distinguishes
@@ -129,6 +175,25 @@ When a project is opened, Kompile writes a `.mcp.json` in the project directory 
 
 Kompile also auto-configures hooks in agent settings files (`.claude/settings.local.json`, `.codex/config.toml`, `.opencode/plugins/`, `.gemini/settings.json`).
 
+## Custom MCP servers
+
+Install third-party MCP servers for standard chat, headless chat, and managed passthrough with the shared CLI lifecycle:
+
+```bash
+kompile mcp add context7 -- npx -y @upstash/context7-mcp
+kompile mcp add --scope user --transport http docs https://mcp.example.com/mcp
+kompile mcp list
+kompile mcp disable context7
+kompile mcp remove context7
+```
+
+Project entries live in `.mcp.json`; user entries live in
+`~/.kompile/config/mcp-servers.json`, and project names override user names.
+Custom tools are namespaced as `mcp__server__tool` and are also available through
+the stable `mcp_tool_search` / `mcp_tool_call` gateway used by passthrough agents.
+See **[Custom MCP servers](custom-servers.md)** for transports, auth references,
+trust behavior, tool filtering, examples, and the open-source harness comparison.
+
 ## Tool profiles
 
 | Profile | Tools | Use case |
@@ -149,6 +214,7 @@ Kompile also auto-configures hooks in agent settings files (`.claude/settings.lo
 | Workflow | `todowrite`, `todoread` |
 | Knowledge | `knowledge_search`, `knowledge_status`, `rag_search`, `graph_rag_search`, `semantic_memory`, `memory`, `transcript_search` |
 | Crawl | `crawl_discover`, `crawl_documents`, `crawl_source`, `crawl_control`, `crawl_result` |
+| Subprocess watchdog | `subprocess_watchdog` (local crawl admission plus tracking/limits for pooled children) |
 | Code | `code_search`, `code_graph`, `local_code_index`, `tool_call_catalog` |
 | Edit history | `diff_index` (search, filter, and sort old/new text and unified diffs) |
 | Delegation | `task` (single subagent), `multi_task` (parallel), `quorum_task` (consensus voting) |
@@ -156,6 +222,35 @@ Kompile also auto-configures hooks in agent settings files (`.claude/settings.lo
 | Config | `project_config`, `enforcer_config`, `role_manager`, `skill_manager`, `config_archive` |
 
 Any tool can run asynchronously with `_background: true` -- returns a task ID immediately, use `poll` to check status later.
+
+### Pause a resource-blocked agent
+
+High-memory tool launches (including builds and tests) install a one-shot resource watch when
+blocked. The response includes `resourceWaitId` and `wakeSupported`. Nothing is launched or
+reserved while the agent is waiting. The host checks every five seconds for the user-wide
+activity lane, project peer processes, and configured RAM/GPU admission to clear.
+
+- **Interactive Standard Chat:** with `wakeSupported=true`, the agent may end its current turn.
+  A system event starts the next agent turn (or queues behind an active turn), even with ordinary
+  auto-dequeue disabled. Open todos and outstanding validation stay pending, not completed.
+- **External MCP / headless clients:** `wakeSupported=false` means the server cannot start a new
+  model turn on its own. Keep a normal tool call pending; its response resumes the caller:
+
+  ```json
+  {"action":"wait_for_activity","wait_id":"<resourceWaitId>","timeout_seconds":25}
+  ```
+
+  On `WAITING`, repeat **the wait**, not the blocked launch. Choose a timeout below the client's
+  tool timeout (1–300 seconds; default 25). Do not detach this call with `_background:true`.
+  On `READY`, retry the original tool through normal admission; capacity is advisory, not reserved.
+
+Use `edit_coordinator` `watch_activity` with `activity_kind` and `description` to watch without
+attempting a launch. `preflight_activity` remains a dry inspection. `query_activity_waits` lists
+only the current tool session's watches; `cancel_activity_wait` with `wait_id` abandons one.
+Cancelling a held call cancels its watch. Identical pending requests share a watch; successful
+admission clears its matching watch. Watches survive idle turns but not host shutdown, expire
+after 24 hours, and are bounded to 128 entries per host. Notifications never auto-execute commands.
+Existing hosts must be rebuilt/restarted before these actions are available.
 
 ### Crawl jobs are independently pollable
 
@@ -172,6 +267,49 @@ then call `crawl_result` with the same `jobId`. Do not submit the same crawl rep
 `QUEUED` or `RUNNING`. `crawl_control` `cancel` is available for local jobs; completed handles are
 retained for a bounded period. Set `async:false` (or `waitForCompletion:true`) only for explicit
 blocking compatibility. `dryRun:true` remains synchronous because it never persists artifacts.
+
+### Local crawl subprocess watchdog
+
+Project-local crawls run model-backed work in pooled children (model-serving, pipeline runtime,
+learning). Three watchdog layers protect them:
+
+- **Pre-admission** — before a non-dry-run `crawl_documents` worker starts expensive work, the MCP
+  host samples Linux `MemAvailable` (with an OS MXBean fallback) and NVIDIA VRAM. The default
+  `wait` mode keeps the async job in `WAITING_FOR_CAPACITY` until pressure clears or the bounded
+  timeout expires; `fail` rejects immediately and `off` disables this gate. GPU admission is
+  device-agnostic: it admits when any device has the configured fractional and optional absolute
+  headroom, preserving lower-level device failover rather than pinning a card.
+
+- **Child-internal** — each serving/learning child runs its own heap/GPU/off-heap
+  `SubprocessMemoryWatchdog` from its args thresholds (kill exits the child; the crawl job fails
+  with the child's diagnostics). `GET /api/llm/status` on a serving child embeds the live
+  `memoryWatchdog` snapshot.
+- **Parent-side** — the MCP host tracks every pooled child PID, samples RSS, and force-kills
+  children exceeding `min(maxRssMb, maxRssFraction × system RAM)` for `breachCount` consecutive
+  checks (a `graceSeconds` window exempts model-load spikes). Enforcement is off until a limit is
+  set; tracking is always on.
+
+Manage it through `subprocess_watchdog`:
+
+```json
+{"action":"status"}
+{"action":"config_update","config":{"maxRssFraction":0.5,"breachCount":2}}
+{"action":"config_update","config":{"admissionMode":"wait","admissionTimeoutMs":300000,"admissionMaxRamUsedFraction":0.75,"admissionMinAvailableRamMb":8192,"admissionMaxGpuUsedFraction":0.75,"admissionMinAvailableGpuMb":0}}
+{"action":"kill","id":"serving-<runId>","reason":"stuck model"}
+```
+
+Admission configuration keys are `admissionMode` (`wait|fail|off`), `admissionTimeoutMs`,
+`admissionPollIntervalMs`, `admissionMinAvailableRamMb`, `admissionMaxRamUsedFraction`,
+`admissionMinAvailableGpuMb`, and `admissionMaxGpuUsedFraction`. A zero threshold disables that
+individual check. The default fractional RAM/GPU limits are 0.75, preserving 25% dynamic headroom
+before Kompile's 85% high-pressure/OOM band; absolute floors default to zero. Waiting crawls re-read the
+mode, timeout, poll interval, and thresholds, so a runtime config update takes effect without a restart.
+If `nvidia-smi` is unavailable, the default fractional GPU check is fail-open; an explicitly
+configured nonzero absolute GPU floor fails closed because that guarantee cannot be verified.
+
+`crawl_discover` / `crawl_control` `runtime_config` embed the current watchdog state under
+`subprocessWatchdog`. On non-Linux hosts per-child RSS sampling is unavailable; host RAM admission
+uses the OS MXBean when available.
 
 The discovery response from `crawl_discover`/`crawl_control preflight` also advertises this contract in
 `asyncLifecycle`, including terminal statuses, the poll interval, and the status/result tool names, so
@@ -200,7 +338,7 @@ Add `--global` to write user defaults instead of `.kompile/agent-defaults.json`.
       "thinking": {
         "default": "medium",
         "models": {
-          "gpt-5.6-sol": "ultra"
+          "gpt-5.6-sol": "max"
         }
       }
     }
@@ -218,7 +356,7 @@ Roles can override these defaults per provider. Both `create_role` and `update_r
       "thinking": {
         "default": "medium",
         "models": {
-          "gpt-5.6-sol": "ultra"
+          "gpt-5.6-sol": "max"
         }
       }
     },
@@ -234,7 +372,7 @@ Roles can override these defaults per provider. Both `create_role` and `update_r
 }
 ```
 
-The equivalent flat role frontmatter is `agent_defaults.codex.model: gpt-5.6-terra`, `agent_defaults.codex.thinking.default: medium`, and `agent_defaults.codex.thinking.models.gpt-5.6-sol: ultra`. The older top-level role `model:` field remains a prompt hint and is not a launch default.
+The equivalent flat role frontmatter is `agent_defaults.codex.model: gpt-5.6-terra`, `agent_defaults.codex.thinking.default: medium`, and `agent_defaults.codex.thinking.models.gpt-5.6-sol: max`. The older top-level role `model:` field remains a prompt hint and is not a launch default.
 
 Model and thinking resolve independently: explicit task/subtask value, selected role default, nearest project default, user default, then the native agent default. An explicit model can therefore select that model's thinking value from the role. If a task omits `role`, Kompile uses the persisted role assignment for that agent; an explicit role wins over the assignment. Kompile maps thinking to Codex `model_reasoning_effort`, Claude `--effort`, and OpenCode `run --variant`. Direct `kompile chat` and `kompile passthrough` launches also accept `--model` and `--thinking` (alias `--effort`); OpenCode's interactive TUI has no variant flag, so its thinking selection is applied to managed delegation runs.
 

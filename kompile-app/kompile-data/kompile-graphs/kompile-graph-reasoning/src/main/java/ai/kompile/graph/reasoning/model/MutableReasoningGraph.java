@@ -38,6 +38,7 @@ public final class MutableReasoningGraph implements ReasoningGraph {
 
     private final Map<String, GraphEntity> entities = new LinkedHashMap<>();
     private final List<GraphRelation> relations = new ArrayList<>();
+    private final Map<String, GraphRelation> relationsById = new LinkedHashMap<>();
     private final Map<String, List<GraphRelation>> outgoing = new LinkedHashMap<>();
     private final Map<String, List<GraphRelation>> incoming = new LinkedHashMap<>();
 
@@ -57,6 +58,27 @@ public final class MutableReasoningGraph implements ReasoningGraph {
     }
 
     /**
+     * Remove an entity and every relation incident to it. No-ops if the entity is absent.
+     * Returns {@code this}.
+     */
+    public MutableReasoningGraph removeEntityById(String id) {
+        Objects.requireNonNull(id, "id");
+        entities.remove(id);
+        List<GraphRelation> incidentRelations = new ArrayList<>();
+        for (GraphRelation relation : relations) {
+            if (id.equals(relation.sourceId()) || id.equals(relation.targetId())) {
+                incidentRelations.add(relation);
+            }
+        }
+        for (GraphRelation relation : incidentRelations) {
+            removeRelationInstance(relation);
+        }
+        outgoing.remove(id);
+        incoming.remove(id);
+        return this;
+    }
+
+    /**
      * Add a relation and update the adjacency indices. Endpoints are <em>not</em> required to
      * exist yet (adapters may add relations and entities in any order), but
      * {@link #outgoing(String)}/{@link #incoming(String)} only ever return added relations.
@@ -64,7 +86,12 @@ public final class MutableReasoningGraph implements ReasoningGraph {
      */
     public MutableReasoningGraph addRelation(GraphRelation relation) {
         Objects.requireNonNull(relation, "relation");
+        // Relation ids are graph identities. Replacing an id avoids ambiguous analysis rows and
+        // prevents an incident-entity removal from affecting an unrelated duplicate-id edge.
+        GraphRelation existing = relationsById.get(relation.id());
+        if (existing != null) removeRelationInstance(existing);
         relations.add(relation);
+        relationsById.put(relation.id(), relation);
         outgoing.computeIfAbsent(relation.sourceId(), k -> new ArrayList<>()).add(relation);
         incoming.computeIfAbsent(relation.targetId(), k -> new ArrayList<>()).add(relation);
         return this;
@@ -91,11 +118,7 @@ public final class MutableReasoningGraph implements ReasoningGraph {
             }
         }
         for (GraphRelation r : toRemove) {
-            relations.remove(r);
-            List<GraphRelation> out = outgoing.get(r.sourceId());
-            if (out != null) out.remove(r);
-            List<GraphRelation> in = incoming.get(r.targetId());
-            if (in != null) in.remove(r);
+            removeRelationInstance(r);
         }
         return this;
     }
@@ -106,20 +129,18 @@ public final class MutableReasoningGraph implements ReasoningGraph {
      */
     public MutableReasoningGraph removeRelationById(String id) {
         Objects.requireNonNull(id, "id");
-        List<GraphRelation> toRemove = new ArrayList<>();
-        for (GraphRelation r : relations) {
-            if (id.equals(r.id())) {
-                toRemove.add(r);
-            }
-        }
-        for (GraphRelation r : toRemove) {
-            relations.remove(r);
-            List<GraphRelation> out = outgoing.get(r.sourceId());
-            if (out != null) out.remove(r);
-            List<GraphRelation> in = incoming.get(r.targetId());
-            if (in != null) in.remove(r);
-        }
+        GraphRelation relation = relationsById.get(id);
+        if (relation != null) removeRelationInstance(relation);
         return this;
+    }
+
+    private void removeRelationInstance(GraphRelation relation) {
+        relations.remove(relation);
+        relationsById.remove(relation.id(), relation);
+        List<GraphRelation> out = outgoing.get(relation.sourceId());
+        if (out != null) out.remove(relation);
+        List<GraphRelation> in = incoming.get(relation.targetId());
+        if (in != null) in.remove(relation);
     }
 
     @Override
@@ -135,6 +156,11 @@ public final class MutableReasoningGraph implements ReasoningGraph {
     @Override
     public Optional<GraphEntity> entity(String id) {
         return Optional.ofNullable(entities.get(id));
+    }
+
+    /** O(1) relation lookup by graph identity. */
+    public Optional<GraphRelation> relation(String id) {
+        return Optional.ofNullable(relationsById.get(id));
     }
 
     @Override

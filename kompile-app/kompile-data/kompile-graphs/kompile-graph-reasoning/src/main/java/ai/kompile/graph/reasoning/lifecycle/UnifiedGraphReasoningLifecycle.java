@@ -12,10 +12,12 @@ import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
 import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.mebn.MTheory;
+import ai.kompile.graph.reasoning.mebn.RelationalMTheoryArtifactCodec;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder;
 import ai.kompile.graph.reasoning.mebn.RelationalMTheoryBuilder.RelationDescriptor;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.psl.GraphPslProgramBuilder;
 import ai.kompile.graph.reasoning.psl.PslProgram;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -29,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Store-agnostic final FOL/PSL/MEBN learning for a portable {@link UnifiedGraph}.
@@ -43,6 +46,7 @@ public final class UnifiedGraphReasoningLifecycle {
     public static final String FOL_PSL_PROGRAM_ARTIFACT = "reasoning/fol-psl-program.bin";
     public static final String PSL_WEIGHTS_ARTIFACT = "reasoning/psl-weights.json";
     public static final String MEBN_THEORY_ARTIFACT = "reasoning/mebn-theory.bin";
+    public static final String MEBN_THEORY_JSON_ARTIFACT = "reasoning/mebn-theory.v1.json";
     public static final String MEBN_STRENGTHS_ARTIFACT = "reasoning/mebn-strengths.json";
     public static final String CONSENSUS_TARGETS_ARTIFACT = "reasoning/consensus-targets.bin";
 
@@ -147,11 +151,38 @@ public final class UnifiedGraphReasoningLifecycle {
         graph.putModel(FOL_PSL_PROGRAM_ARTIFACT, learned.trainedProgram());
         graph.putArtifactText(PSL_WEIGHTS_ARTIFACT,
                 PslWeightLearningService.weightsToJson(learned.trainedProgram().rules()));
-        graph.putModel(MEBN_THEORY_ARTIFACT, mTheory);
+        graph.putArtifactText(PSL_RULE_LEGEND_ARTIFACT, pslRuleLegend(graph));
+        graph.putArtifactText(MEBN_THEORY_JSON_ARTIFACT,
+                RelationalMTheoryArtifactCodec.toJson(mTheory));
         graph.putArtifactText(MEBN_STRENGTHS_ARTIFACT,
                 MebnWeightSerializer.strengthsToJson(mTheory));
         graph.putModel(CONSENSUS_TARGETS_ARTIFACT,
                 new LinkedHashMap<>(learned.consensusTargets()));
+        // Project entity-state posteriors onto Subjective-Logic opinions so downstream consumers
+        // (opinions, facts_by_tier, graph_reasoning_query) see trained beliefs without re-deriving
+        // them from consensusTargets. Maps PSL constants back to entity ids via the builder.
+        int opinionsProjected = 0;
+        java.util.LinkedHashSet<String> projectedEntityIds = new java.util.LinkedHashSet<>();
+        for (Map.Entry<String, Double> target : learned.consensusTargets().entrySet()) {
+            String key = target.getKey();
+            if (!key.startsWith(GraphPslProgramBuilder.STATE + "(") || !key.endsWith(")")) {
+                continue;
+            }
+            String constant = key.substring(
+                    GraphPslProgramBuilder.STATE.length() + 1, key.length() - 1);
+            String entityId = pslBuilder.constantToEntityId().get(constant);
+            if (entityId != null && graph.entity(entityId).isPresent()) {
+                graph.putEntityOpinion(entityId,
+                        Opinion.fromSoftTruth(clamp01(target.getValue())));
+                projectedEntityIds.add(entityId);
+                opinionsProjected++;
+            }
+        }
+        graph.meta("reasoningLearning.entityOpinionsProjected", opinionsProjected);
+        // Keep IDs structured: entity identifiers are opaque and may contain commas. The graph
+        // archive preserves JSON arrays losslessly; a legacy comma-delimited string remains only a
+        // reader compatibility concern in the CLI audit guard.
+        graph.meta("reasoningLearning.projectedEntityIds", List.copyOf(projectedEntityIds));
         graph.meta("reasoningLearning.status", "COMPLETED")
                 .meta("reasoningLearning.folPsl", true)
                 .meta("reasoningLearning.mebn", learned.mebnTrained())
@@ -182,9 +213,9 @@ public final class UnifiedGraphReasoningLifecycle {
     /** Reconstruct the learned portable MEBN theory, if one was stored with the graph. */
     public static MTheory learnedMTheory(UnifiedGraph graph) {
         Objects.requireNonNull(graph, "graph");
-        Object stored = graph.model(MEBN_THEORY_ARTIFACT);
-        if (stored instanceof MTheory theory) {
-            return theory;
+        String theoryJson = graph.artifactText(MEBN_THEORY_JSON_ARTIFACT);
+        if (theoryJson != null && !theoryJson.isBlank()) {
+            return RelationalMTheoryArtifactCodec.fromJson(theoryJson);
         }
         String strengths = graph.artifactText(MEBN_STRENGTHS_ARTIFACT);
         if (strengths == null || strengths.isBlank()) {
@@ -255,6 +286,42 @@ public final class UnifiedGraphReasoningLifecycle {
             result = fallback + "_" + result;
         }
         return result;
+    }
+
+    /** Artifact holding a plain-text interpretation guide for the generic PSL rule names. */
+    public static final String PSL_RULE_LEGEND_ARTIFACT = "reasoning/psl-rule-legend.txt";
+
+    /**
+     * Human-readable legend for {@link #PSL_WEIGHTS_ARTIFACT}: explains the structural predicate
+     * vocabulary and lists which relation types of this graph were folded into Link vs Conflict.
+     * The PSL program itself is deliberately structure-level (all relations share the
+     * State/Link/Conflict atoms) so weights transfer across graphs; the legend preserves the
+     * per-graph typing without changing the program.
+     */
+    private static String pslRuleLegend(UnifiedGraph graph) {
+        Set<String> linkTypes = new TreeSet<>();
+        Set<String> conflictTypes = new TreeSet<>();
+        for (GraphRelation relation : graph.relations()) {
+            if (GraphPslProgramBuilder.isIdentitySeparationType(relation.type())) {
+                continue;
+            }
+            if (GraphPslProgramBuilder.isConflictType(relation.type())) {
+                conflictTypes.add(relation.type());
+            } else {
+                linkTypes.add(relation.type());
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("PSL rule legend (rule keys in reasoning/psl-weights.json)\n");
+        sb.append("========================================================\n");
+        sb.append("State(N)       : latent truth of entity N (learning target).\n");
+        sb.append("Link(X, Y)     : observed positive relation X->Y (weight*confidence).\n");
+        sb.append("Conflict(X, Y) : observed contradictory relation X->Y (penalizes State).\n");
+        sb.append("Prior(N)       : structural prior from entity confidence + out-degree.\n");
+        sb.append("Rule suffix ^2 : hinge-loss weight of the rule; higher = trusted more.\n\n");
+        sb.append("Relation types folded into Link   : ").append(linkTypes).append("\n");
+        sb.append("Relation types folded into Conflict: ").append(conflictTypes).append("\n");
+        return sb.toString();
     }
 
     private static double clamp01(double value) {

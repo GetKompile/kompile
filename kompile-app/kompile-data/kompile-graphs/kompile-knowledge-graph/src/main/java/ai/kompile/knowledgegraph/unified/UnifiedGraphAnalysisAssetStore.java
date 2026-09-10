@@ -21,7 +21,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -57,6 +59,13 @@ public class UnifiedGraphAnalysisAssetStore {
             int weightMaps,
             int artifacts,
             boolean present) {
+    }
+
+    /** Exact prior state used by managed import compensation. */
+    public record AssetState(boolean present, UnifiedGraph graph) {
+        public static AssetState absent() {
+            return new AssetState(false, null);
+        }
     }
 
     /** Store (replace) the snapshot for a fact sheet; best-effort sidecar write-through. */
@@ -98,6 +107,69 @@ public class UnifiedGraphAnalysisAssetStore {
                     factSheetId, e.getMessage());
             return Optional.empty();
         }
+    }
+
+    /**
+     * Read the current snapshot without populating the in-memory cache. Used by import rollback
+     * preparation so capturing a compensating snapshot does not change live cache state.
+     */
+    public Optional<UnifiedGraph> snapshot(long factSheetId) {
+        UnifiedGraph cached = snapshots.get(factSheetId);
+        if (cached != null) return Optional.of(cached);
+        Path sidecar = sidecarPath(factSheetId);
+        if (sidecar == null || !Files.isRegularFile(sidecar)) return Optional.empty();
+        try {
+            return Optional.of(UnifiedGraph.load(sidecar));
+        } catch (Exception e) {
+            log.warn("Analysis-asset snapshot read failed for factSheet={}: {}",
+                    factSheetId, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /** Capture exact state without swallowing corrupt-sidecar failures. */
+    public AssetState captureStrict(long factSheetId) throws java.io.IOException {
+        UnifiedGraph cached = snapshots.get(factSheetId);
+        if (cached != null) return new AssetState(true, copy(cached));
+        Path sidecar = sidecarPath(factSheetId);
+        if (sidecar == null || !Files.exists(sidecar)) return AssetState.absent();
+        if (!Files.isRegularFile(sidecar)) {
+            throw new java.io.IOException("Analysis asset is not a regular file: " + sidecar);
+        }
+        return new AssetState(true, UnifiedGraph.load(sidecar));
+    }
+
+    /** Atomically replace the persistent sidecar before publishing the in-memory snapshot. */
+    public void replaceStrict(long factSheetId, UnifiedGraph graph) throws java.io.IOException {
+        if (graph == null) throw new IllegalArgumentException("graph is required");
+        Path sidecar = sidecarPath(factSheetId);
+        if (sidecar != null) {
+            Files.createDirectories(sidecar.getParent());
+            Path temporary = Files.createTempFile(sidecar.getParent(), sidecar.getFileName().toString(), ".tmp");
+            try {
+                graph.save(temporary);
+                try {
+                    Files.move(temporary, sidecar,
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException unsupported) {
+                    Files.move(temporary, sidecar, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        }
+        snapshots.put(factSheetId, graph);
+    }
+
+    /** Restore exact prior presence or absence. */
+    public void restoreStrict(long factSheetId, AssetState state) throws java.io.IOException {
+        if (state != null && state.present()) {
+            replaceStrict(factSheetId, state.graph());
+            return;
+        }
+        Path sidecar = sidecarPath(factSheetId);
+        if (sidecar != null) Files.deleteIfExists(sidecar);
+        snapshots.remove(factSheetId);
     }
 
     /** Summarize the currently cached or persisted analysis asset for a fact sheet. */
@@ -142,5 +214,11 @@ public class UnifiedGraphAnalysisAssetStore {
             return null;
         }
         return Path.of(directory, "factsheet-" + factSheetId + ".kgraph");
+    }
+
+    private static UnifiedGraph copy(UnifiedGraph graph) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        graph.save(out);
+        return UnifiedGraph.load(new java.io.ByteArrayInputStream(out.toByteArray()));
     }
 }

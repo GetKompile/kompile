@@ -29,8 +29,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -206,6 +208,65 @@ public class FactSheetService {
     @Transactional(readOnly = true)
     public Optional<FactSheet> getSheetById(Long id) {
         return factSheetRepository.findById(id);
+    }
+
+    /** Get a fact sheet by its stable machine-independent portable identity. */
+    @Transactional(readOnly = true)
+    public Optional<FactSheet> getSheetByPortableId(String portableId) {
+        if (portableId == null || portableId.isBlank()) {
+            return Optional.empty();
+        }
+        return factSheetRepository.findByPortableId(canonicalPortableId(portableId));
+    }
+
+    /** Ensure legacy rows have a stable portable identity before they are exported. */
+    public FactSheet ensurePortableId(FactSheet sheet) {
+        if (sheet == null) {
+            throw new IllegalArgumentException("fact sheet is required");
+        }
+        FactSheet target = sheet.getId() == null ? sheet
+                : factSheetRepository.findByIdForPortableIdentity(sheet.getId())
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "Fact sheet does not exist: " + sheet.getId()));
+        if (target.getPortableId() == null || target.getPortableId().isBlank()) {
+            target.setPortableId(UUID.randomUUID().toString());
+            return factSheetRepository.saveAndFlush(target);
+        }
+        target.setPortableId(canonicalPortableId(target.getPortableId()));
+        return target;
+    }
+
+    /**
+     * Bind a restored runtime sheet to the archive's portable identity, rejecting cross-sheet
+     * collisions instead of silently retargeting portable graphs.
+     */
+    public FactSheet assignPortableId(FactSheet sheet, String portableId) {
+        if (sheet == null) {
+            throw new IllegalArgumentException("fact sheet is required");
+        }
+        String normalized = canonicalPortableId(portableId);
+        factSheetRepository.findByPortableId(normalized).ifPresent(existing -> {
+            if (!Objects.equals(existing.getId(), sheet.getId())) {
+                throw new IllegalArgumentException("Portable fact-sheet identity already belongs to another sheet: "
+                        + normalized);
+            }
+        });
+        if (normalized.equals(sheet.getPortableId())) {
+            return sheet;
+        }
+        sheet.setPortableId(normalized);
+        return factSheetRepository.save(sheet);
+    }
+
+    public static String canonicalPortableId(String portableId) {
+        if (portableId == null || portableId.isBlank()) {
+            throw new IllegalArgumentException("portableId is required");
+        }
+        try {
+            return UUID.fromString(portableId.trim()).toString();
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Invalid portable fact-sheet identity: " + portableId, invalid);
+        }
     }
 
     /**

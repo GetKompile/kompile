@@ -34,9 +34,10 @@ class CorpusSchemaOverlayValidatorTest {
         GraphSchema overlay = new GraphSchema(
                 List.of(
                         new NodeType("PERSON", "A person", List.of(new PropertyType("function", "String"))),
-                        new NodeType("ROLE", "A role", null)
+                        new NodeType("ROLE", "A role", null, "CONCEPT")
                 ),
-                List.of(new RelationshipType("HAS_ROLE", "person has role", null, List.of())),
+                List.of(new RelationshipType("HAS_ROLE", "person has role", null,
+                        List.of(), "AFFILIATION")),
                 List.of("(PERSON)-[:HAS_ROLE]->(ROLE)")
         );
 
@@ -75,6 +76,35 @@ class CorpusSchemaOverlayValidatorTest {
 
         assertFalse(result.valid());
         assertTrue(result.errors().stream().anyMatch(e -> e.startsWith("[SCHEMA_DUPLICATE_TYPE]")));
+    }
+
+    @Test
+    void rejectsNodeRelationshipTypeKindCollisions() {
+        GraphSchema established = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", null)),
+                List.of(new RelationshipType(
+                        "EMPLOYED_BY", "Employment relation", null, List.of(), "AFFILIATION")),
+                null);
+        GraphSchema nodeCollision = new GraphSchema(
+                List.of(new NodeType("EMPLOYED_BY", "Wrong kind", null, "CONCEPT")),
+                null, null);
+        GraphSchema relationCollision = new GraphSchema(
+                null,
+                List.of(new RelationshipType(
+                        "PERSON", "Wrong kind", null, List.of(), "AFFILIATION")),
+                null);
+
+        CorpusSchemaOverlayValidator.Result nodeResult =
+                CorpusSchemaOverlayValidator.validateTypesOnly(established, nodeCollision);
+        CorpusSchemaOverlayValidator.Result relationResult =
+                CorpusSchemaOverlayValidator.validateTypesOnly(established, relationCollision);
+
+        assertFalse(nodeResult.valid());
+        assertFalse(relationResult.valid());
+        assertTrue(nodeResult.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_TYPE_KIND_COLLISION]")));
+        assertTrue(relationResult.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_TYPE_KIND_COLLISION]")));
     }
 
     @Test
@@ -140,13 +170,64 @@ class CorpusSchemaOverlayValidatorTest {
     void typeOnlyValidationAcceptsRelationshipTypesWithoutPatterns() {
         GraphSchema overlay = new GraphSchema(
                 List.of(new NodeType("PERSON", "A person", null)),
-                List.of(new RelationshipType("SUBMITS", "Submission relation", null)),
+                List.of(new RelationshipType("SUBMITS", "Submission relation", null,
+                        List.of(), "PARTICIPATION")),
                 null);
 
         CorpusSchemaOverlayValidator.Result result =
                 CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
 
         assertTrue(result.valid());
+    }
+
+    @Test
+    void rejectsMissingOrUnknownHierarchyClassifications() {
+        GraphSchema overlay = new GraphSchema(
+                List.of(new NodeType("EMAIL_MESSAGE", "An email", null)),
+                List.of(new RelationshipType("EMAILED", "Sent email", null,
+                        List.of(), "ASSOCIATION")), null);
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_PARENT_REQUIRED]")));
+        assertTrue(result.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_CONNECTION_FAMILY_UNKNOWN]")));
+    }
+
+    @Test
+    void acceptsParentFromEstablishedMultiLevelHierarchy() {
+        GraphSchema established = new GraphSchema(
+                List.of(new NodeType(
+                        "SCIENTIFIC_OBJECT", "A scientific object", null, "CONCEPT")),
+                null, null);
+        GraphSchema overlay = new GraphSchema(
+                List.of(new NodeType(
+                        "CELESTIAL_OBJECT", "A celestial object", null, "SCIENTIFIC_OBJECT")),
+                null, null);
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(established, overlay);
+
+        assertTrue(result.valid(), result.errors().toString());
+    }
+
+    @Test
+    void rejectsCycleBetweenSameOverlayHierarchyTypes() {
+        GraphSchema overlay = new GraphSchema(
+                List.of(
+                        new NodeType("TYPE_A", "Type A", null, "TYPE_B"),
+                        new NodeType("TYPE_B", "Type B", null, "TYPE_A")),
+                null, null);
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_PARENT_CYCLE]")));
     }
 
     @Test

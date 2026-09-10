@@ -15,11 +15,12 @@ kompile app ingest list                           # List ingested documents
 
 ## Crawl
 
-Start and manage crawl jobs:
+Start and manage crawl jobs. Running `kompile app crawl` with no subcommand launches the
+interactive crawl wizard (sources, indexing, graph extraction, model and presets):
 
 ```bash
+kompile app crawl                                 # Interactive crawl wizard
 kompile app crawl start --source=web --seed=https://example.com
-kompile app crawl wizard                          # Interactive setup
 kompile app crawl status                          # Current job status
 kompile app crawl pause                           # Pause running job
 kompile app crawl resume                          # Resume paused job
@@ -91,10 +92,12 @@ kompile app subprocess stats                      # Subprocess statistics
 
 ## Training
 
-Manage model training:
+Manage model training. Running `kompile app train` with no subcommand launches the
+interactive training wizard:
 
 ```bash
-kompile app train wizard                          # Interactive training setup
+kompile app train                                 # Interactive training wizard
+kompile app train wizard                          # Same wizard, explicit
 kompile app train start --config=train.json       # Start training job
 kompile app train list                            # List training jobs
 kompile app train status --id=<id>                # Job status

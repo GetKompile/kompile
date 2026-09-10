@@ -87,7 +87,8 @@ public final class HlMrfMapInference {
      * @param satisfied             {@code true} when d ≤ {@link #HARD_VIOLATION_TOLERANCE}
      * @param direction             +1 pushes atom up, -1 pushes atom down, 0 neutral
      * @param dualForce             ADMM scaled dual magnitude at convergence for this rule/atom
-     *                              pair; 0.0 when the solver did not surface duals
+     *                              pair; 0.0 when the solver did not surface duals or the atom
+     *                              is observed evidence rather than a consensus variable
      */
     public record AtomAttribution(
             GroundRule rule,
@@ -106,7 +107,9 @@ public final class HlMrfMapInference {
      * @param objective   final total energy
      * @param converged   whether the descent reached the tolerance before the iteration cap
      * @param admmDuals   optional per-(ruleIndex, atomKey) scaled dual magnitudes at ADMM
-     *                    convergence; empty map when not populated by the solver
+     *                    convergence for consensus variables; observed evidence entries remain
+     *                    zero even when they contradict a rule; empty map when not populated
+     *                    by the solver
      */
     public record Result(Map<String, Double> values, List<GroundRule> groundRules,
                          int iterations, double objective, boolean converged,
@@ -216,7 +219,10 @@ public final class HlMrfMapInference {
          *
          * <p>The {@link AtomAttribution#dualForce} is the ADMM scaled-dual magnitude
          * {@code |u_{r,j}|} at convergence, supplied by the ADMM solver via {@link #admmDuals};
-         * it is 0.0 for all other solvers.</p>
+         * it is 0.0 for all other solvers. Observed atoms are fixed evidence, not consensus
+         * variables, so their dual force is 0.0 even when the evidence contradicts a rule;
+         * use {@link AtomAttribution#distanceToSatisfaction()} and
+         * {@link AtomAttribution#weightedPotential()} to attribute that contradiction.</p>
          *
          * @param atomKey    the ground atom key to explain
          * @param hardWeight penalty used to compute weighted potential (use

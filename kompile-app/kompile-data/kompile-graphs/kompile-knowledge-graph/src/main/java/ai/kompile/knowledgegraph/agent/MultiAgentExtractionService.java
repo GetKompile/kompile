@@ -21,6 +21,7 @@ import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.MergedGraphResult;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent.ExtractionConfig;
 import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.domain.EdgeType;
@@ -90,11 +91,11 @@ public class MultiAgentExtractionService {
 
         List<RelationExtractionAgent> agents = selectAgents(agentIds);
         if (agents.isEmpty()) {
-            log.warn("No agents available for extraction (requested: {})", agentIds);
+            throw new IllegalArgumentException("No agents available for extraction: " + agentIds);
         }
 
         GraphMergeStrategy strategy = parseStrategy(mergeStrategy);
-        ExtractionConfig effectiveConfig = config != null ? config : ExtractionConfig.defaults();
+        ExtractionConfig effectiveConfig = strictConfig(config);
 
         log.info("Running multi-agent extraction: {} agents, strategy={}, {} chunks",
                 agents.size(), strategy, chunks != null ? chunks.size() : 0);
@@ -303,19 +304,49 @@ public class MultiAgentExtractionService {
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /** Validate before the host spends tokens. An omitted list means host-only, not all server agents. */
+    public void validateHostSelection(List<String> agentIds, String strategy) {
+        if (agentIds != null && !agentIds.isEmpty()) selectAgents(agentIds);
+        parseStrategy(strategy);
+        if (agentIds != null && agentIds.contains("native-chat")) {
+            throw new IllegalArgumentException("native-chat is supplied by the host, not a registered agent");
+        }
+    }
+
+    public MergedGraphResult mergeHostGraph(Graph graph, List<RetrievedDoc> chunks,
+                                            List<String> agentIds, String strategy, ExtractionConfig config) {
+        validateHostSelection(agentIds, strategy);
+        List<RelationExtractionAgent> agents = new ArrayList<>();
+        agents.add(new RelationExtractionAgent() {
+            public String getId() { return "native-chat"; }
+            public String getDescription() { return "Request-scoped native chat extraction on MCP host"; }
+            public Set<String> supportedContentTypes() { return Set.of("text/plain"); }
+            public ExtractionResult extract(List<RetrievedDoc> input, ExtractionConfig options) {
+                return new ExtractionResult(graph, new AgentMetrics(getId(), 0,
+                        graph.getEntities().size(), graph.getRelationships().size(), input.size(), null, Map.of()));
+            }
+        });
+        if (agentIds != null && !agentIds.isEmpty()) agents.addAll(selectAgents(agentIds));
+        return builder.buildGraph(chunks, agents, parseStrategy(strategy), strictConfig(config));
+    }
+
+    private ExtractionConfig strictConfig(ExtractionConfig config) {
+        ExtractionConfig base = config == null ? ExtractionConfig.defaults() : config;
+        Map<String, Object> options = new HashMap<>(base.options() == null ? Map.of() : base.options());
+        options.put("failFast", true);
+        return new ExtractionConfig(base.entityTypes(), base.relationshipTypes(), base.minConfidence(), options);
+    }
+
     private List<RelationExtractionAgent> selectAgents(List<String> agentIds) {
         if (agentIds == null || agentIds.isEmpty()) {
             return new ArrayList<>(registeredAgents);
         }
         List<RelationExtractionAgent> selected = new ArrayList<>();
+        Set<String> seen = new java.util.HashSet<>();
         for (String id : agentIds) {
-            registeredAgents.stream()
-                    .filter(a -> a.getId().equals(id))
-                    .findFirst()
-                    .ifPresentOrElse(
-                            selected::add,
-                            () -> log.warn("Requested agent '{}' not found in registry", id)
-                    );
+            if (id == null || !seen.add(id)) throw new IllegalArgumentException("Invalid or duplicate agent: " + id);
+            selected.add(registeredAgents.stream().filter(a -> a.getId().equals(id)).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown extraction agent: " + id)));
         }
         return selected;
     }
@@ -325,10 +356,9 @@ public class MultiAgentExtractionService {
             return GraphMergeStrategy.UNION;
         }
         try {
-            return GraphMergeStrategy.valueOf(mergeStrategy.toUpperCase());
+            return GraphMergeStrategy.valueOf(mergeStrategy.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            log.warn("Unknown merge strategy '{}', defaulting to UNION", mergeStrategy);
-            return GraphMergeStrategy.UNION;
+            throw new IllegalArgumentException("Unknown merge strategy: " + mergeStrategy, e);
         }
     }
 

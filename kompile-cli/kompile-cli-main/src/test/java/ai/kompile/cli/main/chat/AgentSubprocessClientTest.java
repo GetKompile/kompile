@@ -185,12 +185,36 @@ class AgentSubprocessClientTest {
                     "Should parse assistant text from Codex item.completed, got: " + result.text);
             assertTrue(captured.toString().contains("Hello from codex"),
                     "Should print Codex assistant text to stdout, got: " + captured);
-            assertEquals(12, result.inputTokens);
+            assertEquals(7, result.inputTokens);
             assertEquals(7, result.outputTokens);
             assertEquals(5, result.cacheReadTokens);
 
         } finally {
             System.setOut(originalOut);
+            client.close();
+        }
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void streamChatShouldPreserveCacheOnlyCodexUsage() throws Exception {
+        String script = "cat > /dev/null; " +
+                "echo '{\"type\":\"thread.started\",\"thread_id\":\"codex-session\"}'; " +
+                "echo '{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"Cached\"}}'; " +
+                "echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":5,\"cached_input_tokens\":5,\"output_tokens\":0}}'";
+
+        TestableSubprocessClient client = new TestableSubprocessClient(
+                "codex", System.getProperty("user.dir"), new ObjectMapper(),
+                "/bin/bash", "-c", script);
+
+        try {
+            DirectLlmClient.StreamResult result = client.streamChat(
+                    "test", null, null, null, null);
+
+            assertEquals(0, result.inputTokens);
+            assertEquals(0, result.outputTokens);
+            assertEquals(5, result.cacheReadTokens);
+        } finally {
             client.close();
         }
     }

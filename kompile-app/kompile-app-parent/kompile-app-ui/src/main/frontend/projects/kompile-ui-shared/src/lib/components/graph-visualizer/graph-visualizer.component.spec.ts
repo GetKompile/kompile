@@ -468,15 +468,15 @@ describe('GraphVisualizerComponent', () => {
       expect(result.links.map(l => l.type)).toContain('EMBEDDING_SIMILARITY');
     });
 
-    it('should keep FP&A structural edge types enabled by default', () => {
-      const fpnaData: D3VisualizationData = {
+    it('should keep structural edge types enabled by default', () => {
+      const structuralData: D3VisualizationData = {
         nodes: mockD3Data.nodes,
         links: [
           { id: 'contains', source: 'n1', target: 'n2', type: 'CONTAINS', weight: 1.0 },
           { id: 'header', source: 'n2', target: 'n3', type: 'HEADER_OF', weight: 1.0 }
         ]
       };
-      const result = component.applyFilters(fpnaData);
+      const result = component.applyFilters(structuralData);
       expect(result.links.map(l => l.id)).toEqual(['contains', 'header']);
     });
 

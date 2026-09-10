@@ -22,6 +22,7 @@ import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -40,6 +41,14 @@ import org.springframework.stereotype.Component;
 public class Nd4jCleanupAndExitHandler {
 
     private static final Logger log = LoggerFactory.getLogger(Nd4jCleanupAndExitHandler.class);
+
+    /**
+     * Native worker threads require a hard halt in production, but an in-process Spring context
+     * test must be able to close without terminating Surefire. Keep the operational default intact
+     * and provide an explicit test/integration seam instead of relying on a SecurityManager.
+     */
+    @Value("${kompile.runtime.force-halt-on-shutdown:true}")
+    private boolean forceHaltOnShutdown;
 
     @PreDestroy
     public void cleanupAndExit() {
@@ -158,6 +167,11 @@ public class Nd4jCleanupAndExitHandler {
             }
         } catch (Throwable e) {
             log.warn("ND4J cleanup steps skipped (ND4J may not be initialized): {}", e.getMessage());
+        }
+
+        if (!forceHaltOnShutdown) {
+            log.info("=== Cleanup complete. Forced JVM halt disabled by configuration. ===");
+            return;
         }
 
         // Use Runtime.halt(0) rather than System.exit(0) here.

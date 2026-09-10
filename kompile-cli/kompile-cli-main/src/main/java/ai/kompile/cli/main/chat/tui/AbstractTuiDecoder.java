@@ -1147,6 +1147,7 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
             String line = raw.strip();
             if (line.isEmpty()) continue;
             String lower = line.toLowerCase(Locale.ROOT);
+            if (isTerminalProviderFailureLine(lower)) return line;
             for (String phrase : BLOCKING_PHRASES) {
                 if (lower.contains(phrase)) return line;
             }
@@ -1155,6 +1156,27 @@ public abstract class AbstractTuiDecoder implements AgentTuiDecoder {
             }
         }
         return null;
+    }
+
+    /**
+     * Detect terse provider-terminal rows without matching ordinary prose that
+     * merely discusses the same words. Codex has emitted both "Error: closed"
+     * and HTTP 401 lines while leaving its working frame on screen; treating
+     * those rows as content makes the managed REPL wait for an idle heuristic.
+     */
+    private boolean isTerminalProviderFailureLine(String lower) {
+        String text = stripLeadingChromeGlyphs(lower);
+        if (text.startsWith("401 unauthorized")) return true;
+        if (!text.startsWith("error")) return false;
+
+        String detail = text.substring("error".length()).stripLeading();
+        while (!detail.isEmpty()) {
+            char first = detail.charAt(0);
+            if (first != ':' && first != ']' && first != '-' && first != '—') break;
+            detail = detail.substring(1).stripLeading();
+        }
+        return detail.equals("closed") || detail.startsWith("closed ")
+                || (detail.contains("401") && detail.contains("unauthorized"));
     }
 
     // ------------------------------------------------------------------

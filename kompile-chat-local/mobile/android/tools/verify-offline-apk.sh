@@ -701,7 +701,7 @@ MODEL_PREPARATION_CLIENT_CODE=$("$APKANALYZER" dex code \
 for contract in \
   'SdxModelPreparationConnection' \
   'awaitProcessExit' \
-  '"/proc/'; do
+  'requireRemoteStartTimeTicks'; do
   grep -Fq "$contract" <<<"$MODEL_PREPARATION_CLIENT_CODE" ||
     fail "SDX model preparation client is missing lifecycle contract: $contract"
 done
@@ -726,7 +726,10 @@ MODEL_PREPARATION_WIRE_CODE=$("$APKANALYZER" dex code \
   fail "cannot decompile SDX model preparation wire contract"
 for contract in \
   'buildSdxModelPreparationRequest' \
-  'requireFrameworkOnlySdxWireBundle'; do
+  'requireFrameworkOnlySdxWireBundle' \
+  'sdxImporterProcessStartTimeTicks' \
+  'sdxImporterProcessMatches' \
+  '"/proc/'; do
   grep -Fq "$contract" <<<"$MODEL_PREPARATION_WIRE_CODE" ||
     fail "SDX model preparation wire is missing framework-only contract: $contract"
 done

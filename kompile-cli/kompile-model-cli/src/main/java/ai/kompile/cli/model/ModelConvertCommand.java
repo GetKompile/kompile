@@ -46,6 +46,11 @@ public class ModelConvertCommand implements Callable<Integer> {
             description = "Input format: onnx, tensorflow, keras, gguf, ggml, safetensors (auto-detected when omitted)")
     private String format;
 
+    @CommandLine.Option(names = {"-w", "--weight-dtype"},
+            description = "GGUF weight storage dtype: fp32, fp16, bf16, fp8, fp8_e5m2, int8, int4 " +
+                    "(gguf/ggml only; default fp16 dense; int4/int8 keep GGUF-packed weights)")
+    private String weightDtype;
+
     @CommandLine.Option(names = "--staging-executable",
             description = "Standalone native kompile-model-staging binary override")
     private Path stagingExecutable;
@@ -85,6 +90,7 @@ public class ModelConvertCommand implements Callable<Integer> {
     public Integer call() {
         Path inputPath = normalize(input);
         Path outputPath = normalize(output);
+        Process process = null;
         try {
             if (!Files.isRegularFile(inputPath) || Files.isSymbolicLink(inputPath)) {
                 throw new IOException("Input model file does not exist or is a symbolic link: " + inputPath);
@@ -119,9 +125,12 @@ public class ModelConvertCommand implements Callable<Integer> {
                 if (format != null && !format.isBlank()) {
                     command.add("--format=" + format.trim());
                 }
+                if (weightDtype != null && !weightDtype.isBlank()) {
+                    command.add("--weight-dtype=" + weightDtype.trim());
+                }
             }
 
-            Process process = new ProcessBuilder(command)
+            process = new ProcessBuilder(command)
                     .directory(inputPath.getParent().toFile())
                     .inheritIO()
                     .start();
@@ -131,6 +140,9 @@ public class ModelConvertCommand implements Callable<Integer> {
                 throw new IOException("Model conversion timed out after " + timeout + " minute(s)");
             }
             int exitCode = process.exitValue();
+            if (exitCode == 0) {
+                ManagedModelRuntimeRegistrar.validateConvertedModel(outputPath);
+            }
             if (exitCode == 0 && directOnnx && modelId != null && !modelId.isBlank()) {
                 ManagedModelArtifactCatalog.Definition definition = ManagedModelArtifactCatalog.find(modelId)
                         .orElseThrow(() -> new IOException(
@@ -143,9 +155,30 @@ public class ModelConvertCommand implements Callable<Integer> {
                         registryRoot, definition, outputPath, tokenizer);
             }
             return exitCode;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            System.err.println("Model conversion interrupted");
+            return 1;
         } catch (Exception e) {
             System.err.println("Model conversion failed: " + message(e));
             return 1;
+        } finally {
+            stopProcess(process);
+        }
+    }
+
+    private static void stopProcess(Process process) {
+        if (process == null || !process.isAlive()) {
+            return;
+        }
+        process.destroy();
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException interrupted) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
         }
     }
 

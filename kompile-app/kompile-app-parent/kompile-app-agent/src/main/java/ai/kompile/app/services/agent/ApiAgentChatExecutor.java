@@ -84,7 +84,16 @@ public class ApiAgentChatExecutor {
     }
 
     // Track active connections for cancellation
-    private final Map<String, HttpURLConnection> activeConnections = new ConcurrentHashMap<>();
+    private final Map<String, ActiveApiStream> activeConnections = new ConcurrentHashMap<>();
+
+    /** Completion hooks used by the canonical provisioned-agent conversation projection. */
+    public interface ExecutionObserver {
+        ExecutionObserver NO_OP = new ExecutionObserver() { };
+
+        default boolean onComplete(String processId, String content) { return true; }
+        default boolean onError(String processId, String message) { return true; }
+        default boolean onCancelled(String processId, String content) { return true; }
+    }
 
     /**
      * Execute an API chat request with streaming.
@@ -95,8 +104,21 @@ public class ApiAgentChatExecutor {
             String augmentedPrompt,
             List<RetrievedDoc> retrievedSources,
             SseEmitter emitter) {
+        executeApiChat(agent, request, augmentedPrompt, retrievedSources, emitter,
+                ExecutionObserver.NO_OP);
+    }
+
+    /** Execute with provider-neutral outcome observation; existing callers use the no-op overload. */
+    public void executeApiChat(
+            AgentProvider agent,
+            AgentChatRequest request,
+            String augmentedPrompt,
+            List<RetrievedDoc> retrievedSources,
+            SseEmitter emitter,
+            ExecutionObserver observer) {
 
         String processId = UUID.randomUUID().toString();
+        ExecutionObserver safeObserver = observer == null ? ExecutionObserver.NO_OP : observer;
 
         executorService.submit(() -> {
             HttpURLConnection connection = null;
@@ -140,7 +162,8 @@ public class ApiAgentChatExecutor {
                 connection.setReadTimeout(0); // No read timeout for streaming
 
                 // Track connection for cancellation
-                activeConnections.put(processId, connection);
+                activeConnections.put(processId, new ActiveApiStream(
+                        connection, safeObserver, emitter));
 
                 // Send request body
                 try (OutputStream os = connection.getOutputStream()) {
@@ -151,13 +174,17 @@ public class ApiAgentChatExecutor {
                 if (responseCode != 200) {
                     String errorBody = readErrorStream(connection);
                     log.error("API endpoint returned {}: {}", responseCode, errorBody);
-                    sendError(emitter, "API error (" + responseCode + "): " + errorBody);
+                    String message = "API error (" + responseCode + "): " + errorBody;
+                    if (notifyError(safeObserver, processId, message)) {
+                        sendError(emitter, message);
+                    }
                     return;
                 }
 
                 // Stream the response
                 long startTime = System.currentTimeMillis();
-                int outputTokens = 0;
+                long streamedChunks = 0;
+                ApiTokenUsage providerUsage = null;
                 StringBuilder fullResponse = new StringBuilder();
 
                 try (BufferedReader reader = new BufferedReader(
@@ -167,10 +194,12 @@ public class ApiAgentChatExecutor {
                     while ((line = reader.readLine()) != null) {
                         // Check if cancelled
                         if (!activeConnections.containsKey(processId)) {
-                            sendEvent(emitter, "cancelled", Map.of(
-                                    "processId", processId,
-                                    "content", fullResponse.toString()));
-                            break;
+                            if (notifyCancelled(safeObserver, processId, fullResponse.toString())) {
+                                sendEvent(emitter, "cancelled", Map.of(
+                                        "processId", processId,
+                                        "content", fullResponse.toString()));
+                            }
+                            return;
                         }
 
                         if (line.isEmpty()) continue;
@@ -190,7 +219,7 @@ public class ApiAgentChatExecutor {
                                     String content = delta.path("content").asText(null);
                                     if (content != null && !content.isEmpty()) {
                                         fullResponse.append(content);
-                                        outputTokens++;
+                                        streamedChunks++;
                                         sendEvent(emitter, "chunk", content);
                                     }
 
@@ -203,8 +232,8 @@ public class ApiAgentChatExecutor {
 
                                 // Extract usage if present (some APIs include it in the final chunk)
                                 JsonNode usage = chunk.path("usage");
-                                if (!usage.isMissingNode() && usage.has("completion_tokens")) {
-                                    outputTokens = usage.path("completion_tokens").asInt(outputTokens);
+                                if (!usage.isMissingNode()) {
+                                    providerUsage = parseOpenAiUsage(usage);
                                 }
                             } catch (Exception e) {
                                 log.debug("Failed to parse SSE chunk: {}", data, e);
@@ -214,7 +243,22 @@ public class ApiAgentChatExecutor {
                 }
 
                 long durationMs = System.currentTimeMillis() - startTime;
+                long inputTokens = providerUsage == null ? 0L : providerUsage.inputTokens();
+                long cacheReadTokens = providerUsage == null ? 0L : providerUsage.cacheReadTokens();
+                long cacheCreationTokens = providerUsage == null
+                        ? 0L : providerUsage.cacheCreationTokens();
+                long outputTokens = providerUsage != null && providerUsage.outputReported()
+                        ? providerUsage.outputTokens() : streamedChunks;
                 double tokensPerSecond = durationMs > 0 ? (outputTokens * 1000.0 / durationMs) : 0;
+
+                if (!activeConnections.containsKey(processId)) {
+                    if (notifyCancelled(safeObserver, processId, fullResponse.toString())) {
+                        sendEvent(emitter, "cancelled", Map.of(
+                                "processId", processId,
+                                "content", fullResponse.toString()));
+                    }
+                    return;
+                }
 
                 // Send stats
                 Map<String, Object> stats = new HashMap<>();
@@ -224,7 +268,14 @@ public class ApiAgentChatExecutor {
                 stats.put("isError", false);
 
                 Map<String, Object> tokenMetrics = new HashMap<>();
+                tokenMetrics.put("inputTokens", inputTokens);
                 tokenMetrics.put("outputTokens", outputTokens);
+                tokenMetrics.put("cacheReadTokens", cacheReadTokens);
+                tokenMetrics.put("cacheCreationTokens", cacheCreationTokens);
+                tokenMetrics.put("contextInputTokens",
+                        inputTokens + cacheReadTokens + cacheCreationTokens);
+                tokenMetrics.put("totalTokens",
+                        inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens);
                 tokenMetrics.put("totalGenerationMs", durationMs);
                 tokenMetrics.put("tokensPerSecond", tokensPerSecond);
                 tokenMetrics.put("model", agent.getModelName());
@@ -232,18 +283,27 @@ public class ApiAgentChatExecutor {
                 sendEvent(emitter, "stats", stats);
 
                 // Send complete
-                sendEvent(emitter, "complete", Map.of(
-                        "processId", processId,
-                        "content", fullResponse.toString(),
-                        "modifiedFiles", Collections.emptyList()));
+                if (notifyComplete(safeObserver, processId, fullResponse.toString())) {
+                    sendEvent(emitter, "complete", Map.of(
+                            "processId", processId,
+                            "content", fullResponse.toString(),
+                            "modifiedFiles", Collections.emptyList()));
+                }
 
             } catch (Exception e) {
                 if (!activeConnections.containsKey(processId)) {
                     // Cancelled - don't send error
                     log.info("API chat cancelled for process {}", processId);
+                    if (notifyCancelled(safeObserver, processId, "")) {
+                        sendEvent(emitter, "cancelled", Map.of(
+                                "processId", processId, "content", ""));
+                    }
                 } else {
                     log.error("Error executing API agent chat", e);
-                    sendError(emitter, "API execution error: " + e.getMessage());
+                    String message = "API execution error: " + e.getMessage();
+                    if (notifyError(safeObserver, processId, message)) {
+                        sendError(emitter, message);
+                    }
                 }
             } finally {
                 activeConnections.remove(processId);
@@ -257,6 +317,36 @@ public class ApiAgentChatExecutor {
                 }
             }
         });
+    }
+
+    private static boolean notifyComplete(
+            ExecutionObserver observer, String processId, String content) {
+        try {
+            return observer.onComplete(processId, content);
+        } catch (RuntimeException failure) {
+            log.error("API terminal completion observer failed for {}", processId, failure);
+            return false;
+        }
+    }
+
+    private static boolean notifyError(
+            ExecutionObserver observer, String processId, String message) {
+        try {
+            return observer.onError(processId, message);
+        } catch (RuntimeException failure) {
+            log.error("API terminal error observer failed for {}", processId, failure);
+            return false;
+        }
+    }
+
+    private static boolean notifyCancelled(
+            ExecutionObserver observer, String processId, String content) {
+        try {
+            return observer.onCancelled(processId, content);
+        } catch (RuntimeException failure) {
+            log.error("API terminal cancellation observer failed for {}", processId, failure);
+            return false;
+        }
     }
 
     /**
@@ -283,6 +373,7 @@ public class ApiAgentChatExecutor {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", agent.getModelName());
         root.put("stream", true);
+        root.putObject("stream_options").put("include_usage", true);
         root.put("temperature", agent.getTemperature());
         root.put("max_tokens", resolveMaxTokens(agent, request, augmentedPrompt));
 
@@ -336,6 +427,39 @@ public class ApiAgentChatExecutor {
         }
 
         return root.toString();
+    }
+
+    static ApiTokenUsage parseOpenAiUsage(JsonNode usage) {
+        JsonNode details = usage == null ? null : usage.path("prompt_tokens_details");
+        long cacheRead = firstPresentLong(
+                details, "cached_tokens",
+                usage, "prompt_cache_hit_tokens",
+                usage, "cached_tokens");
+        long cacheWrite = details == null
+                ? 0L : details.path("cache_write_tokens").asLong(0L);
+        long input;
+        if (usage != null && usage.has("prompt_cache_miss_tokens")) {
+            input = usage.path("prompt_cache_miss_tokens").asLong(0L);
+        } else {
+            long totalInput = usage == null ? 0L
+                    : usage.path("prompt_tokens").asLong(0L);
+            input = Math.max(0L, totalInput - cacheRead - cacheWrite);
+        }
+        boolean outputReported = usage != null && usage.has("completion_tokens");
+        long output = outputReported ? usage.path("completion_tokens").asLong(0L) : 0L;
+        return new ApiTokenUsage(
+                Math.max(0L, input), Math.max(0L, output),
+                Math.max(0L, cacheRead), Math.max(0L, cacheWrite), outputReported);
+    }
+
+    private static long firstPresentLong(
+            JsonNode first, String firstField,
+            JsonNode second, String secondField,
+            JsonNode third, String thirdField) {
+        if (first != null && first.has(firstField)) return first.path(firstField).asLong(0L);
+        if (second != null && second.has(secondField)) return second.path(secondField).asLong(0L);
+        return third != null && third.has(thirdField)
+                ? third.path(thirdField).asLong(0L) : 0L;
     }
 
     /**
@@ -471,10 +595,14 @@ public class ApiAgentChatExecutor {
      * Cancel an active API stream.
      */
     public boolean cancelApiStream(String processId) {
-        HttpURLConnection connection = activeConnections.remove(processId);
-        if (connection != null) {
+        ActiveApiStream active = activeConnections.remove(processId);
+        if (active != null) {
             log.info("Cancelling API stream for process: {}", processId);
-            connection.disconnect();
+            if (notifyCancelled(active.observer(), processId, "")) {
+                sendEvent(active.emitter(), "cancelled", Map.of(
+                        "processId", processId, "content", ""));
+            }
+            active.connection().disconnect();
             return true;
         }
         return false;
@@ -485,6 +613,20 @@ public class ApiAgentChatExecutor {
      */
     public boolean isApiStream(String processId) {
         return activeConnections.containsKey(processId);
+    }
+
+    private record ActiveApiStream(
+            HttpURLConnection connection,
+            ExecutionObserver observer,
+            SseEmitter emitter) {
+    }
+
+    record ApiTokenUsage(
+            long inputTokens,
+            long outputTokens,
+            long cacheReadTokens,
+            long cacheCreationTokens,
+            boolean outputReported) {
     }
 
     /**

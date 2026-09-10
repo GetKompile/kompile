@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.terminal.AgentLaunchSpec;
@@ -37,6 +38,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -833,17 +837,25 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         setField(command, "agent", "opencode");
         Process provider = new ProcessBuilder("sh", "-c", "sleep 30").start();
         try {
-            invokeStringProcessArg(command, "registerDetachedTask", "background response", provider);
+            invokeStringArg(command, "registerDetachedTask", "background response");
             String taskId = (String) getField(command, "detachedTaskId");
             ai.kompile.cli.mcp.stdio.TaskRecord record =
                     new ai.kompile.cli.mcp.stdio.TaskRegistry(tempDir).get(taskId);
 
             assertNotNull(record);
-            assertTrue(record.isTerminal(), "the durable record must not remain active forever");
+            assertEquals(ai.kompile.cli.mcp.stdio.TaskRecord.Status.DETACHED, record.getStatus(),
+                    "the durable record must reflect the still-running response");
             assertEquals(-1L, record.getPid(),
                     "a detached response must never expose the persistent provider PID");
             assertFalse(invokeBooleanStringArg(command, "killActivityItem", taskId));
             assertTrue(provider.isAlive(), "Delete must not terminate the reusable provider session");
+
+            invokeCompleteDetachedTask(command, taskId, "complete output", false);
+            record = new ai.kompile.cli.mcp.stdio.TaskRegistry(tempDir).get(taskId);
+            assertNotNull(record);
+            assertEquals(ai.kompile.cli.mcp.stdio.TaskRecord.Status.COMPLETED, record.getStatus());
+            assertNotNull(record.getOutputPath());
+            assertEquals("complete output", java.nio.file.Files.readString(Path.of(record.getOutputPath())));
 
             EmulatedPassthroughCommand resumed = configuredIdleCommand();
             setField(resumed, "workingDir", tempDir.toString());
@@ -956,7 +968,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void enforceAliasRoutesToManagedEnforcerControl() throws Exception {
+    void judgeCommandRoutesToManagedJudgeControl() throws Exception {
         EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
         TerminalRenderer plainRenderer = new TerminalRenderer(false);
         setField(command, "renderer", plainRenderer);
@@ -965,15 +977,15 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         PrintStream originalOut = System.out;
         try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
             System.setOut(capture);
-            invokeSlashCommand(command, "/enforce status");
+            invokeSlashCommand(command, "/judge status");
         } finally {
             System.setOut(originalOut);
         }
 
         String rendered = output.toString(StandardCharsets.UTF_8);
-        assertTrue(rendered.contains("No enforcer active") || rendered.contains("Enforcer"),
-                "/enforce should route to Kompile enforcer handling, not child-agent forwarding");
-        assertFalse(rendered.contains("→ opencode /enforce"));
+        assertTrue(rendered.contains("No judge policy active") || rendered.contains("Judge"),
+                "/judge should route to Kompile judge handling, not child-agent forwarding");
+        assertFalse(rendered.contains("→ opencode /judge"));
     }
 
     @Test
@@ -1212,7 +1224,80 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
                 "Non-native backgrounding agents should not receive Ctrl+B");
         assertTrue(((AtomicBoolean) getField(command, "backgroundSignal")).get(),
                 "Kompile should own Ctrl+B for managed backgrounding when the child does not");
+        assertFalse(invokeBooleanStringArg(command, "forwardPromptAnswer", "1"),
+                "answers entered after Ctrl+B must not reach the detached native stdin");
+        assertArrayEquals(new byte[0], agentInput.toByteArray());
         assertFalse(((AtomicBoolean) getField(command, "cancelSignal")).get());
+    }
+
+    @Test
+    void enforcedBackgroundKeepsNewMessagesQueuedUntilRollbackOwnerCompletes() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        setField(command, "enforcerService",
+                new ai.kompile.cli.main.chat.enforcer.EnforcerService(null));
+        setField(command, "enforcerPolicy",
+                new ai.kompile.cli.main.chat.enforcer.EnforcerPolicy("Do not bypass review", 1, false));
+
+        invokeNoArg(command, "requestAgentBackground");
+
+        assertFalse(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"));
+        assertTrue(invokeBooleanNoArg(command, "providerDispatchUnavailable"),
+                "parallel work must not share an enforced turn's rollback archive");
+        assertNull(getField(command, "isolatedConversationRunner"));
+    }
+
+    @Test
+    void enforcedBackgroundDrainsOldestDraftAfterOwnerCompletes() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "enforcerService",
+                new ai.kompile.cli.main.chat.enforcer.EnforcerService(null) {
+                    @Override
+                    public ai.kompile.cli.main.chat.enforcer.EnforcerResult enforce(
+                            String userPrompt,
+                            ai.kompile.cli.main.chat.enforcer.EnforcerPolicy policy,
+                            java.util.function.Supplier<ai.kompile.cli.main.chat.enforcer.EnforcerConversationContext> contextSupplier,
+                            AgentTurnExecutor executor) {
+                        return ai.kompile.cli.main.chat.enforcer.EnforcerResult.accepted(
+                                "accepted by queue-drain fixture", List.of(), "test");
+                    }
+                });
+        setField(command, "enforcerPolicy",
+                new ai.kompile.cli.main.chat.enforcer.EnforcerPolicy("Do not bypass review", 1, false));
+        MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+        queue.enqueue("oldest enforced draft");
+
+        invokeNoArg(command, "requestAgentBackground");
+        ((AtomicBoolean) getField(command, "detachedProviderBusy")).set(false);
+        ChatHistory history = new ChatHistory("enforced-background-drain-" + System.nanoTime());
+        try {
+            invokeDrainQueuedMessages(command, history,
+                    new ChatSessionMetrics("enforced-background-drain"), false, true);
+            assertTrue(queue.isEmpty(),
+                    "once the enforced owner and rollback phase finish, its oldest queued draft must drain");
+        } finally {
+            history.close();
+        }
+    }
+
+    @Test
+    void shutdownRejectsLateIsolatedDispatch() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "agent", "codex");
+        ((AtomicBoolean) getField(command, "detachedProviderBusy")).set(true);
+        ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
+        invokeNoArg(command, "beginShutdown");
+
+        ChatHistory history = new ChatHistory("shutdown-dispatch-test-" + System.nanoTime());
+        try {
+            assertFalse(invokeDispatchToAgentAsync(command, "late message", history,
+                    new ChatSessionMetrics("shutdown-dispatch-test")));
+            assertNull(getField(command, "isolatedConversationRunner"));
+        } finally {
+            history.close();
+        }
     }
 
     @Test
@@ -1253,10 +1338,29 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         }
 
         AtomicBoolean backgroundSignal = (AtomicBoolean) getField(command, "backgroundSignal");
+        AtomicBoolean detachedProviderBusy = (AtomicBoolean) getField(command, "detachedProviderBusy");
         AtomicBoolean cancelSignal = (AtomicBoolean) getField(command, "cancelSignal");
         assertTrue(backgroundSignal.get(), "Backgrounding must release the current turn from busy input capture");
+        assertTrue(detachedProviderBusy.get(),
+                "Ctrl+B must redirect subsequent input before the provider-owner thread persists activity state");
+        assertFalse(invokeBooleanNoArg(command, "providerDispatchUnavailable"),
+                "the isolated owner should accept a message immediately after Ctrl+B");
+        assertTrue(invokeBooleanNoArg(command, "providerLifecycleBusy"),
+                "session-reset operations must still see the detached provider as busy");
         assertFalse(cancelSignal.get(), "Backgrounding must not cancel the active agent process");
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("Backgrounding current response"));
+    }
+
+    @Test
+    void backgroundRequestAfterProviderTurnClosesDoesNotWedgeDetachedState() throws Exception {
+        EmulatedPassthroughCommand command = configuredBusyCommand("late ctrl-b");
+        setField(command, "providerTurnBackgroundable", false);
+
+        invokeNoArg(command, "requestAgentBackground");
+
+        assertFalse(((AtomicBoolean) getField(command, "backgroundSignal")).get());
+        assertFalse(((AtomicBoolean) getField(command, "detachedProviderBusy")).get(),
+                "a Ctrl+B after provider idle must not create an ownerless detached task");
     }
 
     @Test
@@ -1476,30 +1580,268 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void backgroundFollowupsStayQueuedUntilIsolatedOwnerExists() throws Exception {
+    void backgroundFollowupsUseFreshManagedOwner() throws Exception {
         EmulatedPassthroughCommand command = configuredIdleCommand();
         setField(command, "firstMessageSent", true);
         setField(command, "agentSessionId", "provider-session");
         ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
 
-        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "unknown-agent")) {
+        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "pi", "unknown-agent")) {
             setField(command, "agent", provider);
-            assertFalse(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"),
-                    provider + " must not write a follow-up into a still-generating provider");
-            List<String> built = invokeBuildCommand(command, provider, "next draft");
+            assertTrue(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"),
+                    provider + " should have an isolated owner for messages entered after Ctrl+B");
             AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(provider, null, null, null);
-            assertEquals(provider, built.get(0), provider + " should launch the interactive provider binary");
-            assertEquals(AgentLaunchDefaults.commandArguments(
-                            provider, selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.INTERACTIVE),
-                    built.subList(1, built.size()),
-                    provider + " should apply the configured interactive model and reasoning defaults");
+            List<String> built = SubprocessAgentRunner.buildManagedCommand(
+                    provider, provider, "next draft", false, null, true, tempDir, null,
+                    selection.model(), selection.thinking());
+            assertEquals(provider, built.get(0), provider + " should launch a separate managed process");
             assertFalse(built.contains("--continue"), provider + " must not continue an active background session");
             assertFalse(built.contains("resume"), provider + " must not resume an active background session");
             assertFalse(built.contains("--resume"), provider + " must not resume an active background session");
             assertFalse(built.contains("--session"), provider + " must not target an active background session");
             assertFalse(built.contains("provider-session"), provider + " must not reuse an active background session id");
             assertFalse(built.contains("--fork"), provider + " must not rely on provider-specific fork flags");
-            assertFalse(built.contains("next draft"), provider + " should receive the queued prompt over stdin, not argv");
+            assertTrue(built.contains("next draft"), provider + " must physically receive the follow-up prompt");
+
+            if (!provider.equals("unknown-agent")) {
+                List<String> resumed = SubprocessAgentRunner.buildManagedCommand(
+                        provider, provider, "second draft", true, "isolated-session", true,
+                        tempDir, null, selection.model(), selection.thinking());
+                List<String> expectedResume = AgentLaunchDefaults.resumeArguments(provider, "isolated-session");
+                assertTrue(containsContiguous(resumed, expectedResume),
+                        provider + " must retain only the isolated runner's exact native session: " + resumed);
+            }
+        }
+    }
+
+    @Test
+    void backgroundedProviderDispatchesNewMessageToIsolatedRunner() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "agent", "codex");
+        setField(command, "agentBusy", true);
+        ((AtomicBoolean) getField(command, "detachedProviderBusy")).set(true);
+        ((AtomicBoolean) getField(command, "providerDispatchReserved")).set(true);
+        ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
+
+        AtomicReference<String> received = new AtomicReference<>();
+        setField(command, "isolatedConversationRunner", new RecordingRunner(tempDir, received));
+        ChatHistory history = new ChatHistory("isolated-background-test-" + System.nanoTime());
+        try {
+            assertFalse(invokeBooleanNoArg(command, "providerDispatchUnavailable"),
+                    "the detached persistent process must not block the isolated owner");
+            assertTrue(invokeDispatchToAgentAsync(command, "new message", history,
+                    new ChatSessionMetrics("isolated-background-test")));
+            assertTrue(await(() -> "new message".equals(received.get())),
+                    "the isolated runner must receive the message while the original provider is still busy");
+        } finally {
+            history.close();
+        }
+    }
+
+    @Test
+    void backgroundHandoffDrainsExistingQueueWhenAutoDequeueIsDisabled() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "agent", "codex");
+        setField(command, "autoDequeueEnabled", false);
+        setField(command, "agentBusy", true);
+        setField(command, "providerTurnBackgroundable", true);
+        ((AtomicBoolean) getField(command, "providerDispatchReserved")).set(true);
+
+        MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+        queue.enqueue("waiting before ctrl-b");
+        AtomicReference<String> received = new AtomicReference<>();
+        setField(command, "isolatedConversationRunner", new RecordingRunner(tempDir, received));
+
+        ChatHistory history = new ChatHistory("background-disabled-auto-dequeue-" + System.nanoTime());
+        try {
+            invokeNoArg(command, "requestAgentBackground");
+            invokeDrainQueuedMessages(command, history,
+                    new ChatSessionMetrics("background-disabled-auto-dequeue"), false, true);
+
+            assertTrue(await(() -> "waiting before ctrl-b".equals(received.get())),
+                    "Ctrl+B must dispatch the oldest waiting message despite disabled auto-dequeue");
+            assertTrue(queue.isEmpty(),
+                    "explicit background handoff must not leave the message in the durable queue");
+        } finally {
+            history.close();
+        }
+    }
+
+    @Test
+    void detachedCompletionWakesManagedAgentBeforeQueuedUserInput() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "agent", "codex");
+        setField(command, "workingDir", tempDir.toString());
+        setField(command, "autoDequeueEnabled", false);
+        ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
+
+        MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+        queue.enqueue("ordinary user follow-up");
+        BlockingRecordingRunner runner = new BlockingRecordingRunner(tempDir);
+        setField(command, "isolatedConversationRunner", runner);
+
+        ChatHistory history = new ChatHistory("background-completion-wakeup-" + System.nanoTime());
+        try {
+            invokeCompleteDetachedTask(command, "passthrough-wakeup", "finished result", false);
+            invokeDrainQueuedMessages(command, history,
+                    new ChatSessionMetrics("background-completion-wakeup"), false, true);
+
+            assertTrue(runner.firstStarted.await(2, TimeUnit.SECONDS));
+            assertTrue(runner.messages.get(0).contains("[System background task completion]")
+                            && runner.messages.get(0).contains("passthrough-wakeup")
+                            && runner.messages.get(0).contains("finished result"),
+                    "terminal background state must initiate a new managed-agent turn");
+            assertEquals(1, queue.size(),
+                    "mandatory completion must run before an already waiting user message");
+
+            runner.releaseFirst.countDown();
+            assertTrue(await(() -> runner.messages.size() == 2));
+            assertEquals("ordinary user follow-up", runner.messages.get(1),
+                    "background-owned user input must run after the completion event");
+            assertTrue(queue.isEmpty(),
+                    "background-owned input must bypass disabled auto-dequeue after completion");
+        } finally {
+            runner.releaseFirst.countDown();
+            history.close();
+        }
+    }
+
+    @Test
+    void isolatedBackgroundMessagesPreserveFifoOrder() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "agent", "codex");
+        setField(command, "agentBusy", true);
+        ((AtomicBoolean) getField(command, "detachedProviderBusy")).set(true);
+        ((AtomicBoolean) getField(command, "providerDispatchReserved")).set(true);
+        ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
+
+        BlockingRecordingRunner runner = new BlockingRecordingRunner(tempDir);
+        setField(command, "isolatedConversationRunner", runner);
+        ChatHistory history = new ChatHistory("isolated-fifo-test-" + System.nanoTime());
+        try {
+            assertTrue(invokeDispatchToAgentAsync(command, "first", history,
+                    new ChatSessionMetrics("isolated-fifo-test")));
+            assertTrue(runner.firstStarted.await(2, TimeUnit.SECONDS));
+            invokeStringArg(command, "enqueueBusyMessage", "second");
+            invokeStringArg(command, "enqueueBusyMessage", "third");
+            runner.releaseFirst.countDown();
+
+            assertTrue(await(() -> runner.messages.size() == 3));
+            assertEquals(List.of("first", "second", "third"), runner.messages);
+        } finally {
+            runner.releaseFirst.countDown();
+            history.close();
+        }
+    }
+
+    @Test
+    void failedAdmissionRendersOnlyQueuedOutcome() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        ((AtomicBoolean) getField(command, "shutdownSignal")).set(true);
+
+        PrintStream previousOut = System.out;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ChatHistory history = new ChatHistory("single-admission-outcome-" + System.nanoTime());
+        try {
+            System.setOut(new PrintStream(output, true, StandardCharsets.UTF_8));
+            assertFalse(invokeAdmitUserMessage(command, "retry once", history,
+                    new ChatSessionMetrics("single-admission-outcome")));
+
+            MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+            assertEquals(List.of("retry once"), queue.getAll().stream()
+                    .map(MessageQueue.QueuedMessage::getContent).toList());
+            String rendered = plainTerminalText(output.toString(StandardCharsets.UTF_8));
+            assertTrue(rendered.contains("Queued: ") && rendered.contains("retry once"));
+            assertFalse(rendered.contains("> retry once"),
+                    "a message that lost dispatch admission must never be rendered as sent");
+        } finally {
+            System.setOut(previousOut);
+            history.close();
+        }
+    }
+
+    @Test
+    void freshInputCannotLeapfrogAnOlderQueuedMessage() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "autoDequeueEnabled", false);
+        MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+        queue.enqueue("older draft");
+
+        PrintStream previousOut = System.out;
+        ChatHistory history = new ChatHistory("queued-fifo-admission-" + System.nanoTime());
+        try {
+            System.setOut(new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+            assertFalse(invokeAdmitUserMessage(command, "newer draft", history,
+                    new ChatSessionMetrics("queued-fifo-admission")));
+
+            assertEquals(List.of("older draft", "newer draft"), queue.getAll().stream()
+                    .map(MessageQueue.QueuedMessage::getContent).toList());
+            assertFalse(((AtomicBoolean) getField(command, "providerDispatchReserved")).get());
+        } finally {
+            System.setOut(previousOut);
+            history.close();
+        }
+    }
+
+    @Test
+    void idleAutoDequeueStartsOldestDraftBeforeFreshInput() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+        setField(command, "agent", "codex");
+        setField(command, "workingDir", tempDir.toString());
+        ((AtomicInteger) getField(command, "backgroundTurnCount")).set(1);
+
+        MessageQueue queue = (MessageQueue) getField(command, "messageQueue");
+        queue.enqueue("older draft");
+        BlockingRecordingRunner runner =
+                new BlockingRecordingRunner(tempDir, plainRenderer, "AGENT-START");
+        setField(command, "isolatedConversationRunner", runner);
+
+        PrintStream previousOut = System.out;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ChatHistory history = new ChatHistory("queued-auto-admission-" + System.nanoTime());
+        try {
+            System.setOut(new PrintStream(output, true, StandardCharsets.UTF_8));
+            assertFalse(invokeAdmitUserMessage(command, "newer draft", history,
+                    new ChatSessionMetrics("queued-auto-admission")),
+                    "the fresh input is queued while the older draft owns dispatch");
+
+            assertTrue(runner.firstStarted.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("older draft"), runner.messages);
+            assertEquals(List.of("newer draft"), queue.getAll().stream()
+                    .map(MessageQueue.QueuedMessage::getContent).toList());
+            String rendered = plainTerminalText(output.toString(StandardCharsets.UTF_8));
+            assertTrue(rendered.indexOf("> older draft") >= 0);
+            assertTrue(rendered.indexOf("> older draft") < rendered.indexOf("AGENT-START"),
+                    "accepted draft must be rendered before agent output can begin");
+
+            runner.releaseFirst.countDown();
+            assertTrue(await(() -> runner.messages.size() == 2));
+            assertEquals(List.of("older draft", "newer draft"), runner.messages);
+        } finally {
+            runner.releaseFirst.countDown();
+            System.setOut(previousOut);
+            history.close();
         }
     }
 
@@ -1567,6 +1909,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         setField(command, "inputRows", 3);
         setField(command, "busyInputActive", true);
         setField(command, "busyInputBuffer", inputBuffer);
+        setField(command, "providerTurnBackgroundable", true);
         setField(command, "currentStatus", "running");
         return command;
     }
@@ -1789,12 +2132,38 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         return method.invoke(target, first, second, process);
     }
 
-    private static void invokeStringProcessArg(
-            Object target, String name, String value, Process process) throws Exception {
+    private static void invokeCompleteDetachedTask(
+            Object target, String taskId, String output, boolean cancelled) throws Exception {
         Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
-                name, String.class, Process.class);
+                "completeDetachedTask", String.class, String.class, boolean.class);
         method.setAccessible(true);
-        method.invoke(target, value, process);
+        method.invoke(target, taskId, output, cancelled);
+    }
+
+    private static boolean invokeDispatchToAgentAsync(
+            Object target, String message, ChatHistory history, ChatSessionMetrics metrics) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                "dispatchToAgentAsync", String.class, ChatHistory.class, ChatSessionMetrics.class);
+        method.setAccessible(true);
+        return (Boolean) method.invoke(target, message, history, metrics);
+    }
+
+    private static boolean invokeAdmitUserMessage(
+            Object target, String message, ChatHistory history, ChatSessionMetrics metrics) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                "admitUserMessage", String.class, ChatHistory.class, ChatSessionMetrics.class);
+        method.setAccessible(true);
+        return (Boolean) method.invoke(target, message, history, metrics);
+    }
+
+    private static void invokeDrainQueuedMessages(
+            Object target, ChatHistory history, ChatSessionMetrics metrics,
+            boolean force, boolean previousTurnBackgrounded) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                "drainQueuedMessages", ChatHistory.class, ChatSessionMetrics.class,
+                boolean.class, boolean.class);
+        method.setAccessible(true);
+        method.invoke(target, history, metrics, force, previousTurnBackgrounded);
     }
 
     private static boolean invokeBooleanStringArg(Object target, String name, String value) throws Exception {
@@ -1863,6 +2232,18 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             Thread.sleep(20L);
         }
         return condition.getAsBoolean();
+    }
+
+    private static String plainTerminalText(String text) {
+        return text.replaceAll("\u001B\\[[0-9;?]*[ -/]*[@-~]", "");
+    }
+
+    private static boolean containsContiguous(List<String> values, List<String> expected) {
+        if (expected.isEmpty()) return true;
+        for (int i = 0; i + expected.size() <= values.size(); i++) {
+            if (values.subList(i, i + expected.size()).equals(expected)) return true;
+        }
+        return false;
     }
 
     // ── BUG 9: status-line must show "responding" not "idle" mid-turn ────────────
@@ -2124,6 +2505,64 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
 
         } finally {
             System.setOut(originalOut);
+        }
+    }
+
+    private static final class RecordingRunner extends SubprocessAgentRunner {
+        private final AtomicReference<String> received;
+
+        private RecordingRunner(Path workingDir, AtomicReference<String> received) {
+            this(workingDir, received, new TerminalRenderer(false));
+        }
+
+        private RecordingRunner(Path workingDir, AtomicReference<String> received,
+                                TerminalRenderer renderer) {
+            super("codex", workingDir.toString(), true, false, "", 0,
+                    null, renderer, new AsciiRenderer(renderer, 100));
+            this.received = received;
+        }
+
+        @Override
+        public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
+            received.set(message);
+            return "recorded";
+        }
+    }
+
+    private static final class BlockingRecordingRunner extends SubprocessAgentRunner {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+        private final CountDownLatch firstStarted = new CountDownLatch(1);
+        private final CountDownLatch releaseFirst = new CountDownLatch(1);
+        private final String startMarker;
+
+        private BlockingRecordingRunner(Path workingDir) {
+            this(workingDir, new TerminalRenderer(false));
+        }
+
+        private BlockingRecordingRunner(Path workingDir, TerminalRenderer renderer) {
+            this(workingDir, renderer, null);
+        }
+
+        private BlockingRecordingRunner(
+                Path workingDir, TerminalRenderer renderer, String startMarker) {
+            super("codex", workingDir.toString(), true, false, "", 0,
+                    null, renderer, new AsciiRenderer(renderer, 100));
+            this.startMarker = startMarker;
+        }
+
+        @Override
+        public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
+            messages.add(message);
+            if (messages.size() == 1) {
+                if (startMarker != null) System.out.print(startMarker);
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return "recorded";
         }
     }
 }

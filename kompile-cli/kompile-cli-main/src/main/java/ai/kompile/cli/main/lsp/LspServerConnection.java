@@ -22,6 +22,13 @@ import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.lsp4j.ApplyWorkspaceEditParams;
 import org.eclipse.lsp4j.ApplyWorkspaceEditResponse;
+import org.eclipse.lsp4j.CallHierarchyCapabilities;
+import org.eclipse.lsp4j.CallHierarchyIncomingCall;
+import org.eclipse.lsp4j.CallHierarchyIncomingCallsParams;
+import org.eclipse.lsp4j.CallHierarchyItem;
+import org.eclipse.lsp4j.CallHierarchyOutgoingCall;
+import org.eclipse.lsp4j.CallHierarchyOutgoingCallsParams;
+import org.eclipse.lsp4j.CallHierarchyPrepareParams;
 import org.eclipse.lsp4j.ClientCapabilities;
 import org.eclipse.lsp4j.ClientInfo;
 import org.eclipse.lsp4j.ConfigurationParams;
@@ -104,6 +111,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * A single live language server bound to one {@code (root, language)} pair. Owns the
@@ -255,6 +263,9 @@ public class LspServerConnection {
         td.setDefinition(new DefinitionCapabilities());
         td.setReferences(new ReferencesCapabilities());
         td.setHover(new HoverCapabilities());
+        CallHierarchyCapabilities callHierarchy = new CallHierarchyCapabilities();
+        callHierarchy.setDynamicRegistration(false);
+        td.setCallHierarchy(callHierarchy);
 
         WorkspaceClientCapabilities ws = new WorkspaceClientCapabilities();
         WorkspaceEditCapabilities workspaceEdit = new WorkspaceEditCapabilities();
@@ -352,6 +363,101 @@ public class LspServerConnection {
         ensureSynced(file);
         return textDocuments().references(new ReferenceParams(docId(file), pos, new ReferenceContext(includeDeclaration)))
                 .get(cfg.requestTimeoutMs(), TimeUnit.MILLISECONDS);
+    }
+
+    public static final int MAX_CALL_HIERARCHY_RESULTS = 100;
+    public static final long MAX_CALL_HIERARCHY_TIMEOUT_MS = 30_000;
+
+    /** Static provider capability: callHierarchyProvider covers prepare and both directions. */
+    public boolean supportsCallHierarchy() {
+        var provider = capabilities == null ? null : capabilities.getCallHierarchyProvider();
+        return provider != null && (provider.isLeft()
+                ? Boolean.TRUE.equals(provider.getLeft()) : provider.getRight() != null);
+    }
+
+    /** Ranges are LSP UTF-16, zero-based and end-exclusive, in the caller's document. */
+    public record CallHierarchyEdge(CallHierarchyItem peer, List<Range> fromRanges, int totalRanges) { }
+
+    /** Multiple prepared declarations are choices, never implicitly selected or merged by name. */
+    public record CallHierarchyResult(List<CallHierarchyItem> declarations, int totalDeclarations,
+                                      List<CallHierarchyEdge> calls, int totalCalls) { }
+
+    /**
+     * Explicit, one-hop static call hierarchy. The same prepared item (including opaque data)
+     * is passed back to the server. Limits bound retained results, not the server's computation
+     * or JSON-RPC response size; LSP has no max-results parameter for these methods.
+     * The shared protocol deadline starts after document sync; startup/lock wait are separate.
+     */
+    public synchronized CallHierarchyResult callHierarchy(Path file, Position pos, String direction,
+                                                           int maxResults, long timeoutMs) throws Exception {
+        if (!"incoming".equals(direction) && !"outgoing".equals(direction)) {
+            throw new IllegalArgumentException("direction must be incoming or outgoing");
+        }
+        if (maxResults < 1 || maxResults > MAX_CALL_HIERARCHY_RESULTS) {
+            throw new IllegalArgumentException("max_results must be between 1 and " + MAX_CALL_HIERARCHY_RESULTS);
+        }
+        if (timeoutMs < 1 || timeoutMs > MAX_CALL_HIERARCHY_TIMEOUT_MS) {
+            throw new IllegalArgumentException("timeout_ms must be between 1 and " + MAX_CALL_HIERARCHY_TIMEOUT_MS);
+        }
+        if (!supportsCallHierarchy()) {
+            throw new LspException("Call hierarchy unsupported: " + cfg.language()
+                    + " did not advertise callHierarchyProvider (prepare/incoming/outgoing)."
+                    + " Dynamic-only registrations are not supported.");
+        }
+        ensureSynced(file);
+        long budgetMs = Math.min(timeoutMs, Math.max(1, cfg.requestTimeoutMs()));
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budgetMs);
+        List<CallHierarchyItem> prepared = awaitCallHierarchy(
+                textDocuments().prepareCallHierarchy(new CallHierarchyPrepareParams(docId(file), pos)), deadline);
+        if (prepared == null || prepared.isEmpty()) {
+            return new CallHierarchyResult(List.of(), 0, List.of(), 0);
+        }
+        List<CallHierarchyItem> choices = List.copyOf(prepared.subList(0, Math.min(maxResults, prepared.size())));
+        if (prepared.size() != 1) {
+            return new CallHierarchyResult(choices, prepared.size(), List.of(), 0);
+        }
+        CallHierarchyItem item = prepared.get(0);
+        List<CallHierarchyEdge> edges = new ArrayList<>();
+        int total;
+        if ("incoming".equals(direction)) {
+            List<CallHierarchyIncomingCall> calls = awaitCallHierarchy(textDocuments().callHierarchyIncomingCalls(
+                    new CallHierarchyIncomingCallsParams(item)), deadline);
+            total = calls == null ? 0 : calls.size();
+            for (int i = 0; i < Math.min(maxResults, total); i++) {
+                var call = calls.get(i);
+                edges.add(callHierarchyEdge(call.getFrom(), call.getFromRanges(), maxResults));
+            }
+        } else {
+            List<CallHierarchyOutgoingCall> calls = awaitCallHierarchy(textDocuments().callHierarchyOutgoingCalls(
+                    new CallHierarchyOutgoingCallsParams(item)), deadline);
+            total = calls == null ? 0 : calls.size();
+            for (int i = 0; i < Math.min(maxResults, total); i++) {
+                var call = calls.get(i);
+                edges.add(callHierarchyEdge(call.getTo(), call.getFromRanges(), maxResults));
+            }
+        }
+        return new CallHierarchyResult(choices, 1, List.copyOf(edges), total);
+    }
+
+    private static CallHierarchyEdge callHierarchyEdge(CallHierarchyItem peer, List<Range> ranges, int limit) {
+        int total = ranges == null ? 0 : ranges.size();
+        return new CallHierarchyEdge(peer, total == 0 ? List.of()
+                : List.copyOf(ranges.subList(0, Math.min(limit, total))), total);
+    }
+
+    private static <T> T awaitCallHierarchy(CompletableFuture<T> future, long deadline) throws Exception {
+        try {
+            return future.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true); // LSP4J sends $/cancelRequest; remote cancellation is best-effort.
+            throw new LspException("Call hierarchy timed out within its protocol request budget; request cancelled", e);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new LspException("Call hierarchy protocol error: " + rootCause(e), e);
+        }
     }
 
     public synchronized Hover hover(Path file, Position pos) throws Exception {

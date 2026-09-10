@@ -74,6 +74,7 @@ public final class KompileServiceEndpoints {
         routes.put("/api/process", KompileService.ADMIN);
         routes.put("/api/graph-ontology", KompileService.ADMIN);
         routes.put("/api/archives", KompileService.ADMIN);
+        routes.put("/api/channel-integrations", KompileService.ADMIN);
 
         // --- chat (kompile-app-web-chat) ---
         routes.put("/api/agents", KompileService.CHAT);
@@ -104,6 +105,7 @@ public final class KompileServiceEndpoints {
         routes.put("/api/graph-extraction", KompileService.CRAWL);
         routes.put("/api/graph/extraction-models", KompileService.CRAWL);
         routes.put("/api/graph/hydration", KompileService.CRAWL);
+        routes.put("/api/graph/partitions", KompileService.CRAWL);
         routes.put("/api/ingest", KompileService.CRAWL);
         routes.put("/api/internal/ingest", KompileService.CRAWL);
         routes.put("/api/indexer", KompileService.CRAWL);
@@ -115,6 +117,26 @@ public final class KompileServiceEndpoints {
         routes.put("/api/cross-index", KompileService.CRAWL);
         routes.put("/api/vector-population", KompileService.CRAWL);
         routes.put("/api/enrichment", KompileService.CRAWL);
+        routes.put("/api/sync", KompileService.CRAWL);
+        routes.put("/api/oauth", KompileService.CRAWL);
+        routes.put("/api/source-providers", KompileService.CRAWL);
+
+        // Document source ingestion is implemented by ExternalSourceIngestController in the
+        // crawl manager. Keep these more-specific routes ahead of the shared /api/documents
+        // fallback so unpinned CLI and browser calls do not land on the admin console.
+        routes.put("/api/documents/preview-source-crawl", KompileService.CRAWL);
+        routes.put("/api/documents/preview-source-crawl-files", KompileService.CRAWL);
+        routes.put("/api/documents/add-files", KompileService.CRAWL);
+        routes.put("/api/documents/add-path", KompileService.CRAWL);
+        routes.put("/api/documents/add-url", KompileService.CRAWL);
+        routes.put("/api/documents/add-youtube", KompileService.CRAWL);
+        routes.put("/api/documents/add-text", KompileService.CRAWL);
+        routes.put("/api/documents/add-discord", KompileService.CRAWL);
+        routes.put("/api/documents/add-confluence", KompileService.CRAWL);
+        routes.put("/api/documents/add-jira", KompileService.CRAWL);
+        routes.put("/api/documents/add-reddit", KompileService.CRAWL);
+        routes.put("/api/documents/add-slack", KompileService.CRAWL);
+        routes.put("/api/documents/add-slack-history", KompileService.CRAWL);
 
         // --- graph exploration (kompile-app-web-graph) ---
         // Mounted by chat and crawl-manager but NOT by the admin console, so these two cannot be

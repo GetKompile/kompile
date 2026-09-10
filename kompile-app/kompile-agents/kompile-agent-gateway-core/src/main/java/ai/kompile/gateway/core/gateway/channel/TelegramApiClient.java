@@ -15,21 +15,28 @@
  */
 package ai.kompile.gateway.core.gateway.channel;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import java.util.List;
-import java.util.Map;
 
 public interface TelegramApiClient {
 
-    List<TelegramUpdate> getUpdates(int offset, int timeout);
+    List<TelegramUpdate> getUpdates(long offset, int limit, int timeout, List<String> allowedUpdates);
+
+    default List<TelegramUpdate> getUpdates(long offset, int timeout) {
+        return getUpdates(offset, 100, timeout, List.of("message"));
+    }
+
+    TelegramBotIdentity getMe();
+
+    TelegramWebhookInfo getWebhookInfo();
+
+    void deleteWebhook(boolean dropPendingUpdates);
 
     void sendMessage(String chatId, String text);
 
     void sendChatAction(String chatId, String action);
 
     record TelegramUpdate(
-            int updateId,
+            long updateId,
             TelegramMessage message
     ) {}
 
@@ -38,8 +45,18 @@ public interface TelegramApiClient {
             TelegramUser from,
             TelegramChat chat,
             String text,
-            long date
-    ) {}
+            long date,
+            Long messageThreadId
+    ) {
+        public TelegramMessage(
+                String messageId,
+                TelegramUser from,
+                TelegramChat chat,
+                String text,
+                long date) {
+            this(messageId, from, chat, text, date, null);
+        }
+    }
 
     record TelegramUser(
             long id,
@@ -53,4 +70,30 @@ public interface TelegramApiClient {
             String type,
             String title
     ) {}
+
+    record TelegramBotIdentity(long id, String username, String firstName) {}
+
+    record TelegramWebhookInfo(
+            boolean configured,
+            String redactedHost,
+            int pendingUpdateCount,
+            String lastErrorMessage) {}
+
+    final class TelegramApiException extends RuntimeException {
+        private final int httpStatus;
+        private final int errorCode;
+        private final Integer retryAfterSeconds;
+
+        public TelegramApiException(
+                String message, int httpStatus, int errorCode, Integer retryAfterSeconds) {
+            super(message);
+            this.httpStatus = httpStatus;
+            this.errorCode = errorCode;
+            this.retryAfterSeconds = retryAfterSeconds;
+        }
+
+        public int httpStatus() { return httpStatus; }
+        public int errorCode() { return errorCode; }
+        public Integer retryAfterSeconds() { return retryAfterSeconds; }
+    }
 }

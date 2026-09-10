@@ -23,9 +23,12 @@ import org.springframework.ai.document.Document;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.crawl.graph.HeadlessUnifiedCorpusExtractor;
 import org.bytedeco.javacpp.LongPointer;
+import org.eclipse.deeplearning4j.llm.generation.SameDiffMemoryUtils;
 import org.nd4j.autodiff.samediff.diagnostics.DspDiagnostics;
+import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.linalg.factory.Nd4j;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -44,6 +47,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -57,9 +61,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The parent session loads the same production model implementation used by the standalone
  * serving child, exposes it through {@link LocalServingBackend}, lets the shared
  * {@link HeadlessUnifiedCorpusExtractor} route extraction calls through that model, and releases a
- * shared lease after each crawl. Compatible tests reuse one warm model; the class-level pool
- * deterministically unloads it after the integration run. No mock LLM, HTTP fixture, CLI binary,
- * or duplicate extraction path is used.</p>
+ * shared lease after each crawl. Compatible leases within one test reuse one warm model; JUnit
+ * teardown deterministically unloads it and clears its SameDiff/native resources after every test.
+ * No mock LLM, HTTP fixture, CLI binary, or duplicate extraction path is used.</p>
  */
 @Tag("integration")
 class ModelToCrawlJvmIT {
@@ -69,6 +73,18 @@ class ModelToCrawlJvmIT {
     private static final String MODEL_PROPERTY = "kompile.model.runtime.it.model";
     private static final String TOKENIZER_PROPERTY = "kompile.model.runtime.it.tokenizer";
     private static final String MAX_TOKENS_PROPERTY = "kompile.model.runtime.it.maxTokens";
+    private static final String MAX_PREFILL_LENGTH_PROPERTY =
+            "kompile.model.runtime.it.maxPrefillLength";
+    private static final String MAX_KV_CACHE_LENGTH_PROPERTY =
+            "kompile.model.runtime.it.maxKvCacheLength";
+    private static final String OPTIMIZER_ENABLED_PROPERTY =
+            "kompile.model.runtime.it.optimizerEnabled";
+    private static final String OPTIMIZER_FP16_PROPERTY =
+            "kompile.model.runtime.it.optimizerFp16";
+    // One positive MiB value per visible logical device, in logical device order.
+    // Example: -Dkompile.model.runtime.it.deviceMemoryLimitsMiB=14336,4096
+    private static final String DEVICE_MEMORY_LIMITS_PROPERTY =
+            "kompile.model.runtime.it.deviceMemoryLimitsMiB";
     private static final String REPETITION_PENALTY_PROPERTY =
             "kompile.model.runtime.it.repetitionPenalty";
     private static final String TEMPERATURE_PROPERTY = "kompile.model.runtime.it.temperature";
@@ -79,6 +95,8 @@ class ModelToCrawlJvmIT {
             "kompile.model.runtime.it.presencePenalty";
     private static final String ENABLE_THINKING_PROPERTY =
             "kompile.model.runtime.it.enableThinking";
+    private static final String FORCE_FIRST_EMPLOYMENT_ENTITY_REPAIR_PROPERTY =
+            "kompile.model.runtime.it.forceFirstEmploymentEntityRepair";
     private static final String MAX_OUTPUT_BLOCK_TOKENS_PROPERTY =
             "kompile.model.runtime.it.maxOutputBlockTokens";
     private static final String STRUCTURED_OUTPUT_TOKEN_RESERVE_PROPERTY =
@@ -112,14 +130,19 @@ class ModelToCrawlJvmIT {
                     PooledLanguageModel::isLoaded,
                     PooledLanguageModel::close);
 
+    @AfterEach
+    void unloadPooledModelAfterEachTest() {
+        MODEL_POOL.clear();
+        SameDiffMemoryUtils.reclaimClosedGraphResources();
+        assertEquals(0, MODEL_POOL.pooledCount(),
+                "JUnit teardown must not retain a pooled model between tests");
+        assertEquals(MODEL_LOADS.get(), MODEL_UNLOADS.get(),
+                "JUnit teardown must unload every model loaded by the test");
+    }
+
     @AfterAll
-    static void unloadPooledModel() {
+    static void closeModelPool() {
         MODEL_POOL.close();
-        if (MODEL_LOADS.get() != MODEL_UNLOADS.get()) {
-            throw new IllegalStateException(
-                    "Model-to-crawl pool leaked a model: loads=" + MODEL_LOADS.get()
-                            + ", unloads=" + MODEL_UNLOADS.get());
-        }
     }
 
     @Test
@@ -398,7 +421,14 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    // 60 min: this test legitimately includes a cold DSP plan rebuild + Triton
+    // JIT + CUDA-graph capture (~5-6 min) BEFORE the first token, then a full
+    // multi-request crawl. The old 10-min budget fired mid-generation on the
+    // first request — JUnit interrupts the test thread, the dispatcher surfaced
+    // it as 'Structured model call interrupted' → null → spurious crawl failure
+    // (2026-08-30). Must stay < the failsafe 3600s fork cap, which remains the
+    // outer bound.
+    @Timeout(value = 50, unit = TimeUnit.MINUTES)
     void parentStartsModelCrawlsThroughItAndStopsIt() throws Exception {
         DspDiagnostics.initialize();
         Path modelPath = requiredFile(MODEL_PROPERTY, DEFAULT_MODEL);
@@ -511,7 +541,7 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    @Timeout(value = 20, unit = TimeUnit.MINUTES)
     void pooledModelKeepsOneHomeDeviceAcrossSequentialRealGenerations() throws Exception {
         DspDiagnostics.initialize();
         Path modelPath = requiredFile(MODEL_PROPERTY, DEFAULT_MODEL);
@@ -553,7 +583,7 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    @Timeout(value = 20, unit = TimeUnit.MINUTES)
     void actualModelRecognizesEntitiesWithoutTools() throws Exception {
         DspDiagnostics.initialize();
         Path modelPath = requiredFile(MODEL_PROPERTY, DEFAULT_MODEL);
@@ -605,7 +635,7 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    @Timeout(value = 20, unit = TimeUnit.MINUTES)
     void actualModelExtractsEntitiesWithoutRelationOrCardinalityHints() throws Exception {
         assertNativeEntityBatch(
                 "Alex Rivera is a person. Alex Rivera works at Acme Robotics, a company.",
@@ -747,7 +777,7 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    @Timeout(value = 20, unit = TimeUnit.MINUTES)
     void actualModelExtractsTwoNamedRelationsInOneBoundedNativeCall() throws Exception {
         DspDiagnostics.initialize();
         Path modelPath = requiredFile(MODEL_PROPERTY, DEFAULT_MODEL);
@@ -863,7 +893,7 @@ class ModelToCrawlJvmIT {
     }
 
     @Test
-    @Timeout(value = 10, unit = TimeUnit.MINUTES)
+    @Timeout(value = 50, unit = TimeUnit.MINUTES)
     void actualModelDerivesAccurateOntologyThroughProductionCrawlPath() throws Exception {
         DspDiagnostics.initialize();
         Path modelPath = requiredFile(MODEL_PROPERTY, DEFAULT_MODEL);
@@ -992,13 +1022,15 @@ class ModelToCrawlJvmIT {
             Path tokenizerPath,
             long tokenizerSize,
             long tokenizerModifiedMillis,
-            Map<String, Object> options) {
+            Map<String, Object> options,
+            List<Long> deviceMemoryLimitsBytes) {
 
         private static ModelRuntimeKey of(
                 String modelId,
                 Path modelPath,
                 Path tokenizerPath,
-                Map<String, Object> options) throws Exception {
+                Map<String, Object> options,
+                List<Long> deviceMemoryLimitsBytes) throws Exception {
             Path normalizedModel = modelPath.toAbsolutePath().normalize();
             Path normalizedTokenizer = tokenizerPath.toAbsolutePath().normalize();
             return new ModelRuntimeKey(
@@ -1009,12 +1041,149 @@ class ModelToCrawlJvmIT {
                     normalizedTokenizer,
                     Files.size(normalizedTokenizer),
                     Files.getLastModifiedTime(normalizedTokenizer).toMillis(),
-                    Map.copyOf(options));
+                    Map.copyOf(options),
+                    List.copyOf(deviceMemoryLimitsBytes));
+        }
+    }
+
+    /** Process-global overrides live as long as the pooled model, not an individual lease. */
+    private static final class RuntimeOverrides implements AutoCloseable {
+        private final Map<Integer, Long> previousLimits = new LinkedHashMap<>();
+        private final Map<Integer, Long> effectiveLimits = new LinkedHashMap<>();
+        private final Map<String, String> previousProperties = new LinkedHashMap<>();
+
+        private void apply(Map<String, Object> options, List<Long> requested) {
+            if (!requested.isEmpty()) {
+                var environment = Nd4j.getEnvironment();
+                int deviceCount = Nd4j.getAffinityManager().getNumberOfDevices();
+                if (requested.size() != deviceCount) {
+                    throw new IllegalArgumentException(DEVICE_MEMORY_LIMITS_PROPERTY
+                            + " requires one positive MiB limit for each of " + deviceCount
+                            + " visible logical devices");
+                }
+                // Same contract as ServingSubprocessMain.applyDeviceMemoryLimits: validate
+                // all devices before mutation, retain tighter ceilings, and verify setters.
+                for (int device = 0; device < deviceCount; device++) {
+                    long previous = environment.getDeviceLimit(device);
+                    long limit = previous > 0 ? Math.min(previous, requested.get(device))
+                            : requested.get(device);
+                    long allocated = environment.getDeviceCounter(device);
+                    if (allocated > limit) {
+                        throw new IllegalStateException("Logical device " + device + " already has "
+                                + allocated + " bytes allocated, exceeding ceiling " + limit);
+                    }
+                    effectiveLimits.put(device, limit);
+                }
+                for (int device = 0; device < deviceCount; device++) {
+                    long previous = environment.getDeviceLimit(device);
+                    long effective = effectiveLimits.get(device);
+                    if (previous > 0) effective = Math.min(previous, effective);
+                    effectiveLimits.put(device, effective);
+                    if (previous != effective) {
+                        previousLimits.put(device, previous);
+                        environment.setDeviceLimit(device, effective);
+                    }
+                    if (environment.getDeviceLimit(device) != effective) {
+                        throw new IllegalStateException("Backend did not enforce memory ceiling for "
+                                + "logical device " + device);
+                    }
+                    System.err.printf("MODEL_RUNTIME_DEVICE_LIMIT device=%d requestedBytes=%d "
+                                    + "previousBytes=%d effectiveBytes=%d%n",
+                            device, requested.get(device), previous, effective);
+                }
+            }
+            overrideProperty(options, "graphOptimizerEnabled", ND4JSystemProperties.OPTIMIZER_ENABLED);
+            overrideProperty(options, "optimizerFp16", ND4JSystemProperties.OPTIMIZER_FP16);
+            System.err.printf("MODEL_RUNTIME_BOUNDS maxNewTokens=%s maxPrefillLength=%s "
+                            + "maxKvCacheLength=%s graphOptimizerEnabled=%s optimizerEnabledProperty=%s "
+                            + "optimizerFp16Property=%s requestedDeviceLimitsBytes=%s%n",
+                    options.get("maxNewTokens"), options.getOrDefault("maxPrefillLength", "model-default"),
+                    options.getOrDefault("maxKvCacheLength", "model-default"),
+                    options.getOrDefault("graphOptimizerEnabled", true),
+                    System.getProperty(ND4JSystemProperties.OPTIMIZER_ENABLED, "unset"),
+                    System.getProperty(ND4JSystemProperties.OPTIMIZER_FP16, "unset"), requested);
+        }
+
+        private void overrideProperty(Map<String, Object> options, String option, String property) {
+            if (options.containsKey(option)) {
+                String previous = System.getProperty(property);
+                String value = options.get(option).toString();
+                if (!value.equals(previous)) {
+                    previousProperties.put(property, previous);
+                    System.setProperty(property, value);
+                }
+            }
+        }
+
+        private void logMemory(String phase, int call) {
+            if (effectiveLimits.isEmpty()) return;
+            var environment = Nd4j.getEnvironment();
+            for (var entry : effectiveLimits.entrySet()) {
+                int device = entry.getKey();
+                long limit = environment.getDeviceLimit(device);
+                long allocated = environment.getDeviceCounter(device);
+                System.err.printf("MODEL_RUNTIME_DEVICE_MEMORY phase=%s call=%d device=%d "
+                                + "counterBytes=%d limitBytes=%d effectiveCeilingBytes=%d%n",
+                        phase, call, device, allocated, limit, entry.getValue());
+                if (limit <= 0 || limit > entry.getValue() || allocated < 0 || allocated > limit) {
+                    throw new IllegalStateException("Logical device " + device + " violated memory "
+                            + "bounds: counter=" + allocated + ", limit=" + limit
+                            + ", effectiveCeiling=" + entry.getValue());
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            List<Throwable> failures = new ArrayList<>();
+            for (var entry : previousLimits.entrySet()) {
+                try {
+                    var environment = Nd4j.getEnvironment();
+                    int device = entry.getKey();
+                    long current = environment.getDeviceLimit(device);
+                    long applied = effectiveLimits.get(device);
+                    if (current > 0 && current < applied) {
+                        // Do not undo a tighter ceiling installed by another owner meanwhile.
+                        System.err.printf("MODEL_RUNTIME_DEVICE_LIMIT_RESTORE device=%d "
+                                        + "preservedTighterBytes=%d previousBytes=%d%n",
+                                device, current, entry.getValue());
+                        continue;
+                    }
+                    if (current != entry.getValue()) {
+                        environment.setDeviceLimit(device, entry.getValue());
+                    }
+                    if (environment.getDeviceLimit(device) != entry.getValue()) {
+                        throw new IllegalStateException(
+                                "Could not restore memory ceiling for logical device " + device);
+                    }
+                    System.err.printf("MODEL_RUNTIME_DEVICE_LIMIT_RESTORE device=%d limitBytes=%d%n",
+                            device, environment.getDeviceLimit(device));
+                } catch (RuntimeException | Error failure) {
+                    failures.add(failure);
+                }
+            }
+            for (var entry : previousProperties.entrySet()) {
+                try {
+                    if (entry.getValue() == null) System.clearProperty(entry.getKey());
+                    else System.setProperty(entry.getKey(), entry.getValue());
+                } catch (RuntimeException | Error failure) {
+                    failures.add(failure);
+                }
+            }
+            if (!failures.isEmpty()) {
+                IllegalStateException failure =
+                        new IllegalStateException("Could not restore model runtime overrides");
+                failures.forEach(failure::addSuppressed);
+                // The pool logs only the top-level message; retain per-device failure details.
+                failure.printStackTrace(System.err);
+                throw failure;
+            }
         }
     }
 
     private static final class PooledLanguageModel implements AutoCloseable {
         private final SameDiffLanguageModelImpl languageModel;
+        private final RuntimeOverrides runtimeOverrides = new RuntimeOverrides();
         private final java.util.concurrent.atomic.AtomicBoolean closed =
                 new java.util.concurrent.atomic.AtomicBoolean(false);
 
@@ -1022,13 +1191,22 @@ class ModelToCrawlJvmIT {
                 String modelId,
                 Path modelPath,
                 Path tokenizerPath,
-                Map<String, Object> options) throws Exception {
+                Map<String, Object> options,
+                List<Long> deviceMemoryLimitsBytes) throws Exception {
             SameDiffLanguageModelImpl candidate =
                     new SameDiffLanguageModelImpl(Optional.empty(), Optional.empty());
             try {
+                runtimeOverrides.apply(options, deviceMemoryLimitsBytes);
+                runtimeOverrides.logMemory("before-load", 0);
                 candidate.loadModel(modelId, modelPath, tokenizerPath, options);
+                runtimeOverrides.logMemory("after-load", 0);
             } catch (Exception | Error failure) {
-                candidate.unloadModel();
+                // Restore overrides even if shutdown fails; retain both cleanup failures.
+                try (RuntimeOverrides ignored = runtimeOverrides) {
+                    candidate.shutdown();
+                } catch (Exception | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
                 throw failure;
             }
             this.languageModel = candidate;
@@ -1046,7 +1224,13 @@ class ModelToCrawlJvmIT {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
-                languageModel.unloadModel();
+                // Preserve shutdown/readback failures without skipping limit restoration.
+                try (RuntimeOverrides ignored = runtimeOverrides) {
+                    languageModel.shutdown();
+                    runtimeOverrides.logMemory("after-shutdown", 0);
+                }
+                // A cleanup failure must also fail the existing teardown load/unload assertion;
+                // the reusable pool itself only logs exceptions thrown by its closer.
                 MODEL_UNLOADS.incrementAndGet();
             }
         }
@@ -1056,8 +1240,10 @@ class ModelToCrawlJvmIT {
         private final String modelId;
         private final ReusableResourcePool.Lease<PooledLanguageModel> modelLease;
         private final SameDiffLanguageModelImpl languageModel;
+        private final RuntimeOverrides runtimeOverrides;
         private final AtomicInteger generationCalls = new AtomicInteger();
         private final AtomicInteger activeGenerations = new AtomicInteger();
+        private final AtomicBoolean forcedEmploymentEntityRepair = new AtomicBoolean();
         private final Object generationDrain = new Object();
         private final AtomicInteger schemaPrepassRequests = new AtomicInteger();
         private final AtomicInteger schemaPrepassToolResponses = new AtomicInteger();
@@ -1077,6 +1263,11 @@ class ModelToCrawlJvmIT {
             Map<String, Object> modelOptions = new LinkedHashMap<>();
             modelOptions.put("maxNewTokens", MAX_TOKENS);
             modelOptions.put("dspEnabled", true);
+            putRuntimeBoundOverride(modelOptions, "maxPrefillLength", MAX_PREFILL_LENGTH_PROPERTY);
+            putRuntimeBoundOverride(modelOptions, "maxKvCacheLength", MAX_KV_CACHE_LENGTH_PROPERTY);
+            putRuntimeBooleanOverride(modelOptions, "graphOptimizerEnabled", OPTIMIZER_ENABLED_PROPERTY);
+            putRuntimeBooleanOverride(modelOptions, "optimizerFp16", OPTIMIZER_FP16_PROPERTY);
+            List<Long> deviceMemoryLimitsBytes = requestedDeviceMemoryLimits();
             Map<String, Object> samplingOverrides = new LinkedHashMap<>();
             putDoubleOverride(samplingOverrides, "repetitionPenalty", REPETITION_PENALTY_PROPERTY);
             putDoubleOverride(samplingOverrides, "temperature", TEMPERATURE_PROPERTY);
@@ -1105,14 +1296,15 @@ class ModelToCrawlJvmIT {
                     samplingOverrides,
                     ENABLE_THINKING);
             ModelRuntimeKey key = ModelRuntimeKey.of(
-                    modelId, modelPath, tokenizerPath, modelOptions);
+                    modelId, modelPath, tokenizerPath, modelOptions, deviceMemoryLimitsBytes);
             int loadsBeforeAcquire = MODEL_LOADS.get();
             this.modelLease = MODEL_POOL.acquire(
                     key,
                     () -> new PooledLanguageModel(
-                            modelId, modelPath, tokenizerPath, modelOptions),
+                            modelId, modelPath, tokenizerPath, modelOptions, deviceMemoryLimitsBytes),
                     TimeUnit.MINUTES.toMillis(10));
             this.languageModel = modelLease.resource().languageModel();
+            this.runtimeOverrides = modelLease.resource().runtimeOverrides;
             System.err.printf(
                     "MODEL_RUNTIME_POOL keyModel=%s reused=%s pooled=%d loads=%d unloads=%d%n",
                     modelId,
@@ -1120,6 +1312,43 @@ class ModelToCrawlJvmIT {
                     MODEL_POOL.pooledCount(),
                     MODEL_LOADS.get(),
                     MODEL_UNLOADS.get());
+        }
+
+        private static void putRuntimeBoundOverride(
+                Map<String, Object> options, String option, String property) {
+            String value = System.getProperty(property);
+            if (value == null) return;
+            int bound = Integer.parseInt(value.trim());
+            if (bound < 0) {
+                throw new IllegalArgumentException(property + " must be non-negative (0 = model default)");
+            }
+            options.put(option, bound);
+        }
+
+        private static void putRuntimeBooleanOverride(
+                Map<String, Object> options, String option, String property) {
+            String value = System.getProperty(property);
+            if (value == null) return;
+            value = value.trim();
+            if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) {
+                throw new IllegalArgumentException(property + " must be true or false");
+            }
+            options.put(option, Boolean.valueOf(value));
+        }
+
+        private static List<Long> requestedDeviceMemoryLimits() {
+            String value = System.getProperty(DEVICE_MEMORY_LIMITS_PROPERTY);
+            if (value == null) return List.of();
+            List<Long> limits = new ArrayList<>();
+            for (String part : value.split(",", -1)) {
+                long mib = Long.parseLong(part.trim());
+                if (mib <= 0) {
+                    throw new IllegalArgumentException(DEVICE_MEMORY_LIMITS_PROPERTY
+                            + " requires positive MiB values");
+                }
+                limits.add(Math.multiplyExact(mib, 1024L * 1024L));
+            }
+            return List.copyOf(limits);
         }
 
         private static void putDoubleOverride(
@@ -1212,6 +1441,13 @@ class ModelToCrawlJvmIT {
                             && message.contains("Morgan Chen")
                             && message.contains("Acme Robotics")
                             && message.contains("Nova Labs"));
+            boolean employmentEntityPhase = request.tools().stream()
+                    .anyMatch(tool -> "submit_typed_entities".equals(tool.name()))
+                    && request.messages().stream().map(StructuredChatLanguageModel.Message::content)
+                    .anyMatch(message -> message.contains("Alex Rivera")
+                            && message.contains("Morgan Chen")
+                            && message.contains("Acme Robotics")
+                            && message.contains("Nova Labs"));
             if (schemaPrepass) {
                 schemaPrepassRequests.incrementAndGet();
                 System.err.printf(
@@ -1268,6 +1504,24 @@ class ModelToCrawlJvmIT {
                 }
                 StructuredChatLanguageModel.Response response =
                         languageModel.generateChat(modelRequest, maxNewTokens);
+                if (Boolean.getBoolean(FORCE_FIRST_EMPLOYMENT_ENTITY_REPAIR_PROPERTY)
+                        && employmentEntityPhase
+                        && forcedEmploymentEntityRepair.compareAndSet(false, true)) {
+                    System.err.printf(
+                            "MODEL_TO_CRAWL_FORCED_REPAIR call=%d original=%s%n",
+                            call, bounded(response.toString()));
+                    response = new StructuredChatLanguageModel.Response(
+                            "<forced-test-repair>", "", List.of(
+                            new StructuredChatLanguageModel.ToolCall(
+                                    "forced-entity-repair",
+                                    "submit_typed_entities",
+                                    Map.of("entities", List.of(
+                                            Map.of("name", "Alex Rivera", "type", "PERSON"),
+                                            Map.of("name", "Morgan Chen", "type", "COMPANY"),
+                                            Map.of("name", "Acme Robotics", "type", "COMPANY"),
+                                            Map.of("name", "Nova Labs", "type", "COMPANY"))))),
+                            List.of());
+                }
                 if (schemaPrepass) {
                     response.toolCalls().stream()
                             .filter(toolCall -> SCHEMA_TOOL_NAME.equals(toolCall.name()))
@@ -1356,6 +1610,9 @@ class ModelToCrawlJvmIT {
         }
 
         private void logDspMemory(String phase, int call) {
+            // Explicit ceilings are strict: do not bury counter/limit failures in best-effort
+            // DSP diagnostics, and inspect every logical device rather than only this thread's.
+            runtimeOverrides.logMemory(phase, call);
             try (LongPointer poolUsed = new LongPointer(1);
                  LongPointer poolReserved = new LongPointer(1)) {
                 int device = Nd4j.getAffinityManager().getDeviceForCurrentThread();

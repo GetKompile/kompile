@@ -26,6 +26,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -60,10 +62,10 @@ public class JvmLanguageParser implements LanguageParser {
     // -------------------------------------------------------------------------
 
     private static final Pattern JAVA_PACKAGE = Pattern.compile(
-            "^\\s*package\\s+([\\w.]+)\\s*;");
+            "^\\s*package\\s+([\\w.]+)\\s*;?");
 
     private static final Pattern JAVA_IMPORT = Pattern.compile(
-            "^\\s*import\\s+(static\\s+)?([\\w.*]+)\\s*;");
+            "^\\s*import\\s+(static\\s+)?([\\w.*]+)\\s*;?");
 
     /**
      * Matches class/interface/enum/record/@interface declarations.
@@ -82,9 +84,10 @@ public class JvmLanguageParser implements LanguageParser {
             "(static\\s+)?(abstract\\s+)?(final\\s+|sealed\\s+)?" +
             "(class|interface|enum|record|@interface)\\s+(\\w+)" +
             "(?:<[^>]*>)?" +
-            "(?:\\([^)]*\\))?" +
+            "(?:\\(.*\\))?" +
             "(?:\\s+extends\\s+([\\w.<>,\\s]+?))?" +
-            "(?:\\s+implements\\s+([\\w.<>,\\s]+?))?\\s*(?:\\{|$)");
+            "(?:\\s+implements\\s+([\\w.<>,\\s]+?))?" +
+            "(?:\\s+permits\\s+[\\w.<>,\\s]+)?\\s*(?:\\{|$)", Pattern.DOTALL);
 
     /**
      * Matches method declarations (not constructors — those have no return type token).
@@ -107,7 +110,7 @@ public class JvmLanguageParser implements LanguageParser {
      * Groups: 1 visibility, 2 class name, 3 params.
      */
     private static final Pattern JAVA_CONSTRUCTOR = Pattern.compile(
-            "^\\s*(public|protected|private)?\\s+(\\w+)\\s*\\(([^)]*)\\)\\s*" +
+            "^\\s*(public|protected|private)?\\s*(\\w+)\\s*\\(([^)]*)\\)\\s*" +
             "(?:throws\\s+[\\w.,\\s]+)?\\s*\\{");
 
     /**
@@ -244,9 +247,7 @@ public class JvmLanguageParser implements LanguageParser {
                              boolean groovy) {
 
         String packageName = null;
-        // Stack so we can handle nested types properly (simplified: track outermost)
-        String currentClassFqn = null;
-        String currentClassName = null;
+        Deque<JavaTypeScope> typeScopes = new ArrayDeque<>();
         StringBuilder docComment = null;
         boolean inDocComment = false;
         String pendingAnnotation = null;
@@ -254,6 +255,11 @@ public class JvmLanguageParser implements LanguageParser {
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             String trimmed = line.trim();
+            while (!typeScopes.isEmpty() && i > typeScopes.peek().endIndex()) {
+                typeScopes.pop();
+            }
+            String currentClassFqn = typeScopes.isEmpty() ? null : typeScopes.peek().fqn();
+            String currentClassName = typeScopes.isEmpty() ? null : typeScopes.peek().simpleName();
 
             // Skip blank lines
             if (trimmed.isEmpty()) {
@@ -326,7 +332,8 @@ public class JvmLanguageParser implements LanguageParser {
             }
 
             // Type declaration (class/interface/enum/record/@interface)
-            m = JAVA_TYPE.matcher(line);
+            JavaDeclaration typeDeclaration = collectJavaDeclaration(lines, i);
+            m = JAVA_TYPE.matcher(declarationForMatching(typeDeclaration.text()));
             if (m.find()) {
                 String visibility  = m.group(1);
                 boolean isStatic   = m.group(2) != null;
@@ -346,9 +353,11 @@ public class JvmLanguageParser implements LanguageParser {
                     default           -> CodeEntityType.CLASS;
                 };
 
-                currentClassName  = simpleName;
-                currentClassFqn   = (packageName != null ? packageName + "." : "") + simpleName;
-                int endLine       = findBlockEnd(lines, i);
+                String enclosingTypeFqn = currentClassFqn;
+                currentClassFqn = enclosingTypeFqn != null
+                        ? enclosingTypeFqn + "." + simpleName
+                        : (packageName != null ? packageName + "." : "") + simpleName;
+                int endLine       = findBlockEnd(lines, i, groovy);
 
                 // Build metadataJson for cross-file resolution
                 String classMeta = buildTypeMetadata(superclass, implClause);
@@ -362,11 +371,11 @@ public class JvmLanguageParser implements LanguageParser {
                         .language(groovy ? "groovy" : "java")
                         .startLine(i + 1)
                         .endLine(endLine + 1)
-                        .signature(trimmed)
+                        .signature(typeDeclaration.text())
                         .docComment(docComment != null ? docComment.toString().trim() : null)
                         .contentPreview(buildPreview(lines, i, endLine, 500))
                         .packageName(packageName)
-                        .parentFqn(filePath)
+                        .parentFqn(enclosingTypeFqn != null ? enclosingTypeFqn : filePath)
                         .visibility(visibility)
                         .isStatic(isStatic)
                         .isAbstract(isAbstract)
@@ -374,7 +383,9 @@ public class JvmLanguageParser implements LanguageParser {
                         .build();
                 entities.add(classEntity);
 
-                relations.add(new RelationTriple(filePath, currentClassFqn, CodeRelationType.CONTAINS));
+                relations.add(new RelationTriple(
+                        enclosingTypeFqn != null ? enclosingTypeFqn : filePath,
+                        currentClassFqn, CodeRelationType.CONTAINS));
 
                 if (superclass != null && !superclass.isEmpty()) {
                     for (String sc : superclass.split(",")) {
@@ -398,6 +409,8 @@ public class JvmLanguageParser implements LanguageParser {
 
                 pendingAnnotation = null;
                 docComment = null;
+                typeScopes.push(new JavaTypeScope(currentClassFqn, simpleName, endLine));
+                i = typeDeclaration.endIndex();
                 continue;
             }
 
@@ -409,14 +422,16 @@ public class JvmLanguageParser implements LanguageParser {
 
             // Groovy: def method
             if (groovy) {
-                m = GROOVY_DEF_METHOD.matcher(line);
+                JavaDeclaration groovyDeclaration = collectJavaDeclaration(lines, i);
+                m = GROOVY_DEF_METHOD.matcher(declarationForMatching(groovyDeclaration.text()));
                 if (m.find()) {
                     String visibility = m.group(1);
                     boolean isStatic  = m.group(2) != null;
                     String methodName = m.group(3);
                     String params     = m.group(4);
                     String methodFqn  = currentClassFqn + "." + methodName;
-                    int endLine       = findBlockEnd(lines, i);
+                    boolean hasBody   = declarationHasBody(groovyDeclaration.text());
+                    int endLine       = hasBody ? findBlockEnd(lines, i, true) : i;
 
                     entities.add(CodeEntity.builder()
                             .projectId(projectId)
@@ -440,9 +455,12 @@ public class JvmLanguageParser implements LanguageParser {
                     if (pendingAnnotation != null) {
                         relations.add(new RelationTriple(methodFqn, pendingAnnotation, CodeRelationType.ANNOTATED_BY));
                     }
-                    extractCallSites(lines, i, endLine, methodFqn, filePath, relations);
+                    if (hasBody) {
+                        extractCallSites(lines, i, endLine, methodFqn, filePath, relations);
+                    }
                     pendingAnnotation = null;
                     docComment = null;
+                    i = hasBody ? endLine : groovyDeclaration.endIndex();
                     continue;
                 }
 
@@ -479,8 +497,12 @@ public class JvmLanguageParser implements LanguageParser {
                 }
             }
 
+            JavaDeclaration declaration = collectJavaDeclaration(lines, i);
+            String declarationText = declaration.text();
+            String declarationMatchText = declarationForMatching(declarationText);
+
             // Constructor (must come before method to avoid misclassification)
-            m = JAVA_CONSTRUCTOR.matcher(line);
+            m = JAVA_CONSTRUCTOR.matcher(declarationMatchText);
             if (m.find()) {
                 String visibility   = m.group(1);
                 String ctorName     = m.group(2);
@@ -488,7 +510,7 @@ public class JvmLanguageParser implements LanguageParser {
                 // Only match if constructor name matches the current class name
                 if (ctorName.equals(currentClassName)) {
                     String ctorFqn = currentClassFqn + ".<init>";
-                    int endLine    = findBlockEnd(lines, i);
+                    int endLine    = findBlockEnd(lines, i, groovy);
 
                     entities.add(CodeEntity.builder()
                             .projectId(projectId)
@@ -515,13 +537,14 @@ public class JvmLanguageParser implements LanguageParser {
                     extractCallSites(lines, i, endLine, ctorFqn, filePath, relations);
                     pendingAnnotation = null;
                     docComment = null;
+                    i = declarationText.contains("{") ? endLine : declaration.endIndex();
                     continue;
                 }
             }
 
             // Method
             if (!trimmed.startsWith("return") && !trimmed.startsWith("throw")) {
-                m = JAVA_METHOD.matcher(line);
+                m = JAVA_METHOD.matcher(declarationMatchText);
                 if (m.find()) {
                     String visibility = m.group(1);
                     boolean isStatic  = m.group(2) != null;
@@ -533,7 +556,9 @@ public class JvmLanguageParser implements LanguageParser {
                     // Exclude obvious non-method matches (e.g. "if", "while", "for", "new")
                     if (!isKeyword(methodName) && !isKeyword(returnType.split("\\s+")[0])) {
                         String methodFqn = currentClassFqn + "." + methodName;
-                        int endLine      = findBlockEnd(lines, i);
+                        boolean hasBody  = declarationHasBody(declarationText);
+                        int endLine      = hasBody
+                                ? findBlockEnd(lines, i, groovy) : declaration.endIndex();
 
                         entities.add(CodeEntity.builder()
                                 .projectId(projectId)
@@ -558,9 +583,14 @@ public class JvmLanguageParser implements LanguageParser {
                         if (pendingAnnotation != null) {
                             relations.add(new RelationTriple(methodFqn, pendingAnnotation, CodeRelationType.ANNOTATED_BY));
                         }
-                        extractCallSites(lines, i, endLine, methodFqn, filePath, relations);
+                        if (hasBody) {
+                            extractCallSites(lines, i, endLine, methodFqn, filePath, relations);
+                        }
                         pendingAnnotation = null;
                         docComment = null;
+                        // Call sites were extracted as a batch above. Do not reinterpret
+                        // local variables and invocations in the body as class members.
+                        i = hasBody ? endLine : declaration.endIndex();
                         continue;
                     }
                 }
@@ -1071,6 +1101,195 @@ public class JvmLanguageParser implements LanguageParser {
     // Shared helpers
     // =========================================================================
 
+    private record JavaTypeScope(String fqn, String simpleName, int endIndex) {}
+
+    private record JavaDeclaration(String text, int endIndex) {}
+
+    /**
+     * Collapse a bounded multiline Java parameter list into one declaration for
+     * regex matching. This keeps the lightweight parser fast while supporting
+     * normal formatter output such as one parameter per line.
+     */
+    private static JavaDeclaration collectJavaDeclaration(String[] lines, int startIndex) {
+        StringBuilder declaration = new StringBuilder(lines[startIndex].trim());
+        int balance = parenthesisBalance(lines[startIndex]);
+        int endIndex = startIndex;
+        int limit = Math.min(lines.length, startIndex + 64);
+        while (balance > 0 && endIndex + 1 < limit) {
+            endIndex++;
+            String next = lines[endIndex].trim();
+            if (!next.isEmpty()) declaration.append('\n').append(next);
+            balance += parenthesisBalance(lines[endIndex]);
+        }
+        boolean inContinuation = declarationContinues(declaration.toString());
+        while (balance <= 0 && endIndex + 1 < limit
+                && !declarationEndsHeader(declaration.toString())) {
+            String next = lines[endIndex + 1].trim();
+            if (next.isEmpty()) {
+                endIndex++;
+                continue;
+            }
+            boolean startsContinuation = next.startsWith("throws ") || next.startsWith("extends ")
+                    || next.startsWith("implements ") || next.startsWith("permits ")
+                    || next.startsWith("{");
+            if (!inContinuation && !startsContinuation) break;
+            endIndex++;
+            declaration.append('\n').append(next);
+            balance += parenthesisBalance(next);
+            inContinuation = true;
+        }
+        return new JavaDeclaration(declaration.toString(), endIndex);
+    }
+
+    private static boolean declarationEndsHeader(String declaration) {
+        String trimmed = declaration.trim();
+        return trimmed.endsWith(";") || declarationHasBody(declaration);
+    }
+
+    private static boolean declarationContinues(String declaration) {
+        int closingParenthesis = declaration.lastIndexOf(')');
+        if (closingParenthesis >= 0) {
+            String tail = declaration.substring(closingParenthesis + 1).trim();
+            return tail.matches("^(?:throws|extends|implements|permits)\\b.*");
+        }
+        return declaration.matches("(?s).*\\b(?:extends|implements|permits)\\b[^;{]*$");
+    }
+
+    private static boolean declarationHasBody(String declaration) {
+        boolean inString = false;
+        boolean inChar = false;
+        boolean inBlockComment = false;
+        boolean escaped = false;
+        int parentheses = 0;
+        for (int i = 0; i < declaration.length(); i++) {
+            char c = declaration.charAt(i);
+            char next = i + 1 < declaration.length() ? declaration.charAt(i + 1) : 0;
+            if (inBlockComment) {
+                if (c == '*' && next == '/') {
+                    inBlockComment = false;
+                    i++;
+                }
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '/') {
+                int newline = declaration.indexOf("\n", i + 2);
+                if (newline < 0) return false;
+                i = newline;
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '*') {
+                inBlockComment = true;
+                i++;
+                continue;
+            }
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!inChar && c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString && c == '\'') {
+                inChar = !inChar;
+                continue;
+            }
+            if (!inString && !inChar) {
+                if (c == '(') parentheses++;
+                else if (c == ')' && parentheses > 0) parentheses--;
+                else if (parentheses == 0 && c == ';') return false;
+                else if (parentheses == 0 && c == '{') return true;
+            }
+        }
+        return false;
+    }
+
+    private static String declarationForMatching(String declaration) {
+        StringBuilder result = new StringBuilder(declaration.length());
+        boolean inString = false;
+        boolean inChar = false;
+        boolean inBlockComment = false;
+        boolean inLineComment = false;
+        boolean escaped = false;
+        for (int i = 0; i < declaration.length(); i++) {
+            char c = declaration.charAt(i);
+            char next = i + 1 < declaration.length() ? declaration.charAt(i + 1) : 0;
+            if (inLineComment) {
+                if (c == '\n') {
+                    inLineComment = false;
+                    result.append(c);
+                }
+                continue;
+            }
+            if (inBlockComment) {
+                if (c == '*' && next == '/') {
+                    inBlockComment = false;
+                    result.append(' ');
+                    i++;
+                }
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '/') {
+                inLineComment = true;
+                i++;
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '*') {
+                inBlockComment = true;
+                i++;
+                continue;
+            }
+            result.append(c);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+            } else if (!inChar && c == '"') {
+                inString = !inString;
+            } else if (!inString && c == '\'') {
+                inChar = !inChar;
+            }
+        }
+        return result.toString();
+    }
+
+    private static int parenthesisBalance(String line) {
+        int balance = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        boolean escaped = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!inChar && c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString && c == '\'') {
+                inChar = !inChar;
+                continue;
+            }
+            if (!inString && !inChar) {
+                if (c == '(') balance++;
+                else if (c == ')') balance--;
+            }
+        }
+        return balance;
+    }
+
     /**
      * Finds the line index of the closing brace that matches the first opening
      * brace at or after {@code startLine}.  Returns a safe fallback if no
@@ -1081,10 +1300,19 @@ public class JvmLanguageParser implements LanguageParser {
      * @return 0-based line index of the closing '}', or a best-effort estimate
      */
     int findBlockEnd(String[] lines, int startLine) {
+        return findBlockEnd(lines, startLine, false);
+    }
+
+    int findBlockEnd(String[] lines, int startLine, boolean groovy) {
         int braceCount = 0;
+        int parentheses = 0;
         boolean foundOpen = false;
         boolean inLineComment = false;
         boolean inBlockComment = false;
+        boolean inTextBlock = false;
+        boolean inGroovyTripleSingle = false;
+        boolean inGroovyDollarSlashy = false;
+        boolean inGroovySlashy = false;
 
         for (int i = startLine; i < lines.length; i++) {
             String l = lines[i];
@@ -1092,6 +1320,12 @@ public class JvmLanguageParser implements LanguageParser {
             for (int j = 0; j < l.length(); j++) {
                 char c = l.charAt(j);
                 char next = (j + 1 < l.length()) ? l.charAt(j + 1) : 0;
+                boolean tripleQuote = c == '"' && j + 2 < l.length()
+                        && l.charAt(j + 1) == '"' && l.charAt(j + 2) == '"'
+                        && !isEscapedQuote(l, j);
+                boolean tripleSingle = c == '\'' && j + 2 < l.length()
+                        && l.charAt(j + 1) == '\'' && l.charAt(j + 2) == '\''
+                        && !isEscapedQuote(l, j);
 
                 if (inBlockComment) {
                     if (c == '*' && next == '/') {
@@ -1102,6 +1336,43 @@ public class JvmLanguageParser implements LanguageParser {
                 }
                 if (inLineComment) break;
 
+                if (inGroovyTripleSingle) {
+                    if (tripleSingle) {
+                        inGroovyTripleSingle = false;
+                        j += 2;
+                    }
+                    continue;
+                }
+                if (inGroovyDollarSlashy) {
+                    if (c == '/' && next == '$') {
+                        inGroovyDollarSlashy = false;
+                        j++;
+                    }
+                    continue;
+                }
+                if (inGroovySlashy) {
+                    if (c == '\\') j++;
+                    else if (c == '/') inGroovySlashy = false;
+                    continue;
+                }
+                if (groovy && !inTextBlock && tripleSingle) {
+                    inGroovyTripleSingle = true;
+                    j += 2;
+                    continue;
+                }
+                if (groovy && !inTextBlock && c == '$' && next == '/') {
+                    inGroovyDollarSlashy = true;
+                    j++;
+                    continue;
+                }
+
+                if (tripleQuote) {
+                    inTextBlock = !inTextBlock;
+                    j += 2;
+                    continue;
+                }
+                if (inTextBlock) continue;
+
                 if (c == '/' && next == '/') {
                     inLineComment = true;
                     break;
@@ -1109,6 +1380,10 @@ public class JvmLanguageParser implements LanguageParser {
                 if (c == '/' && next == '*') {
                     inBlockComment = true;
                     j++;
+                    continue;
+                }
+                if (groovy && c == '/' && isLikelyGroovySlashyStart(l, j)) {
+                    inGroovySlashy = true;
                     continue;
                 }
                 // Ignore characters inside string literals (simple approximation)
@@ -1129,17 +1404,38 @@ public class JvmLanguageParser implements LanguageParser {
                     continue;
                 }
 
-                if (c == '{') {
+                if (!foundOpen && c == '(') {
+                    parentheses++;
+                } else if (!foundOpen && c == ')' && parentheses > 0) {
+                    parentheses--;
+                } else if (c == '{' && (foundOpen || parentheses == 0)) {
                     braceCount++;
                     foundOpen = true;
-                } else if (c == '}') {
+                } else if (c == '}' && foundOpen) {
                     braceCount--;
-                    if (foundOpen && braceCount == 0) return i;
+                    if (braceCount == 0) return i;
                 }
             }
         }
         // No matching brace found — fall back to a reasonable limit
         return Math.min(startLine + 100, lines.length - 1);
+    }
+
+    private static boolean isEscapedQuote(String line, int quoteIndex) {
+        int backslashes = 0;
+        for (int i = quoteIndex - 1; i >= 0 && line.charAt(i) == '\\'; i--) {
+            backslashes++;
+        }
+        return (backslashes & 1) == 1;
+    }
+
+    private static boolean isLikelyGroovySlashyStart(String line, int slashIndex) {
+        char next = slashIndex + 1 < line.length() ? line.charAt(slashIndex + 1) : 0;
+        if (next == 0 || next == '/' || next == '*') return false;
+        String prefix = line.substring(0, slashIndex).trim();
+        if (prefix.isEmpty() || prefix.endsWith("return") || prefix.endsWith("case")) return true;
+        char previous = prefix.charAt(prefix.length() - 1);
+        return "=(:,[!&|?{;~+-*%^<>".indexOf(previous) >= 0;
     }
 
     /**

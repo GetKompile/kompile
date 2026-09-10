@@ -97,6 +97,12 @@ public class AskGraphQueryTool implements CliTool {
         props.putObject("asOf")
                 .put("type", "string")
                 .put("description", "ISO-8601 snapshot time. Absent = current truth.");
+        props.putObject("validAt")
+                .put("type", "string")
+                .put("description", "Local only: ISO-8601 valid-time filter over retained facts. Timeless facts included; does not reconstruct deleted history. Cannot combine with asOf.");
+        props.putObject("maxWork")
+                .put("type", "integer").put("minimum", 1).put("maximum", 1000000)
+                .put("description", "Local only: relation-examination budget (default 100000). Exhaustion errors explicitly; never silently truncates joins.");
         props.putObject("maxResults")
                 .put("type", "integer")
                 .put("description", "Maximum binding rows returned. Default 50.");
@@ -130,6 +136,9 @@ public class AskGraphQueryTool implements CliTool {
             return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
+        if (params.hasNonNull("validAt") || params.hasNonNull("maxWork")) {
+            return ToolResult.error("validAt/maxWork are supported only by the project-local backend; no remote request was sent.");
+        }
         try {
             ObjectNode body = objectMapper.createObjectNode();
             body.set("conjuncts", conjunctsNode);

@@ -352,6 +352,7 @@ class CrawlDocumentChunkingService {
         boolean hasVlmContent = false;
         boolean hasHtmlContent = false;
         boolean hasTables = false;
+        boolean hasCodeContent = false;
 
         for (Document doc : documents) {
             Map<String, Object> meta = doc.getMetadata();
@@ -360,11 +361,22 @@ class CrawlDocumentChunkingService {
             String contentType = meta.get(GraphConstants.META_CONTENT_TYPE) instanceof String
                     ? (String) meta.get(GraphConstants.META_CONTENT_TYPE) : null;
             if ("table".equals(contentType) || "vlm_document".equals(contentType)) hasTables = true;
+            if ("code".equals(contentType) || "source-code".equals(meta.get("documentType"))) {
+                hasCodeContent = true;
+            }
             String loaderName = meta.get(GraphConstants.META_LOADER) instanceof String
                     ? (String) meta.get(GraphConstants.META_LOADER) : null;
             if (loaderName != null && loaderName.toLowerCase().contains("html")) hasHtmlContent = true;
             Object tableCount = meta.get(GraphConstants.META_TABLE_COUNT);
             if (tableCount instanceof Number && ((Number) tableCount).intValue() > 0) hasTables = true;
+        }
+
+        if (hasCodeContent) {
+            TextChunker codeAware = findChunkerByName("code-aware");
+            if (codeAware != null) {
+                log.info("Auto-selecting 'code-aware' chunker for source-code content");
+                return codeAware;
+            }
         }
 
         // Try HTML chunker for HTML content
@@ -389,6 +401,7 @@ class CrawlDocumentChunkingService {
         // Fall back to first available real chunker
         return textChunkers.stream()
                 .filter(c -> !isNoOpChunker(c))
+                .filter(c -> !"code-aware".equals(normalizeName(c.getName())))
                 .findFirst()
                 .orElse(null);
     }

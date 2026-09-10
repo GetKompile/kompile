@@ -17,10 +17,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -50,7 +56,7 @@ class AgenticChatLoopQueueSteeringTest {
 
         AtomicInteger boundaryPolls = new AtomicInteger();
         loop.setQueuedMessageSupplier(() -> boundaryPolls.incrementAndGet() == 2
-                ? "change direction now" : null);
+                ? AgenticChatLoop.QueuedInput.immediate("change direction now") : null);
 
         String response = loop.chat(
                 "start the work", "queue-steering-" + UUID.randomUUID(),
@@ -65,6 +71,38 @@ class AgenticChatLoopQueueSteeringTest {
         assertTrue(client.secondRequestToolResults.get(1).isError);
         assertTrue(client.secondRequestToolResults.get(1).output.contains("superseded"));
         assertEquals("steered response", response);
+    }
+
+    @Test
+    void interruptAtToolBoundaryDoesNotLoseClaimedQueuedMessage() {
+        ObjectMapper objectMapper = JsonUtils.standardMapper();
+        ToolRegistry tools = new ToolRegistry(objectMapper);
+        tools.register(countingTool("first_tool", new AtomicInteger(), objectMapper));
+        tools.register(countingTool("second_tool", new AtomicInteger(), objectMapper));
+
+        ScriptedDirectClient client = new ScriptedDirectClient(objectMapper);
+        AgenticChatLoop loop = new AgenticChatLoop(
+                null, objectMapper, tools, new PermissionService(), new AgentRegistry(),
+                workingDirectory, client, null);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        loop.setCancelSignal(cancelled);
+        Deque<String> queued = new ArrayDeque<>(List.of("run this next"));
+        AtomicInteger boundaryPolls = new AtomicInteger();
+        loop.setQueuedMessageSupplier(() -> {
+            if (boundaryPolls.incrementAndGet() != 2) return null;
+            String claimed = queued.pollFirst();
+            cancelled.set(true);
+            return new AgenticChatLoop.QueuedInput(
+                    claimed, () -> true, () -> queued.addFirst(claimed));
+        });
+
+        loop.chat("start the work", "queue-interrupt-" + UUID.randomUUID(),
+                "coder", "default", false);
+
+        assertEquals(List.of("run this next"), List.copyOf(queued),
+                "an interrupt after claim but before provider dispatch must restore the queued prompt");
+        assertEquals(List.of("start the work"), client.messages,
+                "the restored prompt must be left for the next owner, not sent by the cancelled one");
     }
 
     @Test
@@ -90,6 +128,90 @@ class AgenticChatLoopQueueSteeringTest {
     }
 
     @Test
+    void onlyBlockingTaskToolPhaseIsBackgroundable() throws Exception {
+        ObjectMapper objectMapper = JsonUtils.standardMapper();
+        CountDownLatch taskStarted = new CountDownLatch(1);
+        CountDownLatch releaseTask = new CountDownLatch(1);
+        ToolRegistry tools = new ToolRegistry(objectMapper);
+        tools.register(new CliTool() {
+            @Override
+            public String id() { return "task"; }
+
+            @Override
+            public String description() { return "blocking subagent fixture"; }
+
+            @Override
+            public JsonNode parameterSchema() {
+                return objectMapper.createObjectNode().put("type", "object");
+            }
+
+            @Override
+            public String permissionKey() { return "read"; }
+
+            @Override
+            public ToolResult execute(JsonNode params, ToolContext context) {
+                taskStarted.countDown();
+                try {
+                    releaseTask.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ToolResult.error("interrupted");
+                }
+                return ToolResult.success("subagent complete");
+            }
+        });
+
+        AtomicInteger requestCount = new AtomicInteger();
+        DirectLlmClient client = new DirectLlmClient(
+                new ChatConfig("custom", null, "task-phase-test", "http://unused.invalid"),
+                objectMapper) {
+            @Override
+            public StreamResult streamChat(
+                    String userMessage,
+                    String systemPrompt,
+                    ArrayNode toolDefs,
+                    List<ToolCallResultInput> toolResults,
+                    String modelOverride,
+                    List<AttachmentInput> attachments) {
+                StreamResult result = new StreamResult();
+                if (requestCount.getAndIncrement() == 0) {
+                    ToolCallOutput call = new ToolCallOutput();
+                    call.id = "call-task";
+                    call.name = "task";
+                    call.arguments = objectMapper.createObjectNode();
+                    result.toolCalls.add(call);
+                } else {
+                    result.text = "done";
+                }
+                return result;
+            }
+        };
+        AgenticChatLoop loop = new AgenticChatLoop(
+                null, objectMapper, tools, new PermissionService(), new AgentRegistry(),
+                workingDirectory, client, null);
+        AtomicInteger eligibilityChanges = new AtomicInteger();
+        loop.setBackgroundEligibilityListener(eligibilityChanges::incrementAndGet);
+
+        assertFalse(loop.isBlockingSubagentInvocationActive(),
+                "model thinking is not backgroundable");
+        CompletableFuture<String> response = CompletableFuture.supplyAsync(() -> loop.chat(
+                "delegate work", "task-phase-" + UUID.randomUUID(),
+                "coder", "default", false));
+        try {
+            assertTrue(taskStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(loop.isBlockingSubagentInvocationActive(),
+                    "TaskTool must publish the Ctrl+B-eligible phase");
+        } finally {
+            releaseTask.countDown();
+        }
+        assertEquals("done", response.get(5, TimeUnit.SECONDS));
+        assertFalse(loop.isBlockingSubagentInvocationActive(),
+                "eligibility must clear when TaskTool returns");
+        assertEquals(2, eligibilityChanges.get(),
+                "the UI must be notified on both entry and exit");
+    }
+
+    @Test
     void remindersAreAppliedAtEachUserPromptBoundary() {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
         ScriptedDirectClient client = ScriptedDirectClient.finalResponseOnly(objectMapper);
@@ -108,6 +230,33 @@ class AgenticChatLoopQueueSteeringTest {
         assertTrue(outbound.indexOf("[project] Keep project context")
                 < outbound.indexOf("[session] Run focused tests"));
         assertTrue(outbound.endsWith("implement the feature"));
+    }
+
+    @Test
+    void reminderIntervalSkipsUnduePromptsWithinTheLoop() {
+        ObjectMapper objectMapper = JsonUtils.standardMapper();
+        ReminderManager reminders = ReminderManager.inMemory(
+                List.of("Stay on plan"), List.of());
+        reminders.handleCommand(ReminderManager.Scope.PROJECT, "interval 2");
+
+        // Fresh loop per turn: the send boundary ticks the shared manager, so the
+        // sequence 1..3 shows inject / skip / inject across loop instances.
+        List<String> outbound = new ArrayList<>();
+        for (String task : List.of("first task", "second task", "third task")) {
+            ScriptedDirectClient client = ScriptedDirectClient.finalResponseOnly(objectMapper);
+            AgenticChatLoop loop = new AgenticChatLoop(
+                    null, objectMapper, new ToolRegistry(objectMapper),
+                    new PermissionService(), new AgentRegistry(), workingDirectory, client, null);
+            loop.setReminderManager(reminders);
+            loop.chat(task, "reminder-interval-" + UUID.randomUUID(),
+                    "coder", "default", false);
+            assertEquals(1, client.messages.size());
+            outbound.add(client.messages.get(0));
+        }
+
+        assertTrue(outbound.get(0).startsWith("<kompile_reminders>"));
+        assertEquals("second task", outbound.get(1));
+        assertTrue(outbound.get(2).startsWith("<kompile_reminders>"));
     }
 
     @Test

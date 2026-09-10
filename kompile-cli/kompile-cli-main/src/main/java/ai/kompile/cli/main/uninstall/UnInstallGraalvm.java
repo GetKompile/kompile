@@ -21,7 +21,7 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "graalvm", description = "Remove the managed GraalVM runtime.", mixinStandardHelpOptions = false)
 public class UnInstallGraalvm implements Callable<Integer> {
     public UnInstallGraalvm() {
     }

@@ -15,9 +15,15 @@
  */
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.main.CliProcessLauncher;
+import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -76,6 +82,117 @@ class McpToolInjectionTest {
     }
 
     @Test
+    void claudeUsesProjectServersDirectlyAndCleanupPreservesConcurrentMcpEdits()
+            throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("claude-custom-work"));
+        Path binary = createExecutable("claude-custom-kompile");
+        Path configPath = workDir.resolve(".mcp.json");
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode original = mapper.createObjectNode();
+        original.putObject("mcpServers").putObject("project-tools")
+                .put("command", "project-mcp");
+        Files.writeString(configPath,
+                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(original));
+
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            McpToolInjection.injectTools(
+                    workDir, "claude", "http://localhost:8080/mcp/sse");
+
+            JsonNode injected = mapper.readTree(configPath.toFile());
+            assertTrue(injected.path("mcpServers").has("project-tools"));
+            JsonNode kompile = injected.path("mcpServers").path("kompile");
+            assertEquals(binary.toString(), kompile.path("command").asText());
+            assertFalse(kompile.has("url"), "custom servers force Claude's Kompile bridge to stdio");
+            assertEquals("true", kompile.path("env")
+                    .path(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV).asText());
+
+            ObjectNode lateServer = mapper.createObjectNode().put("command", "late-mcp");
+            new McpConfigStore(workDir).put("late-tools", lateServer,
+                    McpConfigStore.Scope.PROJECT, false);
+
+            McpToolInjection.removeTools(configPath);
+            JsonNode restored = mapper.readTree(configPath.toFile()).path("mcpServers");
+            assertTrue(restored.has("project-tools"));
+            assertTrue(restored.has("late-tools"));
+            assertFalse(restored.has("kompile"));
+        } finally {
+            McpToolInjection.removeTools(configPath);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    @ResourceLock("SYSTEM_PROPERTIES")
+    void stdioLauncherCarriesTheActiveTranscriptUuid() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        String previousTranscript = System.getProperty(
+                TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+        Path binary = createExecutable("transcript-kompile-cli");
+        String transcriptId = java.util.UUID.randomUUID().toString();
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            System.setProperty(
+                    TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, transcriptId);
+
+            McpToolInjectionSupport.CliLauncher launcher =
+                    McpToolInjectionSupport.findCliLauncher();
+            List<String> args = launcher.buildArgs(tempDir.toAbsolutePath());
+
+            assertEquals(List.of(
+                    "mcp-stdio", "--work-dir", tempDir.toAbsolutePath().toString(),
+                    "--transcript-id", transcriptId), args);
+        } finally {
+            restoreProperty("kompile.cli.binary", previousBinary);
+            restoreProperty(
+                    TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, previousTranscript);
+        }
+    }
+
+    @Test
+    @ResourceLock("SYSTEM_PROPERTIES")
+    void jarTierAlwaysUsesInstalledWrapperInsteadOfDirectJavaJar() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        String previousJar = System.getProperty("kompile.cli.jar");
+        String previousInstall = System.getProperty("kompile.install.dir");
+        String previousTranscript = System.getProperty(
+                TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+        Path install = tempDir.resolve("installed-dist");
+        Path wrapper = install.resolve("bin/kompile");
+        Path jar = tempDir.resolve("direct-cli.jar");
+        Files.createDirectories(wrapper.getParent());
+        Files.writeString(wrapper, "#!/usr/bin/env bash\n");
+        Files.writeString(jar, "jar");
+        assertTrue(wrapper.toFile().setExecutable(true));
+        try {
+            System.clearProperty("kompile.cli.binary");
+            System.setProperty("kompile.cli.jar", jar.toString());
+            System.setProperty("kompile.install.dir", install.toString());
+            System.setProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY,
+                    java.util.UUID.randomUUID().toString());
+
+            McpToolInjectionSupport.CliLauncher launcher =
+                    McpToolInjectionSupport.findCliLauncher();
+
+            assertNotNull(launcher);
+            assertEquals(wrapper.toAbsolutePath().toString(), launcher.command());
+            assertTrue(launcher.prefixArgs().isEmpty());
+
+            System.clearProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+            McpToolInjectionSupport.CliLauncher bareMcpLauncher =
+                    McpToolInjectionSupport.findCliLauncher();
+            assertNotNull(bareMcpLauncher);
+            assertEquals(wrapper.toAbsolutePath().toString(), bareMcpLauncher.command());
+        } finally {
+            restoreProperty("kompile.cli.binary", previousBinary);
+            restoreProperty("kompile.cli.jar", previousJar);
+            restoreProperty("kompile.install.dir", previousInstall);
+            restoreProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, previousTranscript);
+        }
+    }
+
+    @Test
     void codexInjectionUsesStdioEvenWhenSseUrlIsAvailable() throws Exception {
         String previousHome = System.getProperty("user.home");
         String previousBinary = System.getProperty("kompile.cli.binary");
@@ -126,7 +243,7 @@ class McpToolInjectionTest {
             System.setProperty("kompile.cli.binary", staleBinary.toString());
             System.setProperty("kompile.cli.jar", executableJar.toString());
 
-            McpToolInjectionSupport.CliLauncher launcher = McpToolInjectionSupport.findCliLauncher();
+            CliProcessLauncher.Launcher launcher = CliProcessLauncher.find();
 
             assertNotNull(launcher);
             assertNotEquals(staleBinary.toString(), launcher.command());

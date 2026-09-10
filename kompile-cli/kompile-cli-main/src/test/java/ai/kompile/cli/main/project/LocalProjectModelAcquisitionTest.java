@@ -1,7 +1,6 @@
 /* Copyright 2025 Kompile Inc. Licensed under Apache-2.0. */
 package ai.kompile.cli.main.project;
 
-import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,6 +12,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LocalProjectModelAcquisitionTest {
 
@@ -41,27 +41,17 @@ class LocalProjectModelAcquisitionTest {
     }
 
     @Test
-    void convertedEncoderIsRegisteredWithItsExactRuntimeContract() throws Exception {
+    void convertedManagedEncoderRequiresItsPinnedSourceBundle() throws Exception {
         Path modelDirectory = Files.createDirectories(
                 tempDir.resolve("data/models/multilingual-e5-small"));
         Path converted = Files.write(modelDirectory.resolve("model.sdz"), new byte[2_048]);
         Files.writeString(modelDirectory.resolve("tokenizer.json"), "{}");
 
-        ModelEntry registered = LocalProjectModelAcquisition.registerConverted(
-                tempDir, "multilingual-e5-small", converted);
-
-        assertEquals("model.sdz", registered.getModelFile());
-        assertEquals("tokenizer.json", registered.getVocabFile());
-        assertEquals(384, registered.getMetadata().getEmbeddingDim());
-        assertEquals("MEAN", registered.getMetadata().getPoolingStrategy());
-        assertEquals("query: ", registered.getMetadata().getInputPrefix());
-        assertTrue(registered.getMetadata().getNormalizeOutput());
-        assertEquals(64, registered.getChecksum().length());
-        assertEquals(registered.getModelId(),
-                new RegistryService(tempDir.resolve("data/models"))
-                        .getModel("multilingual-e5-small").orElseThrow().getModelId());
-        assertTrue(Files.isRegularFile(tempDir.resolve("data/models/registry.json")));
-        assertTrue(Files.isRegularFile(tempDir.resolve("kompile.project.json")));
+        assertThrows(java.io.IOException.class, () ->
+                LocalProjectModelAcquisition.registerConverted(
+                        tempDir, "multilingual-e5-small", converted));
+        assertTrue(new RegistryService(tempDir.resolve("data/models"))
+                .getModel("multilingual-e5-small").isEmpty());
     }
 
     @Test
@@ -78,5 +68,25 @@ class LocalProjectModelAcquisitionTest {
         assertEquals("SOURCE", inventory.get("artifactStage"));
         assertEquals("CONVERSION_REQUIRED", inventory.get("runtimeStatus"));
         assertEquals(false, inventory.get("ready"));
+    }
+
+    @Test
+    void localGgufDirectoryImportIsReportedAsRuntimeReady() throws Exception {
+        Path bundle = Files.createDirectories(tempDir.resolve("qwen-bundle"));
+        Path gguf = Files.write(bundle.resolve("model.gguf"), new byte[]{1, 2, 3});
+        Path tokenizer = Files.writeString(bundle.resolve("tokenizer.json"), "{}");
+
+        LocalProjectModelAcquisition.Result result = LocalProjectModelAcquisition.acquire(
+                tempDir, "qwen-local", Map.of("localPath", bundle.toString()),
+                false, false);
+
+        assertEquals(gguf.toAbsolutePath().normalize(), result.modelPath());
+        assertEquals(tokenizer.toAbsolutePath().normalize(), result.tokenizerPath());
+        Map<String, Object> inventory = LocalProjectModelBootstrap.inventory(tempDir).stream()
+                .filter(item -> "qwen-local".equals(item.get("modelId")))
+                .findFirst().orElseThrow();
+        assertEquals("RUNTIME", inventory.get("artifactStage"));
+        assertEquals("NOT_PROBED", inventory.get("runtimeStatus"));
+        assertEquals(true, inventory.get("ready"));
     }
 }

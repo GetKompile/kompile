@@ -21,8 +21,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -63,6 +67,8 @@ public class NativeLibraryResolver {
 
     /** Kompile cache subdirectory under ~/.kompile/ */
     private static final String KOMPILE_NATIVE_LIBS = "native-libs";
+    private static final int MAX_CLASSPATH_NATIVE_CACHES = 8;
+    private static final long CLASSPATH_CACHE_GRACE_MILLIS = 24L * 60L * 60L * 1_000L;
 
     /** Runtime path propagated through Kompile's backend-isolated child launchers. */
     static final String ND4J_SHARED_RUNTIME_PATH =
@@ -821,9 +827,15 @@ public class NativeLibraryResolver {
         String classpath = System.getProperty("java.class.path", "");
         if (classpath.isEmpty()) return List.of();
 
-        Path cacheDir = getKompileNativeLibDir();
+        Path cacheRoot = getKompileNativeLibDir();
         Set<Path> resultDirs = new LinkedHashSet<>();
         String[] entries = classpath.split(File.pathSeparator);
+        List<Path> classpathEntries = Arrays.stream(entries)
+                .filter(entry -> entry != null && !entry.isBlank())
+                .map(Path::of)
+                .filter(Files::exists)
+                .toList();
+        Path cacheDir = versionedClasspathCache(cacheRoot, classpathEntries);
         int extractedCount = 0;
 
         for (String entry : entries) {
@@ -851,6 +863,134 @@ public class NativeLibraryResolver {
         }
 
         return new ArrayList<>(resultDirs);
+    }
+
+    /**
+     * Isolate extracted JNI/native payloads by the exact classpath artifact set. Reusing one flat
+     * directory allowed an old libnd4jcuda.so to survive a Java binding upgrade and crash child
+     * JVMs with UnsatisfiedLinkError. Path, size, and modification time make Maven/dist artifact
+     * replacement invalidate the extraction cache without recopying gigabytes on every launch.
+     */
+    static Path versionedClasspathCache(Path cacheRoot, Collection<Path> entries) {
+        if (cacheRoot == null) return null;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (Path entry : entries) {
+                Path normalized = entry.toAbsolutePath().normalize();
+                digest.update(normalized.toString().getBytes(StandardCharsets.UTF_8));
+                if (Files.exists(normalized)) {
+                    digest.update(Long.toString(Files.size(normalized)).getBytes(StandardCharsets.UTF_8));
+                    digest.update(Long.toString(Files.getLastModifiedTime(normalized).toMillis())
+                            .getBytes(StandardCharsets.UTF_8));
+                    if (Files.isRegularFile(normalized)) {
+                        updateArtifactSamples(digest, normalized);
+                    }
+                }
+                digest.update((byte) 0);
+            }
+            String fingerprint = HexFormat.of().formatHex(digest.digest()).substring(0, 20);
+            Path selected = cacheRoot.resolve("classpath-" + fingerprint);
+            Files.createDirectories(selected);
+            Files.setLastModifiedTime(selected,
+                    java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
+            pruneClasspathCaches(cacheRoot, selected);
+            return selected;
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        } catch (IOException io) {
+            throw new IllegalStateException("Unable to fingerprint native-library classpath", io);
+        }
+    }
+
+    private static void pruneClasspathCaches(Path cacheRoot, Path selected) {
+        if (!Files.isDirectory(cacheRoot)) {
+            return;
+        }
+        try (Stream<Path> children = Files.list(cacheRoot)) {
+            List<Path> caches = children
+                    .filter(Files::isDirectory)
+                    .filter(path -> path.getFileName().toString().startsWith("classpath-"))
+                    .sorted(Comparator.comparingLong(NativeLibraryResolver::lastModifiedMillis)
+                            .reversed())
+                    .collect(Collectors.toList());
+            int retained = 1; // Reserve one slot for the selected fingerprint.
+            long staleBefore = System.currentTimeMillis() - CLASSPATH_CACHE_GRACE_MILLIS;
+            for (Path cache : caches) {
+                if (cache.equals(selected) || retained++ < MAX_CLASSPATH_NATIVE_CACHES) {
+                    continue;
+                }
+                if (lastModifiedMillis(cache) < staleBefore) {
+                    deleteTreeBestEffort(cache);
+                }
+            }
+        } catch (IOException e) {
+            logger.log(Level.FINE, "Unable to prune stale native classpath caches", e);
+        }
+    }
+
+    private static long lastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException ignored) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    private static void deleteTreeBestEffort(Path root) {
+        try (Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                    // A running JVM may still have a platform library open; retain that cache.
+                }
+            });
+        } catch (IOException ignored) {
+            // Cache cleanup is opportunistic and must never block runtime startup.
+        }
+    }
+
+    private static void updateArtifactSamples(MessageDigest digest, Path artifact) throws IOException {
+        if (artifact.getFileName().toString().endsWith(".jar")) {
+            boolean nativeEntriesFound = false;
+            try (JarFile jar = new JarFile(artifact.toFile())) {
+                Enumeration<JarEntry> entries = jar.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    String name = entry.getName();
+                    String fileName = name.substring(name.lastIndexOf('/') + 1);
+                    if (!entry.isDirectory() && name.contains(PLATFORM) && isNativeLib(fileName)) {
+                        nativeEntriesFound = true;
+                        digest.update(name.getBytes(StandardCharsets.UTF_8));
+                        digest.update(Long.toString(entry.getSize()).getBytes(StandardCharsets.UTF_8));
+                        digest.update(Long.toString(entry.getCrc()).getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+            } catch (java.util.zip.ZipException notAJar) {
+                // A file with a .jar suffix can still be an incomplete download or test fixture.
+                // Fall through to byte sampling so cache invalidation remains deterministic.
+            }
+            if (nativeEntriesFound) {
+                return;
+            }
+        }
+        final int sampleSize = 64 * 1024;
+        long size = Files.size(artifact);
+        try (SeekableByteChannel channel = Files.newByteChannel(artifact, StandardOpenOption.READ)) {
+            ByteBuffer sample = ByteBuffer.allocate((int) Math.min(sampleSize, size));
+            while (sample.hasRemaining() && channel.read(sample) >= 0) {
+                // Fill the leading sample.
+            }
+            digest.update(sample.array(), 0, sample.position());
+            if (size > sampleSize) {
+                channel.position(Math.max(0L, size - sampleSize));
+                sample.clear();
+                while (sample.hasRemaining() && channel.read(sample) >= 0) {
+                    // Fill the trailing ZIP central-directory sample.
+                }
+                digest.update(sample.array(), 0, sample.position());
+            }
+        }
     }
 
     /**
@@ -925,14 +1065,29 @@ public class NativeLibraryResolver {
                 }
 
                 Path target = targetDir.resolve(fileName);
-                if (Files.exists(target)) {
+                if (Files.isRegularFile(target)
+                        && (entry.getSize() < 0 || Files.size(target) == entry.getSize())) {
                     count++; // Already extracted, still counts as available
                     continue;
                 }
 
-                try (InputStream is = jar.getInputStream(entry)) {
-                    Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
-                    target.toFile().setExecutable(true);
+                Path temp = Files.createTempFile(targetDir, "." + fileName + "-", ".tmp");
+                try {
+                    try (InputStream is = jar.getInputStream(entry)) {
+                        Files.copy(is, temp, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    if (entry.getSize() >= 0 && Files.size(temp) != entry.getSize()) {
+                        throw new IOException("Incomplete native extraction for " + fileName);
+                    }
+                    temp.toFile().setExecutable(true);
+                    try {
+                        Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                                StandardCopyOption.ATOMIC_MOVE);
+                    } catch (AtomicMoveNotSupportedException unsupported) {
+                        Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temp);
                 }
                 logger.fine("Extracted: " + fileName + " from " + jarPath.getFileName());
                 count++;
@@ -951,14 +1106,31 @@ public class NativeLibraryResolver {
      */
     private static List<Path> findInJavaCppCache(Path cacheDir) {
         List<Path> result = new ArrayList<>();
+        List<Path> zludaOnly = new ArrayList<>();
         try (Stream<Path> topLevel = Files.list(cacheDir)) {
             for (Path entry : topLevel.collect(Collectors.toList())) {
                 if (!Files.isDirectory(entry)) continue;
                 if (!entry.getFileName().toString().contains(PLATFORM)) continue;
-                result.addAll(findNativeLibDirectories(entry));
+                List<Path> found = findNativeLibDirectories(entry);
+                if (entry.getFileName().toString().contains("-zluda")) {
+                    // Deferred: the ZLUDA-shim bindings shadow the plain CUDA build when both
+                    // are cached (both match PLATFORM as a substring). Only keep them when no
+                    // plain nd4j-cuda bindings dir exists for this platform — on NVIDIA boxes
+                    // the shim's ROCm HIP pool is absent and even a 4-byte Nd4j allocation
+                    // then fails at backend init.
+                    zludaOnly.addAll(found);
+                } else {
+                    result.addAll(found);
+                }
             }
         } catch (IOException e) {
             logger.log(Level.FINE, "Error scanning JavaCPP cache: " + cacheDir, e);
+        }
+        boolean plainCudaPresent = result.stream().anyMatch(
+                path -> path.toString().contains("nd4j-cuda")
+                        && !path.toString().contains("-zluda"));
+        if (!plainCudaPresent) {
+            result.addAll(zludaOnly);
         }
 
         // Sort: javacpp base first, then blas, then everything else

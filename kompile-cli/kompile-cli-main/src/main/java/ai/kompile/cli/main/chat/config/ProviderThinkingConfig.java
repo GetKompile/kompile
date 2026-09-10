@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -23,12 +24,14 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /**
- * Loads provider-owned, documented thinking fallbacks from classpath resources.
+ * Loads provider-owned thinking fallbacks and selection-to-wire mappings from
+ * classpath resources.
  *
- * <p>Live provider metadata is resolved before this configuration is consulted.
- * Every resource must identify itself as {@code DOCUMENTED_FALLBACK}, name the
- * classpath resource, and point to an upstream authoritative source. Invalid or
- * missing resources fail closed and therefore never invent a thinking selector.</p>
+ * <p>Live provider metadata is resolved before fallback choices are consulted.
+ * Wire mappings remain transport metadata and therefore also apply to live
+ * selections. Every resource must identify itself as {@code DOCUMENTED_FALLBACK},
+ * name the classpath resource, and point to an upstream authoritative source.
+ * Invalid or missing resources fail closed and never invent a selector.</p>
  */
 final class ProviderThinkingConfig {
     static final String RESOURCE_ROOT = "/ai/kompile/cli/main/chat/providers/";
@@ -54,6 +57,17 @@ final class ProviderThinkingConfig {
             return Optional.empty();
         }
         return CACHE.computeIfAbsent(normalized, ProviderThinkingConfig::read);
+    }
+
+    /** Translate a provider-facing selection tier to the value sent on the wire. */
+    static String wireValue(String providerId, String selectedValue) {
+        if (selectedValue == null || selectedValue.isBlank()) {
+            return selectedValue;
+        }
+        String normalized = selectedValue.trim();
+        return load(providerId)
+                .map(config -> config.wireValue(normalized))
+                .orElse(normalized);
     }
 
     static void clearCacheForTests() {
@@ -95,6 +109,7 @@ final class ProviderThinkingConfig {
         }
 
         Source source = parseSource(root.path("source"), null);
+        Map<String, String> wireValues = parseWireValues(root.path("wireValues"));
         JsonNode profilesNode = root.path("profiles");
         if (!profilesNode.isArray()) {
             throw new IllegalArgumentException("profiles must be an array");
@@ -108,7 +123,29 @@ final class ProviderThinkingConfig {
                 metadataSource,
                 "classpath:" + resourcePath,
                 source,
+                wireValues,
                 List.copyOf(profiles));
+    }
+
+    private static Map<String, String> parseWireValues(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return Map.of();
+        }
+        if (!node.isObject()) {
+            throw new IllegalArgumentException("wireValues must be an object");
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        node.fields().forEachRemaining(entry -> {
+            String selected = entry.getKey() == null ? "" : entry.getKey().trim();
+            String wire = entry.getValue().isTextual()
+                    ? entry.getValue().asText().trim() : "";
+            if (selected.isBlank() || wire.isBlank()) {
+                throw new IllegalArgumentException(
+                        "wireValues keys and values must be non-blank strings");
+            }
+            values.put(selected, wire);
+        });
+        return Map.copyOf(values);
     }
 
     private static Profile parseProfile(JsonNode node, Source inheritedSource) {
@@ -207,9 +244,15 @@ final class ProviderThinkingConfig {
             String metadataSource,
             String resourcePath,
             Source source,
+            Map<String, String> wireValues,
             List<Profile> profiles) {
         Config {
+            wireValues = wireValues == null ? Map.of() : Map.copyOf(wireValues);
             profiles = profiles == null ? List.of() : List.copyOf(profiles);
+        }
+
+        String wireValue(String selectedValue) {
+            return wireValues.getOrDefault(selectedValue, selectedValue);
         }
 
         ThinkingCapabilityProvider.ThinkingCapabilities resolve(

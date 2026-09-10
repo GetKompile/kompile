@@ -54,6 +54,7 @@ class SlackChannelAdapterTest {
         adapter.setApiClient(slackApiClient);
         adapter.setBotToken("xoxb-test-token");
         adapter.setAppToken("xapp-test-token");
+        adapter.addAllowedChannel("C12345");
 
         // Configure a channel
         AdapterConfig config = AdapterConfig.defaults("C12345", "test-agent");
@@ -73,12 +74,12 @@ class SlackChannelAdapterTest {
     }
 
     @Test
-    @DisplayName("Start without API client does not throw")
+    @DisplayName("Start without API client fails and remains stopped")
     void testStartWithoutApiClient() {
         SlackChannelAdapter adapterNoClient = new SlackChannelAdapter(agentService);
-        adapterNoClient.start();
 
-        assertTrue(adapterNoClient.isRunning());
+        assertThrows(IllegalStateException.class, adapterNoClient::start);
+        assertFalse(adapterNoClient.isRunning());
     }
 
     @Test
@@ -270,29 +271,27 @@ class SlackChannelAdapterTest {
     }
 
     @Test
-    @DisplayName("Empty whitelist allows all channels")
-    void testEmptyWhitelistAllowsAll() {
-        // No addAllowedChannel calls = empty whitelist = all allowed
+    @DisplayName("Empty whitelist denies inbound channels")
+    void testEmptyWhitelistDeniesAll() {
+        SlackChannelAdapter denyByDefault = new SlackChannelAdapter(agentService);
+        denyByDefault.setApiClient(slackApiClient);
+        denyByDefault.setBotToken("xoxb-test-token");
+        denyByDefault.setAppToken("xapp-test-token");
+        denyByDefault.updateConfig(AdapterConfig.defaults("C12345", "test-agent"));
         SlackApiClient.SlackUser humanUser = new SlackApiClient.SlackUser(
                 "U999", "testuser", "Test User", null, false);
         when(slackApiClient.getUsers()).thenReturn(List.of(humanUser));
 
-        AgentResponse agentResponse = AgentResponse.builder()
-                .response("OK")
-                .success(true)
-                .build();
-        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
-
-        adapter.start();
+        denyByDefault.start();
 
         SlackApiClient.SlackMessage message = new SlackApiClient.SlackMessage(
                 "ts1", "C12345", "U999", "testuser",
                 "<@BOT> hello", null, null, null, null
         );
 
-        adapter.onAppMention(message);
+        denyByDefault.onAppMention(message);
 
-        verify(agentExecutor).execute(any(AgentRequest.class));
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Mention Cleaning ──

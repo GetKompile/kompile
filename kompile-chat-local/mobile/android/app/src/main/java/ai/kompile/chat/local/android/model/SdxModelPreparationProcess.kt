@@ -16,6 +16,7 @@ import android.os.Messenger
 import android.os.Process
 import android.os.RemoteException
 import android.os.SystemClock
+import android.util.Log
 import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCrashRecovery
@@ -33,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 private const val IMPORTER_PROCESS_SUFFIX = ":sdx_model_import"
+private const val MODEL_PREPARATION_TAG = "SdxModelPreparation"
 private const val MSG_PID = 1
 private const val MSG_PREPARE = 2
 private const val EVENT_RESPONSE = 100
@@ -40,16 +42,19 @@ private const val EVENT_PROGRESS = 101
 private const val KEY_REQUEST_ID = "request_id"
 private const val KEY_PREPARATION_STAGE = "preparation_stage"
 private const val KEY_PID = "pid"
+private const val KEY_PROCESS_START_TIME_TICKS = "process_start_time_ticks"
 private const val KEY_MODEL_PATH = "model_path"
 private const val KEY_TOKENIZER_SOURCE_PATH = "tokenizer_source_path"
 private const val KEY_VERIFIED_SHA256 = "verified_sha256"
 private const val KEY_VERIFIED_BYTES = "verified_bytes"
 private const val KEY_HAS_VERIFIED_BYTES = "has_verified_bytes"
-private const val KEY_WEIGHT_OPTIMIZATION = "weight_optimization"
-private const val KEY_KV_CACHE_OPTIMIZATION = "kv_cache_optimization"
-private const val KEY_TENSOR_BATCH_SIZE = "tensor_batch_size"
-private const val KEY_USE_MEMORY_MAPPING = "use_memory_mapping"
-private const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
+// Preparation-profile keys are owned by ModelPreparationOptions.WireKeys — the single
+// vocabulary shared by the request bundle, the response bundle, and preferences.
+private val KEY_WEIGHT_OPTIMIZATION = ModelPreparationOptions.Companion.WireKeys.WEIGHT_OPTIMIZATION
+private val KEY_KV_CACHE_OPTIMIZATION = ModelPreparationOptions.Companion.WireKeys.KV_CACHE_OPTIMIZATION
+private val KEY_TENSOR_BATCH_SIZE = ModelPreparationOptions.Companion.WireKeys.TENSOR_BATCH_SIZE
+private val KEY_USE_MEMORY_MAPPING = ModelPreparationOptions.Companion.WireKeys.USE_MEMORY_MAPPING
+private val KEY_DIAGNOSTIC_MODE = ModelPreparationOptions.Companion.WireKeys.DIAGNOSTIC_MODE
 private const val KEY_OPERATION_ATTEMPT_ID = "operation_attempt_id"
 private const val KEY_OPERATION_TERMINAL = "operation_terminal"
 private const val KEY_SUCCESS = "success"
@@ -84,6 +89,26 @@ private const val MAX_REMOTE_STACK_CHARS = 512 * 1024
 internal fun sdxImporterProcessName(packageName: String): String =
     packageName + IMPORTER_PROCESS_SUFFIX
 
+internal fun sdxImporterProcessStartTimeTicks(
+    pid: Int,
+    readStat: (Int) -> String = { watchedPid -> File("/proc/$watchedPid/stat").readText() },
+): Long? = runCatching {
+    val stat = readStat(pid)
+    val commandEnd = stat.lastIndexOf(')')
+    require(commandEnd > 0 && commandEnd + 2 < stat.length)
+    val fieldsAfterCommand = stat.substring(commandEnd + 2).trim().split(Regex("\\s+"))
+    require(fieldsAfterCommand.size > 19)
+    fieldsAfterCommand[19].toLong().takeIf { it > 0L }
+}.getOrNull()
+
+internal fun sdxImporterProcessMatches(pid: Int, expectedStartTimeTicks: Long): Boolean =
+    sdxImporterProcessStartTimeTicks(pid) == expectedStartTimeTicks
+
+/** Prove the disposable importer is gone before deleting its shared model cache. */
+internal fun retireSdxImporterWorkerForStorageMutation(context: Context) {
+    SdxModelPreparationClient.retireForStorageMutation(context.applicationContext)
+}
+
 internal fun isFrameworkOnlySdxWireValueClass(valueClass: Class<*>): Boolean =
     valueClass == String::class.java ||
         valueClass == Boolean::class.javaObjectType ||
@@ -115,11 +140,7 @@ internal fun buildSdxModelPreparationRequest(
         putString(KEY_VERIFIED_SHA256, verifiedSourceSha256)
         putBoolean(KEY_HAS_VERIFIED_BYTES, verifiedSourceBytes != null)
         if (verifiedSourceBytes != null) putLong(KEY_VERIFIED_BYTES, verifiedSourceBytes)
-        putString(KEY_WEIGHT_OPTIMIZATION, options.weightOptimization.name)
-        putString(KEY_KV_CACHE_OPTIMIZATION, options.kvCacheOptimization.name)
-        putInt(KEY_TENSOR_BATCH_SIZE, options.tensorBatchSize)
-        putBoolean(KEY_USE_MEMORY_MAPPING, options.useMemoryMapping)
-        putString(KEY_DIAGNOSTIC_MODE, options.diagnosticMode.name)
+        options.toWireBundle(this)
         putString(KEY_OPERATION_ATTEMPT_ID, operationAttemptId)
     },
     "SDX model preparation request"
@@ -205,6 +226,17 @@ internal data class PreparedModelPayload(
  */
 internal object SdxModelPreparationClient {
 
+    fun retireForStorageMutation(context: Context) {
+        val connection = SdxModelPreparationConnection.bind(context) { }
+        val pid = try {
+            connection.requireRemotePid()
+        } catch (failure: Throwable) {
+            connection.close()
+            throw failure
+        }
+        retireImporter(connection, pid, connection.requireRemoteStartTimeTicks())?.let { throw it }
+    }
+
     fun prepare(
         context: Context,
         model: File,
@@ -219,6 +251,16 @@ internal object SdxModelPreparationClient {
         check(Process.myPid() != importerPidIfCurrentProcess(processName)) {
             "GGUF preparation client cannot run inside the importer process."
         }
+        onPreparationStage(PreparationStage.MEMORY_PREFLIGHT)
+        val memoryPreflight = modelPreparationMemoryPreflight(currentModelPreparationMemorySnapshot())
+        if (!memoryPreflight.thresholdMet) {
+            onPreparationStage(PreparationStage.MEMORY_PRESSURE_WARNING)
+            Log.w(
+                MODEL_PREPARATION_TAG,
+                memoryPreflight.userMessage(model.name) +
+                    " Continuing immediately; checking prepared artifacts before cold conversion."
+            )
+        }
         val connection = SdxModelPreparationConnection.bind(
             applicationContext,
             onPreparationStage
@@ -226,6 +268,7 @@ internal object SdxModelPreparationClient {
         var pid = -1
         try {
             pid = connection.requireRemotePid()
+            val processStartTimeTicks = connection.requireRemoteStartTimeTicks()
             check(pid != Process.myPid()) {
                 "SDX importer service was not isolated: importer pid=$pid app pid=${Process.myPid()}"
             }
@@ -279,7 +322,7 @@ internal object SdxModelPreparationClient {
                 }
                 throw failure
             } finally {
-                retireImporter(connection, pid)?.let { teardownFailure ->
+                retireImporter(connection, pid, processStartTimeTicks)?.let { teardownFailure ->
                     val failure = primaryFailure
                     if (failure == null) {
                         throw teardownFailure
@@ -297,10 +340,11 @@ internal object SdxModelPreparationClient {
 
     private fun retireImporter(
         connection: SdxModelPreparationConnection,
-        pid: Int
+        pid: Int,
+        startTimeTicks: Long,
     ): ChatException? {
         connection.close()
-        if (pid <= 0 || awaitProcessExit(pid)) return null
+        if (pid <= 0 || awaitProcessExit(pid, startTimeTicks)) return null
         return ChatException(
             "The SDX importer process $pid did not terminate within " +
                 "$IMPORTER_EXIT_WAIT_MILLIS ms; accelerator loading was stopped to avoid retaining " +
@@ -308,13 +352,13 @@ internal object SdxModelPreparationClient {
         )
     }
 
-    private fun awaitProcessExit(pid: Int): Boolean {
+    private fun awaitProcessExit(pid: Int, startTimeTicks: Long): Boolean {
         val deadline = SystemClock.elapsedRealtime() + IMPORTER_EXIT_WAIT_MILLIS
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (!File("/proc/$pid").exists()) return true
+            if (!sdxImporterProcessMatches(pid, startTimeTicks)) return true
             SystemClock.sleep(PROCESS_POLL_MILLIS)
         }
-        return !File("/proc/$pid").exists()
+        return !sdxImporterProcessMatches(pid, startTimeTicks)
     }
 
     private fun reloadPersistedOperation(
@@ -478,6 +522,9 @@ private class SdxModelPreparationConnection private constructor(
     @Volatile
     private var remotePid: Int = -1
 
+    @Volatile
+    private var remoteStartTimeTicks: Long = -1L
+
     override fun onServiceConnected(name: ComponentName, service: IBinder) {
         try {
             service.linkToDeath(this, 0)
@@ -516,9 +563,17 @@ private class SdxModelPreparationConnection private constructor(
         )
         val pid = reply.getInt(KEY_PID, -1)
         if (pid <= 0) throw ChatException("The SDX importer service returned an invalid pid: $pid")
+        val startTimeTicks = reply.getLong(KEY_PROCESS_START_TIME_TICKS, -1L)
+        if (startTimeTicks <= 0L) {
+            throw ChatException("The SDX importer service returned no process start identity")
+        }
         remotePid = pid
+        remoteStartTimeTicks = startTimeTicks
         return pid
     }
+
+    fun requireRemoteStartTimeTicks(): Long = remoteStartTimeTicks.takeIf { it > 0L }
+        ?: throw ChatException("The SDX importer process start identity is unavailable")
 
     fun prepare(data: Bundle, processId: Int): Bundle = request(
         method = MSG_PREPARE,
@@ -555,13 +610,17 @@ private class SdxModelPreparationConnection private constructor(
                 if (pendingReply.completed.await(IMPORTER_CALL_POLL_MILLIS, TimeUnit.MILLISECONDS)) break
                 connectionFailure.get()?.let { throw it.asException() }
                 val watchedPid = if (processId > 0) processId else remotePid
-                if (watchedPid > 0 && !File("/proc/$watchedPid").exists()) {
+                if (watchedPid > 0 && remoteStartTimeTicks > 0L &&
+                    !sdxImporterProcessMatches(watchedPid, remoteStartTimeTicks)
+                ) {
                     throw ChatException(
                         "The app-private SDX importer process $watchedPid disappeared during IPC method $method."
                     )
                 }
                 if (SystemClock.elapsedRealtime() >= deadline) {
-                    if (watchedPid > 0 && File("/proc/$watchedPid").exists()) {
+                    if (watchedPid > 0 && remoteStartTimeTicks > 0L &&
+                        sdxImporterProcessMatches(watchedPid, remoteStartTimeTicks)
+                    ) {
                         Process.killProcess(watchedPid)
                     }
                     throw ChatException(
@@ -747,6 +806,11 @@ class SdxModelPreparationService : Service() {
                 Bundle().apply {
                     putBoolean(KEY_SUCCESS, true)
                     putInt(KEY_PID, Process.myPid())
+                    putLong(
+                        KEY_PROCESS_START_TIME_TICKS,
+                        sdxImporterProcessStartTimeTicks(Process.myPid())
+                            ?: error("Android did not expose the importer process start identity"),
+                    )
                 }
             )
             MSG_PREPARE -> executePreparation(replyTo, requestId, requestData)

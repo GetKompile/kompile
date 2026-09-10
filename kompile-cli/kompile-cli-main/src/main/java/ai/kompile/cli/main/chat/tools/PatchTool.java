@@ -61,14 +61,15 @@ public class PatchTool implements CliTool {
                 "omit file_path. Creates new files from '--- /dev/null' or '*** Add File:' patches. " +
                 "Wrong @@ line numbers and whitespace drift are tolerated (automatic retry with " +
                 "whitespace-insensitive matching and git apply --recount). Use this for multi-hunk or " +
-                "multi-file changes; edit is still simplest for a single small replacement.";
+                "multi-file changes; edit is still simplest for a single small replacement. Managed " +
+                "memory paths are rejected; use the memory tool instead.";
     }
 
     @Override
     public String compactHint() {
         return "Apply unified diff OR '*** Begin Patch' apply_patch input — file_path+patch for one "
                 + "file, diff headers for multi-file. Wrong @@ numbers and whitespace drift are "
-                + "auto-recovered; new files via /dev/null or Add File. Good for multi-hunk changes.";
+                + "auto-recovered; new files via /dev/null or Add File. Managed memory → memory tool.";
     }
 
     @Override
@@ -125,7 +126,7 @@ public class PatchTool implements CliTool {
                 return applyApplyPatchFormat(context, patch, filePath);
             }
             if (!filePath.isEmpty()) {
-                return applySingleFilePatch(context, context.resolvePath(filePath), patch);
+                return applySingleFilePatch(context, context.resolveMutationPath(filePath), patch);
             }
             return applyHeaderPatch(context, patch);
         } catch (ToolExecutionException e) {
@@ -151,11 +152,11 @@ public class PatchTool implements CliTool {
         List<String> summary = new ArrayList<>();
 
         for (ApplyPatchFormat.FileOp op : ops) {
-            Path path = context.resolvePath(op.path);
+            Path path = context.resolveMutationPath(op.path);
             if (op.type != ApplyPatchFormat.OpType.ADD && !Files.exists(path)
                     && ops.size() == 1 && !filePathParam.isEmpty()) {
                 // Rescue a mislabeled section path when the explicit file_path resolves.
-                Path fallback = context.resolvePath(filePathParam);
+                Path fallback = context.resolveMutationPath(filePathParam);
                 if (Files.exists(fallback)) path = fallback;
             }
             switch (op.type) {
@@ -196,7 +197,7 @@ public class PatchTool implements CliTool {
                                 + "or use the `edit` tool for a targeted replacement.");
                     }
                     if (op.moveTo != null && !op.moveTo.isBlank()) {
-                        Path target = context.resolvePath(op.moveTo);
+                        Path target = context.resolveMutationPath(op.moveTo);
                         context.checkPermission(permissionKey(), "Create file via patch (move target): " + target);
                         pendingWrites.put(target, updated);
                         deletions.add(path);
@@ -491,7 +492,7 @@ public class PatchTool implements CliTool {
         for (String rawLine : patch.split("\\R")) {
             Matcher git = DIFF_GIT.matcher(rawLine);
             if (git.matches()) {
-                paths.add(context.resolvePath(git.group(2)));
+                paths.add(context.resolveMutationPath(git.group(2)));
                 pendingOldPath = null;
                 continue;
             }
@@ -507,7 +508,7 @@ public class PatchTool implements CliTool {
                 String newPath = normalizePatchPath(newFile.group(1));
                 String target = "/dev/null".equals(newPath) ? pendingOldPath : newPath;
                 if (target != null && !target.isBlank() && !"/dev/null".equals(target)) {
-                    paths.add(context.resolvePath(stripDiffPrefix(target)));
+                    paths.add(context.resolveMutationPath(stripDiffPrefix(target)));
                 }
                 pendingOldPath = null;
             }

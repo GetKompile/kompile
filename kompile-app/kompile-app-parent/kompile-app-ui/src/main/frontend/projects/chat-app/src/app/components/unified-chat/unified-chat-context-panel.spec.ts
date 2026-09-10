@@ -49,7 +49,8 @@ function createTestBed() {
     'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
-    'getAllAgents', 'getAvailableAgents', 'getKompileLocalStatus'
+    'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
+    'refreshChatHarnessAgents', 'getKompileLocalStatus'
   ], { agents$: new Subject<any[]>().asObservable() });
   const chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
     'getSessions', 'saveSession', 'deleteSession', 'getSession'
@@ -86,6 +87,8 @@ function createTestBed() {
   ragServiceSpy.buildOptions.and.returnValue({});
   agentServiceSpy.getAllAgents.and.returnValue(of([]));
   agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
+  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
+  agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
   agentServiceSpy.getKompileLocalStatus.and.returnValue(of({ connected: false, modelLoaded: false, stagingUrl: null } as any));
   chatStorageServiceSpy.getSessions.and.returnValue([]);
   chatHistoryServiceSpy.getSessions.and.returnValue(of([]));

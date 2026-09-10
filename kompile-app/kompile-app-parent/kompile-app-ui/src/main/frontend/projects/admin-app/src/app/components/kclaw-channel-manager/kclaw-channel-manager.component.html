@@ -1,166 +1,243 @@
 <div class="channel-manager">
+  <mat-card class="browser-login" *ngIf="authenticationRequired">
+    <mat-card-header>
+      <mat-card-title>Authorize channel administration</mat-card-title>
+      <mat-card-subtitle>Channel credentials require a short-lived CLI authorization.</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <p>Run <code>kompile auth channel web-login</code>, then enter its one-time code here.</p>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>One-time login code</mat-label>
+        <input matInput type="password" [(ngModel)]="loginCode" autocomplete="one-time-code"
+               (keyup.enter)="authenticateBrowser()">
+      </mat-form-field>
+    </mat-card-content>
+    <mat-card-actions align="end">
+      <button mat-raised-button color="primary" (click)="authenticateBrowser()"
+              [disabled]="!loginCode.trim()">Authorize</button>
+    </mat-card-actions>
+  </mat-card>
+
+  <ng-container *ngIf="!authenticationRequired">
   <div class="header-row">
-    <h3>Channel Management</h3>
+    <div>
+      <h3>Channel connections</h3>
+      <p>Connect external messaging providers to the same agents used by Kompile CLI and web chat.</p>
+    </div>
+    <div class="new-connection" *ngIf="!showConfig">
+      <mat-form-field appearance="outline">
+        <mat-label>Provider</mat-label>
+        <mat-select [(value)]="newProviderId">
+          <mat-option *ngFor="let provider of providers" [value]="provider.id">
+            {{ provider.displayName }}
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+      <button mat-raised-button color="primary" (click)="openCreate()" [disabled]="!newProviderId">
+        <mat-icon>add</mat-icon> New connection
+      </button>
+    </div>
   </div>
 
-  <!-- Channel List -->
-  <div class="channel-grid" *ngIf="!showConfig">
-    <mat-card *ngFor="let channel of channels" class="channel-card">
+  <div class="empty-state" *ngIf="!showConfig && connections.length === 0">
+    <mat-icon>forum</mat-icon>
+    <p>No channel connections are configured.</p>
+  </div>
+
+  <div class="channel-grid" *ngIf="!showConfig && connections.length > 0">
+    <mat-card *ngFor="let connection of connections" class="channel-card">
       <mat-card-header>
-        <mat-icon mat-card-avatar>{{ getChannelIcon(channel.channelName) }}</mat-icon>
-        <mat-card-title>{{ channel.channelName | titlecase }}</mat-card-title>
-        <mat-card-subtitle>
-          <mat-chip [color]="channel.running ? 'primary' : 'warn'" selected>
-            {{ channel.running ? 'Running' : 'Stopped' }}
-          </mat-chip>
-        </mat-card-subtitle>
+        <mat-icon mat-card-avatar>{{ getChannelIcon(connection.providerId) }}</mat-icon>
+        <mat-card-title>{{ connection.name }}</mat-card-title>
+        <mat-card-subtitle>{{ connection.providerId | titlecase }}</mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
-        <p *ngIf="channel.config">
-          Agent: <strong>{{ channel.config.agentId || 'default' }}</strong>
-        </p>
+        <div class="status-row">
+          <mat-chip [color]="connection.runtimeState === 'RUNNING' ? 'primary' :
+                    connection.runtimeState === 'ERROR' ? 'warn' : undefined" selected>
+            {{ connection.runtimeState }}
+          </mat-chip>
+          <span>{{ engineStatus(connection.engine)?.displayName || connection.engine }}</span>
+        </div>
+        <dl>
+          <dt>Agent</dt><dd>{{ connection.agentId }}</dd>
+          <dt *ngIf="connection.model">Model</dt><dd *ngIf="connection.model">{{ connection.model }}</dd>
+          <dt>Credentials</dt><dd>{{ connection.configuredSecrets.join(', ') || 'none' }}</dd>
+        </dl>
+        <p class="error" *ngIf="connection.lastError">{{ connection.lastError }}</p>
       </mat-card-content>
       <mat-card-actions>
-        <button mat-button color="primary" (click)="configureChannel(channel)">
-          <mat-icon>settings</mat-icon>
-          Configure
+        <button mat-button color="primary" (click)="editConnection(connection)">
+          <mat-icon>settings</mat-icon> Configure
         </button>
-        <button mat-raised-button
-          [color]="channel.running ? 'warn' : 'primary'"
-          (click)="channel.running ? stopChannel(channel.channelName) : startChannel(channel.channelName)">
-          <mat-icon>{{ channel.running ? 'stop' : 'play_arrow' }}</mat-icon>
-          {{ channel.running ? 'Stop' : 'Start' }}
+        <button mat-raised-button [color]="connection.enabled ? 'warn' : 'primary'"
+                (click)="toggle(connection)">
+          <mat-icon>{{ connection.enabled ? 'stop' : 'play_arrow' }}</mat-icon>
+          {{ connection.enabled ? 'Disable' : 'Run' }}
         </button>
-        <span *ngIf="supportsOAuth(channel.channelName)" class="oauth-actions">
-          <button mat-stroked-button *ngIf="!oauthStatus[channel.channelName]?.connected"
-            (click)="connectOAuth(channel.channelName)">
-            <mat-icon>link</mat-icon>
-            Connect with {{ channel.channelName | titlecase }}
-          </button>
-          <span *ngIf="oauthStatus[channel.channelName]?.connected" class="connected-badge">
-            <mat-icon color="primary">check_circle</mat-icon>
-            Connected{{ oauthStatus[channel.channelName].teamName ? ' - ' + oauthStatus[channel.channelName].teamName : '' }}
-            <button mat-icon-button color="warn" (click)="disconnectOAuth(channel.channelName)" matTooltip="Disconnect">
-              <mat-icon>link_off</mat-icon>
-            </button>
-          </span>
-        </span>
+        <button mat-icon-button color="warn" (click)="disconnect(connection)"
+                matTooltip="Disconnect and delete credentials">
+          <mat-icon>delete</mat-icon>
+        </button>
       </mat-card-actions>
     </mat-card>
   </div>
 
-  <!-- Channel Configuration -->
-  <mat-card class="config-card" *ngIf="showConfig && selectedChannel">
+  <mat-card class="config-card" *ngIf="showConfig && selectedProvider && form as channelForm">
     <mat-card-header>
-      <mat-card-title>
-        Configure {{ selectedChannel.channelName | titlecase }}
-      </mat-card-title>
+      <mat-card-title>{{ editing ? 'Configure ' + editing.name : 'Connect ' + selectedProvider.displayName }}</mat-card-title>
+      <mat-card-subtitle>{{ selectedProvider.description }}</mat-card-subtitle>
     </mat-card-header>
     <mat-card-content>
-      <!-- Telegram Config -->
-      <form [formGroup]="telegramForm" *ngIf="selectedChannel.channelName === 'telegram'" class="config-form">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Bot Token</mat-label>
-          <input matInput formControlName="botToken" type="password">
-          <mat-hint>Get from &#64;BotFather</mat-hint>
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Allowed Chat IDs</mat-label>
-          <input matInput formControlName="allowedChatIds" placeholder="123456789,987654321">
-          <mat-hint>Comma-separated chat IDs</mat-hint>
-        </mat-form-field>
-      </form>
-
-      <!-- Discord Config -->
-      <form [formGroup]="discordForm" *ngIf="selectedChannel.channelName === 'discord'" class="config-form">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Bot Token</mat-label>
-          <input matInput formControlName="botToken" type="password">
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Allowed Channel IDs</mat-label>
-          <input matInput formControlName="allowedChannelIds">
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Allowed Guild IDs</mat-label>
-          <input matInput formControlName="allowedGuildIds">
-        </mat-form-field>
-      </form>
-
-      <!-- Slack Config -->
-      <form [formGroup]="slackForm" *ngIf="selectedChannel.channelName === 'slack'" class="config-form">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Bot Token</mat-label>
-          <input matInput formControlName="botToken" type="password">
-          <mat-hint>xoxb-...</mat-hint>
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>App Token</mat-label>
-          <input matInput formControlName="appToken" type="password">
-          <mat-hint>xapp-...</mat-hint>
-        </mat-form-field>
-        <mat-slide-toggle formControlName="respondToAllMessages">
-          Respond to all messages (not just mentions)
-        </mat-slide-toggle>
-      </form>
-
-      <!-- WhatsApp Config -->
-      <form [formGroup]="whatsappForm" *ngIf="selectedChannel.channelName === 'whatsapp'" class="config-form">
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Access Token</mat-label>
-          <input matInput formControlName="accessToken" type="password">
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Phone Number ID</mat-label>
-          <input matInput formControlName="phoneNumberId">
-        </mat-form-field>
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Verify Token</mat-label>
-          <input matInput formControlName="verifyToken">
-        </mat-form-field>
-      </form>
-
-      <!-- Email Config -->
-      <form [formGroup]="emailForm" *ngIf="selectedChannel.channelName === 'email'" class="config-form">
+      <form [formGroup]="channelForm" class="config-form">
         <div class="form-row">
           <mat-form-field appearance="outline">
-            <mat-label>IMAP Host</mat-label>
-            <input matInput formControlName="imapHost">
+            <mat-label>Connection name</mat-label>
+            <input matInput formControlName="name" [readonly]="!!editing">
+            <mat-hint>Stable lowercase identifier</mat-hint>
           </mat-form-field>
           <mat-form-field appearance="outline">
-            <mat-label>IMAP Port</mat-label>
-            <input matInput type="number" formControlName="imapPort">
+            <mat-label>Provider</mat-label>
+            <input matInput formControlName="providerId" readonly>
           </mat-form-field>
         </div>
+
         <div class="form-row">
           <mat-form-field appearance="outline">
-            <mat-label>Username</mat-label>
-            <input matInput formControlName="username">
+            <mat-label>Inbound chat engine</mat-label>
+            <mat-select formControlName="engine">
+              <mat-option *ngFor="let engine of engines" [value]="engine.engine"
+                          [disabled]="!engine.available && engine.engine !== editing?.engine">
+                {{ engine.displayName }} — {{ engine.available ? 'ready' : engine.status }}
+              </mat-option>
+            </mat-select>
           </mat-form-field>
           <mat-form-field appearance="outline">
-            <mat-label>Password</mat-label>
-            <input matInput formControlName="password" type="password">
+            <mat-label>Agent ID</mat-label>
+            <input matInput formControlName="agentId" placeholder="jarvis"
+                   [readonly]="!selectedEngine()?.supportsAgent">
+            <mat-hint *ngIf="!selectedEngine()?.supportsAgent">Not used by this engine.</mat-hint>
           </mat-form-field>
         </div>
-        <div class="form-row">
-          <mat-form-field appearance="outline">
-            <mat-label>SMTP Host</mat-label>
-            <input matInput formControlName="smtpHost">
-          </mat-form-field>
-          <mat-form-field appearance="outline">
-            <mat-label>SMTP Port</mat-label>
-            <input matInput type="number" formControlName="smtpPort">
-          </mat-form-field>
-        </div>
+
         <mat-form-field appearance="outline" class="full-width">
-          <mat-label>From Address</mat-label>
-          <input matInput formControlName="fromAddress">
+          <mat-label>Model override</mat-label>
+          <input matInput formControlName="model" placeholder="Use engine default"
+                 [readonly]="!selectedEngine()?.supportsModel">
+          <mat-hint>{{ selectedEngine()?.supportsModel
+            ? 'Leave empty to use the CLI default.' : 'Not used by this engine.' }}</mat-hint>
         </mat-form-field>
+
+        <h4>Provider settings</h4>
+        <div formGroupName="settings" class="field-list">
+          <ng-container *ngFor="let field of selectedProvider.settings">
+            <mat-slide-toggle *ngIf="field.type === 'BOOLEAN'" [formControlName]="field.name">
+              {{ field.label }}
+            </mat-slide-toggle>
+            <mat-form-field *ngIf="field.type !== 'BOOLEAN'" appearance="outline" class="full-width">
+              <mat-label>{{ field.label }}</mat-label>
+              <input matInput [formControlName]="field.name"
+                     [type]="field.type === 'INTEGER' ? 'number' : 'text'"
+                     [placeholder]="field.type.endsWith('_LIST') ? 'Comma-separated values' : ''">
+              <mat-hint>{{ field.description }}</mat-hint>
+            </mat-form-field>
+          </ng-container>
+        </div>
+
+        <h4>Credentials</h4>
+        <p class="secret-note">Credentials are encrypted on the server. Existing values are never sent back to this page.</p>
+        <div formGroupName="secrets" class="field-list">
+          <mat-form-field *ngFor="let field of selectedProvider.secrets" appearance="outline" class="full-width">
+            <mat-label>{{ field.label }}</mat-label>
+            <input matInput [formControlName]="field.name" type="password" autocomplete="new-password">
+            <mat-hint>
+              {{ editing?.configuredSecrets?.includes(field.name) ? 'Configured — leave blank to keep it.' : field.description }}
+              <span *ngIf="field.environmentHint"> CLI env: {{ field.environmentHint }}</span>
+            </mat-hint>
+          </mat-form-field>
+        </div>
+
+        <div class="pairing-box" *ngIf="selectedProvider.id === 'whatsapp'">
+          <strong>Meta webhook callback</strong>
+          <code>{{ whatsAppWebhookUrl() }}</code>
+          <p>Configure this HTTPS URL in the Meta app. Verification and signed payloads are routed
+            to this named connection by verify token, app secret, and phone number ID.</p>
+        </div>
+
+        <mat-slide-toggle formControlName="enabled">Enable and run after saving</mat-slide-toggle>
       </form>
+
+      <section class="operations" *ngIf="editing">
+        <h4>Delivery test</h4>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Target</mat-label>
+            <input matInput [(ngModel)]="testTarget" placeholder="Chat, channel, address, or phone">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Message</mat-label>
+            <input matInput [(ngModel)]="testMessage" placeholder="Kompile channel test">
+          </mat-form-field>
+          <button mat-stroked-button color="primary" (click)="sendTest()"
+                  [disabled]="editing?.runtimeState !== 'RUNNING'">Send</button>
+        </div>
+      </section>
+
+      <section class="operations telegram" *ngIf="editing?.providerId === 'telegram'">
+        <div class="section-heading">
+          <h4>Telegram ownership and pairing</h4>
+          <button mat-button (click)="refreshTelegramHealth()"><mat-icon>refresh</mat-icon> Refresh health</button>
+        </div>
+
+        <div class="health-grid" *ngIf="telegramDiagnostics">
+          <span>Bot</span><strong>&#64;{{ telegramDiagnostics.botUsername }} ({{ telegramDiagnostics.botId }})</strong>
+          <span>Poller</span><strong>{{ telegramDiagnostics.pollerAlive ? 'alive' : 'stopped' }}</strong>
+          <span>Next offset</span><strong>{{ telegramDiagnostics.nextOffset }}</strong>
+          <span>Last poll</span><strong>{{ telegramDiagnostics.lastSuccessfulPoll || 'never' }}</strong>
+        </div>
+
+        <div class="webhook-warning" *ngIf="telegramWebhook?.configured">
+          <mat-icon color="warn">warning</mat-icon>
+          <div>
+            <strong>A webhook on {{ telegramWebhook?.host }} owns this bot.</strong>
+            <p>Polling will remain disabled until you explicitly delete that webhook.</p>
+            <mat-checkbox [(ngModel)]="dropPendingUpdates">Drop pending updates</mat-checkbox>
+            <button mat-stroked-button color="warn" (click)="deleteTelegramWebhook()">Delete webhook</button>
+          </div>
+        </div>
+
+        <button mat-raised-button color="primary" (click)="startTelegramPairing()"
+                [disabled]="editing?.runtimeState !== 'RUNNING'">
+          Start secure pairing
+        </button>
+        <div class="pairing-box" *ngIf="pairingStart">
+          <p>Send this one-time command to the bot before {{ pairingStart.expiresAt | date:'mediumTime' }}:</p>
+          <code>{{ pairingStart.command }}</code>
+          <div class="button-row">
+            <button mat-button (click)="refreshPairing()">Check candidate</button>
+            <button mat-button color="warn" (click)="cancelPairing()">Cancel</button>
+          </div>
+        </div>
+        <div class="pairing-box" *ngIf="pairing">
+          <p>Status: <strong>{{ pairing.status }}</strong></p>
+          <div *ngIf="pairing.candidate as candidate">
+            <p>Chat {{ candidate.chatId }} ({{ candidate.chatType }}) requested by
+              {{ candidate.displayName }} / {{ candidate.userId }}.</p>
+            <p class="error" *ngIf="candidate.authorizesEntireChat">
+              Approval authorizes every participant in this group chat.
+            </p>
+            <button mat-raised-button color="primary" (click)="approvePairing()"
+                    [disabled]="pairing.status !== 'CANDIDATE'">Approve exact chat</button>
+          </div>
+        </div>
+      </section>
     </mat-card-content>
-    <mat-card-actions>
+    <mat-card-actions align="end">
       <button mat-button (click)="closeConfig()">Cancel</button>
-      <button mat-raised-button color="primary" (click)="saveChannelConfig()">Save</button>
+      <button mat-raised-button color="primary" (click)="save()" [disabled]="saving">
+        {{ saving ? 'Saving…' : 'Save connection' }}
+      </button>
     </mat-card-actions>
   </mat-card>
+  </ng-container>
 </div>

@@ -159,7 +159,7 @@ class JvmLanguageParserTest {
                 package com.example;
 
                 public interface Processor<T> {
-                    T process(T input);
+                    T process(T input); // { comment is not a body
                     default void init() {}
                 }
                 """;
@@ -171,6 +171,19 @@ class JvmLanguageParserTest {
                 .filter(e -> e.getEntityType() == CodeEntityType.INTERFACE).toList();
         assertEquals(1, interfaces.size(), "Should find 1 interface");
         assertEquals("Processor", interfaces.get(0).getName());
+
+        CodeEntity process = output.entities().stream()
+                .filter(e -> e.getName().equals("process"))
+                .findFirst().orElseThrow();
+        CodeEntity init = output.entities().stream()
+                .filter(e -> e.getName().equals("init"))
+                .findFirst().orElseThrow();
+        assertTrue(process.getEndLine() < init.getStartLine(),
+                "Bodyless interface method must end before the following default method");
+        assertTrue(output.relations().stream().noneMatch(r ->
+                r.sourceFqn().equals("com.example.Processor.process")
+                        && r.targetFqn().equals("init")
+                        && r.relationType() == CodeRelationType.CALLS));
     }
 
     @Test
@@ -266,6 +279,183 @@ class JvmLanguageParserTest {
         String sig = methods.get(0).getSignature();
         assertNotNull(sig, "Method should have signature");
         assertTrue(sig.contains("process"), "Signature should contain method name");
+    }
+
+    @Test
+    void multilineMethodsAndConstructorsAreDefinitionsNotBodyEntities() {
+        String java = """
+                package com.example;
+
+                public class DeferredService {
+                    private DeferredService(
+                            String name,
+                            int retries) {
+                        int constructorLocal = retries;
+                    }
+
+                    private int createDeferredEdges(
+                            java.util.List<String> deferred,
+                            java.util.Map<String, String> ids,
+                            Long factSheetId) {
+                        int bodyLocal = deferred.size();
+                        helperCall(
+                                bodyLocal,
+                                factSheetId);
+                        return bodyLocal;
+                    }
+
+                    private void helperCall(int count, Long id) {}
+                }
+                """;
+
+        ExtractionOutput output = parser.parse(
+                java.split("\n"), "DeferredService.java", "default", "java");
+
+        List<CodeEntity> methods = output.entities().stream()
+                .filter(e -> e.getEntityType() == CodeEntityType.METHOD).toList();
+        assertTrue(methods.stream().anyMatch(e -> e.getName().equals("createDeferredEdges")));
+        assertTrue(methods.stream().anyMatch(e -> e.getName().equals("helperCall")));
+
+        List<CodeEntity> constructors = output.entities().stream()
+                .filter(e -> e.getEntityType() == CodeEntityType.CONSTRUCTOR).toList();
+        assertEquals(1, constructors.size());
+        assertTrue(constructors.get(0).getSignature().contains("retries"));
+
+        assertTrue(output.entities().stream().noneMatch(e ->
+                e.getName().equals("bodyLocal") || e.getName().equals("constructorLocal")));
+    }
+
+    @Test
+    void allmanDeclarationsAndTextBlocksDoNotHideFollowingMethods() {
+        String java = String.join("\n",
+                "package com.example;",
+                "public class FormattingService {",
+                "    private FormattingService(",
+                "            String name)",
+                "    {",
+                "        int constructorLocal = name.length();",
+                "    }",
+                "    public java.util.Map<String, ? extends Number> allman(",
+                "            String value)",
+                "    throws IllegalStateException",
+                "    {",
+                "        String braces = \"\"\"",
+                "                { text block braces are not code }",
+                "                escaped delimiter: \\" + "\"\"\" { still text block }",
+                "                \"\"\";",
+                "        int bodyLocal = value.length();",
+                "        return java.util.Map.of();",
+                "    }",
+                "    public void afterTextBlock() {}",
+                "    public void commentedAllman() // header comment",
+                "    {",
+                "        int commentedLocal = 1;",
+                "    }",
+                "    public void afterCommentedAllman() {}",
+                "}");
+
+        ExtractionOutput output = parser.parse(
+                java.split("\n"), "FormattingService.java", "default", "java");
+
+        assertTrue(output.entities().stream().anyMatch(e -> e.getName().equals("FormattingService")
+                && e.getEntityType() == CodeEntityType.CONSTRUCTOR));
+        assertTrue(output.entities().stream().anyMatch(e -> e.getName().equals("allman")
+                && e.getEntityType() == CodeEntityType.METHOD));
+        assertTrue(output.entities().stream().anyMatch(e -> e.getName().equals("afterTextBlock")
+                && e.getEntityType() == CodeEntityType.METHOD));
+        assertTrue(output.entities().stream().anyMatch(e -> e.getName().equals("commentedAllman")
+                && e.getEntityType() == CodeEntityType.METHOD));
+        assertTrue(output.entities().stream().anyMatch(e -> e.getName().equals("afterCommentedAllman")
+                && e.getEntityType() == CodeEntityType.METHOD));
+        assertTrue(output.entities().stream().noneMatch(e ->
+                e.getName().equals("bodyLocal") || e.getName().equals("constructorLocal")
+                        || e.getName().equals("commentedLocal")));
+    }
+
+    @Test
+    void nestedTypeScopeRestoresOuterClassForFollowingMethods() {
+        String java = """
+                package com.example;
+                public class OuterService {
+                    public record NestedValue(
+                            @JsonNames({"value", "alias"}) String value)
+                            implements
+                            java.io.Serializable {
+                        public String normalized() { return value.trim(); }
+                        public int length() { return value.length(); }
+                    }
+
+                    public void afterNestedType() {}
+                }
+                """;
+
+        ExtractionOutput output = parser.parse(
+                java.split("\n"), "OuterService.java", "default", "java");
+
+        CodeEntity nestedType = output.entities().stream()
+                .filter(e -> e.getName().equals("NestedValue"))
+                .findFirst().orElseThrow();
+        assertEquals("com.example.OuterService.NestedValue",
+                nestedType.getFullyQualifiedName());
+        assertEquals("com.example.OuterService", nestedType.getParentFqn());
+
+        CodeEntity nestedMethod = output.entities().stream()
+                .filter(e -> e.getName().equals("normalized"))
+                .findFirst().orElseThrow();
+        assertEquals("com.example.OuterService.NestedValue.normalized",
+                nestedMethod.getFullyQualifiedName());
+
+        CodeEntity secondNestedMethod = output.entities().stream()
+                .filter(e -> e.getName().equals("length"))
+                .findFirst().orElseThrow();
+        assertEquals("com.example.OuterService.NestedValue.length",
+                secondNestedMethod.getFullyQualifiedName());
+
+        CodeEntity outerMethod = output.entities().stream()
+                .filter(e -> e.getName().equals("afterNestedType"))
+                .findFirst().orElseThrow();
+        assertEquals("com.example.OuterService.afterNestedType",
+                outerMethod.getFullyQualifiedName());
+        assertEquals("com.example.OuterService", outerMethod.getParentFqn());
+
+        assertTrue(output.relations().stream().anyMatch(r ->
+                r.sourceFqn().equals("com.example.OuterService")
+                        && r.targetFqn().equals("com.example.OuterService.NestedValue")
+                        && r.relationType() == CodeRelationType.CONTAINS));
+    }
+
+    @Test
+    void groovyDefBodiesAndMultilineLiteralsDoNotLeakIntoMembers() {
+        String groovy = """
+                package com.example
+                class GroovyService {
+                    def render()
+                    {
+                        def triple = ''' } still text '''
+                        def slashy = / } still text /
+                        def dollar = $/ } still text /$
+                        def matches = "value" ==~ /}/
+                        def combined = /a/ + / } /
+                    }
+                    def afterRender() {}
+                }
+                """;
+
+        ExtractionOutput output = parser.parse(
+                groovy.split("\n"), "GroovyService.groovy", "default", "groovy");
+
+        CodeEntity after = output.entities().stream()
+                .filter(e -> e.getName().equals("afterRender"))
+                .findFirst().orElseThrow();
+        assertEquals(CodeEntityType.METHOD, after.getEntityType());
+        assertEquals("com.example.GroovyService.afterRender", after.getFullyQualifiedName());
+        assertTrue(output.entities().stream().noneMatch(e ->
+                e.getName().equals("triple") || e.getName().equals("slashy")
+                        || e.getName().equals("dollar")));
+        assertTrue(output.relations().stream().noneMatch(r ->
+                r.sourceFqn().equals("com.example.GroovyService.render")
+                        && r.targetFqn().equals("afterRender")
+                        && r.relationType() == CodeRelationType.CALLS));
     }
 
     @Test

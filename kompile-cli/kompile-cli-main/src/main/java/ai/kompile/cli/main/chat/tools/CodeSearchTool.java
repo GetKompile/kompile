@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.tools.grounding.CodeGraphLearningRunner;
 import ai.kompile.cli.main.codeindex.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +28,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -36,13 +38,12 @@ import java.util.Set;
  * methods, functions, etc.), indexing new codebases, and getting
  * codebase statistics.
  * <p>
- * Uses {@link KompileBackendClient} for auto-detection, reconnection,
- * and configurable timeouts. Falls back to local index when no backend
- * is available.
+ * Uses the folder-local index unless an explicit server URL is supplied.
+ * Explicit remote requests never fall back to a different local dataset.
  */
 public class CodeSearchTool implements CliTool {
 
-    // Actions that always execute against the local index even when a backend is up.
+    // Actions unavailable on the remote code-index API.
     private static final Set<String> LOCAL_ALWAYS_ACTIONS = Set.of(
             "ranked_search", "blended_search", "signatures", "health", "routing");
 
@@ -53,11 +54,13 @@ public class CodeSearchTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public CodeSearchTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -72,7 +75,8 @@ public class CodeSearchTool implements CliTool {
                 "with intent detection and graph boost), blended_search (auto-detects query type " +
                 "and blends spath, ranked, and signature strategies), signatures (token-compressed " +
                 "file views), health (index quality score 0-100), routing (file complexity tiers), " +
-                "index, stats, entities.";
+                "index, stats, entities. No explicit URL uses the folder-local index; " +
+                "explicit remote requests never fall back locally. Analysis actions are local-only.";
     }
 
     @Override
@@ -107,7 +111,7 @@ public class CodeSearchTool implements CliTool {
         ObjectNode projectId = props.putObject("project_id");
         projectId.put("type", "string");
         projectId.put("description", "Project identifier for the index (default: auto-resolved " +
-                "from registration.json or indexed roots containing the cwd)");
+                "from kompile.project.json, registration.json, or indexed roots containing the cwd)");
 
         ObjectNode autoRefresh = props.putObject("auto_refresh");
         autoRefresh.put("type", "boolean");
@@ -152,76 +156,80 @@ public class CodeSearchTool implements CliTool {
         // Default root_path to current working directory if not specified
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
 
-        boolean backendUp = backend.isAvailable();
-        String projectId = resolveProjectId(action, params, context, backendUp);
-
-        // Self-heal the local index when this call will be answered from it:
-        // background maintenance keeps it fresh; reads only join in-flight work.
-        if (REFRESHABLE_ACTIONS.contains(action)
-                && (!backendUp || LOCAL_ALWAYS_ACTIONS.contains(action))
-                && params.path("auto_refresh").asBoolean(true)) {
-            BackgroundIndexService.getInstance().prepareForRead(new LocalCodeIndexer(), projectId);
+        if (remoteConfigured && LOCAL_ALWAYS_ACTIONS.contains(action)) {
+            return ToolResult.error("Action '" + action + "' is local-only and cannot analyze the " +
+                    "explicitly configured remote dataset. Remove --url to use the folder-local index " +
+                    "(a separate dataset), or use local_code_index explicitly.");
         }
+        String projectId = resolveProjectId(action, params, context);
 
-        if (!backendUp) {
-            // No backend reachable — fall back to local index
-            return executeLocal(action, params, projectId, cwd, context);
+        if (!remoteConfigured) {
+            String refreshNote = null;
+            if (REFRESHABLE_ACTIONS.contains(action) && params.path("auto_refresh").asBoolean(true)) {
+                refreshNote = BackgroundIndexService.getInstance()
+                        .prepareForRead(new LocalCodeIndexer(), projectId);
+            }
+            ToolResult result = executeLocal(action, params, projectId, cwd, context);
+            return withBackend(result, "folder-local", refreshNote);
         }
 
         try {
-            return switch (action) {
-                case "search" -> doSearch(params, projectId);
-                case "ranked_search" -> doRankedSearchLocal(params, projectId, cwd);
-                case "blended_search" -> doBlendedSearchLocal(params, projectId, cwd);
-                case "signatures" -> doSignaturesLocal(params, projectId, cwd);
-                case "health" -> doHealthLocal(params, projectId, cwd);
-                case "routing" -> doRoutingLocal(params, projectId, cwd);
-                case "index" -> doIndex(params, projectId, cwd);
-                case "stats" -> doStats(projectId);
-                case "entities" -> doEntities(params, projectId);
+            if (!backend.isAvailable("/api/code-indexer/search")) {
+                return ToolResult.error("The explicitly configured remote code index service is unavailable. " +
+                        "No local fallback was attempted. Remove --url to use the separate folder-local index.");
+            }
+            ToolResult result = switch (action) {
+                case "search" -> doSearch(params, projectId, cwd, context);
+                case "index" -> doIndex(params, projectId, cwd, context);
+                case "stats" -> doStats(projectId, cwd, context);
+                case "entities" -> doEntities(params, projectId, cwd, context);
                 default -> ToolResult.error("Unknown action: " + action +
                         ". Use 'search', 'ranked_search', 'blended_search', 'signatures', " +
                         "'health', 'routing', 'index', 'stats', or 'entities'.");
             };
+            return withBackend(result, "remote", null);
         } catch (ConnectException e) {
-            // Backend went down — KompileBackendClient already tried reconnection, fall back to local
-            return executeLocal(action, params, projectId, cwd, context);
+            return ToolResult.error("Explicit remote code index connection failed; no local fallback: " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
-            return ToolResult.error("Code search timed out. Try a more specific query.");
+            return ToolResult.error("Explicit remote code search timed out; no local fallback. Try a more specific query.");
         } catch (Exception e) {
-            return ToolResult.error("Code search error: " + e.getMessage());
+            return ToolResult.error("Explicit remote code search error; no local fallback: " + e.getMessage());
         }
+    }
+
+    private ToolResult withBackend(ToolResult result, String backendName, String refreshNote) {
+        Map<String, Object> metadata = new LinkedHashMap<>(result.getMetadata());
+        metadata.put("backend", backendName);
+        String output = "[backend: " + backendName + "]\n" + result.getOutput();
+        if (refreshNote != null && !refreshNote.isBlank()) {
+            output += "\n" + refreshNote;
+        }
+        return new ToolResult(result.getTitle(), output, metadata, result.isError());
     }
 
     /**
      * Resolve the effective project id. Search-type actions use
-     * {@link ProjectIdResolver} (registration → indexed root → cwd name);
-     * 'index' keeps a directory-derived default. Backend-bound calls preserve
-     * the legacy {@code "default"} bucket when nothing authoritative matched,
-     * since historically backend data was indexed under that id.
+     * {@link ProjectIdResolver} (project manifest → registration → indexed root
+     * → cwd name). Indexing and searching use the same resolution rules so the
+     * selected backend cannot silently create or query a different bucket.
      */
-    private String resolveProjectId(String action, JsonNode params, ToolContext context,
-                                    boolean backendUp) {
+    private String resolveProjectId(String action, JsonNode params, ToolContext context) {
         String raw = params.path("project_id").asText("");
         if ("index".equals(action)) {
             if (!raw.isEmpty()) return raw;
-            if (backendUp) return "default";
             String rootPath = params.path("root_path").asText("");
             Path dir = rootPath.isEmpty()
                     ? context.getWorkingDirectory().toAbsolutePath()
                     : Path.of(rootPath).toAbsolutePath();
-            return dir.getFileName() != null ? dir.getFileName().toString() : "default";
+            return ProjectIdResolver.resolve("", dir).projectId();
         }
         ProjectIdResolver.Resolution resolution =
                 ProjectIdResolver.resolve(raw, context.getWorkingDirectory());
-        boolean backendBound = backendUp && !LOCAL_ALWAYS_ACTIONS.contains(action);
-        if (backendBound && "cwd-name".equals(resolution.source())) {
-            return "default";
-        }
         return resolution.projectId();
     }
 
-    private ToolResult doSearch(JsonNode params, String projectId) throws Exception {
+    private ToolResult doSearch(JsonNode params, String projectId, String cwd,
+                                ToolContext context) throws Exception {
         String query = params.path("query").asText("");
         if (query.isEmpty()) return ToolResult.error("query is required for search");
 
@@ -229,11 +237,11 @@ public class CodeSearchTool implements CliTool {
         int maxResults = params.path("max_results").asInt(10);
 
         StringBuilder path = new StringBuilder("/api/code-indexer/search?")
-                .append("projectId=").append(projectId)
-                .append("&query=").append(java.net.URLEncoder.encode(query, "UTF-8"))
+                .append("projectId=").append(urlEncode(projectId))
+                .append("&query=").append(urlEncode(query))
                 .append("&maxResults=").append(maxResults);
         if (!entityType.isEmpty()) {
-            path.append("&type=").append(entityType);
+            path.append("&type=").append(urlEncode(entityType));
         }
 
         HttpResponse<String> response = backend.get(path.toString(), Duration.ofSeconds(30));
@@ -247,7 +255,8 @@ public class CodeSearchTool implements CliTool {
         return formatSearchResults(query, results);
     }
 
-    private ToolResult doIndex(JsonNode params, String projectId, String cwd) throws Exception {
+    private ToolResult doIndex(JsonNode params, String projectId, String cwd,
+                               ToolContext context) throws Exception {
         String rootPath = params.path("root_path").asText("");
         if (rootPath.isEmpty()) rootPath = cwd;
 
@@ -273,6 +282,8 @@ public class CodeSearchTool implements CliTool {
         sb.append("- **Files processed**: ").append(result.path("filesProcessed").asInt()).append("\n");
         sb.append("- **Entities found**: ").append(result.path("entitiesFound").asInt()).append("\n");
         sb.append("- **Relations created**: ").append(result.path("relationsCreated").asInt()).append("\n");
+        sb.append("- **Folder-local graph**: not updated by the managed code-index endpoint; ")
+                .append("use local_code_index action='index' when folder-local graph_search is required\n");
         if (result.path("errors").asInt() > 0) {
             sb.append("- **Errors**: ").append(result.path("errors").asInt()).append("\n");
         }
@@ -281,13 +292,13 @@ public class CodeSearchTool implements CliTool {
                 Map.of("projectId", projectId, "filesProcessed", result.path("filesProcessed").asInt()));
     }
 
-    private ToolResult doStats(String projectId) throws Exception {
+    private ToolResult doStats(String projectId, String cwd, ToolContext context) throws Exception {
         HttpResponse<String> response = backend.get(
-                "/api/code-indexer/statistics?projectId=" + projectId,
+                "/api/code-indexer/statistics?projectId=" + urlEncode(projectId),
                 Duration.ofSeconds(10));
 
         if (response.statusCode() != 200) {
-            return ToolResult.error("Stats failed: " + response.body());
+            return ToolResult.error("Stats failed (HTTP " + response.statusCode() + "): " + response.body());
         }
 
         JsonNode result = objectMapper.readTree(response.body());
@@ -305,15 +316,16 @@ public class CodeSearchTool implements CliTool {
         return ToolResult.success("code_stats: " + projectId, sb.toString());
     }
 
-    private ToolResult doEntities(JsonNode params, String projectId) throws Exception {
+    private ToolResult doEntities(JsonNode params, String projectId, String cwd,
+                                  ToolContext context) throws Exception {
         String filePath = params.path("file_path").asText("");
         String parentFqn = params.path("parent_fqn").asText("");
 
-        StringBuilder apiPath = new StringBuilder("/api/code-indexer/entities?projectId=" + projectId);
+        StringBuilder apiPath = new StringBuilder("/api/code-indexer/entities?projectId=" + urlEncode(projectId));
         if (!filePath.isEmpty()) {
-            apiPath.append("&file=").append(java.net.URLEncoder.encode(filePath, "UTF-8"));
+            apiPath.append("&file=").append(urlEncode(filePath));
         } else if (!parentFqn.isEmpty()) {
-            apiPath.append("&parentFqn=").append(java.net.URLEncoder.encode(parentFqn, "UTF-8"));
+            apiPath.append("&parentFqn=").append(urlEncode(parentFqn));
         } else {
             return ToolResult.error("Provide file_path or parent_fqn for entities action");
         }
@@ -321,7 +333,7 @@ public class CodeSearchTool implements CliTool {
         HttpResponse<String> response = backend.get(apiPath.toString(), Duration.ofSeconds(30));
 
         if (response.statusCode() != 200) {
-            return ToolResult.error("Entities failed: " + response.body());
+            return ToolResult.error("Entities failed (HTTP " + response.statusCode() + "): " + response.body());
         }
 
         JsonNode results = objectMapper.readTree(response.body());
@@ -368,6 +380,10 @@ public class CodeSearchTool implements CliTool {
                 Map.of("query", query, "resultCount", results.size()));
     }
 
+    private static String urlEncode(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     /**
      * Execute against the local code index (no server required).
      */
@@ -383,15 +399,37 @@ public class CodeSearchTool implements CliTool {
                     ai.kompile.cli.main.codeindex.LocalCodeIndexer.IndexResult result =
                             localIndexer.index(java.nio.file.Path.of(rootPath), projectId,
                                     null, null, ProgressPrintStream.from(context));
+                    LocalCodeKGraphPublisher.ProjectionResult projection =
+                            LocalCodeKGraphPublisher.publish(Path.of(rootPath), projectId, null, null);
+                    CodeGraphLearningRunner.ConfiguredResult learning =
+                            new CodeGraphLearningRunner().runConfigured(
+                                    Path.of(rootPath), projection.graphPath(),
+                                    CodeGraphReasoningConfig.TRIGGER_BUILD);
                     StringBuilder sb = new StringBuilder();
                     sb.append("Codebase indexed locally\n\n");
                     sb.append("- **Project**: ").append(result.projectId()).append("\n");
                     sb.append("- **Root**: ").append(result.rootPath()).append("\n");
                     sb.append("- **Files processed**: ").append(result.filesProcessed()).append("\n");
                     sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
+                    sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
+                    sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
+                    sb.append("- **Code graph learning**: ").append(learning.status()).append("\n");
+                    if (learning.error() != null) {
+                        sb.append("  - Learning failed without invalidating the structural index: ")
+                                .append(learning.error()).append("\n");
+                    }
                     if (result.errors() > 0) sb.append("- **Errors**: ").append(result.errors()).append("\n");
-                    yield ToolResult.success("code_index: " + rootPath, sb.toString(),
-                            Map.of("projectId", projectId, "filesProcessed", result.filesProcessed()));
+                    sb.append("\nGraph search with: graph_search query='...' knowledgeBase='")
+                            .append(projection.knowledgeBaseId()).append("' code_project_id='")
+                            .append(projectId).append("'\n");
+                    Map<String, Object> metadata = new LinkedHashMap<>();
+                    metadata.put("projectId", projectId);
+                    metadata.put("filesProcessed", result.filesProcessed());
+                    metadata.put("knowledgeBase", projection.knowledgeBaseId());
+                    metadata.put("graphPath", projection.graphPath().toString());
+                    metadata.put("learningStatus", learning.status());
+                    if (learning.error() != null) metadata.put("learningError", learning.error());
+                    yield ToolResult.success("code_index: " + rootPath, sb.toString(), metadata);
                 }
                 case "search" -> {
                     String query = params.path("query").asText("");
@@ -432,6 +470,20 @@ public class CodeSearchTool implements CliTool {
                     sb.append("- **Entities**: ").append(stats.getOrDefault("entitiesFound", "?")).append("\n");
                     sb.append("- **Indexed at**: ").append(stats.getOrDefault("indexedAt", "?")).append("\n");
                     yield ToolResult.success("code_stats: " + projectId, sb.toString());
+                }
+                case "entities" -> {
+                    String filePath = params.path("file_path").asText("");
+                    if (filePath.isEmpty()) {
+                        String parentFqn = params.path("parent_fqn").asText("");
+                        String detail = parentFqn.isEmpty()
+                                ? "Provide file_path for local entities action"
+                                : "Local entities lookup currently requires file_path, not parent_fqn";
+                        yield ToolResult.error(detail);
+                    }
+                    int maxResults = params.path("max_results").asInt(10);
+                    java.util.List<Map<String, Object>> entities =
+                            localIndexer.entitiesForFile(projectId, filePath, maxResults);
+                    yield formatSearchResults("entities", objectMapper.valueToTree(entities));
                 }
                 case "ranked_search" -> doRankedSearchLocal(params, projectId, cwd);
                 case "blended_search" -> doBlendedSearchLocal(params, projectId, cwd);

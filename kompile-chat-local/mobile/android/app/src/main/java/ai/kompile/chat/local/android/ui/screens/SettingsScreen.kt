@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -149,6 +150,8 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var dspShareInProgress by remember { mutableStateOf(false) }
     var dspClearInProgress by remember { mutableStateOf(false) }
+    var confirmDspCacheClear by remember { mutableStateOf(false) }
+    var confirmStoredModelClear by remember { mutableStateOf(false) }
     var pendingHuggingFaceStart by remember { mutableStateOf<(() -> Boolean)?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -294,9 +297,12 @@ fun SettingsScreen(
         // Only engine-affecting values force a rebuild (which resets the conversation
         // and reloads the native model); anything else persists without disturbing a
         // working session, and an unchanged Save is a plain navigation.
-        val engineSettingsChanged = maxRounds != prefs.maxToolRounds ||
-            temperature != prefs.temperature ||
-            maxTokens != prefs.maxTokens
+        val engineSettingsChanged = settingsRequireEngineReload(
+            targetProfile = BuildConfig.SDX_TARGET_PROFILE,
+            toolRoundsChanged = maxRounds != prefs.maxToolRounds,
+            temperatureChanged = temperature != prefs.temperature,
+            maxTokensChanged = maxTokens != prefs.maxTokens,
+        )
         prefs.maxToolRounds   = maxRounds
         prefs.temperature     = temperature
         prefs.maxTokens       = maxTokens
@@ -305,6 +311,74 @@ fun SettingsScreen(
             vm.onSettingsChanged()
         }
         onBack()
+    }
+
+    if (confirmDspCacheClear) {
+        AlertDialog(
+            onDismissRequest = { confirmDspCacheClear = false },
+            title = { Text("Clear DSP disk cache?") },
+            text = {
+                Text(
+                    "This removes saved Edge TPU/NNAPI compilations and DSP replay metadata. " +
+                        "Models remain installed, but the next load must compile the plan again."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDspCacheClear = false
+                    scope.launch {
+                        clearImportError()
+                        vm.clearDspDiskCache().fold(
+                            onSuccess = { bytes ->
+                                importNotice = "Cleared ${formatModelBytes(bytes)} of DSP cache."
+                            },
+                            onFailure = { failure ->
+                                importError = failure.message ?: "The DSP disk cache could not be cleared."
+                                importErrorStackTrace = failure.stackTraceToString()
+                            },
+                        )
+                    }
+                }) { Text("Clear cache") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDspCacheClear = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (confirmStoredModelClear) {
+        AlertDialog(
+            onDismissRequest = { confirmStoredModelClear = false },
+            title = { Text("Delete all stored models?") },
+            text = {
+                Text(
+                    "This permanently deletes imported model sources, optimized SDZ files, " +
+                        "compiled target objects, labels, and the DSP disk cache."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmStoredModelClear = false
+                    scope.launch {
+                        clearImportError()
+                        vm.clearStoredModelsAndDspCache().fold(
+                            onSuccess = { cleared ->
+                                refreshSelectionFromPrefs()
+                                importNotice = "Deleted ${formatModelBytes(cleared.modelBytes)} of models " +
+                                    "and ${formatModelBytes(cleared.dspCacheBytes)} of DSP cache."
+                            },
+                            onFailure = { failure ->
+                                importError = failure.message ?: "Stored models could not be deleted."
+                                importErrorStackTrace = failure.stackTraceToString()
+                            },
+                        )
+                    }
+                }) { Text("Delete models") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmStoredModelClear = false }) { Text("Cancel") }
+            },
+        )
     }
 
     Scaffold(
@@ -468,6 +542,34 @@ fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Import full project (.kproject)")
                     }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { confirmDspCacheClear = true },
+                        enabled = !importBlocked && optimizedModelStorage.deviceCompilationBytes > 0L,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("clear_dsp_disk_cache"),
+                    ) {
+                        Text("Clear DSP disk cache")
+                    }
+                    Button(
+                        onClick = { confirmStoredModelClear = true },
+                        enabled = !importBlocked && optimizedModelStorage.totalModelBytes > 0L,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("clear_stored_models"),
+                    ) {
+                        Text("Delete stored models and DSP cache")
+                    }
+                    Text(
+                        text = if (activeModelLoaded) {
+                            "Unload the active model before clearing model or DSP storage."
+                        } else {
+                            "DSP cache clearing preserves models. Deleting stored models also removes the DSP cache."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(12.dp))
                     ModelOptimizationOptionsPane(
                         options = modelPreparationOptions,
@@ -638,7 +740,7 @@ fun SettingsScreen(
                         text = "Total ${formatModelBytes(optimizedModelStorage.totalModelBytes)} · " +
                             "optimized ${formatModelBytes(optimizedModelStorage.optimizedCacheBytes)} · " +
                             "retained originals ${formatModelBytes(optimizedModelStorage.retainedModelBytes)} · " +
-                            "device cache ${formatModelBytes(optimizedModelStorage.deviceCompilationBytes)}",
+                            "DSP cache ${formatModelBytes(optimizedModelStorage.deviceCompilationBytes)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

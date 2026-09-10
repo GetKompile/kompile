@@ -94,7 +94,22 @@ public interface OAuthProviderFlow {
             String token,
             String baseUrl,
             Map<String, String> headers,
-            boolean oauth) {
+            boolean oauth,
+            String credentialName,
+            String credentialIdentity) {
+        public RequestAuth(String token, String baseUrl, Map<String, String> headers, boolean oauth) {
+            this(token, baseUrl, headers, oauth, null, null);
+        }
+
+        public RequestAuth withCredential(String name, String identity) {
+            return new RequestAuth(token, baseUrl, headers, oauth, name, identity);
+        }
+
+        @Override
+        public String toString() {
+            return "RequestAuth{oauth=" + oauth + ", secret=<redacted>}";
+        }
+
         public RequestAuth {
             if (token == null || token.isBlank()) {
                 throw new IllegalArgumentException("Resolved token must not be blank");

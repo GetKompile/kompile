@@ -45,6 +45,23 @@ public final class LocalCrawlRunner {
             GraphContext graphContext,
             ObjectMapper mapper,
             ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) throws IOException {
+        return execute(profile, projectRoot, dryRun, request, graphContext, mapper,
+                modelPipelineExecutor, null);
+    }
+
+    /**
+     * Runs a local crawl with the graph backend owned by the caller. Keeping that instance in the
+     * lifecycle is required for request-scoped native-chat bridges and other embedded boundaries.
+     */
+    public static ExecutionResult execute(
+            KompileProjectCrawlProfile profile,
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            GraphContext graphContext,
+            ObjectMapper mapper,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor,
+            LocalProjectGraphBackend graphBackend) throws IOException {
         checkCancellation();
         ProjectCrawlCommand.LocalCrawlExecution execution = modelPipelineExecutor == null
                 ? ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request)
@@ -52,7 +69,7 @@ public final class LocalCrawlRunner {
                         profile, projectRoot, dryRun, request, modelPipelineExecutor);
         checkCancellation();
         LocalProjectGraphBackend.GraphUpdate graphUpdate =
-                updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper);
+                updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper, graphBackend);
         checkCancellation();
         return new ExecutionResult(execution, graphUpdate);
     }
@@ -64,9 +81,22 @@ public final class LocalCrawlRunner {
             GraphContext graphContext,
             ProjectCrawlCommand.LocalCrawlExecution execution,
             ObjectMapper mapper) throws IOException {
+        return updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper, null);
+    }
+
+    static LocalProjectGraphBackend.GraphUpdate updateGraph(
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            GraphContext graphContext,
+            ProjectCrawlCommand.LocalCrawlExecution execution,
+            ObjectMapper mapper,
+            LocalProjectGraphBackend graphBackend) throws IOException {
         if (dryRun || graphContext == null || "FAILED".equals(execution.status())) return null;
         try {
-            return new LocalProjectGraphBackend(mapper).updateCrawlGraph(
+            LocalProjectGraphBackend effectiveBackend = graphBackend == null
+                    ? new LocalProjectGraphBackend(mapper) : graphBackend;
+            return effectiveBackend.updateCrawlGraph(
                     projectRoot,
                     graphContext.knowledgeBaseId(),
                     graphContext.knowledgeBaseName(),

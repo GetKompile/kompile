@@ -28,8 +28,10 @@ import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.CompactionProgressIndicator;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
@@ -37,6 +39,8 @@ import ai.kompile.cli.main.chat.roles.RoleWizard;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.workflow.WorkflowController;
+import ai.kompile.cli.main.chat.workflow.WorkflowPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -52,6 +56,28 @@ import java.util.stream.Collectors;
  * Extracts all /command handling logic from ChatRepl to keep it focused.
  */
 public class ChatCommandRouter {
+
+    private static final Set<String> JUDGE_CONTROL_COMMANDS = Set.of(
+            "status", "show", "on", "enable", "resume", "off", "disable", "pause",
+            "global", "workflow", "direction", "policy", "init", "setup", "config",
+            "rules", "reload", "delete", "remove", "run", "start", "launch", "chat",
+            "talk", "ask", "feedback", "guidance", "override", "bypass", "allow-next",
+            "approve", "judgements", "history", "restart", "agent", "help", "usage");
+
+    static JudgeCommand parseJudgeCommand(String args) {
+        String normalized = args == null ? "" : args.trim();
+        if (normalized.isBlank()) return new JudgeCommand("status", "");
+        String[] command = normalized.split("\\s+", 2);
+        String subcommand = command[0].toLowerCase(Locale.ROOT);
+        String remainder = command.length > 1 ? command[1].trim() : "";
+        if (!JUDGE_CONTROL_COMMANDS.contains(subcommand)) {
+            return new JudgeCommand("chat", normalized);
+        }
+        if ("ask".equals(subcommand)) subcommand = "chat";
+        return new JudgeCommand(subcommand, remainder);
+    }
+
+    record JudgeCommand(String subcommand, String arguments) { }
 
     // References to shared REPL state
     private final ChatRepl repl;
@@ -137,7 +163,7 @@ public class ChatCommandRouter {
      * Routes a slash command to the appropriate handler.
      *
      * @param input the full command string including the leading /
-     * @return false if the REPL should exit
+     * @return false if the current REPL should stop (exit or start a fresh conversation)
      */
     public boolean handleSlashCommand(String input) {
         String[] parts = input.split("\\s+", 2);
@@ -149,8 +175,16 @@ public class ChatCommandRouter {
             case "/exit":
                 return false;
 
+            case "/resources":
+                System.out.println(repl.configureResources(rest));
+                return true;
+
             case "/help":
                 printHelp();
+                return true;
+
+            case "/auth":
+                repl.handleAuthenticationCommand(rest);
                 return true;
 
             case "/setup":
@@ -197,6 +231,11 @@ public class ChatCommandRouter {
                 printStatus();
                 return true;
 
+            case "/dashboard":
+                System.out.println(renderer.cyan("  "
+                        + repl.handleDashboardCommand(rest.trim())));
+                return true;
+
             case "/title":
                 handleTitle(rest);
                 return true;
@@ -210,12 +249,15 @@ public class ChatCommandRouter {
                 return true;
 
             case "/clear":
-                if (localMode) {
-                    System.out.println("Session transcript cleared (local mode).");
-                } else {
-                    clearSession();
-                }
-                return true;
+                repl.requestNewConversation();
+                return false;
+
+            case "/restart":
+            case "/reset":
+                return restartCurrentSession(cmd, rest);
+
+            case "/reset-all":
+                return restartAllActiveSessions(rest);
 
             case "/compact":
                 handleCompact(rest);
@@ -378,7 +420,11 @@ public class ChatCommandRouter {
                 return true;
 
             case "/loop":
-                handleLoop(rest);
+                handleLoop(LoopScope.SESSION, rest);
+                return true;
+
+            case "/loop-global":
+                handleLoop(LoopScope.PROJECT, rest);
                 return true;
 
             // Background task management commands
@@ -395,6 +441,12 @@ public class ChatCommandRouter {
                 return true;
 
             // Process management & status bar commands
+            case "/activity":
+                if (!repl.handleProjectActivityCommand(rest.trim())) {
+                    showProcessPanel();
+                }
+                return true;
+
             case "/processes":
                 showProcessPanel();
                 return true;
@@ -431,6 +483,10 @@ public class ChatCommandRouter {
                 lifecycleManager.launchResumeTool(rest.trim());
                 return true;
 
+            case "/resume-all":
+                lifecycleManager.launchResumeAll(rest.trim());
+                return true;
+
             case "/mode":
                 lifecycleManager.handleModeSwitch(rest.trim());
                 return true;
@@ -459,9 +515,25 @@ public class ChatCommandRouter {
                 handleModelCommand(rest.trim());
                 return true;
 
+            case "/fast":
+                handleFastModeCommand(rest.trim());
+                return true;
+
             case "/enforce":
             case "/enforcer":
-                handleEnforcerCommand(rest.trim());
+                handleJudgeCommand(rest.trim());
+                return true;
+
+            case "/judge":
+                handleJudgeCommand(rest.trim());
+                return true;
+
+            case "/judge-global":
+                handleJudgeGlobal(rest.trim());
+                return true;
+
+            case "/direction":
+                handleJudgeCommand("direction" + (rest.isBlank() ? "" : " " + rest.trim()));
                 return true;
 
             case "/forward":
@@ -546,11 +618,26 @@ public class ChatCommandRouter {
         if (store != null) store.checkpoint(controller, "operator_" + op);
     }
 
-    private void handleLoop(String arguments) {
+    private enum LoopScope {
+        SESSION("/loop", "Session", "session"),
+        PROJECT("/loop-global", "Project-global", "project-global");
+
+        private final String command;
+        private final String heading;
+        private final String label;
+
+        LoopScope(String command, String heading, String label) {
+            this.command = command;
+            this.heading = heading;
+            this.label = label;
+        }
+    }
+
+    private void handleLoop(LoopScope scope, String arguments) {
         String input = arguments == null ? "" : arguments.strip();
         if (input.isEmpty() || input.equalsIgnoreCase("list")
                 || input.equalsIgnoreCase("status")) {
-            listLoops();
+            listLoops(scope);
             return;
         }
 
@@ -558,23 +645,24 @@ public class ChatCommandRouter {
         String command = operation[0].toLowerCase(Locale.ROOT);
         String rest = operation.length > 1 ? operation[1].strip() : "";
         switch (command) {
-            case "add" -> addLoop(rest);
-            case "pause" -> updateLoop("pause", rest);
-            case "resume" -> updateLoop("resume", rest);
-            case "remove", "delete", "stop" -> updateLoop("remove", rest);
-            case "run", "now" -> updateLoop("run", rest);
-            default -> addLoop(input); // Claude-style shorthand: /loop 5m prompt
+            case "add" -> addLoop(scope, rest);
+            case "pause" -> updateLoop(scope, "pause", rest);
+            case "resume" -> updateLoop(scope, "resume", rest);
+            case "remove", "delete", "stop" -> updateLoop(scope, "remove", rest);
+            case "run", "now" -> updateLoop(scope, "run", rest);
+            case "clear" -> clearLoops(scope, rest);
+            default -> addLoop(scope, input); // Claude-style shorthand: /loop 5m prompt
         }
     }
 
-    private void addLoop(String arguments) {
+    private void addLoop(LoopScope scope, String arguments) {
         String schedule;
         String prompt;
         if (arguments.startsWith("cron ")) {
             String cronAndPrompt = arguments.substring(5).strip();
             int separator = cronAndPrompt.indexOf(" -- ");
             if (separator < 0) {
-                printLoopUsage();
+                printLoopUsage(scope);
                 return;
             }
             schedule = cronAndPrompt.substring(0, separator).strip();
@@ -582,7 +670,7 @@ public class ChatCommandRouter {
         } else {
             String[] parts = arguments.split("\\s+", 2);
             if (parts.length < 2) {
-                printLoopUsage();
+                printLoopUsage(scope);
                 return;
             }
             schedule = parts[0];
@@ -590,23 +678,24 @@ public class ChatCommandRouter {
         }
 
         ScheduledLoopManager.ScheduledLoop loop =
-                repl.getScheduledLoopManager().create(schedule, prompt);
+                loopManager(scope).create(schedule, prompt);
         if (loop == null) {
             System.out.println(renderer.red("Invalid loop schedule or empty prompt."));
-            printLoopUsage();
+            printLoopUsage(scope);
             return;
         }
-        System.out.println(renderer.green("✓ Scheduled loop [") + loop.getId()
-                + renderer.green("] ") + loop.getFormattedInterval());
+        System.out.println(renderer.green(
+                        "✓ Scheduled " + scope.label + " loop [")
+                + loop.getId() + renderer.green("] ") + loop.getFormattedInterval());
         System.out.println(renderer.dim("  " + prompt));
     }
 
-    private void updateLoop(String operation, String id) {
+    private void updateLoop(LoopScope scope, String operation, String id) {
         if (id == null || id.isBlank()) {
-            printLoopUsage();
+            printLoopUsage(scope);
             return;
         }
-        ScheduledLoopManager loops = repl.getScheduledLoopManager();
+        ScheduledLoopManager loops = loopManager(scope);
         boolean changed = switch (operation) {
             case "pause" -> loops.pause(id);
             case "resume" -> loops.resume(id);
@@ -622,31 +711,56 @@ public class ChatCommandRouter {
                 case "run" -> "started";
                 default -> operation;
             };
-            System.out.println(renderer.green("✓ Loop " + label + ": ") + id);
+            System.out.println(renderer.green(
+                    "✓ " + scope.heading + " loop " + label + ": ") + id);
         } else {
-            System.out.println(renderer.red("Loop not found or invalid state: ") + id);
+            System.out.println(renderer.red(
+                    scope.heading + " loop not found or invalid state: ") + id);
         }
     }
 
-    private void listLoops() {
-        List<ScheduledLoopManager.ScheduledLoop> loops =
-                repl.getScheduledLoopManager().list();
-        if (loops.isEmpty()) {
-            System.out.println(renderer.dim("No scheduled loops."));
-            printLoopUsage();
+    private void clearLoops(LoopScope scope, String arguments) {
+        if (arguments != null && !arguments.isBlank()) {
+            printLoopUsage(scope);
             return;
         }
-        System.out.println(ascii.sectionHeader("Scheduled Loops"));
+        int cleared = loopManager(scope).clear();
+        System.out.println(renderer.green("✓ Cleared " + cleared + " " + scope.label
+                + " scheduled loop" + (cleared == 1 ? "." : "s.")));
+    }
+
+    private void listLoops(LoopScope scope) {
+        List<ScheduledLoopManager.ScheduledLoop> loops = loopManager(scope).list();
+        if (loops.isEmpty()) {
+            System.out.println(renderer.dim("No " + scope.label + " scheduled loops."));
+            printLoopUsage(scope);
+            return;
+        }
+        System.out.println(ascii.sectionHeader(scope.heading + " Scheduled Loops"));
         for (ScheduledLoopManager.ScheduledLoop loop : loops) {
             System.out.println("  " + ScheduledLoopManager.formatLoop(loop));
         }
-        System.out.println(renderer.dim("  Local only; schedules run while Kompile Chat is open."));
+        if (scope == LoopScope.SESSION) {
+            System.out.println(renderer.dim(
+                    "  Follows this conversation across resume; runs while this chat is open."));
+        } else {
+            System.out.println(renderer.dim(
+                    "  Shared by this project; loaded whenever a project chat opens."));
+        }
     }
 
-    private void printLoopUsage() {
-        System.out.println(renderer.dim("  /loop add <5m|2h30m> <prompt>"));
-        System.out.println(renderer.dim("  /loop add cron <min hour dom mon dow> -- <prompt>"));
-        System.out.println(renderer.dim("  /loop list | pause <id> | resume <id> | run <id> | remove <id>"));
+    private ScheduledLoopManager loopManager(LoopScope scope) {
+        return scope == LoopScope.SESSION
+                ? repl.getScheduledLoopManager()
+                : repl.getGlobalScheduledLoopManager();
+    }
+
+    private void printLoopUsage(LoopScope scope) {
+        System.out.println(renderer.dim("  " + scope.command + " add <5m|2h30m> <prompt>"));
+        System.out.println(renderer.dim("  " + scope.command
+                + " add cron <min hour dom mon dow> -- <prompt>"));
+        System.out.println(renderer.dim("  " + scope.command
+                + " list | clear | pause <id> | resume <id> | run <id> | remove <id>"));
     }
 
     // ========================================================================
@@ -655,6 +769,60 @@ public class ChatCommandRouter {
 
     private void printReminderResult(ReminderManager.Scope scope, String arguments) {
         System.out.println(reminderManager.handleCommand(scope, arguments));
+    }
+
+    private boolean restartCurrentSession(String command, String arguments) {
+        if (arguments != null && !arguments.isBlank()) {
+            System.out.println(renderer.dim("  Usage: " + command));
+            return true;
+        }
+
+        SessionRestartLauncher.LaunchResult result =
+                SessionRestartLauncher.restartCurrentSession(sessionId, repl.getWorkingDirectory());
+        if (!result.started()) {
+            System.out.println(renderer.red("  Could not restart this session: " + result.error()));
+            return true;
+        }
+
+        chatHistory.logSystem("Session restart requested; replacement process "
+                + result.processId() + " will resume this transcript.");
+        System.out.println(renderer.cyan("  Opening the restarted session in a new terminal"
+                + " (launcher process " + result.processId() + ")..."));
+        return false;
+    }
+
+    private boolean restartAllActiveSessions(String arguments) {
+        if (arguments != null && !arguments.isBlank()) {
+            System.out.println(renderer.dim("  Usage: /reset-all"));
+            return true;
+        }
+
+        SessionRestartLauncher.RestartAllResult result =
+                SessionRestartLauncher.restartAllActiveSessions(
+                        sessionId, repl.getWorkingDirectory());
+        printRestartAllResult(result);
+        if (!result.currentSessionRestarted()) {
+            System.out.println(renderer.yellow(
+                    "  This session stayed open because its replacement could not be started."));
+            return true;
+        }
+
+        chatHistory.logSystem("All active sessions reset requested; started replacements for "
+                + result.replacementsStarted() + " of " + result.activeSessions() + " sessions.");
+        return false;
+    }
+
+    private void printRestartAllResult(SessionRestartLauncher.RestartAllResult result) {
+        if (result.activeSessions() == 0) {
+            System.out.println(renderer.dim("  No active sessions were found."));
+            return;
+        }
+        System.out.println(renderer.cyan("  Started replacements for "
+                + result.replacementsStarted() + " of " + result.activeSessions()
+                + " active session" + (result.activeSessions() == 1 ? "" : "s") + "."));
+        for (SessionRestartLauncher.RestartFailure failure : result.failures()) {
+            System.out.println(renderer.yellow("  " + failure.sessionId() + ": " + failure.error()));
+        }
     }
 
     private void printHelp() {
@@ -672,6 +840,9 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
             body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
+            if (repl.getChatConfig() != null && repl.getChatConfig().supportsFastMode()) {
+                body.append("  ").append(renderer.cyan("/fast")).append(" [on|off|status]  Toggle premium fast mode\n");
+            }
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
             body.append("  ").append(renderer.cyan("/plan")).append(" [on|off]       Toggle planning mode (plan → approve → execute)\n");
@@ -680,11 +851,18 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/menu")).append("               Main menu (chat, passthrough, resume, setup)\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
+            body.append("  ").append(renderer.cyan("/resume-all [options]")).append(" Restore recent exited/crashed conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
+            body.append("  ").append(renderer.cyan("/auth")).append("               Session account or global per-vendor authentication\n");
             body.append("  ").append(renderer.cyan("/provider")).append("           Switch provider/model and keep this conversation\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure provider/runtime\n");
+            body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
+            body.append("  ").append(renderer.cyan("/reset")).append("              Restart this session in a new process\n");
+            body.append("  ").append(renderer.cyan("/reset-all")).append("          Restart every active CLI chat session\n");
+            body.append("  ").append(renderer.cyan("/restart")).append("            Alias for /reset\n");
             body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
-            body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]       Enforcer config (init/show/rules/run/delete)\n");
+            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Refresh/show/hide the project dashboard\n");
+            body.append("  ").append(renderer.cyan("/judge")).append(" [cmd]         Judge control, policy, direction, and global switch\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
             body.append("  ").append(renderer.cyan("/queue <text>")).append("       Add a message to the queue\n");
@@ -697,23 +875,28 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/queue-move <id> <n>")).append("   Reorder a queued message\n");
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
-            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a recurring local task\n");
-            body.append("  ").append(renderer.cyan("/loop list")).append("           List/pause/resume/remove schedules\n");
+            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a session recurring task\n");
+            body.append("  ").append(renderer.cyan("/loop-global add <time> <text>")).append("Schedule a project-global task\n");
+            body.append("  ").append(renderer.cyan("/loop[-global] list|clear")).append(" List/clear/pause/resume/run/remove schedules\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
-            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
-            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel main LLM/tool operation (not subagents)\n");
+            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background active subagent invocation\n");
             body.append("  ").append(renderer.cyan("Ctrl+X P")).append("            Toggle planning mode\n");
             body.append("  ").append(renderer.cyan("Ctrl+X T")).append("            Show session task list (todos)\n");
             body.append("  ").append(renderer.cyan("Ctrl+X A")).append("            Cycle agent (coder/planner)\n");
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
-            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes & subagents panel\n");
+            body.append("  ").append(renderer.cyan("/activity agents")).append("     Open live project-agent activity\n");
+            body.append("  ").append(renderer.cyan("/resources help")).append("     Configure resource rules and preview admission classes\n");
+            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes, monitors & subagents panel\n");
             body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
             body.append("  ").append(renderer.cyan("/process-output <id>")).append("View process output\n");
             body.append("  ").append(renderer.cyan("/process-status <id>")).append("Show process or watcher status\n");
             body.append("  ").append(renderer.cyan("/statusbar")).append("          Toggle status bar on/off\n");
+            body.append("  ").append(renderer.cyan("/process-monitors")).append("   List process completion monitors\n");
+
             body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Attachments"))).append("\n");
@@ -732,8 +915,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
-            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add session reminders; use clear to reset\n");
-            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders shared by every session\n");
+            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
+            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
@@ -767,20 +950,25 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/transcript")).append("         Local transcript file\n");
             body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
-            body.append("  ").append(renderer.cyan("/clear")).append("              Clear server history\n");
+            body.append("  ").append(renderer.cyan("/clear")).append("              Start a new conversation in this process\n");
+            body.append("  ").append(renderer.cyan("/reset")).append("              Restart this session in a new process\n");
+            body.append("  ").append(renderer.cyan("/reset-all")).append("          Restart every active CLI chat session\n");
+            body.append("  ").append(renderer.cyan("/restart")).append("            Alias for /reset\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation (local mode only)\n");
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Auto-compaction status and policy\n");
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
-            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add session reminders; use clear to reset\n");
-            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders shared by every session\n");
+            body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Refresh/show/hide the project dashboard\n");
+            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
+            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
+            body.append("  ").append(renderer.cyan("/resume-all [options]")).append(" Restore recent exited/crashed conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
-            body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]         Enforcer config (init/show/rules/run/delete)\n");
+            body.append("  ").append(renderer.cyan("/judge")).append(" [cmd]           Judge control, policy, direction, and global switch\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("RAG & Server Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/rag")).append(" on|off         Toggle RAG retrieval\n");
@@ -814,21 +1002,26 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/queue-move <id> <n>")).append("   Reorder a queued message\n");
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
-            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a recurring local task\n");
-            body.append("  ").append(renderer.cyan("/loop list")).append("           List/pause/resume/remove schedules\n");
+            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a session recurring task\n");
+            body.append("  ").append(renderer.cyan("/loop-global add <time> <text>")).append("Schedule a project-global task\n");
+            body.append("  ").append(renderer.cyan("/loop[-global] list|clear")).append(" List/clear/pause/resume/run/remove schedules\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
-            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
-            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel main LLM/tool operation (not subagents)\n");
+            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background active subagent invocation\n");
             body.append("  ").append(renderer.cyan("Ctrl+X P")).append("            Toggle planning mode\n");
             body.append("  ").append(renderer.cyan("Ctrl+X T")).append("            Show session task list (todos)\n");
             body.append("  ").append(renderer.cyan("Ctrl+X A")).append("            Cycle agent (coder/planner)\n");
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
-            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes & subagents panel\n");
+            body.append("  ").append(renderer.cyan("/activity agents")).append("     Open live project-agent activity\n");
+            body.append("  ").append(renderer.cyan("/resources help")).append("     Configure resource rules and preview admission classes\n");
+            body.append("  ").append(renderer.cyan("/processes")).append("          Show processes, monitors & subagents panel\n");
             body.append("  ").append(renderer.cyan("/process-kill <id>")).append("  Kill a running process\n");
             body.append("  ").append(renderer.cyan("/process-status <id>")).append("Show process or watcher status\n");
+            body.append("  ").append(renderer.cyan("/process-monitors")).append("   List process completion monitors\n");
+
             body.append("  ").append(renderer.cyan("/statusbar")).append("          Toggle status bar on/off\n");
             body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
         }
@@ -844,7 +1037,8 @@ public class ChatCommandRouter {
         System.out.println(ascii.panel("Help", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
         System.out.println();
         System.out.println(renderer.dim("  Conversations saved to ~/.kompile/conversations/"));
-        System.out.println(renderer.dim("  Resume: kompile chat --resume <session-id>"));
+        System.out.println(renderer.dim("  Resume one: kompile chat --resume <session-id>"));
+        System.out.println(renderer.dim("  Restore recent: /resume-all --dry-run, then /resume-all"));
         System.out.println(renderer.dim("  Continue last: kompile chat --continue"));
     }
 
@@ -879,20 +1073,21 @@ public class ChatCommandRouter {
     }
 
     // ========================================================================
-    // Enforcer
+    // Judge policy configuration (legacy implementation names retained internally)
     // ========================================================================
 
     private void handleEnforcerCommand(String args) {
-        Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        Path wd = repl.getWorkingDirectory();
         String subCmd = args.isBlank() ? "status" : args.split("\\s+")[0].toLowerCase();
 
         switch (subCmd) {
             case "init", "setup" -> {
                 EnforcerConfig config = EnforcerSetupWizard.run(wd);
                 if (config != null) {
-                    System.out.println(renderer.green("Enforcer configured. Run 'kompile enforcer' to start."));
+                    repl.reloadJudgeConfiguration();
+                    System.out.println(renderer.green("Judge policy configured and reloaded."));
                 } else {
-                    System.out.println("Enforcer setup cancelled.");
+                    System.out.println("Judge policy setup cancelled.");
                 }
             }
             case "show", "status" -> {
@@ -900,18 +1095,18 @@ public class ChatCommandRouter {
                 if (agenticLoop.isInlineEnforcerEnabled()) {
                     System.out.println(renderer.green("  [ACTIVE] " + agenticLoop.describeInlineEnforcer()));
                 } else if (agenticLoop.describeInlineEnforcer() != null) {
-                    System.out.println(renderer.yellow("  [DISABLED] " + agenticLoop.describeInlineEnforcer() + " — /enforcer on to enable"));
+                    System.out.println(renderer.yellow("  [DISABLED] " + agenticLoop.describeInlineEnforcer() + " — /judge on to enable"));
                 } else {
                     System.out.println(renderer.dim("  [OFF] No inline enforcer loaded"));
                 }
                 EnforcerConfig config = EnforcerConfig.load(wd);
                 if (config == null) {
-                    System.out.println(renderer.dim("  No enforcer config for this project."));
-                    System.out.println(renderer.dim("  Run /enforcer init to configure."));
+                    System.out.println(renderer.dim("  No judge policy config for this project."));
+                    System.out.println(renderer.dim("  Run /judge init to configure."));
                     return;
                 }
                 System.out.println();
-                System.out.println(renderer.bold("  Enforcer Config"));
+                System.out.println(renderer.bold("  Judge Policy Config"));
                 System.out.println("  ──────────────────────────");
                 System.out.println("  Agent:         " + renderer.cyan(config.getAgent()));
                 System.out.println("  Mode:          " + (config.isKeywordMode() ? "keyword (no LLM)" : "LLM judge"));
@@ -946,15 +1141,16 @@ public class ChatCommandRouter {
                 }
                 System.out.println("  Config path:   " + EnforcerConfig.resolveConfigPath(wd));
                 System.out.println();
-                System.out.println(renderer.dim("  /enforcer init   — reconfigure"));
-                System.out.println(renderer.dim("  /enforcer delete — remove config"));
-                System.out.println(renderer.dim("  /enforcer run    — launch enforcer session"));
+                System.out.println(renderer.dim("  /judge init   — reconfigure"));
+                System.out.println(renderer.dim("  /judge delete — remove config"));
+                System.out.println(renderer.dim("  /judge run    — show standalone compatibility command"));
                 System.out.println();
             }
             case "delete", "remove" -> {
                 try {
                     if (EnforcerConfig.delete(wd)) {
-                        System.out.println(renderer.green("Enforcer config deleted."));
+                    repl.clearJudgePolicy();
+                    System.out.println(renderer.green("Judge policy config deleted and unloaded."));
                     } else {
                         System.out.println(renderer.dim("No enforcer config found."));
                     }
@@ -965,7 +1161,7 @@ public class ChatCommandRouter {
             case "run", "start", "launch" -> {
                 EnforcerConfig config = EnforcerConfig.load(wd);
                 if (config == null) {
-                    System.out.println(renderer.dim("No enforcer config. Run /enforcer init first."));
+                    System.out.println(renderer.dim("No judge policy config. Run /judge init first."));
                     return;
                 }
                 System.out.println(renderer.dim("Launching enforcer mode..."));
@@ -986,7 +1182,7 @@ public class ChatCommandRouter {
             case "rules" -> {
                 EnforcerConfig config = EnforcerConfig.load(wd);
                 if (config == null) {
-                    System.out.println(renderer.dim("No enforcer config. Run /enforcer init first."));
+                    System.out.println(renderer.dim("No judge policy config. Run /judge init first."));
                     return;
                 }
                 try {
@@ -1016,7 +1212,7 @@ public class ChatCommandRouter {
                     if (agenticLoop.isInlineEnforcerEnabled()) {
                         System.out.println(renderer.green("  Enforcer loaded and enabled: " + agenticLoop.describeInlineEnforcer()));
                     } else {
-                        System.out.println(renderer.dim("No enforcer config for this project. Run /enforcer init first."));
+                        System.out.println(renderer.dim("No judge policy config for this project. Run /judge init first."));
                     }
                 }
             }
@@ -1025,15 +1221,15 @@ public class ChatCommandRouter {
                 System.out.println(renderer.yellow("  Enforcer disabled."));
             }
             case "reload" -> {
-                repl.loadInlineEnforcer(wd);
+                repl.reloadJudgeConfiguration();
                 if (agenticLoop.isInlineEnforcerEnabled()) {
-                    System.out.println(renderer.green("  Enforcer reloaded: " + agenticLoop.describeInlineEnforcer()));
+                    System.out.println(renderer.green("  Judge policy reloaded: " + agenticLoop.describeInlineEnforcer()));
                 } else {
-                    System.out.println(renderer.dim("No keyword-mode enforcer config found."));
+                    System.out.println(renderer.dim("No active project judge policy found."));
                 }
             }
             default -> {
-                System.out.println("Usage: /enforcer [on|off|init|show|rules|reload|delete]");
+                System.out.println("Usage: /judge [on|off|init|config|rules|reload|delete]");
                 System.out.println();
                 System.out.println(renderer.dim("  on      — enable inline enforcer for this session"));
                 System.out.println(renderer.dim("  off     — disable inline enforcer"));
@@ -1045,6 +1241,507 @@ public class ChatCommandRouter {
                 System.out.println(renderer.dim("  delete  — remove project config"));
             }
         }
+    }
+
+    // ========================================================================
+    // Judge control (/judge) — chat with the judge, give feedback, override
+    // ========================================================================
+
+    private void handleJudgeCommand(String args) {
+        ai.kompile.cli.main.chat.enforcer.JudgeControl control = repl.getJudgeControl();
+        if (control == null) {
+            System.out.println(renderer.red("Judge control is not available in this session."));
+            return;
+        }
+        JudgeCommand command = parseJudgeCommand(args);
+        String subCmd = command.subcommand();
+        String rest = command.arguments();
+
+        switch (subCmd) {
+            case "status", "show" -> printJudgeStatus(control);
+            case "on", "enable", "resume" -> {
+                if (repl.setJudgeSessionEnabled(true)) {
+                    System.out.println(renderer.green("  Judge enabled for this session."));
+                } else {
+                    System.out.println(renderer.yellow(
+                            "  Judge is globally disabled. Use /judge global on first."));
+                }
+            }
+            case "off", "disable", "pause" -> {
+                repl.setJudgeSessionEnabled(false);
+                System.out.println(renderer.yellow(
+                        "  Judge intervention disabled for this session; chat remains available."));
+            }
+            case "global" -> handleJudgeGlobal(rest);
+            case "workflow" -> handleWorkflowCommand(rest);
+            case "direction" -> handleDirectionCommand(rest);
+            case "policy" -> handleEnforcerCommand(rest);
+            case "init", "setup", "config", "rules", "reload", "delete", "remove",
+                 "run", "start", "launch" -> handleEnforcerCommand(
+                    "config".equals(subCmd) ? "show" : subCmd + (rest.isBlank() ? "" : " " + rest));
+            case "chat", "talk" -> handleJudgeChat(rest);
+            case "feedback", "guidance" -> handleJudgeFeedback(control, rest);
+            case "approve" -> {
+                if (rest.isBlank()) {
+                    System.out.println("Usage: /judge approve [--pattern] <bash command> | off");
+                    return;
+                }
+                boolean cancel = "off".equalsIgnoreCase(rest) || "cancel".equalsIgnoreCase(rest);
+                boolean pattern = rest.equals("--pattern") || rest.startsWith("--pattern ");
+                try {
+                    if (pattern) control.approvePatternNext(rest.substring("--pattern".length()).trim());
+                    else control.approveCommandNext(cancel ? "" : rest);
+                } catch (IllegalArgumentException invalid) {
+                    System.out.println(renderer.red("  Invalid approval pattern: " + invalid.getMessage()));
+                    return;
+                }
+                System.out.println(renderer.yellow(cancel ? "  Command approval cancelled."
+                        : "  Approved " + (pattern ? "bash token pattern" : "exact bash command")
+                        + " for the next turn only: " + control.getApprovedCommandNext()));
+                if (pattern) System.out.println(renderer.dim(
+                        "  * matches within one argument (not /); final ** accepts remaining arguments. No shell operators or expansion."));
+                System.out.println(renderer.dim("  Permissions, workflow and dedicated-tool/managed-memory protections remain active."));
+                System.out.println(renderer.dim("  This does not execute a command. Ask the agent to retry in your next turn."));
+            }
+            case "override", "bypass", "allow-next" -> {
+                boolean enable = !"off".equalsIgnoreCase(rest) && !"cancel".equalsIgnoreCase(rest);
+                control.setOverrideNext(enable);
+                if (enable) {
+                    System.out.println(renderer.yellow("  Judge override ARMED for the next turn:"));
+                    System.out.println(renderer.dim("  · turn review still evaluates and logs, but is report-only"));
+                    System.out.println(renderer.dim("  · explicit hard MCP policy remains active for this one-shot override"));
+                    System.out.println(renderer.dim("  · use /judge off to disable every judge lane for the session"));
+                    System.out.println(renderer.dim("  · cancel before it fires with: /judge override off"));
+                } else {
+                    System.out.println(renderer.green("  Judge override disarmed — normal turn enforcement resumes."));
+                }
+            }
+            case "judgements", "history" -> printJudgeJudgements(rest);
+            case "restart" -> {
+                String message = repl.restartJudge();
+                System.out.println(renderer.green(message));
+            }
+            case "agent" -> {
+                if (rest.isBlank()) {
+                    System.out.println("Usage: /judge agent <name>  (e.g. claude, codex, gemini)");
+                    return;
+                }
+                System.out.println(renderer.green(repl.modifyJudge(rest)));
+            }
+            case "help", "usage" -> printJudgeUsage();
+            default -> throw new IllegalStateException("Unhandled /judge command: " + subCmd);
+        }
+    }
+
+    private void printJudgeStatus(ai.kompile.cli.main.chat.enforcer.JudgeControl control) {
+        System.out.println();
+        System.out.println(renderer.bold("  Judge Control"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println("  Global:     " + (repl.isJudgeGloballyEnabled()
+                ? renderer.green("enabled") : renderer.yellow("disabled")));
+        System.out.println("  Session:    " + (repl.isJudgeSessionEnabled()
+                ? renderer.green("enabled") : renderer.yellow("disabled")));
+        System.out.println("  Backend:    " + renderer.cyan(repl.describeJudge()));
+        System.out.println("  Chat:       " + (repl.isJudgeChatAvailable()
+                ? renderer.green("available independently of intervention")
+                : renderer.yellow("no backend available")));
+        String policy = agenticLoop.describeInlineEnforcer();
+        boolean policyActive = repl.isJudgeGloballyEnabled() && repl.isJudgeSessionEnabled()
+                && agenticLoop.isInlineEnforcerEnabled();
+        System.out.println("  Policy:     " + (policy == null
+                ? renderer.dim("not configured")
+                : (policyActive ? renderer.green(policy) : renderer.yellow(policy + " (off)"))));
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge direction = repl.getDirectionJudge();
+        System.out.println("  Direction:  " + (direction == null
+                ? renderer.dim("not configured")
+                : (direction.isEnabled() ? renderer.green("enabled") : renderer.yellow("off"))));
+        WorkflowController.Status workflow = agenticLoop.workflowStatus();
+        System.out.println("  Workflow:   " + (workflow.effectiveMode() == WorkflowPolicy.Mode.OFF
+                ? renderer.dim("off")
+                : workflow.effectiveMode() == WorkflowPolicy.Mode.ENFORCED
+                        ? renderer.green("enforced") : renderer.yellow("advisory")));
+        if (control.hasGuidance()) {
+            System.out.println("  Guidance:   " + renderer.green("active"));
+            for (String line : control.getGuidance().split("\n", 20)) {
+                System.out.println(renderer.dim("    " + line));
+            }
+        } else {
+            System.out.println("  Guidance:   " + renderer.dim("(none — /judge feedback <text> to correct the judge)"));
+        }
+        System.out.println("  Override:   " + (control.isOverrideNextSet()
+                ? renderer.yellow("ARMED for next turn (turn review report-only; hard MCP policy active)")
+                : renderer.dim("not armed")));
+        System.out.println("  Approved command (next turn): " + (control.getApprovedCommandNext().isBlank()
+                ? renderer.dim("none") : renderer.yellow((control.isApprovalPatternNext() ? "pattern: " : "exact: ")
+                        + control.getApprovedCommandNext())));
+        System.out.println("  State file: " + renderer.dim(control.getFile().toString()));
+        System.out.println();
+        System.out.println(renderer.dim("  /judge chat [msg]        talk with the judge (no msg = interactive)"));
+        System.out.println(renderer.dim("  /judge on|off            enable/disable every judge lane this session"));
+        System.out.println(renderer.dim("  /judge global on|off     persistent master switch for every session"));
+        System.out.println(renderer.dim("  /judge init|rules|reload configure the project judge policy"));
+        System.out.println(renderer.dim("  /judge workflow ...      configure deterministic workflow gates"));
+        System.out.println(renderer.dim("  /judge direction ...     configure goal-drift monitoring"));
+        System.out.println(renderer.dim("  /judge feedback <text>   durable guidance for every future verdict"));
+        System.out.println(renderer.dim("  /judge approve [--pattern] <cmd>   approve next turn; off cancels"));
+        System.out.println(renderer.dim("  /judge override [off]    one-shot report-only turn; hard MCP policy stays active"));
+        System.out.println(renderer.dim("  /judge judgements [n]    show the judge's recent verdicts"));
+        System.out.println(renderer.dim("  /judge restart|agent X   restart judge / switch judge agent"));
+        System.out.println();
+    }
+
+    private void handleJudgeGlobal(String args) {
+        HarnessConfig config = HarnessConfig.load(objectMapper);
+        String value = args == null ? "" : args.trim().toLowerCase(Locale.ROOT);
+        if (value.isBlank() || "status".equals(value) || "show".equals(value)) {
+            System.out.println("  Judge global setting: " + (config.isJudgeGlobalEnabled()
+                    ? renderer.green("enabled") : renderer.yellow("disabled")));
+            System.out.println("  Config: " + renderer.dim(HarnessConfig.getConfigFilePath().toString()));
+            return;
+        }
+        if (!"on".equals(value) && !"enable".equals(value)
+                && !"off".equals(value) && !"disable".equals(value)) {
+            System.out.println("Usage: /judge global [on|off|status]");
+            return;
+        }
+        boolean enabled = "on".equals(value) || "enable".equals(value);
+        config.setJudgeGlobalEnabled(enabled);
+        config.save(objectMapper);
+        repl.setJudgeGloballyEnabled(enabled);
+        System.out.println(enabled
+                ? renderer.green("  Judge enabled globally and for this session.")
+                : renderer.yellow(
+                        "  Judge intervention disabled globally; configured judge chat remains available."));
+    }
+
+    // ========================================================================
+    // Workflow profile (/judge workflow)
+    // ========================================================================
+
+    private void handleWorkflowCommand(String args) {
+        String[] parts = args == null || args.isBlank()
+                ? new String[] {"status"} : args.trim().split("\\s+", 2);
+        String command = parts[0].toLowerCase(Locale.ROOT);
+        String rest = parts.length > 1 ? parts[1].trim() : "";
+        try {
+            switch (command) {
+                case "status", "show" -> printWorkflowStatus();
+                case "reload", "default", "configured" -> {
+                    agenticLoop.reloadWorkflowConfiguration();
+                    System.out.println(renderer.green("  Workflow profile reloaded from project config."));
+                    printWorkflowStatus();
+                }
+                case "off", "disable", "disabled",
+                     "advisory", "advise", "guided", "guide",
+                     "enforced", "enforce", "strict" -> {
+                    WorkflowPolicy.Mode mode = WorkflowPolicy.Mode.parse(command);
+                    List<String> skills = parseWorkflowSkills(rest);
+                    agenticLoop.setWorkflowSessionMode(mode, skills);
+                    System.out.println(renderer.green("  Workflow session mode set to "
+                            + mode.name().toLowerCase(Locale.ROOT) + "."));
+                    printWorkflowStatus();
+                }
+                case "help", "usage" -> printWorkflowUsage();
+                default -> {
+                    System.out.println(renderer.red(
+                            "Unknown /judge workflow subcommand: " + command));
+                    printWorkflowUsage();
+                }
+            }
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            System.out.println(renderer.red("  Workflow configuration failed: " + e.getMessage()));
+        }
+    }
+
+    private void printWorkflowStatus() {
+        WorkflowController.Status status = agenticLoop.workflowStatus();
+        System.out.println();
+        System.out.println(renderer.bold("  Host Workflow Profile"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println("  Configured: " + status.configuredMode().name().toLowerCase(Locale.ROOT));
+        System.out.println("  Effective:  " + status.effectiveMode().name().toLowerCase(Locale.ROOT)
+                + (status.sessionOverride() ? " (session override)" : ""));
+        System.out.println("  Skills:     " + (status.requiredSkills().isEmpty()
+                ? renderer.dim("none") : String.join(", ", status.requiredSkills())));
+        System.out.println("  Plan gate:  " + (status.requirePlanBeforeMutation()
+                ? "todowrite add/set required before mutation" : "disabled"));
+        System.out.println("  Corrections: " + status.maxCorrections());
+        System.out.println("  Scope:      standard/headless agentic loop");
+        if (!status.globalEnabled() || !status.sessionEnabled()) {
+            System.out.println(renderer.yellow("  Disabled by the "
+                    + (!status.globalEnabled() ? "global" : "session") + " judge switch."));
+        }
+        System.out.println();
+    }
+
+    private static List<String> parseWorkflowSkills(String value) {
+        if (value == null || value.isBlank()) return null;
+        if ("none".equalsIgnoreCase(value) || "clear".equalsIgnoreCase(value)) {
+            return List.of();
+        }
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        for (String item : value.split("[,\\s]+")) {
+            if (!item.isBlank()) names.add(item.trim());
+        }
+        return List.copyOf(names);
+    }
+
+    private void printWorkflowUsage() {
+        System.out.println();
+        System.out.println(renderer.bold("  /judge workflow usage"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println(renderer.dim("  status                         show effective profile"));
+        System.out.println(renderer.dim("  enforced [skill,...]           block mutation before plan"));
+        System.out.println(renderer.dim("  advisory [skill,...]           inject guidance without blocking"));
+        System.out.println(renderer.dim("  off                            disable for this session"));
+        System.out.println(renderer.dim("  reload                         clear override and reload config"));
+        System.out.println(renderer.dim("  Persist with enforcer_config workflow_* fields."));
+        System.out.println();
+    }
+
+    // ========================================================================
+    // Direction judge (/judge direction; /direction remains a compatibility alias)
+    // ========================================================================
+
+    private void handleDirectionCommand(String args) {
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge judge = repl.getDirectionJudge();
+        String[] parts = args == null || args.isBlank()
+                ? new String[] {"status"} : args.trim().split("\\s+", 2);
+        String subCmd = parts[0].toLowerCase(java.util.Locale.ROOT);
+        String rest = parts.length > 1 ? parts[1].trim() : "";
+
+        if (judge == null) {
+            // Off by default — explain exactly how to turn it on.
+            if ("help".equals(subCmd) || "usage".equals(subCmd)) {
+                printDirectionUsage();
+                return;
+            }
+            System.out.println(renderer.yellow(
+                    "  Direction monitoring is OFF in this session."));
+            System.out.println(renderer.dim(
+                    "  It is strictly opt-in: add \"directionMonitoring\": true to"));
+            System.out.println(renderer.dim(
+                    "  .kompile/enforcer-config.json (or /judge reload after editing),"));
+            System.out.println(renderer.dim(
+                    "  or run: kompile enforcer init --direction-monitoring"));
+            printDirectionUsage();
+            return;
+        }
+
+        switch (subCmd) {
+            case "status", "show" -> printDirectionStatus(judge);
+            case "goal", "set-goal" -> {
+                if (rest.isBlank()) {
+                    System.out.println("Usage: /judge direction goal <text>   (or '... goal clear' to reset)");
+                    return;
+                }
+                if ("clear".equalsIgnoreCase(rest) || "none".equalsIgnoreCase(rest)) {
+                    judge.setGoal(null);
+                    System.out.println(renderer.green(
+                            "  Direction goal cleared — the judge will use each turn's user message."));
+                } else {
+                    judge.setGoal(rest);
+                    System.out.println(renderer.green("  Direction goal set: " + rest));
+                }
+                System.out.println(renderer.dim(
+                        "  Session-scoped: 'kompile enforcer init --direction-goal \"...\"' persists it."));
+            }
+            case "on" -> {
+                judge.setEnabled(true);
+                System.out.println(renderer.green("  Direction judge enabled."));
+            }
+            case "off" -> {
+                judge.setEnabled(false);
+                System.out.println(renderer.yellow(
+                        "  Direction judge disabled for this session."));
+                System.out.println(renderer.dim(
+                        "  The project keeps directionMonitoring=true; /judge direction on re-enables it."));
+            }
+            case "reset", "reset-streak" -> {
+                judge.resetCrossTurnState();
+                System.out.println(renderer.green(
+                        "  Cross-turn direction streak and history reset for this session."));
+            }
+            case "reload" -> {
+                repl.loadDirectionJudge(repl.getWorkingDirectory());
+                ai.kompile.cli.main.chat.enforcer.DirectionJudge reloaded = repl.getDirectionJudge();
+                if (reloaded != null) {
+                    System.out.println(renderer.green("  Direction judge reloaded: "
+                            + reloaded.describe()));
+                } else {
+                    System.out.println(renderer.yellow(
+                            "  Direction monitoring stayed OFF — the project config does not"));
+                    System.out.println(renderer.dim(
+                            "  enable it (\"directionMonitoring\": true), or no judge backend is available."));
+                }
+            }
+            case "help", "usage" -> printDirectionUsage();
+            default -> {
+                System.out.println(renderer.red("Unknown /judge direction subcommand: " + subCmd));
+                printDirectionUsage();
+            }
+        }
+    }
+
+    private void printDirectionStatus(ai.kompile.cli.main.chat.enforcer.DirectionJudge judge) {
+        System.out.println();
+        System.out.println(renderer.bold("  Direction Judge (goal-drift monitor)"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println("  Backend:   " + renderer.cyan(judge.describe()));
+        System.out.println("  Enabled:   " + (judge.isEnabled()
+                ? renderer.green("yes") : renderer.yellow("no (/judge direction on)")));
+        System.out.println("  Mode:      " + (judge.isReportOnly()
+                ? renderer.yellow("report-only (never redirects or halts)")
+                : "active (redirect in place; halt after redirect budget)"));
+        System.out.println("  Cadence:   every " + judge.getCheckEvery() + " model iterations");
+        System.out.println("  Redirects: " + judge.getMaxRedirects() + " max per turn ("
+                + judge.getRedirectsThisTurn() + " used this turn, "
+                + judge.getChecksThisTurn() + " checks)");
+        System.out.println("  Acts at:   confidence >= " + judge.getConfidenceThreshold());
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge.SessionState state =
+                judge.getSessionState();
+        System.out.println("  Cross-turn: " + state.consecutiveDriftTurns() + " consecutive / "
+                + (state.crossTurnDriftLimit() == 0
+                        ? "disabled" : state.crossTurnDriftLimit() + " limit")
+                + " · " + state.totalDriftTurns() + " drift-affected / "
+                + state.assessedTurns() + " assessed turns");
+        if (state.lastDriftReason() != null) {
+            System.out.println("  Last drift: " + renderer.yellow(state.lastDriftReason()));
+        }
+        String goal = judge.getGoal();
+        if (goal != null) {
+            System.out.println("  Goal:      " + renderer.green(goal));
+            System.out.println(renderer.dim("             (session goal — /judge direction goal clear to reset)"));
+        } else {
+            System.out.println("  Goal:      " + renderer.dim("(none — using each turn's user message)"));
+        }
+        System.out.println();
+        System.out.println(renderer.dim("  /judge direction goal <text>  set a session goal (or 'clear')"));
+        System.out.println(renderer.dim("  /judge direction on|off       enable/disable direction checks"));
+        System.out.println(renderer.dim("  /judge direction reset        clear cross-turn streak/history"));
+        System.out.println(renderer.dim("  /judge reload                 re-read the project config"));
+        if (judge.getStateFile() != null) {
+            System.out.println("  State file: " + renderer.dim(judge.getStateFile().toString()));
+        }
+        System.out.println(renderer.dim("  /judge direction help"));
+        System.out.println();
+    }
+
+    private void printDirectionUsage() {
+        System.out.println();
+        System.out.println(renderer.bold("  /judge direction usage"));
+        System.out.println("  ──────────────────────────────────────────");
+        System.out.println(renderer.dim("  status                    show judge state, goal, and counters"));
+        System.out.println(renderer.dim("  goal <text>               set a session goal (or 'clear')"));
+        System.out.println(renderer.dim("  on|off                    enable/disable for this session"));
+        System.out.println(renderer.dim("  reset                     clear cross-turn streak/history"));
+        System.out.println(renderer.dim("  reload                    re-read the project config"));
+        System.out.println();
+    }
+
+    private void handleJudgeChat(String message) {
+        if (message.isBlank()) {
+            System.out.println(renderer.dim(
+                    "  Use /judge chat <message> or simply /judge <message>."));
+            System.out.println(renderer.dim(
+                    "  Repeated messages keep the judge conversation history; intervention can remain off."));
+            return;
+        }
+        String reply = repl.sendToJudge(message);
+        System.out.println();
+        System.out.println(renderer.bold("  Judge:") + " " + reply.strip());
+        System.out.println();
+    }
+
+    private void handleJudgeFeedback(ai.kompile.cli.main.chat.enforcer.JudgeControl control,
+                                     String text) {
+        if (text.isBlank()) {
+            if (control.hasGuidance()) {
+                System.out.println(renderer.dim("  Current guidance:"));
+                for (String line : control.getGuidance().split("\n", 20)) {
+                    System.out.println("    " + line);
+                }
+            } else {
+                System.out.println("Usage: /judge feedback <text>   (or '/judge feedback clear' to remove)");
+            }
+            return;
+        }
+        if ("clear".equalsIgnoreCase(text) || "none".equalsIgnoreCase(text)
+                || "off".equalsIgnoreCase(text)) {
+            control.clearGuidance();
+            System.out.println(renderer.green("  Judge guidance cleared."));
+            return;
+        }
+        control.setGuidance(text);
+        System.out.println(renderer.green("  Judge guidance saved — injected into every future judge prompt:"));
+        for (String line : text.split("\n", 20)) {
+            System.out.println(renderer.dim("    " + line));
+        }
+        System.out.println(renderer.dim("  Persists for this session across restarts ("
+                + control.getFile().getFileName() + ")."));
+    }
+
+    private void printJudgeJudgements(String rest) {
+        int limit = 10;
+        if (!rest.isBlank()) {
+            try {
+                limit = Math.max(1, Math.min(100, Integer.parseInt(rest.split("\\s+")[0])));
+            } catch (NumberFormatException ignored) {
+                // keep default
+            }
+        }
+        java.util.List<ai.kompile.cli.main.chat.enforcer.JudgementRecord> records =
+                repl.judgeHistory(limit);
+        if (records.isEmpty()) {
+            System.out.println(renderer.dim("  No judgements recorded for this session yet."));
+            return;
+        }
+        System.out.println();
+        System.out.println(renderer.bold("  Recent Judgements (newest first, last " + limit + ")"));
+        System.out.println("  ──────────────────────────────────────────");
+        for (int i = records.size() - 1; i >= 0; i--) {
+            ai.kompile.cli.main.chat.enforcer.JudgementRecord r = records.get(i);
+            String verdict = r.isStop() ? "STOP"
+                    : r.isCompliant() ? "ALLOW" : "CORRECT";
+            String color = r.isCompliant() && !r.isStop()
+                    ? renderer.green(verdict) : renderer.yellow(verdict);
+            System.out.println("  [" + (r.getTimestamp() == null ? "?" : r.getTimestamp()) + "] "
+                    + r.getPhase() + " · " + color
+                    + " · " + r.getBackend()
+                    + (r.getLatencyMs() > 0 ? " · " + r.getLatencyMs() + "ms" : ""));
+            String reasoning = r.getReasoning();
+            if (reasoning != null && !reasoning.isBlank()) {
+                System.out.println(renderer.dim("      " + reasoning));
+            }
+        }
+        System.out.println();
+    }
+
+    private void printJudgeUsage() {
+        System.out.println("Usage: /judge [message | status|on|off|global|workflow|init|config|rules|direction|chat|ask|feedback|approve|override|judgements|restart|agent]");
+        System.out.println();
+        System.out.println(renderer.dim("  status              — guidance, override state, backend health"));
+        System.out.println(renderer.dim("  on|off              — enable/disable intervention this session; chat stays available"));
+        System.out.println(renderer.dim("  global on|off       — persistent intervention switch for every session"));
+        System.out.println(renderer.dim("  init|config|rules   — configure or inspect project judge policy"));
+        System.out.println(renderer.dim("  workflow ...        — required skills and plan-before-mutation gate"));
+        System.out.println(renderer.dim("  direction ...       — configure goal-drift checks"));
+        System.out.println(renderer.dim("  chat <message>      — converse with the judge using normal REPL turns"));
+        System.out.println(renderer.dim("  <message>           — shorthand for chat (for example: /judge why did you block that?)"));
+        System.out.println(renderer.dim("  ask <message>       — explicit chat alias; conversation remains available while intervention is off"));
+        System.out.println(renderer.dim("  feedback <text>     — durable guidance injected into every verdict"));
+        System.out.println(renderer.dim("  feedback clear      — remove durable guidance"));
+        System.out.println(renderer.dim("  approve <command>   — override judge for exact bash command next turn; does not execute it"));
+        System.out.println(renderer.dim("  approve --pattern <pattern> — token globs, e.g. git log ** or rm -rf target/cache-*"));
+        System.out.println(renderer.dim("  * stays within one argument and path component; final ** permits remaining arguments"));
+        System.out.println(renderer.dim("  Patterns reject chaining, redirects, substitutions, shell globs and .. paths; use exact approval for complex shell"));
+        System.out.println(renderer.dim("  approve off         — cancel pending command approval"));
+        System.out.println(renderer.dim("  override            — report-only turn review; hard MCP policy stays active"));
+        System.out.println(renderer.dim("  override off        — disarm a pending override"));
+        System.out.println(renderer.dim("  judgements [n]      — show recent judge verdicts"));
+        System.out.println(renderer.dim("  restart             — restart the judge backend"));
+        System.out.println(renderer.dim("  agent <name>        — switch the judge agent (claude, codex, …)"));
+        System.out.println();
     }
 
     private void forwardCommandToAgent(String args) {
@@ -1220,6 +1917,7 @@ public class ChatCommandRouter {
             spinner.stop();
 
             System.out.println(renderer.renderToolCallComplete(toolName, argsJson, result));
+            repl.onDirectToolComplete(toolName, argsJson, result);
         } catch (ToolExecutionException e) {
             if (e.isPermissionDenied()) {
                 System.out.println(renderer.renderToolCallDenied(toolName, e.getMessage()));
@@ -1252,6 +1950,37 @@ public class ChatCommandRouter {
     // ========================================================================
     // Model switching
     // ========================================================================
+
+    private void handleFastModeCommand(String rest) {
+        String action = rest.toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("", "on", "off", "status").contains(action)) {
+            ChatCompleter.printAbove("Usage: /fast [on|off|status] (no argument toggles)");
+            return;
+        }
+        ChatConfig config = repl.getChatConfig();
+        if (!localMode || config == null) {
+            ChatCompleter.printAbove("Fast mode is only configurable in local standard chat.");
+            return;
+        }
+        // Always allow clearing an old preference, even after eligibility changes.
+        if (!config.supportsFastMode() && !"off".equals(action)) {
+            ChatCompleter.printAbove("Fast mode is not supported for the selected provider/model. Use /model.");
+            return;
+        }
+        if (!"status".equals(action)) {
+            config.setFastMode("on".equals(action) || (action.isEmpty() && !config.isFastMode()));
+            try {
+                config.saveLoadedOrGlobal();
+            } catch (java.io.IOException error) {
+                ChatCompleter.printAbove(renderer.yellow(
+                        "Fast mode changed for this session, but could not be saved: " + error.getMessage()));
+            }
+            repl.refreshModelDisplay();
+        }
+        ChatCompleter.printAbove("Fast mode " + (config.isFastMode() ? "ON (requested)" : "OFF")
+                + " — applies to subsequent requests; reasoning effort is unchanged.");
+        ChatCompleter.printAbove(config.fastModeCapabilities().notice());
+    }
 
     private void handleModelCommand(String rest) {
         if (!localMode) {
@@ -1612,7 +2341,8 @@ public class ChatCommandRouter {
     // ========================================================================
 
     private void showTodos() {
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos =
+                TodoWriteTool.getTodos(sessionId, repl.getWorkingDirectory());
         if (todos.isEmpty()) {
             System.out.println("No tasks in the current session.");
             return;
@@ -1842,87 +2572,103 @@ public class ChatCommandRouter {
         System.out.println(renderer.dim("  Resume: kompile chat --resume <session-id>"));
     }
 
-    private void clearSession() {
-        try {
-            ObjectNode args = objectMapper.createObjectNode();
-            args.put("sessionId", sessionId);
-            mcpClient.callTool("clear_chat_session", args);
-            chatHistory.logSystem("Session cleared.");
-            System.out.println("Chat session cleared.");
-        } catch (Exception e) {
-            System.err.println("Error clearing session: " + e.getMessage());
-        }
-    }
-
     // ========================================================================
     // Compact
     // ========================================================================
 
     private void handleCompact(String focusInstruction) {
-        if (repl.isLlmBusy()) {
-            System.out.println(renderer.yellow("  /compact is available after the active turn finishes."));
-            System.out.println(renderer.dim("  Mid-tool compaction would break provider function-call/result linkage."));
-            return;
-        }
         if (!agenticLoop.supportsForceCompact()) {
-            System.out.println(renderer.yellow("  /compact requires local mode."));
-            System.out.println(renderer.dim("  In server mode, use /clear to reset the server session, "
+            ChatCompleter.printAbove(renderer.yellow("  /compact requires local mode."));
+            ChatCompleter.printAbove(renderer.dim("  In server mode, use /clear to reset the server session, "
                     + "or run kompile chat in local mode for LLM-based compaction."));
             return;
         }
 
+        int entriesBefore = agenticLoop.conversationEntryCount();
+        if (entriesBefore == 0) {
+            ChatCompleter.printAbove(renderer.dim(
+                    "  Nothing to compact — conversation is empty."));
+            return;
+        }
+
+        // Dispatch through the turn lifecycle instead of running inline: the
+        // reservation closes the race where a turn (foreground or backgrounded)
+        // starts between this check and the LLM call, and the registered worker
+        // stays interruptible — an inline reader-thread call deadlocks the
+        // session because requestCancel() cannot reach it.
+        final String focus = focusInstruction;
+        boolean accepted = messageHandler.dispatchMaintenanceTurn(() -> {
+            runCompactOnTurnThread(focus);
+        }, "compact-dispatch");
+        if (!accepted) {
+            // printAbove, not System.out: the managed TUI owns the terminal, and
+            // raw stdout paints straight over the user's input row.
+            ChatCompleter.printAbove(renderer.yellow(
+                    "  /compact is available after the active turn finishes."));
+            ChatCompleter.printAbove(renderer.dim(
+                    "  Mid-tool compaction would break provider function-call/result linkage."));
+        }
+    }
+
+    private void runCompactOnTurnThread(String focusInstruction) {
+        // Runs on the compact worker while the REPL prompt is live. All rendering
+        // goes through CompactionProgressIndicator: one replaceable transcript
+        // block in the managed TUI (animated in place, never inside the input
+        // row) or a single-line fallback on unmanaged surfaces.
         int tokensBefore = agenticLoop.estimateConversationTokens();
         int entriesBefore = agenticLoop.conversationEntryCount();
         if (entriesBefore == 0) {
-            System.out.println(renderer.dim("  Nothing to compact — conversation is empty."));
+            ChatCompleter.printAbove(renderer.dim(
+                    "  Nothing to compact — conversation is empty."));
             return;
         }
 
-        System.out.println();
-        System.out.println(renderer.cyan("  ─── compacting context ───"));
-        if (focusInstruction != null && !focusInstruction.isBlank()) {
-            System.out.println(renderer.dim("  focus: " + focusInstruction.trim()));
-        }
-        System.out.println(renderer.dim("  before: " + entriesBefore + " entries, ~"
-                + tokensBefore + " tokens. Summarizing…"));
-        System.out.println();
-
-        AgenticChatLoop.ForceCompactResult result;
+        CompactionProgressIndicator progress = null;
         try {
-            result = agenticLoop.forceCompact(focusInstruction);
+            progress = CompactionProgressIndicator.start(
+                    "compact:" + System.nanoTime(), renderer, entriesBefore, tokensBefore,
+                    ChatCompleter::printAbove,
+                    label -> ChatCompleter.setActivity(label));
+            progress.phase("Summarizing conversation");
+            AgenticChatLoop.ForceCompactResult result =
+                    agenticLoop.forceCompact(focusInstruction, progress);
+            switch (result.getStatus()) {
+                case OK:
+                    progress.complete(result.getTokensBefore(), result.getTokensAfter(),
+                            result.getPreservedTurns());
+                    chatHistory.logSystem("Context compacted · portable history estimate: ~"
+                            + result.getTokensBefore() + " → ~" + result.getTokensAfter()
+                            + " tokens; provider context not measured.");
+                    break;
+                case NOOP:
+                    progress.noop(result.getMessage());
+                    break;
+                case UNSUPPORTED:
+                    progress.unsupported(result.getMessage());
+                    break;
+                case FAILED:
+                    progress.failed(result.getMessage());
+                    break;
+            }
         } catch (Exception e) {
-            System.out.println(renderer.red("  /compact failed: " + e.getMessage()));
-            return;
-        }
-
-        System.out.println();
-        switch (result.getStatus()) {
-            case OK:
-                int after = result.getTokensAfter();
-                int before = result.getTokensBefore();
-                double ratio = before > 0 ? (1.0 - ((double) after / before)) * 100.0 : 0.0;
-                System.out.println(renderer.renderCompactionNotice(before, after));
-                System.out.println(renderer.dim(String.format(
-                        "  Compaction complete — saved %.1f%% (%d → %d tokens), preserved %d recent turn(s).",
-                        ratio, before, after, result.getPreservedTurns())));
-                chatHistory.logSystem("Context compacted: " + before + " → " + after + " tokens.");
-                break;
-            case NOOP:
-                System.out.println(renderer.dim("  " + result.getMessage()));
-                break;
-            case UNSUPPORTED:
-                System.out.println(renderer.yellow("  " + result.getMessage()));
-                break;
-            case FAILED:
-                System.out.println(renderer.red("  " + result.getMessage()));
-                break;
+            String message = e.getMessage() == null || e.getMessage().isBlank()
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            if (progress != null && !progress.isFinished()) {
+                progress.failed("/compact failed: " + message);
+            } else {
+                ChatCompleter.printAbove(renderer.red("  ✗ /compact failed: " + message));
+            }
+        } finally {
+            if (progress != null) {
+                progress.abandonIfActive(null);
+            }
         }
     }
 
     private void handleAutoCompact(String arguments) {
         ChatConfig config = repl.getChatConfig();
         if (!localMode || config == null || !agenticLoop.supportsForceCompact()) {
-            System.out.println(renderer.yellow("  /auto-compact requires standard local chat mode."));
+            ChatCompleter.printAbove(renderer.yellow("  /auto-compact requires standard local chat mode."));
             return;
         }
 
@@ -1947,7 +2693,8 @@ public class ChatCommandRouter {
                 config.saveLoadedOrGlobal();
                 agenticLoop.refreshCompactionPolicy();
             } catch (Exception e) {
-                System.out.println(renderer.red("  Could not update auto-compaction: " + e.getMessage()));
+                ChatCompleter.printAbove(renderer.red(
+                        "  Could not update auto-compaction: " + e.getMessage()));
                 printAutoCompactUsage();
                 return;
             }
@@ -1986,18 +2733,18 @@ public class ChatCommandRouter {
 
     private void printAutoCompactStatus(ChatConfig config) {
         String state = agenticLoop.autoCompactEnabled() ? "enabled" : "disabled";
-        System.out.println(renderer.cyan("  Auto-compaction: ") + state);
-        System.out.println(renderer.dim("  strategy: "
+        ChatCompleter.printAbove(renderer.cyan("  Auto-compaction: ") + state);
+        ChatCompleter.printAbove(renderer.dim("  strategy: "
                 + agenticLoop.compactionStrategyDescription()));
-        System.out.println(renderer.dim(String.format(Locale.ROOT,
+        ChatCompleter.printAbove(renderer.dim(String.format(Locale.ROOT,
                 "  active model limits: %,d context / %,d output tokens",
                 agenticLoop.contextWindowTokens(), agenticLoop.maxOutputTokens())));
-        System.out.println(renderer.dim(String.format(Locale.ROOT,
+        ChatCompleter.printAbove(renderer.dim(String.format(Locale.ROOT,
                 "  trigger: %,d tokens (%.0f%% ceiling, %,d reserved)",
                 agenticLoop.compactionTriggerTokens(),
                 agenticLoop.autoCompactThreshold() * 100.0d,
                 agenticLoop.compactionReserveTokens())));
-        System.out.println(renderer.dim("  overrides: context="
+        ChatCompleter.printAbove(renderer.dim("  overrides: context="
                 + tokenSetting(config.getContextWindowTokens()) + ", output="
                 + tokenSetting(config.getMaxOutputTokens()) + ", reserve="
                 + tokenSetting(config.getCompactionReserveTokens())));
@@ -2008,9 +2755,10 @@ public class ChatCommandRouter {
     }
 
     private void printAutoCompactUsage() {
-        System.out.println(renderer.dim("  Usage: /auto-compact status|on|off"));
-        System.out.println(renderer.dim("         /auto-compact threshold <50%-95%>"));
-        System.out.println(renderer.dim("         /auto-compact reserve|context|output <tokens|auto>"));
+        ChatCompleter.printAbove(renderer.dim("  Usage: /auto-compact status|on|off"));
+        ChatCompleter.printAbove(renderer.dim("         /auto-compact threshold <50%-95%>"));
+        ChatCompleter.printAbove(renderer.dim(
+                "         /auto-compact reserve|context|output <tokens|auto>"));
     }
 
     // ========================================================================
@@ -2456,8 +3204,8 @@ public class ChatCommandRouter {
 
         System.out.println(ascii.panel("Jobs & Queue", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
         System.out.println();
-        System.out.println(renderer.dim("  Escape              Cancel in-progress operation"));
-        System.out.println(renderer.dim("  Ctrl+B              Background current task"));
+        System.out.println(renderer.dim("  Escape              Cancel main operation; subagents keep running"));
+        System.out.println(renderer.dim("  Ctrl+B              Background active subagent invocation"));
         System.out.println(renderer.dim("  Ctrl+X P            Toggle planning mode"));
         System.out.println(renderer.dim("  Ctrl+X T            Show todos"));
         System.out.println(renderer.dim("  Ctrl+X A            Cycle agent"));

@@ -206,13 +206,13 @@ class SearchExclusionsTest {
     @Test
     void gitignoreFilterUsesRepoRelativePathsWhenSearchStartsInSubdirectory() {
         Path repo = Path.of("/repo");
-        Path project = repo.resolve("kompile-fpna-v8");
-        var f = SearchExclusions.fromLines(List.of("kompile-fpna-v8/log-archives/"), repo);
+        Path project = repo.resolve("generated-project");
+        var f = SearchExclusions.fromLines(List.of("generated-project/log-archives/"), repo);
 
         assertTrue(f.isIgnoredDir(f.relativePath(project.resolve("log-archives"), project), "log-archives"));
         assertFalse(f.isIgnoredDir("log-archives", "log-archives"));
         assertTrue(f.excludeDirArgs(project).contains("log-archives"));
-        assertFalse(f.excludeDirArgs(project).contains("kompile-fpna-v8/log-archives"));
+        assertFalse(f.excludeDirArgs(project).contains("generated-project/log-archives"));
     }
 
     // ─── Binary detection: UTF-8 multibyte content must not be misclassified ───

@@ -51,12 +51,28 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-channel-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-project-store</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-graph-reasoning</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+          Local learning variant: launches the Spring-free LearningSubprocessMain
+          child directly from the current classpath (no HTTP server, no UI, no
+          MainApplication boot). Same PORTABLE_GRAPH_LEARNING protocol and the
+          same underlying graph-reasoning libraries as the installed dist child.
+        -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-learning</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- MCP SDK for stdio server -->
@@ -250,6 +266,19 @@
             <artifactId>kompile-loader-pdf-extended</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- Explicit source loaders used by the non-Spring project-local crawl runtime. -->
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-jira</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-reddit</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-notion</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-source-confluence</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-slack</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-discord</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-email-imap</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-gmail</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-gdocs</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-gdrive</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-google-workspace</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>ai.kompile</groupId><artifactId>kompile-loader-onedrive</artifactId><version>${project.version}</version></dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-crawl-graph</artifactId>
@@ -270,6 +299,11 @@
 
         <!-- Test Dependencies -->
         <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
             <scope>test</scope>
@@ -285,21 +319,21 @@
             <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- Local crawl/enrichment tests execute the same backend-agnostic graph lifecycle as
-             production. Supply the build-selected ND4J host backend only on the test classpath;
-             distributions continue to side-load their CPU/CUDA backend from packaged assets. -->
+        <!-- ND4J host backend: the fat CLI jar doubles as the MCP host JVM. Crawl
+             pipelines legitimately use Nd4j parent-side (embeddings, graph projection),
+             so the build-selected backend's JAVA classes (CpuBackend registration,
+             Nd4jBackend service entries) must be on the runtime classpath. Native .so
+             binaries continue to side-load from javacpp cache / native-libs. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
-            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
-            <scope>test</scope>
         </dependency>
         <!-- MockRestServiceServer for ask_graph_* tool HTTP tests -->
         <dependency>
@@ -318,6 +352,68 @@
     </dependencies>
 
     <profiles>
+        <!-- Refresh an existing installation without rebuilding its dependency bundle.
+             Run: mvn -pl :kompile-cli-main -Pdeploy-local-cli verify
+             Use -Dkompile.deploy.incremental=false to rebuild and replace the entire
+             shaded CLI bundle after installing changed upstream modules.
+             Override the destination with -Dkompile.install.home=... . -->
+        <profile>
+            <id>deploy-local-cli</id>
+            <properties>
+                <kompile.install.home>${user.home}/.kompile</kompile.install.home>
+                <kompile.deploy.incremental>true</kompile.deploy.incremental>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <configuration>
+                            <skip>${kompile.deploy.incremental}</skip>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>deploy-local-cli</id>
+                                <phase>verify</phase>
+                                <goals><goal>run</goal></goals>
+                                <configuration>
+                                    <target xmlns:if="ant:if" xmlns:unless="ant:unless">
+                                        <property name="installed.cli" value="${kompile.install.home}/lib/kompile-cli.jar"/>
+                                        <available file="${installed.cli}" property="installed.cli.exists"/>
+                                        <fail unless="installed.cli.exists" message="An existing CLI installation is required at ${installed.cli}"/>
+                                        <!-- First entry wins: overlay the entire module, retaining
+                                             the executable manifest and merged service providers. -->
+                                        <zip if:true="${kompile.deploy.incremental}"
+                                             destfile="${installed.cli}.candidate" duplicate="preserve">
+                                            <zipfileset src="${project.build.directory}/${project.build.finalName}.jar"
+                                                        excludes="META-INF/MANIFEST.MF,META-INF/services/**"/>
+                                            <zipfileset src="${installed.cli}"/>
+                                        </zip>
+                                        <!-- Full-bundle mode includes current dependencies and merged
+                                             services; do not retain stale classes from the old bundle. -->
+                                        <copy unless:true="${kompile.deploy.incremental}"
+                                              file="${project.build.directory}/${project.build.finalName}-shaded.jar"
+                                              tofile="${installed.cli}.candidate" overwrite="true"/>
+                                        <exec executable="${java.home}/bin/java" failonerror="true" timeout="60000">
+                                            <arg value="-jar"/>
+                                            <arg value="${installed.cli}.candidate"/>
+                                            <arg value="--version"/>
+                                        </exec>
+                                        <copy file="${installed.cli}" tofile="${installed.cli}.bak-local-deploy" overwrite="true"/>
+                                        <move file="${installed.cli}.candidate" tofile="${installed.cli}" overwrite="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>native</id>
             <activation>
@@ -424,9 +520,11 @@
                                 <buildArg>-H:IncludeResources=pi-mcp-adapter/.*</buildArg>
                                 <buildArg>-H:IncludeResources=version\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=kompile-cli-versions\.properties</buildArg>
+                                <buildArg>-H:IncludeResources=installer/install\.sh</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/providers/.*\.json</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/model-catalogs\.json</buildArg>
                                 <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
@@ -517,9 +615,19 @@
                 <directory>${project.build.directory}/generated-pi-mcp-adapter</directory>
                 <filtering>false</filtering>
             </resource>
+            <!-- Bundle the canonical installer so self-update never executes a freshly downloaded script. -->
+            <resource>
+                <!-- project.basedir is stable even when build-dist.sh invokes Maven from this module. -->
+                <directory>${project.basedir}/../..</directory>
+                <targetPath>installer</targetPath>
+                <filtering>false</filtering>
+                <includes>
+                    <include>install.sh</include>
+                </includes>
+            </resource>
             <!-- Bundle build-scripts/ as classpath resources for extraction at runtime -->
             <resource>
-                <directory>${kompile.root.dir}/build-scripts</directory>
+                <directory>${project.basedir}/../../build-scripts</directory>
                 <targetPath>build-scripts</targetPath>
                 <filtering>false</filtering>
                 <includes>
@@ -610,47 +718,12 @@
                 <configuration>
                     <includeProjectDependencies>true</includeProjectDependencies>
                     <includePluginDependencies>true</includePluginDependencies>
+                    <blockSystemExit>true</blockSystemExit>
                     <mainClass>picocli.codegen.docgen.manpage.ManPageGenerator</mainClass>
                     <arguments>
                         <argument>--outdir=${project.build.directory}/generated-picocli-docs</argument>
-                        <argument>-v</argument>
-                        <argument>--template-dir=src/docs/mantemplates</argument>
+                        <argument>--exit</argument>
                         <argument>ai.kompile.cli.main.MainCommand</argument>
-                        <argument>ai.kompile.cli.main.Bootstrap</argument>
-                        <argument>ai.kompile.cli.main.Info</argument>
-                        <argument>ai.kompile.cli.main.build.BuildMain</argument>
-                        <argument>ai.kompile.cli.main.build.CloneBuildComponents</argument>
-                        <argument>ai.kompile.cli.main.build.GenerateImageAndSDK</argument>
-                        <argument>ai.kompile.cli.main.build.NativeImageBuilder</argument>
-                        <argument>ai.kompile.cli.main.build.PipelineCommandGenerator</argument>
-                        <argument>ai.kompile.cli.main.build.PomGenerator</argument>
-                        <argument>ai.kompile.cli.main.build.RagPomGenerator</argument>
-                        <argument>ai.kompile.cli.main.build.BuildAppCommand</argument>
-                        <argument>ai.kompile.cli.main.build.generators.SampleProjectSync</argument>
-                        <argument>ai.kompile.cli.main.config.ConfigMain</argument>
-                        <argument>ai.kompile.cli.main.exec.ExecMain</argument>
-                        <argument>ai.kompile.cli.main.exec.InferenceServerCreate</argument>
-                        <argument>ai.kompile.cli.main.exec.PipelineGenerator</argument>
-                        <argument>ai.kompile.cli.main.exec.SequencePipelineCombiner</argument>
-                        <argument>ai.kompile.cli.main.exec.NewStepCreator</argument> <argument>ai.kompile.cli.main.install.InstallAll</argument>
-                        <argument>ai.kompile.cli.main.install.InstallGraalvm</argument>
-                        <argument>ai.kompile.cli.main.install.InstallMain</argument>
-                        <argument>ai.kompile.cli.main.install.InstallMaven</argument>
-                        <argument>ai.kompile.cli.main.install.InstallPython</argument>
-                        <argument>ai.kompile.cli.main.install.InstallSDK</argument>
-                        <argument>ai.kompile.cli.main.models.Convert</argument>
-                        <argument>ai.kompile.cli.main.models.DL4jSummary</argument>
-                        <argument>ai.kompile.cli.main.models.OnnxPrint</argument>
-                        <argument>ai.kompile.cli.main.models.samediff.SameDiffSummary</argument>
-                        <argument>ai.kompile.cli.main.models.TensorflowPrint</argument>
-                        <argument>ai.kompile.cli.main.uninstall.UnInstallAll</argument>
-                        <argument>ai.kompile.cli.main.uninstall.UnInstallGraalvm</argument>
-                        <argument>ai.kompile.cli.main.uninstall.UnInstallMain</argument>
-                        <argument>ai.kompile.cli.main.uninstall.UnInstallMaven</argument>
-                        <argument>ai.kompile.cli.main.uninstall.UnInstallPython</argument>
-                        <argument>ai.kompile.cli.main.util.ModelFileDebug</argument>
-                        <argument>ai.kompile.cli.main.chat.ChatCommand</argument>
-                        <argument>ai.kompile.cli.main.auth.AuthCommand</argument>
                     </arguments>
                 </configuration>
                 <dependencies>
@@ -673,7 +746,6 @@
                             <goal>process-asciidoc</goal>
                         </goals>
                         <configuration>
-                            <sourceHighlighter>coderay</sourceHighlighter>
                             <backend>html5</backend>
                         </configuration>
                     </execution>
@@ -684,7 +756,6 @@
                             <goal>process-asciidoc</goal>
                         </goals>
                         <configuration>
-                            <sourceHighlighter>coderay</sourceHighlighter>
                             <backend>manpage</backend>
                         </configuration>
                     </execution>
@@ -707,6 +778,12 @@
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>
+                    <systemPropertyVariables>
+                        <!-- Unit tests exercise the deterministic portable learners directly. The
+                             dedicated child-process bridge has its own process-level contract test. -->
+                        <kompile.local.learning.subprocess.enabled>false</kompile.local.learning.subprocess.enabled>
+                        <kompile.local.learning.inlineFallback>true</kompile.local.learning.inlineFallback>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
 
@@ -752,6 +829,12 @@
                             <artifact>*:*</artifact>
                             <excludes>
                                 <exclude>org/datanucleus/**</exclude>
+                                <!-- Android AAR/JAR staging paths occasionally leak into a locally
+                                     installed host-classified ND4J artifact. They are never loadable
+                                     by the desktop CLI and can add multiple gigabytes (including
+                                     interrupted .tmp native copies) to the shaded executable. -->
+                                <exclude>lib/arm64-v8a/**</exclude>
+                                <exclude>lib/x86_64/**</exclude>
                                 <exclude>META-INF/*.SF</exclude>
                                 <exclude>META-INF/*.DSA</exclude>
                                 <exclude>META-INF/*.RSA</exclude>

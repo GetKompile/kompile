@@ -253,7 +253,7 @@ public class EntityPartitionCrawlStep {
                         .relationships(new ArrayList<>())
                         .build()
                 : loadedContextGraph;
-        extraction.mergeIntoContext(initialGraphContext, contextGraph, config);
+        extraction.mergeIntoContext(initialGraphContext, contextGraph, config, job);
 
         // One ledger across every partition: the overlap between partitions is the point of
         // partitioning, and without sharing it a chunk naming two subjects is extracted twice.
@@ -296,7 +296,7 @@ public class EntityPartitionCrawlStep {
                                     member.confidence(), contextGraph.getId(), null);
                             Graph produced = extraction.extractChunkGraph(doc, config, job,
                                     contextGraph, task);
-                            extraction.mergeIntoContext(produced, contextGraph, config);
+                            extraction.mergeIntoContext(produced, contextGraph, config, job);
                             return produced;
                         });
                 StagedRunResult ran = partitions.runStaged(scheduled, store,

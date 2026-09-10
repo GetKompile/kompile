@@ -85,12 +85,22 @@ public class CodeEntityExtractor {
      * Delegates to the appropriate LanguageParser based on detected language.
      */
     public ExtractionResult extract(Path filePath, String projectId) throws IOException {
+        return extractContent(filePath, projectId, Files.readString(filePath));
+    }
+
+    /**
+     * Extract entities from caller-supplied source text without rereading the file. This is used by
+     * managed crawl chunking, where the loader output is the authoritative text and may not have a
+     * durable local copy.
+     */
+    public ExtractionResult extractContent(Path filePath, String projectId, String content) {
+        Objects.requireNonNull(filePath, "filePath");
+        Objects.requireNonNull(content, "content");
         String language = languageRegistry.detectLanguage(filePath);
         if (language == null) {
             return new ExtractionResult(List.of(), List.of());
         }
 
-        String content = Files.readString(filePath);
         String[] lines = content.split("\n", -1);
         String relativePath = filePath.toString();
 

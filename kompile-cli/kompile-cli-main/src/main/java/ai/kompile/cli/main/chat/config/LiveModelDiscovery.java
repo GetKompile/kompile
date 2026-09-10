@@ -22,6 +22,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Fetches model and vendor-native thinking capabilities from the selected vendor.
@@ -31,6 +35,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class LiveModelDiscovery {
     private static final long PROCESS_TIMEOUT_SECONDS = 20;
+    private static final int MAX_NATIVE_OUTPUT_CHARS = 4 * 1024 * 1024;
     private static final ObjectMapper MAPPER = ai.kompile.cli.common.util.JsonUtils.standardMapper();
 
     private LiveModelDiscovery() {
@@ -148,31 +153,66 @@ public final class LiveModelDiscovery {
 
     private static List<Model> discoverNative(AgentProvider agent) {
         Process process = null;
+        ExecutorService readerExecutor = null;
+        Future<String> outputTask = null;
+        AtomicBoolean outputOverflow = new AtomicBoolean(false);
         try {
             process = new ProcessBuilder(List.copyOf(agent.getModelListCommand()))
                     .redirectErrorStream(true)
                     .start();
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append('\n');
+            Process running = process;
+            readerExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "provider-model-list-reader");
+                thread.setDaemon(true);
+                return thread;
+            });
+            outputTask = readerExecutor.submit(() -> {
+                StringBuilder collected = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        running.getInputStream(), StandardCharsets.UTF_8))) {
+                    char[] buffer = new char[8192];
+                    int read;
+                    while ((read = reader.read(buffer)) >= 0) {
+                        if (read == 0) continue;
+                        if (collected.length() >= MAX_NATIVE_OUTPUT_CHARS) {
+                            outputOverflow.set(true);
+                            continue;
+                        }
+                        int retained = Math.min(read,
+                                MAX_NATIVE_OUTPUT_CHARS - collected.length());
+                        collected.append(buffer, 0, retained);
+                        if (retained < read) outputOverflow.set(true);
+                    }
                 }
-            }
-            if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    || process.exitValue() != 0) {
+                return collected.toString();
+            });
+            if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
                 return List.of();
             }
-            return parseNativeOutput(output.toString());
-        } catch (IOException | InterruptedException e) {
+            if (process.exitValue() != 0) return List.of();
+            String retainedOutput = outputTask.get(2, TimeUnit.SECONDS);
+            return outputOverflow.get() ? List.of() : parseNativeOutput(retainedOutput);
+        } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            if (process != null) {
-                process.destroyForcibly();
-            }
             return List.of();
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
+            if (process != null) {
+                try { process.getInputStream().close(); } catch (IOException ignored) { }
+            }
+            if (outputTask != null && !outputTask.isDone()) outputTask.cancel(true);
+            if (readerExecutor != null) {
+                readerExecutor.shutdownNow();
+                try {
+                    readerExecutor.awaitTermination(1, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 
@@ -203,9 +243,31 @@ public final class LiveModelDiscovery {
     }
 
     static List<Model> parseHttpModels(String body, String provider) {
+        ProviderModelCatalogs.Descriptor descriptor = ProviderModelCatalogs.find(provider);
+        return parseHttpModels(
+                body,
+                provider,
+                descriptor == null ? "STANDARD" : descriptor.responseProfile(),
+                descriptor == null ? List.of() : descriptor.idFields());
+    }
+
+    static List<Model> parseHttpModels(
+            String body,
+            String provider,
+            String responseProfile) {
+        return parseHttpModels(body, provider, responseProfile, List.of());
+    }
+
+    static List<Model> parseHttpModels(
+            String body,
+            String provider,
+            String responseProfile,
+            List<String> idFields) {
         String vendor = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
-        if (!"gemini".equals(vendor)) {
-            return parseHttpModelsBody(body, vendor);
+        String profile = responseProfile == null
+                ? "STANDARD" : responseProfile.trim().toUpperCase(Locale.ROOT);
+        if (!"GEMINI".equals(profile)) {
+            return parseHttpModelsBody(body, vendor, profile, idFields);
         }
         try {
             JsonNode root = MAPPER.readTree(body);
@@ -226,9 +288,10 @@ public final class LiveModelDiscovery {
                     filtered.add(value);
                 }
             }
-            return parseHttpModelsBody(MAPPER.writeValueAsString(filtered), vendor);
+            return parseHttpModelsBody(
+                    MAPPER.writeValueAsString(filtered), vendor, profile, idFields);
         } catch (Exception ignored) {
-            return parseHttpModelsBody(body, vendor);
+            return parseHttpModelsBody(body, vendor, profile, idFields);
         }
     }
 
@@ -245,10 +308,14 @@ public final class LiveModelDiscovery {
     }
 
     static List<Model> parseHttpModels(String body) {
-        return parseHttpModelsBody(body, "");
+        return parseHttpModelsBody(body, "", "STANDARD", List.of());
     }
 
-    private static List<Model> parseHttpModelsBody(String body, String vendor) {
+    private static List<Model> parseHttpModelsBody(
+            String body,
+            String vendor,
+            String responseProfile,
+            List<String> idFields) {
         if (body == null || body.isBlank()) {
             return List.of();
         }
@@ -267,10 +334,21 @@ public final class LiveModelDiscovery {
 
             Map<String, ModelBuilder> models = new LinkedHashMap<>();
             for (JsonNode value : values) {
+                if ("CODEX".equals(responseProfile)
+                        && value.hasNonNull("visibility")
+                        && !"list".equalsIgnoreCase(value.path("visibility").asText())) {
+                    continue;
+                }
+                if ("GITHUB_COPILOT".equals(responseProfile)
+                        && !copilotPickerModel(value)) {
+                    continue;
+                }
                 // Gemini exposes baseModelId alongside name=models/{id}; the base id
                 // is the identifier accepted by generateContent and is therefore the
                 // useful selectable value. Other vendors expose id/model directly.
-                String id = firstText(value, "id", "model", "baseModelId", "name");
+                String id = idFields == null || idFields.isEmpty()
+                        ? firstText(value, "id", "model", "slug", "baseModelId", "name")
+                        : firstConfiguredText(value, idFields);
                 if (id == null || id.isBlank()) {
                     continue;
                 }
@@ -290,12 +368,32 @@ public final class LiveModelDiscovery {
 
     private static String firstText(JsonNode node, String... fields) {
         for (String field : fields) {
-            String value = node.path(field).asText(null);
+            JsonNode candidate = node.path(field);
+            if (!candidate.isTextual()) continue;
+            String value = candidate.asText(null);
             if (value != null && !value.isBlank()) {
                 return value;
             }
         }
         return null;
+    }
+
+    private static String firstConfiguredText(JsonNode node, List<String> fields) {
+        for (String field : fields) {
+            if (field == null || field.isBlank()) continue;
+            JsonNode candidate = node.path(field);
+            if (!candidate.isTextual()) continue;
+            String value = candidate.asText(null);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
+    }
+
+    private static boolean copilotPickerModel(JsonNode model) {
+        if (!model.path("model_picker_enabled").isBoolean()
+                || !model.path("model_picker_enabled").asBoolean()) return false;
+        JsonNode type = model.path("capabilities").path("type");
+        return type.isTextual() && "chat".equalsIgnoreCase(type.asText());
     }
 
     private static void addCapabilityMetadata(
@@ -306,9 +404,12 @@ public final class LiveModelDiscovery {
             addAnthropicEffortMetadata(model, builder);
         } else if ("openrouter".equals(vendor)) {
             addOpenRouterReasoningMetadata(model, builder);
+        } else if ("radius".equals(vendor)) {
+            addRadiusThinkingMetadata(model, builder);
         }
 
         addVariantNode(model.path("supportedReasoningEfforts"), builder);
+        addVariantNode(model.path("supported_reasoning_levels"), builder);
         addVariantNode(model.path("variants"), builder);
         JsonNode capabilities = model.path("capabilities");
         addVariantNode(capabilities.path("variants"), builder);
@@ -333,7 +434,8 @@ public final class LiveModelDiscovery {
         String defaultValue = firstText(model,
                 "defaultVariant", "default_variant", "defaultThinking",
                 "default_thinking", "defaultReasoningEffort",
-                "default_reasoning_effort");
+                "default_reasoning_effort", "defaultReasoningLevel",
+                "default_reasoning_level");
         if (defaultValue == null) {
             defaultValue = firstText(capabilities,
                     "defaultVariant", "default_variant", "defaultValue");
@@ -374,6 +476,17 @@ public final class LiveModelDiscovery {
             builder.defaultVariant = defaultValue;
         }
         builder.reasoningMandatory = reasoning.path("mandatory").asBoolean(false);
+    }
+
+    private static void addRadiusThinkingMetadata(JsonNode model, ModelBuilder builder) {
+        JsonNode levels = model.path("thinkingLevelMap");
+        if (!levels.isObject()) return;
+        levels.fields().forEachRemaining(entry -> {
+            JsonNode mapped = entry.getValue();
+            if (mapped != null && mapped.isTextual() && !mapped.asText().isBlank()) {
+                builder.addVariant(entry.getKey(), capitalize(entry.getKey()));
+            }
+        });
     }
 
     private static boolean supported(JsonNode capability) {
@@ -426,7 +539,7 @@ public final class LiveModelDiscovery {
                     continue;
                 }
                 String variant = firstText(
-                        value, "value", "id", "key", "name", "reasoningEffort");
+                        value, "value", "id", "key", "name", "reasoningEffort", "effort");
                 if (variant == null || variant.isBlank()) {
                     continue;
                 }

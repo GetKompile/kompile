@@ -102,6 +102,7 @@ kgr_create_isolate
 kgr_detach_thread
 kgr_dispatch
 kgr_free
+kgr_last_error
 kgr_open
 kgr_save
 kgr_tear_down_isolate
@@ -141,5 +142,5 @@ printf '  file: %s\n' "$LIBRARY"
 printf '  sha256: %s\n' "$SHA256"
 printf '  bytes: %s\n' "$SIZE"
 printf '  build-id: %s\n' "$BUILD_ID"
-printf '  exports: 11 exact kgr_* symbols\n'
+printf '  exports: 12 exact kgr_* symbols\n'
 printf '  needed: libc, libdl, liblog, libm, libz\n'

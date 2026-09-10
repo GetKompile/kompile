@@ -19,14 +19,62 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
+import picocli.CommandLine;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MainCommandTest {
+
+    @Test
+    void commandUsageTextIsSafeForManPageFormatting() {
+        Set<CommandLine.Model.CommandSpec> visited =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        List<String> missingSummaries = new ArrayList<>();
+        assertFormatSafe(new CommandLine(new MainCommand()).getCommandSpec(),
+                visited, missingSummaries);
+        assertTrue(missingSummaries.isEmpty(),
+                "Commands without man-page summaries: " + missingSummaries);
+    }
+
+    private static void assertFormatSafe(
+            CommandLine.Model.CommandSpec command,
+            Set<CommandLine.Model.CommandSpec> visited,
+            List<String> missingSummaries) {
+        if (!visited.add(command)) return;
+        String owner = command.qualifiedName(" ");
+        boolean hasSummary = hasNonBlankLine(command.usageMessage().header())
+                || hasNonBlankLine(command.usageMessage().description());
+        if (!hasSummary) missingSummaries.add(owner);
+        assertFormatSafe(owner, "header", command.usageMessage().header());
+        assertFormatSafe(owner, "description", command.usageMessage().description());
+        assertFormatSafe(owner, "footer", command.usageMessage().footer());
+        command.subcommands().values().forEach(
+                child -> assertFormatSafe(child.getCommandSpec(), visited, missingSummaries));
+    }
+
+    private static boolean hasNonBlankLine(String[] lines) {
+        for (String line : lines) {
+            if (line != null && !line.isBlank()) return true;
+        }
+        return false;
+    }
+
+    private static void assertFormatSafe(String owner, String field, String[] lines) {
+        for (String line : lines) {
+            assertDoesNotThrow(() -> String.format(line),
+                    () -> owner + " has a man-page-unsafe " + field + ": " + line);
+        }
+    }
 
     @Test
     @ResourceLock(Resources.SYSTEM_PROPERTIES)

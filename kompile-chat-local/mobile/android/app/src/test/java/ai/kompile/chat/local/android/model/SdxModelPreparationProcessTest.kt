@@ -184,6 +184,74 @@ class SdxModelPreparationProcessTest {
     }
 
     @Test
+    fun importerPidIdentityIncludesProcStartTimeBeforeTimeoutKill() {
+        val stat = "5678 (sdx importer thread) " +
+            (3..22).joinToString(" ") { field -> if (field == 22) "123456" else field.toString() }
+
+        assertEquals(
+            123456L,
+            sdxImporterProcessStartTimeTicks(5678) { stat },
+        )
+        assertEquals(null, sdxImporterProcessStartTimeTicks(5678) { "invalid" })
+
+        val source = File(
+            "src/main/java/ai/kompile/chat/local/android/model/SdxModelPreparationProcess.kt"
+        ).readText()
+        assertTrue(source.contains("sdxImporterProcessMatches(watchedPid, remoteStartTimeTicks)"))
+        assertTrue(source.contains("KEY_PROCESS_START_TIME_TICKS"))
+    }
+
+    @Test
+    fun sourceBuildRefreshesGraphAndChatCoreBeforeSkippingPackagerMaven() {
+        val wrapper = File("../build-tensor-g3-offline-apk.sh").readText()
+        val graphStart = wrapper.indexOf("ensure_graph_aot() {")
+        val graphEnd = wrapper.indexOf("\nWORK_ROOT=", graphStart)
+        assertTrue("Missing graph producer lifecycle", graphStart >= 0 && graphEnd > graphStart)
+        val graph = wrapper.substring(graphStart, graphEnd)
+        val resumeGuard = graph.indexOf("if (( RESUME_PUBLISH == 1 )) &&")
+        val reuseReturn = graph.indexOf("return")
+        assertTrue("Only explicit resume may skip the graph source build", resumeGuard >= 0)
+        assertTrue(reuseReturn > resumeGuard)
+        assertTrue(graph.contains("-pl :kompile-graph-reasoning-local,:kompile-chat-local-core"))
+        assertTrue(graph.contains("-am install"))
+        assertTrue(graph.contains("-Dnd4j.backend=nd4j-native"))
+        assertFalse(graph.contains("clean install"))
+        val refreshCall = wrapper.indexOf("\nensure_graph_aot\n")
+        val packaging = wrapper.indexOf("exec \"\$APK_BUILDER\"")
+        assertTrue("Kompile inputs must be refreshed before packaging", refreshCall >= 0)
+        assertTrue(packaging > refreshCall)
+    }
+
+    @Test
+    fun resumePublishPreservesAndVerifiesHistoricalProducerClosure() {
+        val wrapper = File("../build-tensor-g3-offline-apk.sh").readText()
+        val cleanupStart = wrapper.indexOf("printf 'Running mandatory pre-build cleanup.")
+        val cleanup = wrapper.substring(
+            cleanupStart,
+            wrapper.indexOf("ensure_graph_aot", cleanupStart)
+        )
+        val resumeGuard = cleanup.indexOf("if (( RESUME_PUBLISH == 0 ))")
+        val producerPrune = cleanup.indexOf("\"\$CLEANUP_BUILDER\"")
+        val resumeBranch = cleanup.indexOf("else", producerPrune)
+        val apkCleanup = cleanup.indexOf("\"\$APK_BUILDER\" --cleanup-only")
+
+        assertTrue("Producer pruning is not guarded from resume-publish", resumeGuard >= 0)
+        assertTrue(producerPrune > resumeGuard)
+        assertTrue(resumeBranch > producerPrune)
+        assertTrue("Disposable APK cleanup must still run in resume mode", apkCleanup > resumeBranch)
+        assertTrue(cleanup.contains("preserving immutable producer generations"))
+
+        val packager = File("../tools/build-offline-accelerators.sh").readText()
+        assertTrue(packager.contains("REUSE_RECEIPTED_PRODUCERS == 1"))
+        assertTrue(packager.contains("Historical SDX AOT base generation was pruned"))
+        assertTrue(packager.contains(
+            "base_sdk_actual_sha=\"\${SDX_AOT_RECEIPT_VALUES[base_sdk_sha256]}\""
+        ))
+        assertTrue(packager.contains("SDX_AOT_RECEIPT_VALUES[base_sdk_native_sha256]"))
+        assertTrue(packager.contains("sha256_file \"\$base_native_bytes\""))
+    }
+
+    @Test
     fun runtimeServiceSnapshotsRecyclableMessageBeforeOwnerThreadDispatch() {
         val source = File(
             "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"
@@ -208,6 +276,7 @@ class SdxModelPreparationProcessTest {
         assertTrue(source.contains("ownerExecutor.execute {\n            val response = try {\n                operation()"))
     }
 
+    @Test
     fun importerUsesTheSameBoundImportantServiceLifecycleAsTheRuntime() {
         val source = File(
             "src/main/java/ai/kompile/chat/local/android/model/SdxModelPreparationProcess.kt"
@@ -436,8 +505,8 @@ class SdxModelPreparationProcessTest {
             "native.sdxLlmTokenCount(",
             "GENERATE_TOKENS"
         )
-        assertTrue(sdx.contains("TENSOR_G3_MAX_PROMPT_TOKENS = 256"))
-        assertTrue(sdx.contains("prevent a low-memory termination"))
+        assertFalse(sdx.contains("TENSOR_G3_MAX_PROMPT_TOKENS"))
+        assertTrue(sdx.contains("native_fixed_plan_rolling_window"))
         val cancellation = sdx.substring(
             sdx.indexOf("override fun cancel("),
             sdx.indexOf("override fun close(")
@@ -508,9 +577,12 @@ class SdxModelPreparationProcessTest {
         assertTrue(androidPackager.contains("Kompile-owned Android SDX JNI source"))
         assertTrue(androidPackager.contains("SDX SDK still contains the Kompile-owned JNI transport"))
         assertTrue(androidPackager.contains("-Wl,-soname,libjnisdx_llm.so"))
+        assertTrue(androidPackager.contains("    nd4j/nd4j-ggml\n"))
+        assertTrue(androidPackager.contains("[nd4j-ggml]=\"nd4j/nd4j-ggml\""))
 
         val shrinkerRules = File("proguard-rules.pro").readText()
         assertTrue(shrinkerRules.contains("-keep class org.nd4j.dsp.model.SdxLlmNative { *; }"))
+        assertTrue(shrinkerRules.contains("-keep class kotlin.** { *; }"))
         assertTrue(shrinkerRules.contains("-checkdiscard class ai.kompile.chat.local.sdx.SdxLlmAbi"))
         assertFalse(shrinkerRules.contains("-keep class com.sun.jna"))
         assertFalse(shrinkerRules.contains("-keep interface ai.kompile.chat.local.sdx.SdxLlmAbi"))

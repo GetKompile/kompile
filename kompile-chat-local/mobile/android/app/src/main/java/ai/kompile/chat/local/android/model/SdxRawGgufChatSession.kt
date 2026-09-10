@@ -76,7 +76,9 @@ internal object SdxAndroidLlmLibrary {
 internal enum class PreparationStage {
     CONVERT_AND_CACHE_SDZ,
     TARGET_CACHE_READY,
-    LOAD_ACCELERATOR
+    LOAD_ACCELERATOR,
+    MEMORY_PREFLIGHT,
+    MEMORY_PRESSURE_WARNING,
 }
 
 internal data class PreparedModelInfo(

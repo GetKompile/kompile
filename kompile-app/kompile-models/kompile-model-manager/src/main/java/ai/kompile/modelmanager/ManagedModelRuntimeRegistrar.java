@@ -14,6 +14,7 @@ import ai.kompile.modelmanager.registry.TokenizerConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -32,14 +33,16 @@ public final class ManagedModelRuntimeRegistrar {
         Path root = modelsRoot.toAbsolutePath().normalize();
         Path model = convertedModel.toAbsolutePath().normalize();
         Path tokenizer = tokenizerPath.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(model) || !model.startsWith(root)) {
+        Path realRoot = root.toRealPath();
+        if (!Files.isRegularFile(model, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(model)
+                || !model.toRealPath().startsWith(realRoot)) {
             throw new IOException("Converted managed model must exist under " + root + ": " + model);
         }
-        if (!model.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".sdz")
-                || Files.size(model) < 1_024L) {
-            throw new IOException("Converted managed model is not a plausible SameDiff SDZ artifact: " + model);
-        }
-        if (!Files.isRegularFile(tokenizer) || !tokenizer.startsWith(root)) {
+        validateConvertedModel(model);
+        if (!Files.isRegularFile(tokenizer, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(tokenizer)
+                || !tokenizer.toRealPath().startsWith(realRoot)) {
             throw new IOException("Managed encoder tokenizer must exist under " + root + ": " + tokenizer);
         }
         if (!JsonUtils.standardMapper().readTree(tokenizer.toFile()).isObject()) {
@@ -49,21 +52,28 @@ public final class ManagedModelRuntimeRegistrar {
         if (!directory.equals(tokenizer.getParent())) {
             throw new IOException("Managed model and tokenizer must be in the same runtime bundle directory");
         }
-        ManagedModelArtifactCatalog.Component sourceComponent = definition
-                .component(definition.primaryComponentKey()).orElse(null);
-        if (sourceComponent != null) {
-            Path source = directory.resolve(sourceComponent.localFileName());
-            if (Files.isRegularFile(source)) {
-                if (sourceComponent.expectedBytes() > 0
-                        && Files.size(source) != sourceComponent.expectedBytes()) {
-                    throw new IOException("Managed source size mismatch for " + source);
-                }
-                if (sourceComponent.sha256() != null && !sourceComponent.sha256().isBlank()
-                        && !sourceComponent.sha256().equalsIgnoreCase(
-                        ManagedModelArtifactDownloader.sha256(source))) {
-                    throw new IOException("Managed source checksum mismatch for " + source);
-                }
+        for (ManagedModelArtifactCatalog.Component component : definition.components()) {
+            if (!component.required()) {
+                continue;
             }
+            Path source = directory.resolve(component.localFileName()).normalize();
+            if (!source.startsWith(directory)
+                    || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(source)
+                    || !source.toRealPath().startsWith(realRoot)) {
+                throw new IOException("Managed runtime registration requires pinned component '"
+                        + component.key() + "': " + source);
+            }
+            verifyPinnedComponent(component, source);
+        }
+        ManagedModelArtifactCatalog.Component tokenizerComponent = definition
+                .component(definition.tokenizerComponentKey())
+                .orElseThrow(() -> new IOException(
+                        "Managed definition has no tokenizer component: " + definition.modelId()));
+        Path pinnedTokenizer = directory.resolve(tokenizerComponent.localFileName()).normalize();
+        if (!tokenizer.equals(pinnedTokenizer)) {
+            throw new IOException("Managed tokenizer does not match the pinned component path: "
+                    + tokenizer);
         }
 
         ModelMetadata metadata = ModelMetadata.builder()
@@ -104,6 +114,31 @@ public final class ManagedModelRuntimeRegistrar {
                 .build();
         new RegistryService(root).addModel(entry);
         return entry;
+    }
+
+    /** Validate the minimum portable contract before a converter result is reported as successful. */
+    public static void validateConvertedModel(Path convertedModel) throws IOException {
+        Path model = convertedModel.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(model) || Files.isSymbolicLink(model)
+                || !model.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".sdz")
+                || Files.size(model) < 1_024L) {
+            throw new IOException("Converted model is not a plausible SameDiff SDZ artifact: " + model);
+        }
+    }
+
+    private static void verifyPinnedComponent(
+            ManagedModelArtifactCatalog.Component component, Path path) throws IOException {
+        long actualBytes = Files.size(path);
+        if (component.expectedBytes() > 0 && actualBytes != component.expectedBytes()) {
+            throw new IOException("Managed component size mismatch for " + path
+                    + ": expected " + component.expectedBytes() + ", got " + actualBytes);
+        }
+        if (component.sha256() != null && !component.sha256().isBlank()) {
+            String actualChecksum = ManagedModelArtifactDownloader.sha256(path);
+            if (!component.sha256().equalsIgnoreCase(actualChecksum)) {
+                throw new IOException("Managed component checksum mismatch for " + path);
+            }
+        }
     }
 
     private static int integerMetadata(

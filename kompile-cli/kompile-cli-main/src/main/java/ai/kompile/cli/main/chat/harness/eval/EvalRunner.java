@@ -27,6 +27,7 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -90,7 +91,8 @@ public class EvalRunner {
         ObjectMapper mapper = JsonUtils.standardMapper();
         HarnessConfig config = HarnessConfig.load(mapper);
         config.setJudgeEnabled(true);
-        this.judge = new JudgeLlmEvaluator(mapper, config);
+        this.judge = new JudgeLlmEvaluator(
+                JudgeBackendFactory.create(config, mapper, workingDirectory), mapper);
         if (!judge.isAvailable()) {
             System.err.println("  Warning: Judge LLM not available (" + judge.describeBackend()
                     + "). Configure with: kompile perf config --judge-provider <provider> --judge-api-key <key>");
@@ -355,13 +357,16 @@ public class EvalRunner {
             PermissionService permissionService = new PermissionService();
             permissionService.setAutoApproveAll(true); // eval runs are non-interactive
             AgentRegistry agentRegistry = new AgentRegistry();
+            String sessionId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
             BackgroundProcessManager processManager = new BackgroundProcessManager(
-                    "eval-" + UUID.randomUUID().toString().substring(0, 8), workDir);
+                    sessionId, workDir);
+            CoordinationStateManager coordinationManager = new CoordinationStateManager(
+                    workDir, sessionId, mapper);
             ToolRegistry toolRegistry = ToolRegistryFactory.create(
                     mapper, "", agentRegistry, permissionService,
-                    renderer, processManager, chatConfig, null);
+                    renderer, processManager, chatConfig, null, null,
+                    workDir, coordinationManager);
 
-            String sessionId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
             AgenticChatLoop loop = new AgenticChatLoop(
                     null, mapper, toolRegistry, permissionService,
                     agentRegistry, workDir, directClient, processManager);
@@ -374,13 +379,16 @@ public class EvalRunner {
 
             try {
                 String response = future.get(timeoutMs, TimeUnit.MILLISECONDS);
-                executor.shutdownNow();
                 return new AgentExecResult(
                         response != null ? response : "", 0, false);
             } catch (TimeoutException e) {
                 future.cancel(true);
-                executor.shutdownNow();
                 return new AgentExecResult("", -1, true);
+            } finally {
+                executor.shutdownNow();
+                directClient.close();
+                processManager.close();
+                coordinationManager.shutdown();
             }
         } catch (Exception e) {
             return new AgentExecResult(

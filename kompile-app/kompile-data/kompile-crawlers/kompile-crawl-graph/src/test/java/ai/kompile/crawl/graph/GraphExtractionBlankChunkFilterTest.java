@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit tests for the blank-chunk filter in {@link GraphExtractionOrchestrator}.
  *
- * <p><strong>Root cause (live FP&amp;A crawl, 5 of 50 chunks failed):</strong>
+ * <p><strong>Root cause (live production crawl, 5 of 50 chunks failed):</strong>
  * The chunker emits chunks with empty or whitespace-only text (e.g. markup-only HTML pages
  * that cleaned to nothing). {@code toRetrievedDoc} calls
  * {@code new RetrievedDoc(id, doc.getText(), metadata)}, and {@link RetrievedDoc} enforces
@@ -100,7 +100,7 @@ class GraphExtractionBlankChunkFilterTest {
     // -------------------------------------------------------------------------
 
     /**
-     * Primary regression test: mirrors the live FP&A crawl scenario where 5 of 50 chunks
+     * Primary regression test: mirrors the live Planning crawl scenario where 5 of 50 chunks
      * were empty, causing batches that contained them to fail entirely.
      */
     @Test

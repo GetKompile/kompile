@@ -14,6 +14,7 @@ Kompile uses a JSON config file system rooted at `~/.kompile/config/`. All three
 | `model-roles-config.json` | Dense/sparse retrieval models, reranking model, hybrid search weights |
 | `llm-provider-config.json` | LLM provider, model, API key, base URL |
 | `tool-gateway-config.json` | Model source, fail-open, evaluation timeout, judge scoring |
+| `mcp-servers.json` | User-scoped custom MCP servers; project `.mcp.json` entries override by name |
 | `backup-config.json` | Backup schedule, retention, format |
 
 ## CLI wizards
@@ -23,6 +24,7 @@ kompile configure init          # Creates ~/.kompile/ and default config files
 kompile configure app           # Interactive 9-section config wizard
 kompile configure chat          # Chat session mode, LLM provider, agent preferences
 kompile configure mcp           # MCP profile and schema level
+kompile mcp add/list/get/remove # Install and manage custom MCP servers
 kompile configure enforcer      # Per-project policy rules
 kompile configure judge         # LLM judge mode, model, scoring
 ```
@@ -62,6 +64,7 @@ Also available from the web UI: Settings > Config Archive Manager.
 | Enable guardrails | `feature-flags-config.json` → `guardrailsEnabled: true` |
 | Tune ND4J/CUDA settings | `nd4j-environment-config.json` or Settings > ND4J |
 | Set up the tool gateway | `tool-gateway-config.json` or `kompile configure gateway` |
+| Install custom MCP tools | `kompile mcp add ...`; see [Custom MCP servers](../mcp/custom-servers.md) |
 | Switch vector store backends | `app-index-config.json` → `vectorStoreType` |
 | Configure subprocess memory | `subprocess-ingest-config.json` |
 | Let the system decide | `POST /api/auto-configure/apply` |

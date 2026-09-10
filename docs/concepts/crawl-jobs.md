@@ -43,18 +43,19 @@ optional crawler implementation:
 | `NOTION` | Notion workspaces (OAuth) | `kompile-source-notion` |
 | `SLACK` | Live Slack channels (OAuth) | `kompile-loader-slack` |
 | `SLACK_HISTORY` | Exported Slack history archives | `kompile-loader-slack` |
-| `DISCORD` | Discord servers (OAuth) | `kompile-loader-discord` |
+| `DISCORD` | Discord servers (bot token) | `kompile-loader-discord` |
 | `DISCORD_HISTORY` | Exported Discord history | `kompile-loader-discord` |
 | `GDRIVE` | Google Drive (OAuth) | `kompile-loader-gdrive` |
 | `GDOCS` | Google Docs (OAuth) | `kompile-loader-gdocs` |
 | `ONEDRIVE` | Microsoft OneDrive (OAuth) | `kompile-loader-onedrive` |
-| `GOOGLE_WORKSPACE` | Combined Google Workspace | `kompile-loader-google-workspace` |
-| `REDDIT` | Reddit threads | `kompile-source-reddit` |
+| `GOOGLE_WORKSPACE` | Combined Google Workspace (OAuth) | `kompile-loader-google-workspace` |
+| `REDDIT` | Reddit threads (OAuth) | `kompile-source-reddit` |
 | `URL` | Single URL fetch | `kompile-loader-web` |
 
-Cloud sources use OAuth connections managed through the **Connected Services**
-screen in the web UI. Each provider shows connection status, token expiry,
-required scopes, and connect/disconnect/refresh actions.
+Cloud-source OAuth connections can be managed through the **Connected Services**
+web screen or with `kompile auth source`. The CLI exposes provider setup, masked
+settings, configuration validation, login, status, health, refresh, disconnect,
+and application-registration reset without maintaining a second token store.
 
 ## Document loaders
 

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.tools.grounding.GraphChatSupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -66,7 +67,8 @@ public class GraphForecastTool implements CliTool {
                 "then projects the next N buckets with a least-squares linear trend. " +
                 "All projected values are explicitly labelled as ESTIMATES with a caveat — " +
                 "they are rough guidance, not certainties. " +
-                "Returns both the historical series and the projection, plus an optional LLM narrative. " +
+                "Returns the historical series and projection. Optional chatModel.provider/modelId adds an " +
+                "unverified native-chat narrative without changing the numeric forecast. " +
                 "Example: root_type='Revenue', numeric_attribute='amount', aggregation='SUM', " +
                 "bucket_size='QUARTER', horizon_buckets=4.";
     }
@@ -77,6 +79,7 @@ public class GraphForecastTool implements CliTool {
         ObjectNode schema = om.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
         ObjectNode rootType = props.putObject("root_type");
         rootType.put("type", "string");
@@ -106,8 +109,8 @@ public class GraphForecastTool implements CliTool {
 
         ObjectNode llmProvider = props.putObject("preferred_llm_provider");
         llmProvider.put("type", "string");
-        llmProvider.put("description", "Optional LLM provider ID for a plain-English narrative summary. " +
-                "Skipped if unavailable — never fails the call.");
+        llmProvider.put("description", "Deprecated alias for chatModel.provider. Uses host-native chat; " +
+                "use chatModel.modelId to select the exact model. Failures preserve the numeric forecast and are reported, not silently ignored.");
 
         schema.putArray("required").add("root_type");
         return schema;
@@ -119,7 +122,10 @@ public class GraphForecastTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Forecast knowledge graph numeric attribute over time");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) throws ToolExecutionException {
         String rootType = params.path("root_type").asText("");
         if (rootType.isEmpty()) {
             return ToolResult.error("root_type is required");
@@ -148,10 +154,6 @@ public class GraphForecastTool implements CliTool {
             String graphId = params.path("graph_id").asText(null);
             if (graphId != null && !graphId.isEmpty()) {
                 request.put("graphId", graphId);
-            }
-            String llmProvider = params.path("preferred_llm_provider").asText(null);
-            if (llmProvider != null && !llmProvider.isEmpty()) {
-                request.put("preferredLlmProvider", llmProvider);
             }
 
             HttpResponse<String> response = backend.post(

@@ -10,9 +10,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -62,7 +64,7 @@ final class ToolArgumentSchemaValidator {
         }
 
         JsonNode constant = schema.get("const");
-        if (constant != null && !constant.equals(value)) {
+        if (constant != null && !schemaValueEquals(constant, value)) {
             add(errors, path + " must equal " + constant);
         }
 
@@ -70,7 +72,7 @@ final class ToolArgumentSchemaValidator {
         if (allowed != null && allowed.isArray()) {
             boolean match = false;
             for (JsonNode candidate : allowed) {
-                if (candidate.equals(value)) {
+                if (schemaValueEquals(candidate, value)) {
                     match = true;
                     break;
                 }
@@ -197,10 +199,31 @@ final class ToolArgumentSchemaValidator {
             add(errors, path + " must contain at most "
                     + schema.path("maxItems").asInt() + " items");
         }
+        JsonNode prefixItems = schema.get("prefixItems");
+        int prefixCount = prefixItems != null && prefixItems.isArray()
+                ? prefixItems.size() : 0;
+        for (int index = 0; index < Math.min(value.size(), prefixCount)
+                && !atLimit(errors); index++) {
+            validateValue(value.get(index), prefixItems.get(index), path + "[" + index + "]", errors);
+        }
+
         JsonNode itemSchema = schema.get("items");
         if (itemSchema != null && itemSchema.isObject()) {
-            for (int index = 0; index < value.size() && !atLimit(errors); index++) {
+            for (int index = prefixCount; index < value.size() && !atLimit(errors); index++) {
                 validateValue(value.get(index), itemSchema, path + "[" + index + "]", errors);
+            }
+        } else if (itemSchema != null && itemSchema.isBoolean() && !itemSchema.asBoolean()
+                && value.size() > prefixCount) {
+            add(errors, path + " must not contain items beyond the " + prefixCount
+                    + " positional entries");
+        }
+
+        if (schema.path("uniqueItems").asBoolean(false)) {
+            Set<JsonNode> unique = new HashSet<>();
+            for (int index = 0; index < value.size() && !atLimit(errors); index++) {
+                if (!unique.add(value.get(index))) {
+                    add(errors, path + "[" + index + "] duplicates an earlier item");
+                }
             }
         }
     }
@@ -308,6 +331,20 @@ final class ToolArgumentSchemaValidator {
         } catch (ArithmeticException | NumberFormatException invalidNumber) {
             return false;
         }
+    }
+
+    private static boolean schemaValueEquals(JsonNode expected, JsonNode actual) {
+        if (expected == null || actual == null) {
+            return expected == actual;
+        }
+        if (expected.isNumber() && actual.isNumber()) {
+            try {
+                return expected.decimalValue().compareTo(actual.decimalValue()) == 0;
+            } catch (ArithmeticException | NumberFormatException invalidNumber) {
+                return false;
+            }
+        }
+        return expected.equals(actual);
     }
 
     private static String childPath(String path, String field) {

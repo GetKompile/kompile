@@ -90,7 +90,7 @@ public class CustomSkillLoader {
         loadFromDirectory(userDir, skills, true);
 
         // Project provider skills override user definitions, while collisions between
-        // providers are reported and keep the first deterministic definition.
+        // providers keep the first deterministic definition.
         Map<String, SkillConfig> projectProviderSkills = new LinkedHashMap<>();
         for (String provider : List.of(".claude", ".codex", ".agents", ".gemini", ".opencode", ".qwen")) {
             loadFromDirectory(workingDirectory.resolve(provider).resolve("skills"),
@@ -128,7 +128,7 @@ public class CustomSkillLoader {
                                 if (overwrite) {
                                     skills.put(key, skill);
                                 } else if (skills.putIfAbsent(key, skill) != null) {
-                                    log.warn("Ignoring duplicate provider skill '{}' from {}",
+                                    log.debug("Ignoring duplicate provider skill '{}' from {}",
                                             skill.getName(), file);
                                 }
                             }

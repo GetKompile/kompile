@@ -16,10 +16,10 @@ class MultilingualE5QualificationTest {
         try (SameDiffEncoder<float[]> encoder =
                      AnseriniEncoderFactory.createEncoder("multilingual-e5-small")) {
             List<float[]> vectors = encoder.encodeBatch(List.of(
-                    "monthly revenue forecast and operating margin",
-                    "previsión mensual de ingresos y margen operativo",
-                    "recipe for baking a chocolate cake",
-                    "monthly revenue forecast and operating margin"));
+                    "a telescope observes a distant galaxy",
+                    "un telescopio observa una galaxia distante",
+                    "a violin performs a classical melody",
+                    "a telescope observes a distant galaxy"));
 
             assertEquals(4, vectors.size());
             for (float[] vector : vectors) {

@@ -19,6 +19,7 @@ package ai.kompile.embedding.anserini.subprocess;
 import ai.kompile.app.subprocess.BackendConfigurable;
 import ai.kompile.app.subprocess.ManagedSubprocessLauncher.BackendPreference;
 import ai.kompile.app.subprocess.RestartableSubprocess;
+import ai.kompile.app.subprocess.SubprocessBackendResolver;
 import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
@@ -1801,7 +1802,18 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             }
 
             // Also pass all org.nd4j.* and related system properties.
-            String childClasspath = String.join(File.pathSeparator, classpath);
+            // Backend classpath augmentation (the SAME shared resolver the serving lane uses):
+            // backend-priority/device flags can only select a backend whose JARs are actually on
+            // the child classpath. Without this, a GPU placement emitted org.nd4j.gpu.priority
+            // flags while the classpath carried only nd4j-native — Nd4jBackend silently fell back
+            // to CpuBackend (RUNTIME_STATUS: requestedPlacement=gpu, effectiveBackend=CpuBackend,
+            // 2026-09-01). When the placement demands GPU, inject the nd4j-cuda JARs from the
+            // Maven local repo (dropping conflicting CPU-backend entries); otherwise the resolver
+            // records/logs the CPU resolution for the same observability the serving lane has.
+            Set<String> backendCpEntries = new LinkedHashSet<>(classpath);
+            boolean gpuRequested = placement.effectiveBackend() == BackendPreference.GPU;
+            SubprocessBackendResolver.augmentClasspathForBackend(backendCpEntries, gpuRequested, "EMBEDDING");
+            String childClasspath = String.join(File.pathSeparator, backendCpEntries);
             String[] propertyPrefixes = {
                 "org.nd4j.",           // All ND4J properties
                 "org.bytedeco.",       // All JavaCPP/Bytedeco properties
@@ -2662,6 +2674,26 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 || line.contains("USE-AFTER-FREE")) {
             return "ERROR";
         }
+        // Native runtime aborts print to raw fd 2 with no logger level field
+        // (glibc/JNI aborts, JavaCPP load failures, hs_err frames, fatal signals).
+        // These MUST classify as ERROR so trackRecentError retains them for crash
+        // diagnostics — a native SIGABRT otherwise dies with an empty crashReason
+        // because its abort lines fall through to INFO and are never retained.
+        if (line.contains("terminate called after throwing")
+                || line.contains("terminate called repeatedly")
+                || line.contains("free(): invalid")
+                || line.contains("malloc(): ")
+                || line.contains("corrupted size vs. prev_size")
+                || line.contains("corrupted top size")
+                || line.contains("double free or corruption")
+                || line.contains("Failed to load")
+                || line.startsWith("A fatal error has been detected")
+                || line.startsWith("# ")
+                || line.contains("Internal Error")
+                || line.contains("SIGABRT")
+                || line.contains("SIGSEGV")) {
+            return "ERROR";
+        }
         // Otherwise trust the logger's own level field; default INFO when absent.
         Matcher m = STDERR_LEVEL_FIELD.matcher(line);
         if (m.find()) {
@@ -2880,6 +2912,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         logger.error("Subprocess crashed (exit code {}): {}", exitCode, crashReason);
 
+        // Persist crash diagnostics to disk unconditionally — a native SIGABRT can
+        // kill the child before its JSON protocol flushes anything, and the optional
+        // SubprocessLogWriter may not have initialised. Without this, the only crash
+        // evidence (stderr tail) dies with the launcher process.
+        persistCrashDiagnostics(exitCode, crashReason);
+
         // Finalise central log writer on crash
         finaliseSubprocessLog("CRASHED", exitCode == -1 ? null : exitCode, crashReason);
 
@@ -3039,6 +3077,32 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Write crash diagnostics (exit code, crash reason, stderr tail) to
+     * {@code ~/.kompile/logs/subprocesses/embedding/crash-<timestamp>.log}.
+     * Best-effort: failures are logged and ignored — never mask the crash itself.
+     */
+    private void persistCrashDiagnostics(int exitCode, String crashReason) {
+        try {
+            Path dir = Path.of(System.getProperty("user.home"),
+                    ".kompile", "logs", "subprocesses", "embedding");
+            Files.createDirectories(dir);
+            Path crashFile = dir.resolve("crash-"
+                    + System.currentTimeMillis() + ".log");
+            String report = "=== Embedding subprocess crash ===\n"
+                    + "time: " + java.time.Instant.now() + "\n"
+                    + "exitCode: " + exitCode + " ("
+                    + interpretExitCode(exitCode).trim() + ")\n"
+                    + "model: " + currentModelId + "\n"
+                    + "--- crash reason ---\n" + crashReason + "\n"
+                    + "--- recent stderr ---\n" + getRecentErrorsFormatted() + "\n";
+            Files.writeString(crashFile, report);
+            logger.warn("Crash diagnostics written to {}", crashFile);
+        } catch (Exception e) {
+            logger.warn("Failed to persist crash diagnostics: {}", e.getMessage());
+        }
     }
 
     /**

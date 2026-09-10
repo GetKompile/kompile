@@ -749,7 +749,7 @@ public class ClaudeStreamParser {
             }
         }
 
-        return ParseResult.text(textContent.toString());
+        return ParseResult.event("user", textContent.toString());
     }
 
     private ParseResult handleResultEvent(String sessionId, JsonNode root) {

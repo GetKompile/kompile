@@ -258,6 +258,8 @@ public final class OwlOntology {
 
     public static final class Builder {
         private final String ontologyIri;
+        /** The ontology IRI this builder constructs under. */
+        public String ontologyIri() { return ontologyIri; }
         private final Map<String, OwlClass>          classes          = new LinkedHashMap<>();
         private final Map<String, OwlObjectProperty> objectProperties = new LinkedHashMap<>();
         private final Map<String, OwlDataProperty>   dataProperties   = new LinkedHashMap<>();

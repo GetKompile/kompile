@@ -27,14 +27,22 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Set;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Service for encrypting and decrypting OAuth tokens using AES-256-GCM.
@@ -51,6 +59,7 @@ public class TokenEncryptionService {
     private static final int GCM_IV_LENGTH = 12;
     private static final int GCM_TAG_LENGTH = 128;
     private static final int AES_KEY_SIZE = 256;
+    private static final Object KEY_INITIALIZATION_MONITOR = new Object();
 
     @Value("${kompile.oauth.encryption-key:${KOMPILE_OAUTH_KEY:}}")
     private String configuredKey;
@@ -147,30 +156,38 @@ public class TokenEncryptionService {
      */
     private SecretKey loadOrGenerateKey() throws Exception {
         // First, check if key is provided via configuration
-        if (configuredKey != null && !configuredKey.isEmpty()) {
+        if (configuredKey != null && !configuredKey.isBlank()) {
             log.info("Using configured OAuth encryption key");
-            byte[] keyBytes = Base64.getDecoder().decode(configuredKey);
-            return new SecretKeySpec(keyBytes, "AES");
+            return key(Base64.getDecoder().decode(configuredKey.trim()), "configured key");
         }
 
-        // Otherwise, try to load from file or generate new key
+        // Otherwise, serialize key discovery/publication both inside this JVM and across all
+        // Kompile personas sharing the same data directory. Readers also take the lock, so none
+        // can observe a partially published key.
         Path keyFilePath = Paths.get(kompileDataDir, "config", "oauth-encryption.key");
+        Path lockFilePath = keyFilePath.resolveSibling(keyFilePath.getFileName() + ".lock");
+        synchronized (KEY_INITIALIZATION_MONITOR) {
+            Files.createDirectories(keyFilePath.getParent());
+            try (FileChannel lockChannel = FileChannel.open(lockFilePath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 var ignored = lockChannel.lock()) {
+                restrictPermissions(lockFilePath);
+                if (Files.isRegularFile(keyFilePath)) {
+                    restrictPermissions(keyFilePath);
+                    return loadKey(keyFilePath);
+                }
 
-        if (Files.exists(keyFilePath)) {
-            log.info("Loading OAuth encryption key from: {}", keyFilePath);
-            String keyBase64 = Files.readString(keyFilePath).trim();
-            byte[] keyBytes = Base64.getDecoder().decode(keyBase64);
-            return new SecretKeySpec(keyBytes, "AES");
+                log.info("Generating new OAuth encryption key");
+                SecretKey newKey = generateKey();
+                try {
+                    saveKey(newKey, keyFilePath);
+                    return newKey;
+                } catch (FileAlreadyExistsException unexpectedExternalPublisher) {
+                    restrictPermissions(keyFilePath);
+                    return loadKey(keyFilePath);
+                }
+            }
         }
-
-        // Generate new key
-        log.info("Generating new OAuth encryption key");
-        SecretKey newKey = generateKey();
-
-        // Save to file
-        saveKey(newKey, keyFilePath);
-
-        return newKey;
     }
 
     /**
@@ -191,19 +208,70 @@ public class TokenEncryptionService {
 
         // Write key as Base64
         String keyBase64 = Base64.getEncoder().encodeToString(key.getEncoded());
-        Files.writeString(keyFilePath, keyBase64);
-
-        // Set restrictive permissions (owner read/write only)
+        Path temporary = Files.createTempFile(keyFilePath.getParent(), ".oauth-key-", ".tmp");
         try {
-            keyFilePath.toFile().setReadable(false, false);
-            keyFilePath.toFile().setReadable(true, true);
-            keyFilePath.toFile().setWritable(false, false);
-            keyFilePath.toFile().setWritable(true, true);
-        } catch (Exception e) {
-            log.warn("Could not set restrictive permissions on key file: {}", e.getMessage());
+            Files.writeString(
+                    temporary,
+                    keyBase64,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+            restrictPermissions(temporary);
+            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            publishCompletedFile(temporary, keyFilePath);
+            restrictPermissions(keyFilePath);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
 
         log.info("Saved OAuth encryption key to: {}", keyFilePath);
+    }
+
+    private static void publishCompletedFile(Path completed, Path target) throws IOException {
+        if (Files.exists(target)) throw new FileAlreadyExistsException(target.toString());
+        try {
+            Files.move(completed, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(completed, target);
+        }
+    }
+
+    private static void restrictPermissions(Path path) throws IOException {
+        try {
+            Set<PosixFilePermission> ownerOnly = Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+            Files.setPosixFilePermissions(path, ownerOnly);
+            if (!Files.getPosixFilePermissions(path).equals(ownerOnly)) {
+                throw new IOException("Could not verify owner-only permissions for " + path);
+            }
+            return;
+        } catch (UnsupportedOperationException unsupportedPosix) {
+            // Windows/non-POSIX fallback below.
+        }
+        File file = path.toFile();
+        boolean secured = file.setReadable(false, false)
+                && file.setWritable(false, false)
+                && file.setExecutable(false, false)
+                && file.setReadable(true, true)
+                && file.setWritable(true, true);
+        if (!secured) {
+            throw new IOException("Could not establish owner-only permissions for " + path);
+        }
+    }
+
+    private SecretKey loadKey(Path keyFilePath) throws IOException {
+        log.info("Loading OAuth encryption key from: {}", keyFilePath);
+        String keyBase64 = Files.readString(keyFilePath, StandardCharsets.UTF_8).trim();
+        return key(Base64.getDecoder().decode(keyBase64), "key file " + keyFilePath);
+    }
+
+    private SecretKey key(byte[] keyBytes, String source) {
+        if (keyBytes.length != AES_KEY_SIZE / 8) {
+            throw new IllegalStateException(source + " must contain a 256-bit AES key");
+        }
+        return new SecretKeySpec(keyBytes, "AES");
     }
 
     /**

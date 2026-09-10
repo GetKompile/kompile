@@ -73,7 +73,8 @@ public class GraphReasonTool implements CliTool {
                 "no knowledge of the underlying reasoning engine is required. " +
                 "Use when you need traceable evidence behind a fact, want to understand why " +
                 "the knowledge base believes something, or need to audit a claim. " +
-                "Runs against the project-local graph unless a remote URL is explicitly configured.";
+                "Runs against the project-local graph unless a remote URL is explicitly configured. " +
+                "Optional chatModel.provider/modelId adds host-native interpretation without changing engine evidence or verdicts.";
     }
 
     @Override
@@ -81,6 +82,7 @@ public class GraphReasonTool implements CliTool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
         props.putObject("target")
                 .put("type", "string")
@@ -110,7 +112,10 @@ public class GraphReasonTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Reason over knowledge graph");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) {
         String target = params.path("target").asText("");
         if (target.isBlank()) {
             return ToolResult.error("target is required");

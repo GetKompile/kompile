@@ -182,7 +182,8 @@ public class ChatSessionMetrics {
     }
 
     public boolean hasActualTokenCounts() {
-        return inputTokens.get() > 0 || outputTokens.get() > 0;
+        return inputTokens.get() > 0 || outputTokens.get() > 0
+                || cacheReadTokens.get() > 0 || cacheCreationTokens.get() > 0;
     }
 
     // ========================================================================
@@ -238,7 +239,10 @@ public class ChatSessionMetrics {
     public int getTotalTurns() { return userTurns.get() + assistantTurns.get(); }
     public long getInputTokens() { return inputTokens.get(); }
     public long getOutputTokens() { return outputTokens.get(); }
-    public long getTotalTokens() { return inputTokens.get() + outputTokens.get(); }
+    public long getTotalInputTokens() {
+        return inputTokens.get() + cacheReadTokens.get() + cacheCreationTokens.get();
+    }
+    public long getTotalTokens() { return getTotalInputTokens() + outputTokens.get(); }
     public long getCacheReadTokens() { return cacheReadTokens.get(); }
     public long getCacheCreationTokens() { return cacheCreationTokens.get(); }
     public long getEstimatedInputTokens() { return estimatedInputChars.get() / 4; }

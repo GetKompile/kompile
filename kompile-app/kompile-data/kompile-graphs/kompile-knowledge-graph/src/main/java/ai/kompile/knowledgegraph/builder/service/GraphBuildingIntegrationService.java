@@ -68,6 +68,7 @@ public class GraphBuildingIntegrationService {
 
     // Track running jobs for cancellation
     private final ConcurrentHashMap<String, Boolean> cancelledJobs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Thread> runningJobs = new ConcurrentHashMap<>();
 
     /**
      * Trigger graph building asynchronously for a fact sheet's indexed chunks.
@@ -89,10 +90,17 @@ public class GraphBuildingIntegrationService {
 
         // Create job
         ExtractionJob job = jobService.createJob(factSheetId, builderType, config);
-        String jobId = job.getJobId();
+        return runExistingJobAsync(job, chunks, config, progressCallback);
+    }
 
+    /** Dispatch an already-persisted job; never creates a second job receipt. */
+    @Async
+    public CompletableFuture<String> runExistingJobAsync(ExtractionJob job, List<RetrievedDoc> chunks,
+            BuilderConfig config, Consumer<BuildProgress> progressCallback) {
+        String jobId = job.getJobId();
+        String builderType = job.getBuilderType();
         log.info("Starting graph building job {} for fact sheet {} with {} chunks",
-                jobId, factSheetId, chunks.size());
+                jobId, job.getFactSheetId(), chunks.size());
 
         // Get builder
         Optional<KnowledgeGraphBuilder> builderOpt = builderRegistry.getBuilderByTypeString(builderType);
@@ -104,17 +112,26 @@ public class GraphBuildingIntegrationService {
 
         KnowledgeGraphBuilder builder = builderOpt.get();
 
-        // Configure builder
-        if (config != null) {
-            builder.configure(config);
-        }
-
-        // Run extraction
+        // Bind configuration inside the execution, not on a shared singleton ahead of it.
+        runningJobs.put(jobId, Thread.currentThread());
         try {
-            runExtraction(job, builder, chunks, progressCallback);
+            checkCancelled(jobId);
+            runExtraction(job, builder, chunks, config, progressCallback);
         } catch (Exception e) {
-            log.error("Graph building job {} failed", jobId, e);
-            jobService.failJob(jobId, e.getMessage());
+            if (cancelledJobs.containsKey(jobId) || e instanceof java.util.concurrent.CancellationException
+                    || Thread.currentThread().isInterrupted()) {
+                log.info("Graph building job {} cancelled", jobId);
+                jobService.getJob(jobId).filter(j -> !j.isTerminal())
+                        .ifPresent(j -> jobService.cancelJob(jobId));
+            } else {
+                // Provider failures can contain credentials and source text; persist only a safe diagnostic.
+                log.error("Graph building job {} failed ({})", jobId, e.getClass().getSimpleName());
+                jobService.getJob(jobId).filter(j -> !j.isTerminal())
+                        .ifPresent(j -> jobService.failJob(jobId, "Graph extraction failed"));
+            }
+        } finally {
+            runningJobs.remove(jobId);
+            cancelledJobs.remove(jobId);
         }
 
         return CompletableFuture.completedFuture(jobId);
@@ -127,6 +144,7 @@ public class GraphBuildingIntegrationService {
             ExtractionJob job,
             KnowledgeGraphBuilder builder,
             List<RetrievedDoc> chunks,
+            BuilderConfig config,
             Consumer<BuildProgress> progressCallback) {
 
         String jobId = job.getJobId();
@@ -143,13 +161,9 @@ public class GraphBuildingIntegrationService {
 
         // Combined progress handler
         Consumer<BuildProgress> combinedCallback = progress -> {
-            // Update job status
+            // Check cancellation before accepting any more results/progress.
+            checkCancelled(jobId);
             jobService.updateJobProgress(jobId, progress.processedChunks(), progress.proposalsCreated());
-
-            // Check for cancellation
-            if (cancelledJobs.getOrDefault(jobId, false)) {
-                throw new RuntimeException("Job cancelled");
-            }
 
             // Forward to external callback
             if (progressCallback != null) {
@@ -165,24 +179,20 @@ public class GraphBuildingIntegrationService {
 
         try {
             // Run extraction
-            List<ProposedTriple> proposals = builder.buildFromChunks(chunks, context, combinedCallback);
+            List<ProposedTriple> proposals = builder.buildFromChunks(chunks, context, config, combinedCallback);
 
+            checkCancelled(jobId);
             // Create proposal entities
             int created = jobService.createProposalsFromTriples(jobId, job.getFactSheetId(), proposals);
 
+            checkCancelled(jobId);
             // Complete job
             jobService.completeJob(jobId, created);
 
             log.info("Graph building job {} completed: {} proposals created", jobId, created);
 
         } catch (Exception e) {
-            if (cancelledJobs.getOrDefault(jobId, false)) {
-                log.info("Graph building job {} was cancelled", jobId);
-            } else {
-                throw e;
-            }
-        } finally {
-            cancelledJobs.remove(jobId);
+            throw e;
         }
     }
 
@@ -190,8 +200,21 @@ public class GraphBuildingIntegrationService {
      * Request cancellation of a running job.
      */
     public void requestCancellation(String jobId) {
-        cancelledJobs.put(jobId, true);
+        // Serialize interruption with the worker's finally/remove. A get-then-interrupt can
+        // race with completion and interrupt this pool thread after it starts somebody else's job.
+        runningJobs.computeIfPresent(jobId, (id, worker) -> {
+            cancelledJobs.put(id, true);
+            worker.interrupt();
+            return worker;
+        });
         log.info("Cancellation requested for job {}", jobId);
+    }
+
+    private void checkCancelled(String jobId) {
+        if (Thread.currentThread().isInterrupted() || cancelledJobs.containsKey(jobId)
+                || jobService.getJob(jobId).map(j -> j.isTerminal()).orElse(true)) {
+            throw new java.util.concurrent.CancellationException("Job cancelled or no longer runnable: " + jobId);
+        }
     }
 
     /**
@@ -231,7 +254,7 @@ public class GraphBuildingIntegrationService {
                 BuilderConfig config = objectMapper.readValue(graphBuilderConfigJson, BuilderConfig.class);
                 builder.configure(config);
             } catch (Exception e) {
-                log.warn("Failed to parse graph builder config: {}", e.getMessage());
+                throw new IllegalArgumentException("Invalid graph builder configuration");
             }
         }
 
@@ -264,7 +287,7 @@ public class GraphBuildingIntegrationService {
             try {
                 config = objectMapper.readValue(graphBuilderConfigJson, BuilderConfig.class);
             } catch (Exception e) {
-                log.warn("Failed to parse graph builder config: {}", e.getMessage());
+                throw new IllegalArgumentException("Invalid graph builder configuration");
             }
         }
 

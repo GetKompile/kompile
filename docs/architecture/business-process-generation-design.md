@@ -34,7 +34,7 @@ for the 5-layer stack. The hydration substrate is designed in
 
 **No `.drl` files** exist in the repo — rules are stored inline in `ComputeNode.script` (database-driven). **No jBPM and no BPMN execution** references were found anywhere in the codebase.
 
-**FP&A POMs**: `kompile-fpna-v3/project/pom.xml` and `kompile-fpna-v4/project/pom.xml` both reference drools, confirming the FP&A vertical is the primary consumer of Drools-backed compute graphs.
+**domain-planning POMs**: `kompile-planning-v3/project/pom.xml` and `kompile-planning-v4/project/pom.xml` both reference drools, confirming the domain-planning vertical is the primary consumer of Drools-backed compute graphs.
 
 **Native-image status**: Drools 9.x uses runtime MVEL bytecode generation. The module is `@ConditionalOnClass` and is absent from the native CLI build path. There are no GraalVM reflect/proxy config files for Drools classes. It is **JVM-server-only** — the same native-image hostility that motivated PSL being hand-rolled (`kompile-graph-reasoning`) applies here.
 
@@ -142,7 +142,7 @@ The `ProcessDefinition → ProcessPhase → ProcessStep` hierarchy is the target
 | **Native-image** | Hostile (MVEL bytecode gen) | Native-safe (pure Java; PSL was hand-rolled for this reason) |
 | **CLI deployment** | Excluded by `@ConditionalOnClass` | Fully deployed in any JVM |
 | **Explainability** | `_totalRulesFired` count only | `DerivationTree`, `JustificationIndex`, `EntailmentRecord` full provenance |
-| **FP&A decision tables** | Active consumers in kompile-fpna-v3/v4 | No equivalent; would need a new decision-table DSL or row→PSL compiler |
+| **domain-planning decision tables** | Active consumers in kompile-planning-v3/v4 | No equivalent; would need a new decision-table DSL or row→PSL compiler |
 
 ### 2.2 Verdict: Partial Replace — Keep Decision Tables, Replace Inference
 
@@ -156,7 +156,7 @@ The `ProcessDefinition → ProcessPhase → ProcessStep` hierarchy is the target
 
 **Drools decision tables** (`DROOLS_DECISION_TABLE` step type) **should be kept** for now. Rationale:
 
-1. XLS/CSV decision tables from FP&A fact sheets (`kompile-fpna-v3/v4`) are a real, active use case. No row→PSL compiler exists.
+1. XLS/CSV decision tables from domain-planning fact sheets (`kompile-planning-v3/v4`) are a real, active use case. No row→PSL compiler exists.
 2. Decision tables are a presentation format (business analysts maintain them in Excel), not an inference paradigm. Replacing them requires a new DSL surface, not just a backend swap.
 3. They are isolated behind `@ConditionalOnClass` on the JVM server and do not block native-image builds.
 
@@ -434,6 +434,6 @@ The invariant from `domain-object-generation-design.md:7`: `kompile-graph-reason
 
 4. **Anchor type auto-detection**: `anchorType` in `MiningDiscoveryController` is currently user-supplied. Should the system auto-detect the dominant entity type in the fact sheet (by node count or ontology binding) as the default anchor? This would remove the manual parameter for most use cases.
 
-5. **Decision-table DSL long-term**: If `DROOLS_DECISION_TABLE` is kept for FP&A, is the intent to keep XLS/CSV as the authoring format indefinitely, or to eventually build a native decision-table UI? The latter would remove the last hard Drools dependency.
+5. **Decision-table DSL long-term**: If `DROOLS_DECISION_TABLE` is kept for domain-planning, is the intent to keep XLS/CSV as the authoring format indefinitely, or to eventually build a native decision-table UI? The latter would remove the last hard Drools dependency.
 
 6. **`SuggestionToDefinitionConverter` acceptance flow**: Currently, accepting a suggestion calls `ProcessEngineController.POST /api/process/definition` with a manually assembled body. Automating this via the converter is Phase 1 prep but needs a decision on whether the converter runs server-side (on the accept API) or client-side (the Angular accept button assembles the payload).

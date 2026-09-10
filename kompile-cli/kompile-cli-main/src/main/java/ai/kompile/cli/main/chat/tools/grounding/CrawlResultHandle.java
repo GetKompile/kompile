@@ -37,6 +37,7 @@ final class CrawlResultHandle {
     private final String status;
     private final Long pollAfterMs;
     private final String graphPath;
+    private final boolean cancellable;
 
     private CrawlResultHandle(String backend,
                               String jobId,
@@ -44,7 +45,8 @@ final class CrawlResultHandle {
                               Long factSheetId,
                               String status,
                               Long pollAfterMs,
-                              String graphPath) {
+                              String graphPath,
+                              boolean cancellable) {
         this.backend = nonBlank(backend, "unknown");
         this.jobId = blankToNull(jobId);
         this.knowledgeBase = blankToNull(knowledgeBase);
@@ -52,6 +54,7 @@ final class CrawlResultHandle {
         this.status = nonBlank(status, "UNKNOWN").toUpperCase(Locale.ROOT);
         this.pollAfterMs = pollAfterMs;
         this.graphPath = blankToNull(graphPath);
+        this.cancellable = cancellable;
     }
 
     static CrawlResultHandle from(JsonNode payload,
@@ -69,9 +72,6 @@ final class CrawlResultHandle {
             knowledgeBase = blankToNull(knowledgeBaseNode.asText());
         }
         if (knowledgeBase == null) knowledgeBase = fallbackKnowledgeBase;
-        if (knowledgeBase == null && "project-local".equalsIgnoreCase(backend)) {
-            knowledgeBase = jobId;
-        }
 
         Long factSheetId = firstLong(source, "factSheetId", "fact_sheet_id");
         String status = firstText(source, "status", "state");
@@ -85,7 +85,8 @@ final class CrawlResultHandle {
                 factSheetId,
                 status,
                 pollAfterMs(source),
-                firstText(source, "graphPath", "graph_path"));
+                firstText(source, "graphPath", "graph_path"),
+                !source.has("cancellable") || source.path("cancellable").asBoolean(true));
     }
 
     boolean terminal() {
@@ -101,6 +102,7 @@ final class CrawlResultHandle {
         putIfPresent(value, "factSheetId", factSheetId);
         value.put("status", status);
         value.put("terminal", terminal());
+        value.put("cancellable", !terminal() && cancellable);
         putIfPresent(value, "pollAfterMs", pollAfterMs);
         putIfPresent(value, "graphPath", graphPath);
         value.put("nextActions", nextActions());
@@ -115,8 +117,10 @@ final class CrawlResultHandle {
             monitorArguments.put("jobId", jobId);
             if (pollAfterMs != null) monitorArguments.put("pollAfterMs", pollAfterMs);
             actions.add(action("monitor", "crawl_control", monitorArguments, List.of()));
-            actions.add(action("cancel", "crawl_control",
-                    Map.of("operation", "cancel", "jobId", jobId), List.of()));
+            if (cancellable) {
+                actions.add(action("cancel", "crawl_control",
+                        Map.of("operation", "cancel", "jobId", jobId), List.of()));
+            }
         }
         if (jobId != null) {
             actions.add(action("inspectResult", "crawl_result",

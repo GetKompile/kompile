@@ -59,6 +59,7 @@ class ExtractionJobServiceTest {
     @Mock private ExtractionLogRepository logRepository;
     @Mock private KnowledgeGraphService graphService;
     @Mock private GraphStorageRegistry storageRegistry;
+    @Mock private jakarta.persistence.EntityManager entityManager;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private ExtractionJobService service;
@@ -67,7 +68,7 @@ class ExtractionJobServiceTest {
     void setUp() {
         service = new ExtractionJobService(
                 jobRepository, proposalRepository, logRepository,
-                graphService, storageRegistry, objectMapper);
+                graphService, storageRegistry, objectMapper, entityManager);
     }
 
     private ExtractionJob pendingJob(String jobId, Long factSheetId) {
@@ -84,6 +85,7 @@ class ExtractionJobServiceTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+        when(jobRepository.findByJobIdForUpdate(jobId)).thenReturn(Optional.of(job));
         return job;
     }
 
@@ -214,6 +216,68 @@ class ExtractionJobServiceTest {
         when(jobRepository.findByJobId("job-1")).thenReturn(Optional.of(job));
 
         assertThrows(IllegalStateException.class, () -> service.cancelJob("job-1"));
+    }
+
+    @Test
+    void cancelledJobRejectsLateResultsAndProgress() {
+        ExtractionJob job = runningJob("cancelled", 1L);
+        job.cancel();
+        var triple = new ProposedTriple("A", "PERSON", "KNOWS", "B", "PERSON",
+                0.9, "c1", "d1", null, Map.of());
+        assertThrows(java.util.concurrent.CancellationException.class, () -> service.startJob("cancelled", 1));
+        assertThrows(java.util.concurrent.CancellationException.class, () -> service.completeJob("cancelled"));
+        assertThrows(java.util.concurrent.CancellationException.class, () -> service.completeJob("cancelled", 1));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> service.createProposalsFromTriples("cancelled", 1L, List.of(triple)));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> service.createProposals(job, List.of(triple)));
+        assertSame(job, service.failJob("cancelled", "late model failure"));
+        service.updateJobProgress("cancelled", 1, 1);
+        assertEquals(JobStatus.CANCELLED, job.getStatus());
+        verify(jobRepository, never()).save(any());
+        verify(jobRepository, never()).updateProgress(any(), any(), any());
+        verifyNoInteractions(proposalRepository);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "start", "complete", "completeCount", "proposals", "triples", "fail", "progress", "cancel"})
+    void refreshesStaleJobBeforeAnyLifecycleOrProposalWrite(String operation) {
+        ExtractionJob stale = runningJob("stale", 1L);
+        doAnswer(invocation -> { stale.cancel(); return null; })
+                .when(entityManager).refresh(stale, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        var triple = new ProposedTriple("A", "PERSON", "KNOWS", "B", "PERSON",
+                0.9, "c1", "d1", null, Map.of());
+        switch (operation) {
+            case "start" -> assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> service.startJob("stale", 1));
+            case "complete" -> assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> service.completeJob("stale"));
+            case "completeCount" -> assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> service.completeJob("stale", 1));
+            case "proposals" -> assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> service.createProposals(stale, List.of(triple)));
+            case "triples" -> assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> service.createProposalsFromTriples("stale", 1L, List.of(triple)));
+            case "fail" -> assertSame(stale, service.failJob("stale", "late failure"));
+            case "progress" -> service.updateJobProgress("stale", 1, 1);
+            case "cancel" -> assertThrows(IllegalStateException.class, () -> service.cancelJob("stale"));
+            default -> fail("Unknown operation " + operation);
+        }
+        verify(entityManager).refresh(stale, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        verify(jobRepository, never()).save(any());
+        verify(jobRepository, never()).updateProgress(any(), any(), any());
+        verifyNoInteractions(proposalRepository);
+    }
+
+    @Test
+    void proposalWritesRequireMatchingFactSheet() {
+        runningJob("owned-job", 1L);
+        var triple = new ProposedTriple("A", "PERSON", "KNOWS", "B", "PERSON",
+                0.9, "c1", "d1", null, Map.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.createProposalsFromTriples("owned-job", 2L, List.of(triple)));
+        verifyNoInteractions(proposalRepository);
     }
 
     // ─── Progress Callbacks ────────────────────────────────────────────

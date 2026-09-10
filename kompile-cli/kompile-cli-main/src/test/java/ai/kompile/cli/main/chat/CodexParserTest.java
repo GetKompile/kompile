@@ -180,7 +180,7 @@ class CodexParserTest {
     // ===================================================================
 
     @Test
-    void turnCompleted_shouldProduceTurnCompleteWithTokens() {
+    void turnCompleted_shouldProduceTurnCompleteWithDisjointTokens() {
         String line = ParserTestFixtures.codexTurnCompleted(100L, 50L, 20L);
         PassthroughEvent event = parser.parseCodexLine(line);
 
@@ -190,7 +190,8 @@ class CodexParserTest {
 
         TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
         assertNotNull(tc);
-        assertEquals(100L, tc.inputTokens());
+        assertEquals(80L, tc.inputTokens(),
+                "ordinary input excludes Codex's inclusive cached-input subset");
         assertEquals(50L, tc.outputTokens());
         assertEquals(20L, tc.cacheReadTokens());
     }

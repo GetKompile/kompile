@@ -180,7 +180,7 @@ class CpuDecodeModeDiagnosticTest {
         DifferentialFunctionClassHolder.initInstance();
 
         PassContext context = PassContext
-                .forChunk("chunk-fpna-1", "doc-fpna-board-minutes",
+                .forChunk("chunk-planning-1", "doc-planning-board-minutes",
                         "Acme Corporation hired Jane Chen as CFO in March 2025. "
                                 + "Chen said margins would probably improve next year. "
                                 + "Acme did not acquire Globex Ltd.")

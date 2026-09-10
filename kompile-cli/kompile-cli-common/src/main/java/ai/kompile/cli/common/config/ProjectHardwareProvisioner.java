@@ -376,8 +376,8 @@ public final class ProjectHardwareProvisioner {
      * <p>Starts from the auto-configured map, then ensures any path-bearing
      * fields use user-home-relative references via
      * {@code System.getProperty("user.home")} — never a literal
-     * {@code /home/<username>}. The fpna-v8 config has no path fields in
-     * this file so we emit only the non-path fields from autoConfigure().</p>
+     * {@code /home/<username>}. The generated config currently has no path fields,
+     * so only the non-path fields from autoConfigure() are emitted.</p>
      */
     private static Map<String, Object> buildNd4jConfig(AutoConfigResult auto, Path projectRoot) {
         // The auto-generated nd4jConfig contains no path fields — use as-is.
@@ -405,8 +405,8 @@ public final class ProjectHardwareProvisioner {
     /**
      * Build app-index-config.json.
      *
-     * <p>Uses RELATIVE index paths (relative to projectRoot at runtime) matching
-     * the fpna-v8 semantics but without any absolute prefix. The app resolves
+     * <p>Uses relative index paths resolved from {@code projectRoot} at runtime.
+     * The app resolves
      * these against {@code kompile.data.dir} in {@code AppIndexConfigService}.</p>
      */
     private static Map<String, Object> buildAppIndexConfig(Tier tier) {
@@ -473,8 +473,8 @@ public final class ProjectHardwareProvisioner {
         Map<String, Object> llmRoute = route(budgetVramMb, LLM_DEVICE_FRACTION);
         // Embedding route: the SameDiff encoder subprocess — historically the heaviest device
         // tenant (DSP warmup capture). SERVICE_EMBEDDING is consumed by
-        // DeviceRoutingAutoConfiguration → AnseriniEmbeddingModelImpl; fpna-v4 hand-patched
-        // .serviceRoutes.embedding via jq, so the golden path must provision it.
+        // DeviceRoutingAutoConfiguration → AnseriniEmbeddingModelImpl, so the generated
+        // configuration must provision serviceRoutes.embedding directly.
         Map<String, Object> embeddingRoute = route(budgetVramMb, EMBEDDING_DEVICE_FRACTION);
 
         Map<String, Object> routes = new LinkedHashMap<>();

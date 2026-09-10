@@ -132,6 +132,82 @@ class ChatConfigCredentialMigrationTest {
         });
     }
 
+    @Test
+    void sessionsPinAccountsWhileGlobalModeFollowsVendorSelection() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("openai", "first", "secret-first", true);
+            store.putApiKey("openai", "second", "secret-second", false);
+            ChatConfig defaults = new ChatConfig("openai", null, "model-a", null);
+            defaults.saveGlobal();
+            ChatConfig first = defaults.copy();
+            first.bindSession("first-session");
+            ChatConfig second = defaults.copy();
+            second.setCredentialName("second");
+            second.setModel("model-b");
+            second.bindSession("second-session");
+            ChatConfig global = defaults.copy();
+            global.setAuthenticationScope("global");
+            assertEquals("secret-first", global.getApiKey());
+            store.switchCredential("openai", "second");
+            assertEquals("secret-first", first.getApiKey());
+            assertEquals("secret-second", second.getApiKey());
+            assertEquals("secret-second", global.getApiKey());
+            assertEquals("model-a", ChatConfig.loadGlobal().getModel());
+            ChatConfig resumed = ChatConfig.loadSession("first-session");
+            assertEquals("first", resumed.getCredentialName());
+            assertEquals("secret-first", resumed.getApiKey());
+            assertFalse(Files.readString(ChatConfig.sessionConfigPath("first-session")).contains("secret-first"));
+            ChatConfig copy = resumed.copy();
+            copy.setCredentialName("second");
+            assertEquals("first", resumed.getCredentialName());
+            store.deleteCredential("openai", "first");
+            assertThrows(ChatConfig.AuthenticationException.class, resumed::resolveRequestAuth);
+        });
+    }
+
+    @Test
+    void environmentAccountRemainsPinnedAfterGlobalLogin() throws Exception {
+        withTemporaryHome(() -> {
+            ChatConfig session = new ChatConfig("openai", null, "model", null);
+            session.pinActiveCredential(variable -> "environment-secret");
+            session.bindSession("environment-session");
+            CredentialStore.create().putApiKey("openai", "other", "other-secret", true);
+            assertEquals("environment-secret", session.getApiKey());
+            assertEquals("environment-secret", ChatConfig.loadSession("environment-session").getApiKey());
+        });
+    }
+
+    @Test
+    void sessionPickerSelectsAccountWithoutChangingVendorDefault() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("openai", "first", "first-key", true);
+            store.putApiKey("openai", "second", "second-key", false);
+            org.jline.reader.LineReader reader = (org.jline.reader.LineReader) java.lang.reflect.Proxy.newProxyInstance(
+                    getClass().getClassLoader(), new Class<?>[]{org.jline.reader.LineReader.class},
+                    (proxy, method, args) -> method.getName().equals("readLine") ? "second" : null);
+            var selected = SetupWizard.authenticateSession(reader, "openai", SetupWizard.AuthMethod.API_KEY);
+            assertNotNull(selected);
+            assertEquals("second", selected.credentialName());
+            assertNull(selected.apiKey());
+            assertEquals("first", store.activeCredentialName("openai"));
+        });
+    }
+
+    @Test
+    void sessionApiKeyDoesNotOverwriteGlobalAccountAndSurvivesResume() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("openai", "global", "global-secret", true);
+            ChatConfig config = new ChatConfig("openai", "session-secret", "model", null);
+            config.bindSession("isolated");
+            assertEquals("global-secret", store.resolveApiKey("openai"));
+            assertEquals("session-secret", ChatConfig.loadSession("isolated").getApiKey());
+            assertFalse(Files.readString(ChatConfig.sessionConfigPath("isolated")).contains("session-secret"));
+        });
+    }
+
     private void withTemporaryHome(ThrowingRunnable body) throws Exception {
         String originalHome = System.getProperty("user.home");
         String originalDir = System.getProperty("user.dir");

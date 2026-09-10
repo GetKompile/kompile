@@ -29,7 +29,7 @@ import java.util.Map;
 
 /**
  * A pending human approval request. Created when a workflow step pauses for HITL.
- * This is the generalized version of the exception queue in the FP&amp;A dashboard.
+ * This is the generalized version of the exception queue in the operations dashboard.
  */
 @Data
 @Builder

@@ -195,16 +195,24 @@ public class CrawlWorkerCapabilityService {
                 && active < maxConc
                 && !s.ramPressure().atLeast(ResourceSnapshot.PressureLevel.CRITICAL);
         String role = cfg.getClusterRole() == null ? "none" : cfg.getClusterRole();
+        List<String> jobTypes = advertisedJobTypes(cfg);
+        boolean distributedGraphReady = cfg.getExternalAuthToken() != null
+                && !cfg.getExternalAuthToken().isBlank()
+                && cfg.getClusterOrchestratorUrl() != null
+                && !cfg.getClusterOrchestratorUrl().isBlank()
+                && jobTypes.contains("crawl");
 
         return new WorkerCapabilities(
                 workerId(), advertiseBaseUrl(cfg), role, backends, gpuCount, totalGpuBytes,
                 Runtime.getRuntime().availableProcessors(),
-                advertisedJobTypes(cfg), maxConc, active,
+                jobTypes, maxConc, active,
                 s.systemCpuLoad(), s.worstGpuUsedFraction(),
                 s.cpuPressure().name(), s.worstGpuPressure().name(),
                 accepting, System.currentTimeMillis(),
                 s.systemRamUsedFraction(), s.ramPressure().name(), gpuInfos, drained,
-                computeGcOverheadFraction());
+                computeGcOverheadFraction(), 2,
+                distributedGraphReady ? 1 : 0,
+                distributedGraphReady ? 1 : 0);
     }
 
     /**

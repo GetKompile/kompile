@@ -22,6 +22,7 @@ import ai.kompile.react.model.TokenUsage;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -30,11 +31,17 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.attribute.PosixFilePermission;
+import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -44,6 +51,7 @@ public class JsonlSessionService implements SessionService {
 
     private Path sessionsDir;
     private final ObjectMapper objectMapper;
+    private volatile Map<String, String> sessionIndex = Map.of();
 
     private static final int CHARS_PER_TOKEN = 4;
 
@@ -52,12 +60,16 @@ public class JsonlSessionService implements SessionService {
         this.objectMapper = JsonUtils.newStandardMapper()
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
         Files.createDirectories(sessionsDir);
+        restrictDirectory(sessionsDir);
+        loadIndex();
         log.info("Session storage initialized at: {}", sessionsDir);
     }
 
     public void setWorkspace(String workspace) throws IOException {
         this.sessionsDir = Path.of(workspace, "sessions");
         Files.createDirectories(sessionsDir);
+        restrictDirectory(sessionsDir);
+        loadIndex();
         log.info("Session storage relocated to: {}", sessionsDir);
     }
 
@@ -81,11 +93,13 @@ public class JsonlSessionService implements SessionService {
 
     @Override
     public void appendMessage(String sessionKey, ReActMessage message) {
+        rememberSession(sessionKey);
         Path file = getSessionPath(sessionKey);
         try {
             String json = objectMapper.writeValueAsString(toMap(message));
             Files.write(file, (json + "\n").getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            restrictFile(file);
             log.debug("Appended message to session: {}", sessionKey);
         } catch (IOException e) {
             log.error("Failed to append message to session: {}", sessionKey, e);
@@ -95,6 +109,7 @@ public class JsonlSessionService implements SessionService {
 
     @Override
     public void appendMessages(String sessionKey, List<ReActMessage> messages) {
+        rememberSession(sessionKey);
         Path file = getSessionPath(sessionKey);
         try {
             StringBuilder sb = new StringBuilder();
@@ -104,6 +119,7 @@ public class JsonlSessionService implements SessionService {
             }
             Files.write(file, sb.toString().getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            restrictFile(file);
             log.debug("Appended {} messages to session: {}", messages.size(), sessionKey);
         } catch (IOException e) {
             log.error("Failed to append messages to session: {}", sessionKey, e);
@@ -113,6 +129,7 @@ public class JsonlSessionService implements SessionService {
 
     @Override
     public void saveSession(String sessionKey, List<ReActMessage> messages) {
+        rememberSession(sessionKey);
         Path file = getSessionPath(sessionKey);
         try {
             StringBuilder sb = new StringBuilder();
@@ -122,6 +139,7 @@ public class JsonlSessionService implements SessionService {
             }
             Files.write(file, sb.toString().getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            restrictFile(file);
             log.debug("Saved {} messages to session: {}", messages.size(), sessionKey);
         } catch (IOException e) {
             log.error("Failed to save session: {}", sessionKey, e);
@@ -169,6 +187,7 @@ public class JsonlSessionService implements SessionService {
         Path file = getSessionPath(sessionKey);
         try {
             Files.deleteIfExists(file);
+            forgetSession(sessionKey);
             log.debug("Cleared session: {}", sessionKey);
         } catch (IOException e) {
             log.error("Failed to clear session: {}", sessionKey, e);
@@ -189,20 +208,108 @@ public class JsonlSessionService implements SessionService {
 
     @Override
     public List<String> listSessions() {
-        try (Stream<Path> files = Files.list(sessionsDir)) {
-            return files
-                    .filter(p -> p.toString().endsWith(".jsonl"))
-                    .map(p -> p.getFileName().toString().replace(".jsonl", ""))
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            log.error("Failed to list sessions", e);
-            return new ArrayList<>();
-        }
+        return sessionIndex.entrySet().stream()
+                .filter(entry -> Files.isRegularFile(
+                        sessionsDir.resolve(entry.getKey() + ".jsonl")))
+                .map(Map.Entry::getValue)
+                .sorted()
+                .toList();
     }
 
     private Path getSessionPath(String sessionKey) {
-        String safeKey = sessionKey.replace(":", "_").replace("/", "_").replace("\\", "_");
-        return sessionsDir.resolve(safeKey + ".jsonl");
+        return sessionsDir.resolve(sessionHash(sessionKey) + ".jsonl");
+    }
+
+    private synchronized void rememberSession(String sessionKey) {
+        String hash = sessionHash(sessionKey);
+        if (sessionKey.equals(sessionIndex.get(hash))) return;
+        Map<String, String> replacement = new HashMap<>(sessionIndex);
+        replacement.put(hash, sessionKey);
+        persistIndex(replacement);
+        sessionIndex = Map.copyOf(replacement);
+    }
+
+    private synchronized void forgetSession(String sessionKey) {
+        String hash = sessionHash(sessionKey);
+        if (!sessionIndex.containsKey(hash)) return;
+        Map<String, String> replacement = new HashMap<>(sessionIndex);
+        replacement.remove(hash);
+        persistIndex(replacement);
+        sessionIndex = Map.copyOf(replacement);
+    }
+
+    private synchronized void loadIndex() throws IOException {
+        Path index = sessionsDir.resolve("sessions-index.json");
+        if (!Files.isRegularFile(index)) {
+            sessionIndex = Map.of();
+            return;
+        }
+        sessionIndex = Map.copyOf(objectMapper.readValue(
+                index.toFile(), new TypeReference<Map<String, String>>() { }));
+        restrictFile(index);
+    }
+
+    private void persistIndex(Map<String, String> replacement) {
+        Path index = sessionsDir.resolve("sessions-index.json");
+        try {
+            Path temporary = Files.createTempFile(sessionsDir, ".session-index-", ".tmp");
+            try {
+                objectMapper.writeValue(temporary.toFile(), replacement);
+                restrictFile(temporary);
+                try {
+                    Files.move(temporary, index,
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temporary, index, StandardCopyOption.REPLACE_EXISTING);
+                }
+                restrictFile(index);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not persist session index", e);
+        }
+    }
+
+    private static String sessionHash(String sessionKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            throw new IllegalArgumentException("Session key is required");
+        }
+        try {
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(sessionKey.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static void restrictDirectory(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE));
+        } catch (IOException | UnsupportedOperationException ignored) {
+            path.toFile().setReadable(false, false);
+            path.toFile().setWritable(false, false);
+            path.toFile().setExecutable(false, false);
+            path.toFile().setReadable(true, true);
+            path.toFile().setWritable(true, true);
+            path.toFile().setExecutable(true, true);
+        }
+    }
+
+    private static void restrictFile(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (IOException | UnsupportedOperationException ignored) {
+            path.toFile().setReadable(false, false);
+            path.toFile().setWritable(false, false);
+            path.toFile().setReadable(true, true);
+            path.toFile().setWritable(true, true);
+        }
     }
 
     private ReActMessage parseMessage(String line) {

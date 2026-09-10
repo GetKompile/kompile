@@ -155,10 +155,10 @@ class EntityPartitionTest {
         void pinsCarryTheProvenanceLabelsExtractionPromptsNeed() {
             EntityPartition partition = EntityPartition.open(KEY)
                     .withPin("graph", "graph-7")
-                    .withPin("corpus", "fpna-v15")
+                    .withPin("corpus", "corpus-v15")
                     .withPin("  ", "ignored");
             assertEquals("graph-7", partition.pins().get("graph"));
-            assertEquals("fpna-v15", partition.pins().get("corpus"));
+            assertEquals("corpus-v15", partition.pins().get("corpus"));
             assertEquals(2, partition.pins().size());
         }
 

@@ -21,7 +21,7 @@ Use the MCP `pipeline` tool to manage project-local definitions:
 
 Definitions are immutable versions under `data/pipelines/unified/<pipelineId>/`. Promotion changes an atomic active-version pointer; it does not overwrite prior versions. `list` and `get` also include active registrations from `kompile.project.json`; every result identifies its `registrySource`. A project registration can point at an inline definition, a project-relative definition file, or a managed definition id.
 
-All model-backed runs use the same pooled stdio runtime. Callers provide pipeline definitions, model bindings, and input data—not executable paths, ports, subprocess modes, or worker configuration. When a model definition has `localPath` (or `path`), the runtime consumes that existing file/directory directly: it does not stage, register, or mutate `kompile.project.json`. Without a local path, `pipeline run` may bootstrap a project model; `pipeline test` remains read-only and requires prior provisioning. Test and run failures return a structured diagnostic with a run id, failure stage, exception chain, and bounded stack trace.
+Local artifact-backed runs use the same pooled stdio runtime. Callers provide pipeline definitions, model bindings, and input data—not executable paths, ports, subprocess modes, or worker configuration. When a model definition has `localPath` (or `path`), the runtime consumes that existing file/directory directly: it does not stage, register, or mutate `kompile.project.json`. Without a local path, `pipeline run` may bootstrap a project model; `pipeline test` remains read-only and requires prior provisioning. Test and run failures return a structured diagnostic with a run id, failure stage, exception chain, and bounded stack trace.
 
 ## Composed pipeline steps
 
@@ -66,6 +66,71 @@ For multimodal graphs, the default fusion node demonstrates the explicit form:
 ```
 
 The composed vision steps exchange named tensors: image preprocessing emits image tensors, the vision encoder emits `image_features`, text embedding emits `text_embeddings`, and fusion emits `inputs_embeds`. The decoder loop also needs `input_ids` and, when applicable, `attention_mask`/`position_ids`. Raw `text` is not tokenized implicitly; add a tokenizer/adapter step or provide `input_ids` in the request.
+
+## Native chat compositions
+
+Native chat stages run in the MCP host through normal chat authentication, without
+model downloads or local tensor runtimes. Choose exact models independently per stage:
+
+```json
+{
+  "action": "test",
+  "definition": {
+    "pipelineId": "extract-then-summarize",
+    "kind": "LLM",
+    "topology": "SEQUENCE",
+    "modelBindings": {"step0": "reader", "step1": "writer"},
+    "modelDefinitions": {
+      "reader": {"source": "chat", "provider": "codex", "modelId": "your-reader-model"},
+      "writer": {"source": "chat", "provider": "claude", "modelId": "your-writer-model"}
+    },
+    "pipelineSpec": {
+      "@class": "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+      "steps": [
+        {
+          "@class": "ai.kompile.pipelines.framework.core.config.GenericStepConfig",
+          "runnerClassName": "CHAT_MODEL",
+          "parameters": {"processor": {"type": "CHAT_MODEL", "prompt": "Extract the important facts."}}
+        },
+        {
+          "@class": "ai.kompile.pipelines.framework.core.config.GenericStepConfig",
+          "runnerClassName": "CHAT_MODEL",
+          "parameters": {"processor": {"type": "CHAT_MODEL", "prompt": "Summarize these facts faithfully."}}
+        }
+      ]
+    }
+  },
+  "input": {"text": "Source document text"}
+}
+```
+
+Provider aliases are optional; any registered native provider or configured custom
+endpoint can be selected. Discover exact IDs and probe text and vision separately using
+[the native model capability tools](chat.md#native-chat-for-mcp-pipelines).
+
+The host chat composition contract is deliberately narrower than tensor graph wiring:
+
+- A composition has 1–100 `CHAT_MODEL` stages only. Sequence bindings use `step0`,
+  `step1`, etc.; graph bindings use node names. A `default` binding is the fallback.
+- Graphs use `STANDARD` nodes, must be acyclic, and every node must contribute to
+  `outputNodeName`. Loops, disconnected stages and mixed tensor/chat runners are rejected.
+- A single predecessor is passed through; multiple predecessors supply text joined in
+  declared input order, not merged tensor records. Intermediate outputs are text.
+- `parameters.inputDataBindings` may select exactly one `text`, `filePath`, or `path`
+  slot from a declared input. Intermediate references must be `node.text`; file paths
+  can only come from the original `pipeline_input`, never from model-generated text.
+- Original input can be text, an image or a PDF. A later stage needing the original
+  image must reference `pipeline_input`, rather than a preceding text response.
+- All stages undergo configuration/adapter preflight before any inference. This does
+  not prove model capability or authentication; opt-in live probes are separate.
+- Project `source=chat`/`remote` model aliases resolve to their exact model descriptors.
+  Local artifact aliases are not silently reinterpreted as remote model names.
+
+Crawls can use these definitions through the existing pipeline registry. Text stages
+receive loaded/chunked source text; binary documents requested as text need an explicit
+text loader. Native vision/PDF stages receive the original file. Credentials are never
+stored in definitions or forwarded to a managed crawl server. Embeddings, token tensors,
+tool execution and graph-learning engines remain outside this chat executor.
 
 ## Acquire models, then bind them into a composed pipeline
 

@@ -67,7 +67,7 @@ class EnforcerServiceTest {
     }
 
     @Test
-    void doesNotRunAgentWhenJudgeReadinessFails() {
+    void runsAgentUnjudgedWhenJudgeReadinessFailsByDefault() {
         AtomicInteger executorCalls = new AtomicInteger();
         EnforcerEvaluator unavailable = new FixedEvaluator(
                 List.of(EnforcerDecision.pass("should not be reached"))) {
@@ -87,12 +87,47 @@ class EnforcerServiceTest {
                 new EnforcerPolicy("Use one sentence.", 0, false),
                 prompt -> {
                     executorCalls.incrementAndGet();
-                    return "unexpected";
+                    return "unjudged output";
                 });
 
-        assertEquals(EnforcerResult.Status.UNAVAILABLE, result.getStatus());
-        assertEquals(0, executorCalls.get(), "judge failure must stop before the subordinate agent runs");
-        assertTrue(result.getMessage().contains("failing closed"));
+        assertEquals(EnforcerResult.Status.ACCEPTED, result.getStatus());
+        assertEquals(1, executorCalls.get(), "judge unavailability must fail open");
+        assertEquals("unjudged output", result.getFinalOutput());
+    }
+
+    @Test
+    void acceptsAgentOutputWhenJudgeThrows() {
+        EnforcerEvaluator failingJudge = new FixedEvaluator(
+                List.of(EnforcerDecision.pass("unused"))) {
+            @Override
+            public EnforcerDecision evaluate(String userPrompt, String agentOutput,
+                                             EnforcerPolicy policy, int attempt) {
+                throw new IllegalStateException("judge timed out");
+            }
+        };
+
+        EnforcerResult result = new EnforcerService(failingJudge).enforce(
+                "answer",
+                new EnforcerPolicy("Use one sentence.", 0, false),
+                prompt -> "agent output");
+
+        assertEquals(EnforcerResult.Status.ACCEPTED, result.getStatus());
+        assertEquals("agent output", result.getFinalOutput());
+        assertTrue(result.getJudgeBackend().contains("fail-open"));
+    }
+
+    @Test
+    void doesNotMistakeAgentFailureForJudgeFailure() {
+        EnforcerService service = new EnforcerService(new FixedEvaluator(
+                List.of(EnforcerDecision.pass("unused"))));
+
+        EnforcerResult result = service.enforce(
+                "answer",
+                new EnforcerPolicy("Use one sentence.", 0, false),
+                prompt -> { throw new IllegalStateException("agent crashed"); });
+
+        assertEquals(EnforcerResult.Status.ERROR, result.getStatus());
+        assertTrue(result.getMessage().contains("Agent run failed"));
     }
 
     @Test

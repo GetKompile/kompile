@@ -168,7 +168,7 @@ public class EnforcerCommand implements Callable<Integer> {
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private EnforcerFallbackPolicy enforcerFallbackPolicy = EnforcerFallbackPolicy.FAIL_CLOSED;
-    private BackgroundProcessManager bgProcMgr; // judge/enforcer watcher visibility (interactive only)
+    private BackgroundProcessManager bgProcMgr; // unified judge watcher visibility (interactive only)
 
     @Override
     public Integer call() {
@@ -199,6 +199,12 @@ public class EnforcerCommand implements Callable<Integer> {
         // Bootstrap diff patterns via LLM (one-shot, then exit)
         if (bootstrapPatterns != null && !bootstrapPatterns.isBlank()) {
             return bootstrapDiffPatterns(wd);
+        }
+
+        if (!HarnessConfig.load(objectMapper).isJudgeGlobalEnabled()) {
+            System.err.println("Judge is globally disabled. Enable it with /judge global on "
+                    + "or set judgeGlobalEnabled=true in " + HarnessConfig.getConfigFilePath() + ".");
+            return 2;
         }
 
         // Load per-project enforcer config (provides defaults for unset CLI options)
@@ -244,7 +250,7 @@ public class EnforcerCommand implements Callable<Integer> {
                 }
                 evaluator = kwEval;
             } else {
-                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                judge = new EnforcerJudge(harnessConfig, objectMapper, wd);
                 if (!judge.isAvailable()) {
                     System.err.println("No enforcer judge backend is available.");
                     System.err.println("Configure ~/.kompile/harness-config.json or pass --judge-provider/--judge-model.");
@@ -435,7 +441,7 @@ public class EnforcerCommand implements Callable<Integer> {
                 }
                 evaluator = kw;
             } else {
-                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                judge = new EnforcerJudge(harnessConfig, objectMapper, wd);
                 if (!judge.isAvailable()) {
                     System.err.println("No enforcer judge backend available. Configure "
                             + "~/.kompile/harness-config.json or pass --judge-provider/--judge-model, "
@@ -532,7 +538,7 @@ public class EnforcerCommand implements Callable<Integer> {
                 }
                 evaluator = kw;
             } else {
-                judge = new EnforcerJudge(harnessConfig, objectMapper);
+                judge = new EnforcerJudge(harnessConfig, objectMapper, wd);
                 if (!judge.isAvailable()) {
                     System.err.println("No enforcer judge backend available; configure judge or use --keyword-mode.");
                     return 1;
@@ -742,7 +748,7 @@ public class EnforcerCommand implements Callable<Integer> {
         SubprocessAgentRunner.RealtimeMonitor rtMonitor;
         if (judge != null) {
             EnforcerRealtimeMonitor llmMonitor = new EnforcerRealtimeMonitor(judge, policy, prompt, conversationWindow);
-            llmMonitor.setFailOpenOnError(enforcerFallbackPolicy == EnforcerFallbackPolicy.FAIL_OPEN);
+            llmMonitor.setFailOpenOnError(enforcerFallbackPolicy != EnforcerFallbackPolicy.FAIL_CLOSED);
             rtMonitor = llmMonitor;
         } else if (keywordMode) {
             KeywordEnforcerEvaluator kwEval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
@@ -959,7 +965,7 @@ public class EnforcerCommand implements Callable<Integer> {
                     + "/judge restart  Stop and restart the judge process\n"
                     + "/judge agent <name>  Switch and restart the judge agent\n"
                     + "/status     Show current agent, judge, and correction limit\n"
-                    + "/processes  Show the live judge + enforcer watcher processes\n"
+                    + "/processes  Show the live judge watcher process\n"
                     + "/archive    List archived turns with violation status\n"
                     + "/rollback   Rollback all violated turns (restore original files)\n"
                     + "/rollback <turn-id>  Rollback a specific turn\n"
@@ -1187,7 +1193,8 @@ public class EnforcerCommand implements Callable<Integer> {
                     rules = configRules;
                 }
             } catch (IOException e) {
-                System.err.println("[enforcer] warning: could not load rules from config: " + e.getMessage());
+                ai.kompile.cli.main.chat.enforcer.EnforcerDiagnostics.alert(
+                        "[enforcer] warning: could not load rules from config: " + e.getMessage());
             }
             // Also check ruleFile from config
             if (config.getRuleFile() != null && !config.getRuleFile().isBlank()

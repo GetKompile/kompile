@@ -110,6 +110,10 @@ public class StdioEnforcerTool {
     }
 
     public ToolResult execute(Map<String, Object> arguments) {
+        if (!HarnessConfig.load(objectMapper).isJudgeGlobalEnabled()) {
+            return ToolResult.error("Judge is globally disabled by "
+                    + HarnessConfig.getConfigFilePath());
+        }
         String prompt = stringArg(arguments, "prompt", "");
         if (prompt.isBlank()) {
             return ToolResult.error("prompt is required");
@@ -144,7 +148,7 @@ public class StdioEnforcerTool {
         } catch (Exception e) {
             return ToolResult.error("Could not create enforcer runtime policy: " + e.getMessage());
         }
-        EnforcerJudge judge = new EnforcerJudge(config, objectMapper);
+        EnforcerJudge judge = new EnforcerJudge(config, objectMapper, workDir);
         BackgroundProcessManager.ProcessEntry processEntry = registerEnforcerProcess(
                 runtimePolicy.getSessionId(), agentName, judge.describe());
         EnforcerConversationWindow conversationWindow =
@@ -223,11 +227,11 @@ public class StdioEnforcerTool {
         metadata.put("judge", judgeBackend != null ? judgeBackend : "");
         metadata.put("workingDirectory", workDir.toString());
         BackgroundProcessManager.ProcessEntry entry = processManager.registerVirtual(
-                BackgroundProcessManager.ProcessKind.ENFORCER,
-                "enforcer " + (agentName != null ? agentName : "agent"),
-                "Enforcer watcher checking judge for " + (agentName != null ? agentName : "agent"),
+                BackgroundProcessManager.ProcessKind.JUDGE,
+                "judge " + (agentName != null ? agentName : "agent"),
+                "Judge policy supervising " + (agentName != null ? agentName : "agent"),
                 metadata);
-        System.out.println("[enforcer] watcher started: " + entry.getId()
+        System.out.println("[judge] watcher started: " + entry.getId()
                 + " session=" + sessionId
                 + " judge=" + judgeBackend);
         return entry;

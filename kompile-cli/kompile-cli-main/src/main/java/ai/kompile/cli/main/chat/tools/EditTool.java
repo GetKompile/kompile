@@ -58,14 +58,15 @@ public class EditTool implements CliTool {
         return "Perform exact string replacement in a file. Provide the old_string to find " +
                 "and new_string to replace it with. The old_string must be unique in the file " +
                 "(provide more context if needed). Set replace_all to true to replace all " +
-                "occurrences. Always read the file first before editing.";
+                "occurrences. Always read the file first before editing. Managed memory paths " +
+                "are rejected; use the memory tool instead.";
     }
 
     @Override
     public String compactHint() {
         return "Exact string replace — READ the file first. old_string must match byte-for-byte "
                 + "and be UNIQUE (add surrounding context, or set replace_all). Don't paste read's "
-                + "line-number prefix.";
+                + "line-number prefix. Managed memory → memory tool.";
     }
 
     @Override
@@ -115,7 +116,7 @@ public class EditTool implements CliTool {
             return ToolResult.error("old_string and new_string must be different");
         }
 
-        Path path = context.resolvePath(filePath);
+        Path path = context.resolveMutationPath(filePath);
 
         if (!Files.exists(path)) {
             return ToolResult.error("File not found: " + path);

@@ -432,7 +432,7 @@ class EntityPartitionCrawlStepTest {
             assertEquals("SEED", task.getValue().discoveryChannel());
             assertTrue(task.getValue().corpusSnapshotId().startsWith("partition-corpus-v1:"));
             verify(extraction).mergeIntoContext(same(produced), same(graphContext.getValue()),
-                    same(config));
+                    same(config), same(job));
         }
 
         @Test

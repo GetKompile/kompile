@@ -63,6 +63,7 @@ import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.text.Normalizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -77,6 +78,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static ai.kompile.cli.main.project.ProjectCommandUtils.firstNonBlank;
@@ -113,6 +116,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     private static final int LOCAL_IO_BUFFER_CHARS = 16 * 1024;
     private static final int NO_OP_STREAM_BATCH_CHARS = 64 * 1024;
     private static final int MAX_HTML_TOKEN_CHARS = 8 * 1024;
+    private static final int MAX_GENERATED_FRONT_MATTER_CHARS = 64 * 1024;
     private static final ObjectMapper LOADER_METADATA_MAPPER = new ObjectMapper();
 
     private static final Set<String> LOCAL_KNOWLEDGE_STOP_WORDS = Set.of(
@@ -121,6 +125,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             "our", "into", "about", "their", "there", "these", "those", "then", "than",
             "also", "over", "under", "using", "use", "used", "per", "via", "its", "it"
     );
+    private static final Pattern LOCAL_KNOWLEDGE_TERM_PATTERN = Pattern.compile(
+            "[\\p{L}\\p{N}][\\p{L}\\p{N}\\p{M}]*(?:['’\\-][\\p{L}\\p{N}\\p{M}]+)*");
 
     @Override
     public Integer call() {
@@ -1494,6 +1500,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                       ModelPipelineExecutor modelPipelineExecutor)
             throws IOException {
         List<LocalCrawlDocument> documents = new ArrayList<>();
+        Set<Path> seenFiles = new LinkedHashSet<>();
         LocalCrawlStatistics statistics = new LocalCrawlStatistics();
         int maxDocuments = profile.getMaxDocuments();
         Path chunksPath = outputDir.resolve("chunks.jsonl");
@@ -1511,6 +1518,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     checkCancellation();
                     if (maxDocuments > 0 && documents.size() >= maxDocuments) {
                         break;
+                    }
+                    if (!seenFiles.add(file.toRealPath())) {
+                        continue;
                     }
                     LocalCrawlDocument document = localCrawlDocument(projectRoot, sourcePath, file);
                     LocalCrawlCapabilities.ResolvedPipeline pipeline =
@@ -1951,7 +1961,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
             if (profile.getTags() != null && !profile.getTags().isEmpty()) {
                 fm.append("tags:\n");
-                for (String tag : profile.getTags()) fm.append("  - ").append(tag).append('\n');
+                for (String tag : profile.getTags()) {
+                    fm.append("  - \"").append(escapeYaml(tag)).append("\"\n");
+                }
             }
         }
         if (projectName != null && !projectName.isBlank()) {
@@ -1960,9 +1972,29 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return fm.append("---\n\n# ").append(resolvedTitle).append("\n\n").toString();
     }
 
-    private static String escapeYaml(String value) {
+    static String escapeYaml(String value) {
         if (value == null) return "";
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+        StringBuilder escaped = new StringBuilder(value.length());
+        value.codePoints().forEach(codePoint -> {
+            switch (codePoint) {
+                case '\\' -> escaped.append("\\\\");
+                case '"' -> escaped.append("\\\"");
+                case '\b' -> escaped.append("\\b");
+                case '\f' -> escaped.append("\\f");
+                case '\n' -> escaped.append("\\n");
+                case '\r' -> escaped.append("\\r");
+                case '\t' -> escaped.append("\\t");
+                default -> {
+                    if (Character.isISOControl(codePoint)
+                            || codePoint == 0x85 || codePoint == 0x2028 || codePoint == 0x2029) {
+                        escaped.append(String.format(Locale.ROOT, "\\u%04X", codePoint));
+                    } else {
+                        escaped.appendCodePoint(codePoint);
+                    }
+                }
+            }
+        });
+        return escaped.toString();
     }
 
     private static String normalizeKnowledgeText(String value) {
@@ -1982,25 +2014,116 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                               Writer chunks,
                                                               LocalCrawlStatistics statistics) throws IOException {
         StreamingLocalChunker chunker = new StreamingLocalChunker(document, pipeline, chunks, statistics);
+        GeneratedCrawlBodyFilter bodyFilter = new GeneratedCrawlBodyFilter(chunker);
         long markdownChars = 0;
-        long wordCount = 0;
-        boolean inWord = false;
         try (BufferedReader markdown = Files.newBufferedReader(markdownPath, StandardCharsets.UTF_8)) {
             char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
             int read;
             while ((read = markdown.read(buffer)) >= 0) {
                 if (read == 0) continue;
                 markdownChars += read;
-                for (int i = 0; i < read; i++) {
-                    boolean wordCharacter = Character.isLetterOrDigit(buffer[i]);
-                    if (wordCharacter && !inWord) wordCount++;
-                    inWord = wordCharacter;
-                }
-                chunker.accept(buffer, read);
+                bodyFilter.accept(buffer, read);
             }
         }
-        chunker.finish();
-        return new LocalChunkingStats(markdownChars, wordCount);
+        bodyFilter.finish();
+        return new LocalChunkingStats(markdownChars,
+                analyzeLocalCrawlMarkdown(markdownPath, statistics));
+    }
+
+    /**
+     * Census the semantic document body exactly once. Chunk overlap is an indexing concern and
+     * must not inflate corpus term frequencies; generated crawl front matter is provenance and
+     * must not become domain evidence.
+     */
+    private static long analyzeLocalCrawlMarkdown(Path markdownPath,
+                                                  LocalCrawlStatistics statistics) throws IOException {
+        long wordCount = 0;
+        try (BufferedReader markdown = Files.newBufferedReader(markdownPath, StandardCharsets.UTF_8)) {
+            String first = markdown.readLine();
+            if (first == null) return 0;
+            String normalizedFirst = first.startsWith("\uFEFF") ? first.substring(1) : first;
+            if (!"---".equals(normalizedFirst.trim())) {
+                statistics.acceptText(first);
+                wordCount += countWords(first);
+            } else {
+                List<String> frontMatter = new ArrayList<>();
+                frontMatter.add(first);
+                boolean generated = false;
+                boolean terminated = false;
+                String line;
+                while ((line = markdown.readLine()) != null) {
+                    frontMatter.add(line);
+                    if ("---".equals(line.trim())) {
+                        terminated = true;
+                        break;
+                    }
+                    generated |= isGeneratedCrawlConverterLine(line);
+                }
+                if (!generated || !terminated) {
+                    for (String frontMatterLine : frontMatter) {
+                        statistics.acceptText(frontMatterLine);
+                        wordCount += countWords(frontMatterLine);
+                    }
+                }
+            }
+
+            String line;
+            while ((line = markdown.readLine()) != null) {
+                statistics.acceptText(line);
+                wordCount += countWords(line);
+            }
+        }
+        return wordCount;
+    }
+
+    private static boolean isGeneratedCrawlConverterLine(String line) {
+        int separator = line.indexOf(':');
+        if (separator <= 0 || !"converter".equalsIgnoreCase(line.substring(0, separator).trim())) {
+            return false;
+        }
+        String value = line.substring(separator + 1).trim()
+                .replace("\"", "")
+                .replace("'", "");
+        return "kompile-project-crawl".equalsIgnoreCase(value);
+    }
+
+    static long countWords(String text) {
+        long count = 0;
+        boolean inWord = false;
+        for (int offset = 0; offset < text.length();) {
+            int codePoint = text.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            if (Character.isLetterOrDigit(codePoint)) {
+                if (!inWord) count++;
+                inWord = true;
+            } else if (!isCombiningMark(codePoint)) {
+                inWord = false;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isCombiningMark(int codePoint) {
+        int type = Character.getType(codePoint);
+        return type == Character.NON_SPACING_MARK
+                || type == Character.COMBINING_SPACING_MARK
+                || type == Character.ENCLOSING_MARK;
+    }
+
+    static List<String> localKnowledgeTerms(String text) {
+        List<String> result = new ArrayList<>();
+        if (text == null || text.isBlank()) return result;
+        Matcher matcher = LOCAL_KNOWLEDGE_TERM_PATTERN.matcher(text);
+        while (matcher.find()) {
+            String token = Normalizer.normalize(matcher.group(), Normalizer.Form.NFC)
+                    .toLowerCase(Locale.ROOT);
+            if (token.codePointCount(0, token.length()) < 2
+                    || LOCAL_KNOWLEDGE_STOP_WORDS.contains(token)) {
+                continue;
+            }
+            result.add(token);
+        }
+        return result;
     }
 
     private static final class NormalizedTextWriter extends Writer {
@@ -2188,6 +2311,73 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
     }
 
+    /** Removes only Kompile-generated provenance front matter before semantic chunking. */
+    private static final class GeneratedCrawlBodyFilter {
+        private final StreamingLocalChunker chunker;
+        private final StringBuilder prefix = new StringBuilder();
+        private int lineStart;
+        private int lineNumber;
+        private boolean generated;
+        private boolean complete;
+
+        private GeneratedCrawlBodyFilter(StreamingLocalChunker chunker) {
+            this.chunker = chunker;
+        }
+
+        private void accept(char[] value, int length) throws IOException {
+            if (complete) {
+                chunker.accept(value, length);
+                return;
+            }
+            for (int i = 0; i < length; i++) {
+                prefix.append(value[i]);
+                if (prefix.length() > MAX_GENERATED_FRONT_MATTER_CHARS) {
+                    finishPrefix(false);
+                    if (i + 1 < length) chunker.accept(value, i + 1, length - i - 1);
+                    return;
+                }
+                if (value[i] != '\n') continue;
+
+                String line = prefix.substring(lineStart, prefix.length() - 1).trim();
+                if (lineNumber == 0) {
+                    String normalized = line.startsWith("\uFEFF") ? line.substring(1) : line;
+                    if (!"---".equals(normalized)) {
+                        finishPrefix(false);
+                        if (i + 1 < length) chunker.accept(value, i + 1, length - i - 1);
+                        return;
+                    }
+                } else {
+                    generated |= isGeneratedCrawlConverterLine(line);
+                    if ("---".equals(line)) {
+                        finishPrefix(generated);
+                        if (i + 1 < length) chunker.accept(value, i + 1, length - i - 1);
+                        return;
+                    }
+                }
+                lineStart = prefix.length();
+                lineNumber++;
+            }
+        }
+
+        private void finish() throws IOException {
+            if (!complete) finishPrefix(false);
+            chunker.finish();
+        }
+
+        private void finishPrefix(boolean strip) throws IOException {
+            if (complete) return;
+            if (strip) {
+                chunker.skipPrefix(prefix.length());
+            } else if (!prefix.isEmpty()) {
+                char[] buffered = new char[prefix.length()];
+                prefix.getChars(0, prefix.length(), buffered, 0);
+                chunker.accept(buffered, buffered.length);
+            }
+            prefix.setLength(0);
+            complete = true;
+        }
+    }
+
     private static final class StreamingLocalChunker {
         private final LocalCrawlDocument document;
         private final LocalCrawlCapabilities.ResolvedPipeline pipeline;
@@ -2214,8 +2404,20 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
 
         private void accept(char[] value, int length) throws IOException {
-            pending.append(value, 0, length);
+            accept(value, 0, length);
+        }
+
+        private void accept(char[] value, int offset, int length) throws IOException {
+            pending.append(value, offset, length);
             while (pending.length() >= targetSize) emit(chooseBoundary(), false);
+        }
+
+        private void skipPrefix(long length) {
+            if (index != 0 || !pending.isEmpty()) {
+                throw new IllegalStateException("Generated crawl front matter must be removed before chunk emission");
+            }
+            pendingStart = length;
+            lastEmittedEnd = length;
         }
 
         private void finish() throws IOException {
@@ -2269,7 +2471,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 output.write(",\"text\":");
                 output.write(jsonString(text));
                 output.write("}\n");
-                statistics.acceptChunk(text);
+                statistics.recordChunk();
                 lastEmittedEnd = Math.max(lastEmittedEnd, absoluteEnd);
                 index++;
             }
@@ -2285,11 +2487,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         private long analysisWordCount;
         private final Map<String, Integer> terms = new HashMap<>();
 
-        private void acceptChunk(String text) {
+        private void recordChunk() {
             chunkCount++;
-            for (String token : text.toLowerCase(Locale.ROOT).split("[^a-z0-9]+")) {
-                if (token.length() < 3 || LOCAL_KNOWLEDGE_STOP_WORDS.contains(token)) continue;
-                analysisWordCount++;
+        }
+
+        private void acceptText(String text) {
+            analysisWordCount += countWords(text);
+            for (String token : localKnowledgeTerms(text)) {
                 terms.merge(token, 1, Integer::sum);
             }
         }

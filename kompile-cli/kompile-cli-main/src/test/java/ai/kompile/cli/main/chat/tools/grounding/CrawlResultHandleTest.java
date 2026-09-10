@@ -71,6 +71,43 @@ class CrawlResultHandleTest {
         assertTrue(((List<?>) metadata.get("nextTools")).contains("graph_reasoning_query"));
     }
 
+    @Test
+    void localQueuedResultDoesNotInventKnowledgeBaseFromJobId() throws Exception {
+        CrawlResultHandle handle = CrawlResultHandle.from(mapper.readTree("""
+                {
+                  "jobId":"local-11111111-1111-4111-8111-111111111111",
+                  "status":"QUEUED"
+                }
+                """), "project-local", null, null);
+
+        Map<String, Object> result = handle.asMap();
+
+        assertFalse(result.containsKey("knowledgeBase"));
+        assertTrue(handle.nextActions().stream()
+                .anyMatch(action -> "monitor".equals(action.get("name"))));
+        assertTrue(handle.nextActions().stream()
+                .anyMatch(action -> "inspectResult".equals(action.get("name"))));
+        assertFalse(handle.nextActions().stream()
+                .anyMatch(action -> "inspectKnowledge".equals(action.get("name"))));
+    }
+
+    @Test
+    void nonCancellableQueuedResultOmitsInvalidCancelAction() throws Exception {
+        CrawlResultHandle handle = CrawlResultHandle.from(mapper.readTree("""
+                {
+                  "jobId":"local-22222222-2222-4222-8222-222222222222",
+                  "status":"RUNNING",
+                  "cancellable":false
+                }
+                """), "project-local", null, null);
+
+        assertEquals(false, handle.asMap().get("cancellable"));
+        assertTrue(handle.nextActions().stream()
+                .anyMatch(action -> "monitor".equals(action.get("name"))));
+        assertFalse(handle.nextActions().stream()
+                .anyMatch(action -> "cancel".equals(action.get("name"))));
+    }
+
     private static Map<String, Object> action(CrawlResultHandle handle, String name) {
         return handle.nextActions().stream()
                 .filter(action -> name.equals(action.get("name")))

@@ -74,7 +74,7 @@ public class VariableElimination {
      */
     public static Factor query(BayesianNetwork network, String queryVariable,
                                 Map<String, Integer> evidence) {
-        return queryWithTrace(network, queryVariable, evidence).getFactor();
+        return eliminate(network, queryVariable, evidence, false).getFactor();
     }
 
     /**
@@ -88,6 +88,19 @@ public class VariableElimination {
      */
     public static TracedResult queryWithTrace(BayesianNetwork network, String queryVariable,
                                                Map<String, Integer> evidence) {
+        return eliminate(network, queryVariable, evidence, true);
+    }
+
+    /**
+     * Run exact sum-product elimination, optionally retaining the diagnostic trace.
+     *
+     * <p>The non-traced query path deliberately does not execute the trace estimator.  A
+     * query-all call invokes this method once per variable, and estimating a partial trace for
+     * every one of those queries is both redundant and capable of materialising a large joint
+     * factor.  The posterior itself is still computed by the same exact elimination algorithm.</p>
+     */
+    private static TracedResult eliminate(BayesianNetwork network, String queryVariable,
+                                          Map<String, Integer> evidence, boolean collectTrace) {
         BayesianNode queryNode = network.getNode(queryVariable);
         if (queryNode == null) {
             throw new IllegalArgumentException("Unknown query variable: " + queryVariable);
@@ -113,14 +126,16 @@ public class VariableElimination {
             }
             factors = reduced;
 
-            BayesianNode evidenceNode = network.getNode(evidenceVar);
-            trace.add(InferenceStep.builder()
-                    .eliminatedVariable(evidenceVar)
-                    .eliminatedTitle(evidenceNode != null ? evidenceNode.getTitle() : evidenceVar)
-                    .factorsInvolved(factors.size())
-                    .operation("REDUCE")
-                    .posteriorValue(evidenceState == 1 ? 1.0 : 0.0)
-                    .build());
+            if (collectTrace) {
+                BayesianNode evidenceNode = network.getNode(evidenceVar);
+                trace.add(InferenceStep.builder()
+                        .eliminatedVariable(evidenceVar)
+                        .eliminatedTitle(evidenceNode != null ? evidenceNode.getTitle() : evidenceVar)
+                        .factorsInvolved(factors.size())
+                        .operation("REDUCE")
+                        .posteriorValue(evidenceState == 1 ? 1.0 : 0.0)
+                        .build());
+            }
         }
 
         // 3. Determine elimination order: all variables except query and evidence
@@ -175,28 +190,30 @@ public class VariableElimination {
             factors = irrelevant;
             factors.add(marginalized);
 
-            // Estimate current posterior for the query variable after this elimination
-            Double currentPosterior = estimateQueryPosterior(factors, queryVariable);
+            if (collectTrace) {
+                // Estimate the current posterior with a second exact elimination pass.  This
+                // avoids the old query-factor cross-product heuristic while keeping the trace
+                // numerically honest for sparse and disconnected networks.
+                Double currentPosterior = estimateQueryPosterior(factors, queryVariable);
+                Double priorPosterior = Double.isNaN(previousPosterior) ? null : previousPosterior;
+                double shift = priorPosterior != null && currentPosterior != null
+                        ? Math.abs(currentPosterior - priorPosterior) : 0.0;
 
-            double shift = 0.0;
-            if (!Double.isNaN(previousPosterior) && currentPosterior != null) {
-                shift = Math.abs(currentPosterior - previousPosterior);
+                BayesianNode eliminatedNode = network.getNode(eliminateVar);
+                trace.add(InferenceStep.builder()
+                        .eliminatedVariable(eliminateVar)
+                        .eliminatedTitle(eliminatedNode != null ? eliminatedNode.getTitle() : eliminateVar)
+                        .factorsInvolved(relevant.size())
+                        .factorVariables(new ArrayList<>(involvedVars))
+                        .operation("MARGINALIZE")
+                        .priorValue(priorPosterior)
+                        .posteriorValue(currentPosterior)
+                        .contributionWeight(shift)
+                        .build());
+                if (currentPosterior != null) {
+                    previousPosterior = currentPosterior;
+                }
             }
-            if (currentPosterior != null) {
-                previousPosterior = currentPosterior;
-            }
-
-            BayesianNode eliminatedNode = network.getNode(eliminateVar);
-            trace.add(InferenceStep.builder()
-                    .eliminatedVariable(eliminateVar)
-                    .eliminatedTitle(eliminatedNode != null ? eliminatedNode.getTitle() : eliminateVar)
-                    .factorsInvolved(relevant.size())
-                    .factorVariables(new ArrayList<>(involvedVars))
-                    .operation("MARGINALIZE")
-                    .priorValue(Double.isNaN(previousPosterior) ? null : previousPosterior)
-                    .posteriorValue(currentPosterior)
-                    .contributionWeight(shift)
-                    .build());
         }
 
         // 5. Multiply remaining factors and normalize
@@ -213,52 +230,132 @@ public class VariableElimination {
 
         Factor normalized = result.normalize();
 
-        // Add final normalization step
-        double finalPosterior = normalized.getValues().length > 1
-                ? normalized.getValue(1) : normalized.getValue(0);
-        trace.add(InferenceStep.builder()
-                .eliminatedVariable(queryVariable)
-                .eliminatedTitle(queryNode.getTitle())
-                .factorsInvolved(factors.size())
-                .operation("NORMALIZE")
-                .posteriorValue(finalPosterior)
-                .contributionWeight(0.0)
-                .build());
+        if (collectTrace) {
+            // Add final normalization step
+            double finalPosterior = normalized.getValues().length > 1
+                    ? normalized.getValue(1) : normalized.getValue(0);
+            trace.add(InferenceStep.builder()
+                    .eliminatedVariable(queryVariable)
+                    .eliminatedTitle(queryNode.getTitle())
+                    .factorsInvolved(factors.size())
+                    .operation("NORMALIZE")
+                    .posteriorValue(finalPosterior)
+                    .contributionWeight(0.0)
+                    .build());
+        }
 
         return new TracedResult(normalized, trace);
     }
 
     /**
-     * Estimate the current posterior P(queryVar=TRUE) from the active factors.
-     * Returns null if the query variable is not yet isolated.
+     * Estimate the current posterior P(queryVar=TRUE) from the active factors by exact
+     * elimination.  Factors in components disconnected from the query are omitted because their
+     * scalar contribution cancels during normalization.  Allocation and overflow failures from
+     * {@link Factor#product(Factor, Factor)} are intentionally propagated to the caller instead
+     * of being converted into a fabricated trace value.
      */
     private static Double estimateQueryPosterior(List<Factor> factors, String queryVar) {
-        try {
-            // Find factors mentioning the query variable
+        List<Factor> active = factorsConnectedToQuery(factors, queryVar);
+        if (active.isEmpty()) return null;
+
+        while (true) {
+            String eliminateVar = chooseEstimationVariable(active, queryVar);
+            if (eliminateVar == null) break;
+
             List<Factor> relevant = new ArrayList<>();
-            for (Factor f : factors) {
-                if (f.getVariables().contains(queryVar)) {
-                    relevant.add(f);
+            List<Factor> irrelevant = new ArrayList<>();
+            for (Factor factor : active) {
+                if (factor.getVariables().contains(eliminateVar)) {
+                    relevant.add(factor);
+                } else {
+                    irrelevant.add(factor);
                 }
             }
-            if (relevant.isEmpty()) return null;
 
-            Factor combined = relevant.get(0);
+            Factor product = relevant.get(0);
             for (int i = 1; i < relevant.size(); i++) {
-                combined = Factor.product(combined, relevant.get(i));
+                product = Factor.product(product, relevant.get(i));
             }
+            irrelevant.add(product.marginalize(eliminateVar));
+            active = irrelevant;
+        }
 
-            // Marginalize out everything except the query variable
-            for (String var : new ArrayList<>(combined.getVariables())) {
-                if (!var.equals(queryVar)) {
-                    combined = combined.marginalize(var);
+        Factor combined = active.get(0);
+        for (int i = 1; i < active.size(); i++) {
+            combined = Factor.product(combined, active.get(i));
+        }
+        for (String variable : new ArrayList<>(combined.getVariables())) {
+            if (!variable.equals(queryVar)) {
+                combined = combined.marginalize(variable);
+            }
+        }
+        Factor normalized = combined.normalize();
+        double[] values = normalized.getValues();
+        return values.length > 1 ? normalized.getValue(1) : normalized.getValue(0);
+    }
+
+    /** Keep only the factor component that can affect the requested query variable. */
+    private static List<Factor> factorsConnectedToQuery(List<Factor> factors, String queryVar) {
+        Set<String> connectedVariables = new LinkedHashSet<>();
+        connectedVariables.add(queryVar);
+        List<Factor> active = new ArrayList<>();
+        boolean changed;
+        do {
+            changed = false;
+            for (Factor factor : factors) {
+                if (active.contains(factor)) continue;
+                boolean touchesComponent = factor.getVariables().stream().anyMatch(connectedVariables::contains);
+                if (touchesComponent) {
+                    active.add(factor);
+                    changed |= connectedVariables.addAll(factor.getVariables());
                 }
             }
-            combined = combined.normalize();
-            return combined.getValues().length > 1 ? combined.getValue(1) : combined.getValue(0);
-        } catch (Exception e) {
-            return null;
+        } while (changed);
+        return active;
+    }
+
+    /** Select the next hidden variable using the smallest exact bucket scope first. */
+    private static String chooseEstimationVariable(List<Factor> factors, String queryVar) {
+        Set<String> candidates = new TreeSet<>();
+        for (Factor factor : factors) {
+            candidates.addAll(factor.getVariables());
         }
+        candidates.remove(queryVar);
+
+        String best = null;
+        long bestCells = Long.MAX_VALUE;
+        int bestFactorCount = Integer.MAX_VALUE;
+        for (String candidate : candidates) {
+            List<Factor> bucket = factors.stream()
+                    .filter(factor -> factor.getVariables().contains(candidate))
+                    .toList();
+            long cells = bucketScopeSize(bucket);
+            if (best == null || cells < bestCells
+                    || (cells == bestCells && bucket.size() < bestFactorCount)) {
+                best = candidate;
+                bestCells = cells;
+                bestFactorCount = bucket.size();
+            }
+        }
+        return best;
+    }
+
+    private static long bucketScopeSize(List<Factor> bucket) {
+        Map<String, Integer> cards = new LinkedHashMap<>();
+        for (Factor factor : bucket) {
+            int[] cardinalities = factor.getCardinalities();
+            List<String> variables = factor.getVariables();
+            for (int i = 0; i < variables.size(); i++) {
+                Integer previous = cards.putIfAbsent(variables.get(i), cardinalities[i]);
+                if (previous != null && previous != cardinalities[i]) return Long.MAX_VALUE;
+            }
+        }
+        long cells = 1L;
+        for (int cardinality : cards.values()) {
+            if (cardinality <= 0 || cells > Long.MAX_VALUE / cardinality) return Long.MAX_VALUE;
+            cells *= cardinality;
+        }
+        return cells;
     }
 
     /**
@@ -594,17 +691,14 @@ public class VariableElimination {
             resultCards.remove(eliminateIdx);
             int[] resultCardsArr = resultCards.stream().mapToInt(Integer::intValue).toArray();
 
-            int resultSize = 1;
-            for (int c : resultCardsArr) resultSize *= c;
-            if (resultSize == 0) resultSize = 1;
+            int resultSize = Factor.checkedSize(resultCardsArr, "MPE elimination result");
 
             double[] resultLogVals = new double[resultSize];
             Arrays.fill(resultLogVals, Double.NEGATIVE_INFINITY);
             Map<List<Integer>, Integer> bpTable = new HashMap<>();
 
             // Enumerate all assignments of unionVars
-            int unionSize = 1;
-            for (int c : unionCardsArr) unionSize *= c;
+            int unionSize = Factor.checkedSize(unionCardsArr, "MPE elimination bucket");
             int[] unionAssign = new int[unionVars.size()];
 
             for (int idx = 0; idx < unionSize; idx++) {
@@ -827,9 +921,7 @@ public class VariableElimination {
                                                List<int[]> cardLists) {
         List<String> merged = mergeVarLists(varLists);
         int[] mergedCards = mergeCardArrays(varLists, cardLists, merged);
-        int totalSize = 1;
-        for (int c : mergedCards) totalSize *= c;
-        if (totalSize == 0) totalSize = 1;
+        int totalSize = Factor.checkedSize(mergedCards, "MPE factor combination");
 
         double[] result = new double[totalSize];
         Arrays.fill(result, 0.0);

@@ -49,7 +49,7 @@ public class OAuthProviderSettings {
         return OAuthProviderSettings.builder()
                 .providerId(providerId)
                 .clientId(clientId)
-                .clientSecret(clientSecret != null && !clientSecret.isEmpty() ? "********" : null)
+                .clientSecret(clientSecret != null && !clientSecret.isBlank() ? "********" : null)
                 .tenantId(tenantId)
                 .scopes(scopes)
                 .configured(configured)
@@ -61,7 +61,7 @@ public class OAuthProviderSettings {
      * Check if this provider has valid credentials configured.
      */
     public boolean hasValidCredentials() {
-        return clientId != null && !clientId.isEmpty() &&
-               clientSecret != null && !clientSecret.isEmpty();
+        return clientId != null && !clientId.isBlank() &&
+               clientSecret != null && !clientSecret.isBlank();
     }
 }

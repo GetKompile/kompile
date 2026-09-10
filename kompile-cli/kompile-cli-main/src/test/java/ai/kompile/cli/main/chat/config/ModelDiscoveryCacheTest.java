@@ -15,10 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ModelDiscoveryCacheTest {
 
     @Test
-    void freshEntriesBecomeStaleThenExpire() {
+    void freshEntriesExpireWithoutAStaleFallbackTier() {
         MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         ModelDiscoveryCache cache = new ModelDiscoveryCache(
-                clock, Duration.ofMinutes(5), Duration.ofHours(1));
+                clock, Duration.ofMinutes(5));
         ModelDiscovery.Result result = ModelDiscovery.Result.success(
                 List.of(new LiveModelDiscovery.Model("provider/model", List.of())),
                 List.of("https://example.test/models"));
@@ -29,10 +29,6 @@ class ModelDiscoveryCacheTest {
 
         clock.advance(Duration.ofMinutes(10));
         assertFalse(cache.fresh("provider", "https://example.test/v1").isPresent());
-        assertTrue(cache.stale("provider", "https://example.test/v1").isPresent());
-
-        clock.advance(Duration.ofHours(2));
-        assertFalse(cache.stale("provider", "https://example.test/v1").isPresent());
     }
 
     @Test
@@ -55,6 +51,21 @@ class ModelDiscoveryCacheTest {
         cache.put("provider", "https://example.test", "account-a", result);
         assertTrue(cache.fresh("provider", "https://example.test", "account-a").isPresent());
         assertFalse(cache.fresh("provider", "https://example.test", "account-b").isPresent());
+    }
+
+    @Test
+    void removingOneIdentityDoesNotEvictAnother() {
+        ModelDiscoveryCache cache = new ModelDiscoveryCache();
+        ModelDiscovery.Result result = ModelDiscovery.Result.success(
+                List.of(new LiveModelDiscovery.Model("provider/model", List.of())),
+                List.of("https://example.test/models"));
+        cache.put("provider", "https://example.test", "account-a", result);
+        cache.put("provider", "https://example.test", "account-b", result);
+
+        cache.remove("provider", "https://example.test", "account-a");
+
+        assertFalse(cache.fresh("provider", "https://example.test", "account-a").isPresent());
+        assertTrue(cache.fresh("provider", "https://example.test", "account-b").isPresent());
     }
 
     @Test

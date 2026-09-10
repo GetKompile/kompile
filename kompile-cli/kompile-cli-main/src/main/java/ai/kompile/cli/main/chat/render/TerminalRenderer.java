@@ -157,14 +157,17 @@ public class TerminalRenderer {
             "body", "config_json", "content", "new_string", "old_string", "patch", "prompt");
 
     private final boolean ansiEnabled;
+    private final SyntaxHighlighter highlighter;
     private volatile TerminalTitleController titleController;
 
     public TerminalRenderer() {
         this.ansiEnabled = detectAnsiSupport();
+        this.highlighter = new SyntaxHighlighter(this);
     }
 
     public TerminalRenderer(boolean ansiEnabled) {
         this.ansiEnabled = ansiEnabled;
+        this.highlighter = new SyntaxHighlighter(this);
     }
 
     // ========================================================================
@@ -296,21 +299,73 @@ public class TerminalRenderer {
         StringBuilder detail = new StringBuilder();
         List<String> changeLines = renderEditDiffLines(toolName, rawInput);
         if (!changeLines.isEmpty()) {
-            appendBoundedDetailLines(detail, "diff", changeLines, true);
+            appendBoundedDetailLines(detail, "diff", changeLines, true, null);
         } else if ("write".equals(cleanName)) {
             List<String> contentLines = renderWriteContentLines(rawInput);
             if (!contentLines.isEmpty()) {
-                appendBoundedDetailLines(detail, "content", contentLines, false);
+                appendBoundedDetailLines(detail, "content", contentLines, false,
+                        languageFromRawInput(rawInput));
             }
         }
 
         String output = result.getOutput();
         if (output != null && !output.isBlank()) {
+            // Content tools echo file/source payloads — highlight them with the
+            // language from the tool input's file path when it names a file;
+            // otherwise (grep/glob/list results carry their paths inline, one
+            // per output line) fall back to per-line filename inference.
             String label = !changeLines.isEmpty() ? "result" : isContentTool(cleanName) ? "content" : "output";
+            String languageHint = isContentTool(cleanName) ? languageFromRawInput(rawInput) : null;
+            boolean hintUsable = languageHint != null
+                    && SyntaxHighlighter.familyForFilename(languageHint)
+                            != SyntaxHighlighter.Family.NONE;
             appendBoundedDetailLines(detail, label,
-                    List.of(output.stripTrailing().split("\\R", -1)), false);
+                    List.of(output.stripTrailing().split("\\R", -1)), false,
+                    hintUsable ? languageHint : null,
+                    !hintUsable && isContentTool(cleanName),
+                    "read_batch".equals(cleanName));
         }
         return detail.toString();
+    }
+
+    /**
+     * Best-effort language hint from a tool-call input JSON body:
+     * looks for file_path / path / filename / file keys and maps the value
+     * through {@link SyntaxHighlighter#familyForFilename}. Returns null when
+     * nothing recognizable is present (no styling).
+     */
+    private static String languageFromRawInput(String rawInput) {
+        if (rawInput == null || rawInput.isBlank()) return null;
+        try {
+            JsonNode input = JSON.readTree(rawInput.trim());
+            for (String key : new String[]{"file_path", "path", "filename", "file"}) {
+                String value = textValue(input, key);
+                if (!value.isBlank()) {
+                    return value;
+                }
+            }
+        } catch (Exception ignored) {
+            // non-JSON input (e.g. shell command) — no language hint
+        }
+        return null;
+    }
+
+    /**
+     * Extract the file path from a read_batch section header such as
+     * {@code == src/App.java (lines 1-20 of 80)}. A new unrecognized or error
+     * section deliberately returns null so its body cannot inherit the prior
+     * file's highlighting.
+     */
+    private static String languageFromBatchSectionHeader(String header) {
+        if (header == null) return null;
+        String line = header.strip();
+        if (!line.startsWith("== ")) return null;
+        if (line.contains(" — ERROR:")) return null;
+        int suffix = line.lastIndexOf(" (");
+        if (suffix <= 3) return null;
+        String candidate = line.substring(3, suffix).strip();
+        return SyntaxHighlighter.familyForFilename(candidate) == SyntaxHighlighter.Family.NONE
+                ? null : candidate;
     }
 
     /**
@@ -357,16 +412,40 @@ public class TerminalRenderer {
 
     private void appendBoundedDetailLines(StringBuilder detail, String label,
                                           List<String> lines, boolean diff) {
+        appendBoundedDetailLines(detail, label, lines, diff, null, false, false);
+    }
+
+    private void appendBoundedDetailLines(StringBuilder detail, String label,
+                                          List<String> lines, boolean diff,
+                                          String languageHint) {
+        appendBoundedDetailLines(detail, label, lines, diff, languageHint, false, false);
+    }
+
+    private void appendBoundedDetailLines(StringBuilder detail, String label,
+                                          List<String> lines, boolean diff,
+                                          String languageHint, boolean perLineHints,
+                                          boolean batchSectionHints) {
         if (lines == null || lines.isEmpty()) return;
         detail.append("  ").append(dim("↳ " + label + ":"));
         int shownChars = 0;
         int shownLines = 0;
         boolean truncated = false;
+        boolean stylable = ansiEnabled && !diff;
+        boolean inferPerLine = stylable && perLineHints && languageHint == null;
+        boolean inferBatchSections = inferPerLine && batchSectionHints;
+        String sectionLanguageHint = null;
+        boolean insideBatchSection = false;
         for (String line : lines) {
             if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS
                     || shownLines >= MAX_INLINE_TOOL_DETAIL_LINES) {
                 truncated = true;
                 break;
+            }
+            String plainLine = AsciiRenderer.stripAnsi(line == null ? "" : line).strip();
+            boolean batchSectionHeader = inferBatchSections && plainLine.startsWith("== ");
+            if (batchSectionHeader) {
+                insideBatchSection = true;
+                sectionLanguageHint = languageFromBatchSectionHeader(plainLine);
             }
             int remaining = MAX_INLINE_TOOL_DETAIL_CHARS - shownChars;
             String visible = line == null ? "" : line;
@@ -374,10 +453,25 @@ public class TerminalRenderer {
                 visible = visible.substring(0, remaining);
                 truncated = true;
             }
+            // Truncate on the RAW text, then apply syntax styling afterwards so
+            // escape sequences can never be sliced mid-span and the character
+            // budget keeps counting visible characters.
+            if (stylable) {
+                // read_batch bodies inherit their enclosing file header; other
+                // path-bearing outputs infer a recognized family per line.
+                String hint = languageHint;
+                if (inferPerLine && !batchSectionHeader) {
+                    hint = inferBatchSections && insideBatchSection
+                            ? sectionLanguageHint
+                            : SyntaxHighlighter.filenameFromToolResultLine(line);
+                }
+                if (hint != null) {
+                    visible = highlighter.highlight(visible, hint);
+                }
+            }
             detail.append("\n     ").append(diff ? colorDiffLine(visible) : visible);
-            shownChars += visible.length();
+            shownChars += line == null ? 0 : line.length();
             shownLines++;
-            if (truncated) break;
         }
         if (truncated) {
             detail.append("\n     ").append(dim("… (tool detail truncated at "
@@ -387,7 +481,7 @@ public class TerminalRenderer {
     }
 
     private static boolean isContentTool(String toolName) {
-        return Set.of("read", "read_batch", "grep", "glob", "list", "bash", "webfetch",
+        return Set.of("read", "read_batch", "grep", "grep_batch", "glob", "list", "bash", "webfetch",
                 "websearch", "code_search", "code_graph", "rag_search", "graph_search",
                 "memory", "semantic_memory", "process", "exec").contains(toolName);
     }
@@ -401,6 +495,34 @@ public class TerminalRenderer {
         String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         return "  " + icon + " " + bold(yellow(displayName)) + " " + yellow("⊘ denied") +
                 (reason != null ? " " + dim(reason) : "");
+    }
+
+    /**
+     * Render the reminder block injected into an outbound prompt as a loud inline
+     * section, so the user can see exactly what the agent received.
+     *
+     * @param reminderContent body of the {@code <kompile_reminders>} block
+     *                        ({@link ai.kompile.cli.main.chat.ReminderManager#reminderBlockContent});
+     *                        returns an empty string when absent
+     */
+    public String renderReminderSection(String reminderContent) {
+        if (reminderContent == null || reminderContent.isBlank()) {
+            return "";
+        }
+        StringBuilder section = new StringBuilder();
+        section.append('\n')
+                .append("  ").append(bold(yellow("⚑ REMINDERS APPLIED TO THIS PROMPT")))
+                .append('\n');
+        for (String line : reminderContent.split("\\R", -1)) {
+            String trimmed = line.strip();
+            // The block's own narration duplicates the header above it.
+            if (!trimmed.isEmpty() && !trimmed.startsWith("The user configured these reminders")) {
+                section.append("  ").append(yellow("│ ")).append(trimmed).append('\n');
+            }
+        }
+        section.append("  ").append(yellow("└─"))
+                .append(' ').append(dim("reminders attach per the configured interval — /reminder list"));
+        return section.toString();
     }
 
     // ========================================================================
@@ -790,7 +912,8 @@ public class TerminalRenderer {
      * Render compaction notice.
      */
     public String renderCompactionNotice(int tokensBefore, int tokensAfter) {
-        return "\n" + dim("  ─── context compacted: " + tokensBefore + " → " + tokensAfter + " tokens ───") + "\n";
+        return "\n" + dim("  ─── context compacted · portable history estimate: ~" + tokensBefore
+                + " → ~" + tokensAfter + " tokens; provider context not measured ───") + "\n";
     }
 
     // ========================================================================
@@ -1103,6 +1226,12 @@ public class TerminalRenderer {
     public void updateActivity(String activity) {
         TerminalTitleController controller = titleController;
         if (controller != null) controller.updateLabel(activity);
+    }
+
+    /** Reflect background process activity in the tab title while the REPL is idle. */
+    public void updateProcessActivity(int processCount) {
+        TerminalTitleController controller = titleController;
+        if (controller != null) controller.updateProcessActivity(processCount);
     }
 
     /** Update the tab title from a typed foreground phase. */

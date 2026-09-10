@@ -29,14 +29,16 @@ import java.util.function.Consumer;
  * each line as soon as it's complete — preserving the streaming feel while
  * producing formatted output.
  * <p>
- * Code blocks are buffered entirely and rendered as a bordered box with line
- * numbers when the closing fence arrives.
+ * Fenced code is rendered through a streaming gutter so a long block remains
+ * visible while the model is still generating it. Holding the complete block
+ * until its closing fence can make a healthy token stream look stalled.
  */
 public class StreamingMarkdownRenderer {
 
     private final AsciiRenderer ascii;
     private final TerminalRenderer term;
     private final Consumer<String> linePrinter;
+    private final SyntaxHighlighter syntaxHighlighter;
 
     // Line buffer — accumulates tokens until a newline arrives
     private final StringBuilder lineBuffer = new StringBuilder();
@@ -44,7 +46,7 @@ public class StreamingMarkdownRenderer {
     // Code block state
     private boolean inCodeBlock = false;
     private String codeBlockLang = null;
-    private final StringBuilder codeBuffer = new StringBuilder();
+    private int codeLineNumber = 1;
 
     // Patterns (same as AsciiRenderer)
     private static final Pattern HEADING_PATTERN = Pattern.compile("^(#{1,6})\\s+(.+)$");
@@ -71,6 +73,7 @@ public class StreamingMarkdownRenderer {
         this.ascii = ascii;
         this.term = ascii.getTerminalRenderer();
         this.linePrinter = linePrinter != null ? linePrinter : line -> System.out.println(line);
+        this.syntaxHighlighter = new SyntaxHighlighter(term);
     }
 
     /**
@@ -102,36 +105,28 @@ public class StreamingMarkdownRenderer {
             lineBuffer.setLength(0);
 
             if (inCodeBlock) {
-                // Unclosed code block — render what we have
-                if (codeBuffer.length() > 0) codeBuffer.append("\n");
-                codeBuffer.append(line);
-                printLine(ascii.renderCodeBlock(
-                        codeBuffer.toString().stripTrailing(), codeBlockLang));
-                codeBuffer.setLength(0);
-                inCodeBlock = false;
-                codeBlockLang = null;
+                if (!line.startsWith("```")) {
+                    printCodeLine(line);
+                }
+                closeCodeBlock();
             } else {
                 // Partial line — render with inline formatting
                 printLine(renderInline(line));
             }
-        } else if (inCodeBlock && codeBuffer.length() > 0) {
-            // Unclosed code block at end of stream
-            printLine(ascii.renderCodeBlock(
-                    codeBuffer.toString().stripTrailing(), codeBlockLang));
-            codeBuffer.setLength(0);
-            inCodeBlock = false;
-            codeBlockLang = null;
+        } else if (inCodeBlock) {
+            closeCodeBlock();
         }
     }
 
     /**
-     * Reset state for a new response.
+     * Discard buffered state without emitting it. Normal stream completion
+     * should call {@link #flush()} so an open code gutter is closed.
      */
     public void reset() {
         lineBuffer.setLength(0);
-        codeBuffer.setLength(0);
         inCodeBlock = false;
         codeBlockLang = null;
+        codeLineNumber = 1;
     }
 
     // ── Line processing ──────────────────────────────────────────────────
@@ -140,24 +135,24 @@ public class StreamingMarkdownRenderer {
         // Code block fence
         if (line.startsWith("```")) {
             if (inCodeBlock) {
-                // End code block — render the entire block
-                printLine(ascii.renderCodeBlock(
-                        codeBuffer.toString().stripTrailing(), codeBlockLang));
-                codeBuffer.setLength(0);
-                inCodeBlock = false;
-                codeBlockLang = null;
+                closeCodeBlock();
             } else {
                 inCodeBlock = true;
                 codeBlockLang = line.length() > 3 ? line.substring(3).trim() : null;
                 if (codeBlockLang != null && codeBlockLang.isEmpty()) codeBlockLang = null;
+                codeLineNumber = 1;
+                printLine(codeBlockLang == null
+                        ? term.dim("╭─")
+                        : term.dim("╭─") + " " + term.dim(term.cyan(codeBlockLang)));
             }
             return;
         }
 
-        // Inside code block — buffer without formatting
+        // Emit complete code lines immediately. The direct provider parser runs
+        // this callback on its stream-reading thread, so buffering until the
+        // closing fence otherwise hides seconds of already-received output.
         if (inCodeBlock) {
-            if (codeBuffer.length() > 0) codeBuffer.append("\n");
-            codeBuffer.append(line);
+            printCodeLine(line);
             return;
         }
 
@@ -221,6 +216,20 @@ public class StreamingMarkdownRenderer {
 
     private void printLine(String line) {
         linePrinter.accept(line == null ? "" : line);
+    }
+
+    private void printCodeLine(String line) {
+        String number = Integer.toString(codeLineNumber++);
+        number = " ".repeat(Math.max(0, 4 - number.length())) + number;
+        String highlighted = syntaxHighlighter.highlight(line, codeBlockLang);
+        printLine(term.dim("│ " + number + " │") + " " + highlighted);
+    }
+
+    private void closeCodeBlock() {
+        printLine(term.dim("╰─"));
+        inCodeBlock = false;
+        codeBlockLang = null;
+        codeLineNumber = 1;
     }
 
     // ── Inline formatting ────────────────────────────────────────────────

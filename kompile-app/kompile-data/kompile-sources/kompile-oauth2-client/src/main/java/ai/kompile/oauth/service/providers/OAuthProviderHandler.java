@@ -61,6 +61,14 @@ public interface OAuthProviderHandler {
     List<String> getRequiredScopes();
 
     /**
+     * Purpose-specific scope profile. Providers that support multiple products can
+     * add a fixed, server-owned scope set without accepting arbitrary client scopes.
+     */
+    default List<String> getRequiredScopes(String purpose) {
+        return getRequiredScopes();
+    }
+
+    /**
      * Get the list of source providers that use this OAuth connection.
      */
     List<String> getRelatedSources();
@@ -85,6 +93,11 @@ public interface OAuthProviderHandler {
      * @return full authorization URL
      */
     String buildAuthorizationUrl(String redirectUri, String state);
+
+    /** Build an authorization URL for a fixed server-defined purpose. */
+    default String buildAuthorizationUrl(String redirectUri, String state, String purpose) {
+        return buildAuthorizationUrl(redirectUri, state);
+    }
 
     /**
      * Exchange an authorization code for tokens.

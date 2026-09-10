@@ -19,6 +19,8 @@ import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -30,9 +32,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -50,7 +59,8 @@ import java.util.stream.Collectors;
  * Document ID format:
  * <ul>
  *   <li>Graph metadata: {@code graph:{graphId}:meta}</li>
- *   <li>Node: {@code graph:{graphId}:node:{nodeId}}</li>
+ *   <li>Node metadata: {@code graph:{graphId}:node-meta:{nodeId}}</li>
+ *   <li>Node vector: {@code graph:{graphId}:node:{nodeId}}</li>
  *   <li>Adjacency matrix: {@code graph:{graphId}:adj:{edgeType}}</li>
  * </ul>
  * </p>
@@ -63,6 +73,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     private VectorStore vectorStore;
     @Autowired
     private ObjectMapper objectMapper;
+    @Autowired(required = false)
+    private GraphGenerationJournal generationJournal;
 
     public VectorStoreMatrixGraphStore() {}
 
@@ -76,17 +88,26 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      * In-memory cache of loaded graphs.
      */
     private final Map<String, AdjacencyMatrixGraph> graphCache = new ConcurrentHashMap<>();
+    private final Map<String, GenerationPointer> generationPointers = new ConcurrentHashMap<>();
+    private final Set<String> generationGraphs = ConcurrentHashMap.newKeySet();
+
+    private record GenerationPointer(String active, String previous, long revision) { }
 
     /**
      * Prefix for graph-related documents in the vector store.
      */
     private static final String GRAPH_PREFIX = "graph:";
+    private static final String POINTER_PREFIX = GRAPH_PREFIX + "pointer:";
     private static final String META_SUFFIX = ":meta";
     private static final String NODE_PREFIX = ":node:";
+    private static final String NODE_METADATA_PREFIX = ":node-meta:";
     private static final String EDGE_PREFIX = ":edge:";
     /** Legacy read-only aggregate formats. Fresh writes use individual node and edge documents. */
     private static final String ADJ_PREFIX = ":adj:";
     private static final String EMBD_SUFFIX = ":embd";
+    private static final int MIN_CANONICAL_DOCUMENT_STORAGE_VERSION = 2;
+    private static final int CANONICAL_DOCUMENT_STORAGE_VERSION = 3;
+    private static final int STORAGE_VERSION_IN_PROGRESS = -1;
 
     /**
      * Number of vector-store documents to fetch per page when scanning the index.
@@ -101,6 +122,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      */
     @Value("${kompile.graph.vector-scan-page-size:2000}")
     private int vectorScanPageSize = 2000;
+    @Value("${kompile.graph.max-incident-edges:100000}")
+    private int maxIncidentEdges = 100_000;
 
     /**
      * Whether to eagerly rehydrate all persisted graphs into the in-memory cache on startup.
@@ -184,7 +207,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public AdjacencyMatrixGraph createGraph(String graphId, Long factSheetId) {
+    public synchronized AdjacencyMatrixGraph createGraph(String graphId, Long factSheetId) {
+        graphId = resolveGraphId(graphId);
         // Get-or-create: with stable per-fact-sheet graph ids (graphIdForFactSheet) a second
         // createGraph for the same id must NOT wipe the existing graph — that would lose nodes/edges
         // already persisted for that fact sheet. Return the existing graph (back-filling factSheetId
@@ -214,28 +238,25 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
     @Override
     public Optional<AdjacencyMatrixGraph> loadGraph(String graphId) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         // Check cache first
         AdjacencyMatrixGraph cached = graphCache.get(graphId);
         if (cached != null) {
             return Optional.of(cached);
         }
 
-        // Load from vector store
-        try {
-            return loadGraphFromVectorStore(graphId);
-        } catch (Exception e) {
-            log.error("Failed to load graph {}", graphId, e);
-            return Optional.empty();
-        }
+        return loadGraphFromVectorStore(graphId);
     }
 
     @Override
-    public void saveGraph(AdjacencyMatrixGraph graph) throws IOException {
+    public synchronized void saveGraph(AdjacencyMatrixGraph graph) throws IOException {
         String graphId = graph.getGraphId();
         log.info("Saving graph {} with {} nodes", graphId, graph.getNodeCount());
 
-        // Save metadata
-        saveGraphMetadata(graph);
+        // Demote first. If a crash occurs mid-save, readers take the strict recovery/backfill path
+        // instead of trusting an older v3 commit marker over a hybrid edge set.
+        saveGraphMetadata(graph, STORAGE_VERSION_IN_PROGRESS);
 
         // Save nodes with embeddings
         saveNodes(graph);
@@ -244,27 +265,79 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         // remain derived in-memory state and are never a persistence format.
         saveEdges(graph);
 
+        // Metadata is the commit marker. Publish the current storage version only after every
+        // canonical node/edge document has been written and stale edges removed.
+        saveGraphMetadata(graph);
+
         // Update cache
         graphCache.put(graphId, graph);
 
         // Commit to vector store
-        vectorStore.flushAndCommit();
+        if (!vectorStore.flushAndCommit()) {
+            throw new IOException("Vector store commit failed for graph " + graphId);
+        }
     }
 
     @Override
-    public boolean deleteGraph(String graphId) {
-        try {
-            // Remove from cache
-            AdjacencyMatrixGraph graph = graphCache.remove(graphId);
-            if (graph != null) {
-                graph.close();
+    public synchronized boolean deleteGraph(String graphId) {
+        String logicalId = graphId;
+        if (logicalId.contains("~gen~")) {
+            String owner = logicalId.substring(0, logicalId.indexOf("~gen~"));
+            if (generationJournal != null) {
+                Optional<GraphGeneration.Pointer> authoritative = generationJournal.pointer(owner);
+                if (authoritative.isPresent()
+                        && (logicalId.equals(authoritative.get().activePhysicalGraphId())
+                        || logicalId.equals(authoritative.get().previousPhysicalGraphId()))) {
+                    return false;
+                }
             }
+            refreshGenerationPointersStrict();
+            if (generationPointers.values().stream().anyMatch(pointer -> logicalId.equals(pointer.active())
+                    || logicalId.equals(pointer.previous()))) {
+                return false;
+            }
+        }
+        GenerationPointer pointer = pointer(logicalId, true);
+        if (pointer != null || !logicalId.contains("~gen~")) {
+            try {
+                awaitPendingNodeWrites("delete graph family", logicalId, "*");
+                String familyPrefix = GRAPH_PREFIX + logicalId;
+                List<String> idsToDelete = collectMatchingIdsStrict(familyPrefix);
+                idsToDelete.removeIf(id -> !(id.startsWith(familyPrefix + ":")
+                        || id.startsWith(familyPrefix + "~gen~")));
+                if (pointer != null) idsToDelete.add(pointerDocId(logicalId));
 
+                Set<String> cachedIds = new LinkedHashSet<>();
+                cachedIds.add(logicalId);
+                if (pointer != null) {
+                    cachedIds.add(pointer.active());
+                    if (pointer.previous() != null) cachedIds.add(pointer.previous());
+                }
+                graphCache.keySet().stream()
+                        .filter(id -> id.startsWith(logicalId + "~gen~"))
+                        .forEach(cachedIds::add);
+                boolean deleted = vectorStore.delete(new ArrayList<>(new LinkedHashSet<>(idsToDelete)));
+                if (!deleted || !vectorStore.flushAndCommit()) return false;
+                for (String id : cachedIds) {
+                    AdjacencyMatrixGraph graph = graphCache.remove(id);
+                    if (graph != null) graph.close();
+                }
+                generationPointers.remove(logicalId);
+                generationGraphs.removeIf(id -> id.startsWith(logicalId + "~gen~"));
+                return deleted;
+            } catch (Exception e) {
+                log.error("Failed to delete graph family {}", logicalId, e);
+                return false;
+            }
+        }
+        graphId = resolveGraphId(graphId);
+        try {
             // Stream-scan the index page-by-page and collect only the IDs belonging
             // to this graph.  We never accumulate docs from other graphs in heap —
             // each page is discarded after filtering.
-            String targetPrefix = GRAPH_PREFIX + graphId;
-            List<String> idsToDelete = collectMatchingIds(targetPrefix);
+            awaitPendingNodeWrites("delete graph", graphId, "*");
+            String targetPrefix = GRAPH_PREFIX + graphId + ":";
+            List<String> idsToDelete = collectMatchingIdsStrict(targetPrefix);
 
             // Always add the meta doc so the graph header is removed even if the
             // scanner missed it (e.g. offset race on a concurrent write).
@@ -274,9 +347,11 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             }
 
             if (!idsToDelete.isEmpty()) {
-                vectorStore.delete(idsToDelete);
-                vectorStore.flushAndCommit();
+                if (!vectorStore.delete(idsToDelete) || !vectorStore.flushAndCommit()) return false;
             }
+
+            AdjacencyMatrixGraph graph = graphCache.remove(graphId);
+            if (graph != null) graph.close();
 
             return true;
         } catch (Exception e) {
@@ -289,7 +364,12 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     public Set<String> getLoadedGraphIds() {
         // In-memory cache keys — complete after rehydrateGraphsOnStartup() and updated by
         // getOrCreateGraph/createGraph. O(1) snapshot; avoids the full-index scan of listGraphs().
-        return new LinkedHashSet<>(graphCache.keySet());
+        Set<String> visible = new LinkedHashSet<>();
+        graphCache.keySet().stream()
+                .filter(id -> !generationGraphs.contains(id) && !id.contains("~gen~"))
+                .forEach(visible::add);
+        visible.addAll(generationPointers.keySet());
+        return visible;
     }
 
     @Override
@@ -304,9 +384,26 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 page = vectorStore.listVectorDocuments(offset, vectorScanPageSize);
                 for (Map<String, Object> rawDoc : page) {
                     String docId = (String) rawDoc.get("id");
-                    if (docId == null || !docId.startsWith(GRAPH_PREFIX) || !docId.endsWith(META_SUFFIX)) {
+                    if (docId == null || !docId.startsWith(GRAPH_PREFIX)) {
                         continue;
                     }
+                    if (docId.startsWith(POINTER_PREFIX)) {
+                        Map<String, Object> pointerDoc = flattenDoc(rawDoc);
+                        String logical = docId.substring(POINTER_PREFIX.length());
+                        String active = pointerDoc.get("activePhysicalGraphId") instanceof String value
+                                ? value : null;
+                        if (active != null && !active.isBlank()) {
+                            String previous = pointerDoc.get("previousPhysicalGraphId") instanceof String value
+                                    ? value : null;
+                            long revision = pointerDoc.get("revision") instanceof Number value
+                                    ? value.longValue() : 0L;
+                            generationPointers.put(logical, new GenerationPointer(active, previous, revision));
+                            if (active.contains("~gen~")) generationGraphs.add(active);
+                            if (previous != null && previous.contains("~gen~")) generationGraphs.add(previous);
+                        }
+                        continue;
+                    }
+                    if (!docId.endsWith(META_SUFFIX)) continue;
                     // Confirm the document is actually a graph_metadata record (the type field
                     // may be nested under "metadata" in the Anserini VectorStore response).
                     Map<String, Object> doc = flattenDoc(rawDoc);
@@ -322,6 +419,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         } catch (Exception e) {
             log.error("Failed to list graphs", e);
         }
+        graphIds.removeIf(id -> generationGraphs.contains(id) || id.contains("~gen~"));
+        generationPointers.keySet().forEach(id -> { if (!graphIds.contains(id)) graphIds.add(id); });
         return graphIds;
     }
 
@@ -336,140 +435,651 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    public boolean supportsGraphGenerations() { return true; }
+
+    @Override
+    public synchronized GraphGeneration.Ref beginGeneration(
+            long factSheetId, String logicalGraphId, String generationId) {
+        GenerationPointer pointer = pointer(logicalGraphId, true);
+        String active = pointer == null ? logicalGraphId : pointer.active();
+        long revision = pointer == null ? 0L : pointer.revision();
+        String physical = logicalGraphId + "~gen~" + generationId;
+        if (loadGraph(physical).isPresent()) throw new IllegalStateException("Generation already exists: " + physical);
+        generationGraphs.add(physical);
+        createGraph(physical, factSheetId);
+        return new GraphGeneration.Ref(factSheetId, logicalGraphId, physical, generationId, active, revision);
+    }
+
+    @Override
+    public synchronized GraphGeneration.Validation validateGeneration(GraphGeneration.Ref generation) {
+        Optional<AdjacencyMatrixGraph> candidate = loadGraph(generation.physicalGraphId());
+        if (candidate.isEmpty()) {
+            return new GraphGeneration.Validation(false, 0, 0, List.of("Generation does not exist"));
+        }
+        generationGraphs.add(generation.physicalGraphId());
+        AdjacencyMatrixGraph graph = candidate.get();
+        List<String> errors = new ArrayList<>();
+        if (!Objects.equals(graph.getFactSheetId(), generation.factSheetId())) {
+            errors.add("Generation fact sheet does not match its graph");
+        }
+        int edgeCount = 0;
+        int cursor = 0;
+        ScanPage<StoredEdge> page;
+        do {
+            page = scanEdges(generation.physicalGraphId(), cursor, 2_000);
+            edgeCount += page.items().size();
+            for (StoredEdge edge : page.items()) {
+                if (graph.getNode(edge.sourceNodeId()).isEmpty()
+                        || graph.getNode(edge.targetNodeId()).isEmpty()) {
+                    errors.add("Dangling edge " + edge.sourceNodeId() + "->" + edge.targetNodeId());
+                }
+            }
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        return new GraphGeneration.Validation(errors.isEmpty(), graph.getNodeCount(), edgeCount, errors);
+    }
+
+    @Override
+    public synchronized GraphGeneration.Activation activateGeneration(GraphGeneration.Ref generation) {
+        GraphGeneration.Validation validation = validateGeneration(generation);
+        if (!validation.valid()) throw new IllegalStateException("Generation validation failed: " + validation.errors());
+        GenerationPointer current = pointer(generation.logicalGraphId(), true);
+        String active = current == null ? generation.logicalGraphId() : current.active();
+        long revision = current == null ? 0L : current.revision();
+        if (!Objects.equals(active, generation.expectedActivePhysicalGraphId())
+                || revision != generation.expectedRevision()) {
+            throw new IllegalStateException("Graph generation activation conflict");
+        }
+        try {
+            saveGraph(graphCache.get(generation.physicalGraphId()));
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not persist graph generation before activation", e);
+        }
+        GenerationPointer next = new GenerationPointer(generation.physicalGraphId(), active, revision + 1);
+        writePointer(generation.logicalGraphId(), next);
+        generationPointers.put(generation.logicalGraphId(), next);
+        return new GraphGeneration.Activation(generation.logicalGraphId(), next.active(), next.previous(),
+                next.revision(), Instant.now());
+    }
+
+    @Override
+    public synchronized void abortGeneration(GraphGeneration.Ref generation) {
+        if (generationJournal != null) {
+            Optional<GraphGeneration.Pointer> authoritative =
+                    generationJournal.pointer(generation.logicalGraphId());
+            if (authoritative.isPresent()
+                    && (generation.physicalGraphId().equals(
+                    authoritative.get().activePhysicalGraphId())
+                    || generation.physicalGraphId().equals(
+                    authoritative.get().previousPhysicalGraphId()))) {
+                throw new IllegalStateException(
+                        "Cannot abort an authoritative active or rollback-target generation");
+            }
+        }
+        GenerationPointer pointer = pointer(generation.logicalGraphId(), true);
+        if (pointer != null && (generation.physicalGraphId().equals(pointer.active())
+                || generation.physicalGraphId().equals(pointer.previous()))) {
+            throw new IllegalStateException("Cannot abort an active or rollback-target generation");
+        }
+        deletePhysicalGraph(generation.physicalGraphId());
+    }
+
+    @Override
+    public synchronized GraphGeneration.Activation rollbackGeneration(
+            long factSheetId, String logicalGraphId, long expectedRevision) {
+        GenerationPointer current = pointer(logicalGraphId, true);
+        if (current == null || current.previous() == null || current.revision() != expectedRevision) {
+            throw new IllegalStateException("Graph generation rollback conflict");
+        }
+        requireCompleteStorageState(current.previous(), graphStorageMetadata(current.previous()));
+        AdjacencyMatrixGraph target = graphCache.get(current.previous());
+        if (target == null) target = loadGraphFromVectorStore(current.previous()).orElse(null);
+        if (target == null || !Objects.equals(target.getFactSheetId(), factSheetId)) {
+            throw new IllegalStateException("Graph generation rollback target is unavailable");
+        }
+        GenerationPointer next = new GenerationPointer(current.previous(), current.active(), current.revision() + 1);
+        writePointer(logicalGraphId, next);
+        generationPointers.put(logicalGraphId, next);
+        return new GraphGeneration.Activation(logicalGraphId, next.active(), next.previous(),
+                next.revision(), Instant.now());
+    }
+
+    @Override
+    public Optional<GraphGeneration.Pointer> currentGenerationPointer(
+            long factSheetId, String logicalGraphId) {
+        if (generationJournal != null) {
+            Optional<GraphGeneration.Pointer> authoritative = generationJournal.pointer(logicalGraphId);
+            if (authoritative.isPresent()) return authoritative;
+        }
+        GenerationPointer pointer = pointer(logicalGraphId, true);
+        return Optional.of(pointer == null
+                ? new GraphGeneration.Pointer(factSheetId, logicalGraphId, logicalGraphId, null, 0L)
+                : new GraphGeneration.Pointer(factSheetId, logicalGraphId,
+                        pointer.active(), pointer.previous(), pointer.revision()));
+    }
+
+    @Override
+    public boolean physicalGraphExists(String physicalGraphId, long factSheetId) {
+        requireCompleteStorageState(physicalGraphId, graphStorageMetadata(physicalGraphId));
+        AdjacencyMatrixGraph graph = graphCache.get(physicalGraphId);
+        if (graph == null) graph = loadGraphFromVectorStore(physicalGraphId).orElse(null);
+        return graph != null && Objects.equals(graph.getFactSheetId(), factSheetId);
+    }
+
+    @Override
+    public synchronized void flushGeneration(GraphGeneration.Ref generation) {
+        AdjacencyMatrixGraph candidate = graphCache.get(generation.physicalGraphId());
+        if (candidate == null) {
+            candidate = loadGraphFromVectorStore(generation.physicalGraphId()).orElseThrow(
+                    () -> new IllegalStateException("Graph generation is unavailable before flush"));
+        }
+        int expectedNodes = candidate.getNodeCount();
+        int expectedEdges = countPersistableEdges(candidate);
+        try {
+            saveGraph(candidate);
+            vectorStore.awaitPendingEmbeddings();
+            if (!vectorStore.flushAndCommit()) {
+                throw new IllegalStateException("Vector store rejected graph generation commit");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not durably flush graph generation", e);
+        }
+
+        graphCache.remove(generation.physicalGraphId());
+        AdjacencyMatrixGraph persisted = loadGraphFromVectorStore(generation.physicalGraphId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Graph generation was not reloadable after durable flush"));
+        if (persisted.getNodeCount() != expectedNodes) {
+            throw new IllegalStateException("Graph generation reload count mismatch: expected "
+                    + expectedNodes + " nodes but found " + persisted.getNodeCount());
+        }
+        GraphGeneration.Validation persistedValidation = validateGeneration(generation);
+        if (!persistedValidation.valid()) {
+            throw new IllegalStateException(
+                    "Persisted graph generation validation failed: " + persistedValidation.errors());
+        }
+        if (persistedValidation.edgeCount() != expectedEdges) {
+            throw new IllegalStateException("Graph generation reload count mismatch: expected "
+                    + expectedEdges + " edges but found " + persistedValidation.edgeCount());
+        }
+    }
+
+    @Override
+    public synchronized void repairGenerationPointer(GraphGeneration.Pointer pointer) {
+        GenerationPointer mirror = new GenerationPointer(
+                pointer.activePhysicalGraphId(), pointer.previousPhysicalGraphId(), pointer.revision());
+        writePointer(pointer.logicalGraphId(), mirror);
+        generationPointers.put(pointer.logicalGraphId(), mirror);
+        if (mirror.active().contains("~gen~")) generationGraphs.add(mirror.active());
+        if (mirror.previous() != null && mirror.previous().contains("~gen~")) {
+            generationGraphs.add(mirror.previous());
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public int addNode(String graphId, MatrixGraphNode node) {
+    public synchronized int addNode(String graphId, MatrixGraphNode node) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
+        Optional<MatrixGraphNode> previous = graph.getNode(node.getNodeId());
+        if (previous.isPresent()) {
+            node.setMatrixIndex(previous.get().getMatrixIndex());
+            try {
+                saveNode(graphId, node, false);
+                graph.addNode(node);
+                return node.getMatrixIndex();
+            } catch (Exception failure) {
+                try {
+                    persistNodeMetadata(graphId, previous.get());
+                } catch (RuntimeException compensation) {
+                    failure.addSuppressed(compensation);
+                }
+                throw new IllegalStateException(
+                        "Failed to persist existing node " + node.getNodeId()
+                                + " in graph " + graphId, failure);
+            }
+        }
         int index = graph.addNode(node);
 
         // Persist node
         try {
-            saveNode(graphId, node);
+            saveNode(graphId, node, false);
         } catch (Exception e) {
-            log.error("Failed to persist node {} in graph {}", node.getNodeId(), graphId, e);
+            if (!vectorStore.delete(List.of(
+                    GRAPH_PREFIX + graphId + NODE_METADATA_PREFIX + node.getNodeId()))) {
+                e.addSuppressed(new IllegalStateException(
+                        "Could not compensate failed node metadata write"));
+            }
+            graph.removeNode(node.getNodeId());
+            throw new IllegalStateException(
+                    "Failed to persist node " + node.getNodeId() + " in graph " + graphId, e);
         }
 
         return index;
     }
 
     @Override
-    public void updateNode(String graphId, MatrixGraphNode node) {
+    public synchronized void updateNode(String graphId, MatrixGraphNode node) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
-        if (graph != null) {
-            graph.addNode(node); // addNode handles updates
-        }
-
+        Optional<MatrixGraphNode> previous = graph == null
+                ? Optional.empty() : graph.getNode(node.getNodeId());
         try {
-            saveNode(graphId, node);
+            saveNode(graphId, node, true);
+            if (graph != null) graph.addNode(node);
         } catch (Exception e) {
-            log.error("Failed to update node {} in graph {}", node.getNodeId(), graphId, e);
+            if (previous.isPresent()) {
+                try { persistNodeMetadata(graphId, previous.get()); }
+                catch (RuntimeException compensation) { e.addSuppressed(compensation); }
+            }
+            throw new IllegalStateException(
+                    "Failed to update node " + node.getNodeId() + " in graph " + graphId, e);
         }
     }
 
     @Override
-    public void updateNodeMetadata(String graphId, MatrixGraphNode node) {
+    public synchronized void updateNodeMetadata(String graphId, MatrixGraphNode node) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
-        INDArray existing = null;
-        if (graph != null) {
-            // Capture the existing vector (a copy — getRow returns a view) BEFORE re-adding,
-            // then update the node struct/metadata in place.
-            INDArray current = graph.getNodeEmbedding(node.getNodeId());
-            if (current != null && !current.isEmpty()) {
-                existing = current.dup();
-            }
-            graph.addNode(node);
-        }
-
+        Optional<MatrixGraphNode> previous = graph == null
+                ? Optional.empty() : graph.getNode(node.getNodeId());
         try {
-            Document doc = createNodeDocument(graphId, node);
-            if (existing != null) {
-                // Metadata-only update: the embedding text is unchanged, so reuse the existing
-                // vector instead of paying for a full re-embed (the slow 1-text-at-a-time path).
-                INDArray row = existing.rank() == 1
-                        ? existing.reshape(1, existing.length())
-                        : existing;
-                vectorStore.addWithEmbeddings(List.of(doc), row);
-            } else {
-                // No cached sentence embedding available in the adjacency matrix (common for nodes
-                // whose embeddings are in Lucene but were not loaded into the in-memory matrix via
-                // storeNodeEmbeddings). SKIP the vectorStore.add call here to prevent enqueueing
-                // a sentence re-embed in the async pool — which is the root cause of the post-KGE
-                // OOM (5 903 concurrent re-embeds after training). The in-memory adjacency matrix
-                // has already been updated (graph.addNode above). The metadata change will be
-                // durably persisted to Lucene on the next flush()/saveGraph() call, which the
-                // caller (MatrixKgEmbeddingGraphAdapter.storeEmbeddings) triggers via
-                // knowledgeGraphService.flushPendingNodes() after the batch write.
-                if (graph != null) {
-                    log.debug("updateNodeMetadata: no cached embedding for node {} in graph {} — "
-                            + "in-memory updated, Lucene will be persisted on next flush",
-                            node.getNodeId(), graphId);
-                } else {
-                    // Graph not in cache at all — fall back to re-embed so the node reaches Lucene.
-                    log.debug("updateNodeMetadata: graph {} not in cache for node {} — "
-                            + "falling back to full re-embed", graphId, node.getNodeId());
-                    vectorStore.add(List.of(doc));
+            // Metadata has a dedicated document ID and can therefore be updated without replacing
+            // the vector-bearing node document. This works in the embedding-disabled subprocess
+            // and preserves any existing KNN vector exactly.
+            persistNodeMetadata(graphId, node);
+            if (graph != null) graph.addNode(node);
+        } catch (Exception e) {
+            if (previous.isPresent()) {
+                try { persistNodeMetadata(graphId, previous.get()); }
+                catch (RuntimeException compensation) { e.addSuppressed(compensation); }
+            }
+            throw new IllegalStateException(
+                    "Failed metadata-only update for node " + node.getNodeId()
+                            + " in graph " + graphId, e);
+        }
+    }
+
+    @Override
+    public synchronized boolean removeNode(String graphId, String nodeId) {
+        graphId = resolveGraphId(graphId);
+        AdjacencyMatrixGraph graph = graphCache.get(graphId);
+        List<String> incidentEdgeIds = new ArrayList<>();
+        try {
+            int cursor = 0;
+            ScanPage<StoredEdge> page;
+            do {
+                page = scanEdges(graphId, cursor, 2_000);
+                for (StoredEdge edge : page.items()) {
+                    if (nodeId.equals(edge.sourceNodeId()) || nodeId.equals(edge.targetNodeId())) {
+                        incidentEdgeIds.add(edgeDocumentId(graphId, edge.edgeType(),
+                                edge.sourceNodeId(), edge.targetNodeId()));
+                    }
                 }
-            }
-        } catch (Exception e) {
-            log.error("Failed metadata-only update for node {} in graph {}", node.getNodeId(), graphId, e);
+                cursor = page.nextCursor();
+            } while (page.hasMore());
+        } catch (RuntimeException e) {
+            log.error("Failed to discover incident edges before removing node {} in graph {}", nodeId, graphId, e);
+            return false;
         }
-    }
-
-    @Override
-    public boolean removeNode(String graphId, String nodeId) {
-        AdjacencyMatrixGraph graph = graphCache.get(graphId);
-        if (graph != null) {
-            graph.removeNode(nodeId);
-        }
-
-        String docId = GRAPH_PREFIX + graphId + NODE_PREFIX + nodeId;
-        return vectorStore.delete(List.of(docId));
+        String vectorDocId = GRAPH_PREFIX + graphId + NODE_PREFIX + nodeId;
+        String metadataDocId = GRAPH_PREFIX + graphId + NODE_METADATA_PREFIX + nodeId;
+        // add() is asynchronous. Drain all accepted writes while node operations are serialized so
+        // an older embedding task cannot recreate the vector document after this deletion.
+        boolean barrierSucceeded = awaitPendingNodeWrites("remove", graphId, nodeId);
+        incidentEdgeIds.add(vectorDocId);
+        incidentEdgeIds.add(metadataDocId);
+        boolean deleted = vectorStore.delete(incidentEdgeIds);
+        if (deleted && graph != null) graph.removeNode(nodeId);
+        return barrierSucceeded && deleted;
     }
 
     @Override
     public Optional<MatrixGraphNode> getNode(String graphId, String nodeId) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
             return graph.getNode(nodeId);
         }
 
-        // Load from vector store
-        return loadGraph(graphId).flatMap(g -> g.getNode(nodeId));
+        Map<String, Object> stored = vectorStore.getVectorDocument(
+                GRAPH_PREFIX + graphId + NODE_METADATA_PREFIX + nodeId);
+        if (stored == null) {
+            // Legacy graphs stored metadata only on the vector-bearing node document.
+            stored = vectorStore.getVectorDocument(GRAPH_PREFIX + graphId + NODE_PREFIX + nodeId);
+        }
+        if (stored == null) return Optional.empty();
+        MatrixGraphNode decoded = deserializeNodeFromMetadata(flattenDoc(stored));
+        return decoded != null && nodeId.equals(decoded.getNodeId())
+                ? Optional.of(decoded) : Optional.empty();
     }
 
     @Override
     public List<MatrixGraphNode> getAllNodes(String graphId) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
             return graph.getAllNodes();
         }
 
-        return loadGraph(graphId)
-                .map(AdjacencyMatrixGraph::getAllNodes)
-                .orElse(Collections.emptyList());
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        List<MatrixGraphNode> nodes = new ArrayList<>();
+        int cursor = 0;
+        ScanPage<MatrixGraphNode> page;
+        do {
+            page = scanNodes(graphId, cursor, Math.max(1, vectorScanPageSize));
+            nodes.addAll(page.items());
+            if (page.hasMore() && page.nextCursor() <= cursor) {
+                throw new IllegalStateException("Node scan cursor did not advance for graph " + graphId);
+            }
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        if (storage.version() >= MIN_CANONICAL_DOCUMENT_STORAGE_VERSION
+                && storage.nodeCount() <= nodes.size()) {
+            return nodes;
+        }
+        // Read-only compatibility for legacy or partially migrated graphs. Rehydration already
+        // merges canonical metadata and legacy node documents by node id.
+        return loadGraph(graphId).map(AdjacencyMatrixGraph::getAllNodes).orElse(Collections.emptyList());
     }
 
     @Override
     public ScanPage<MatrixGraphNode> scanNodes(String graphId, int cursor, int pageSize) {
-        return scanGraphDocuments(graphId, cursor, pageSize, "graph_node",
-                doc -> deserializeNodeFromMetadata(doc));
+        graphId = resolveGraphId(graphId);
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        requireCompleteStorageState(graphId, storage);
+        if (storage.version() < MIN_CANONICAL_DOCUMENT_STORAGE_VERSION) {
+            Optional<AdjacencyMatrixGraph> legacy = loadGraph(graphId);
+            if (legacy.isPresent()) return scanLegacyNodes(legacy.get(), cursor, pageSize);
+        }
+        return scanGraphDocuments(graphId, cursor, pageSize,
+                NODE_METADATA_PREFIX, "graph_node", this::deserializeNodeFromMetadata);
     }
 
     @Override
     public ScanPage<StoredEdge> scanEdges(String graphId, int cursor, int pageSize) {
-        return scanGraphDocuments(graphId, cursor, pageSize, "graph_edge", this::deserializeStoredEdge);
+        graphId = resolveGraphId(graphId);
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        requireCompleteStorageState(graphId, storage);
+        if (storage.version() < MIN_CANONICAL_DOCUMENT_STORAGE_VERSION) {
+            Optional<AdjacencyMatrixGraph> legacy = loadGraph(graphId);
+            if (legacy.isPresent()) return scanLegacyEdges(legacy.get(), cursor, pageSize);
+        }
+        return scanGraphDocuments(graphId, cursor, pageSize,
+                EDGE_PREFIX, "graph_edge", this::deserializeStoredEdge);
+    }
+
+    @Override
+    public synchronized IncidentEdges scanIncidentEdges(
+            String graphId, String nodeId, EdgeDirection direction, int maxEdges) {
+        graphId = resolveGraphId(graphId);
+        EdgeDirection effective = direction == null ? EdgeDirection.BOTH : direction;
+        int limit = Math.min(Math.max(0, maxEdges), Math.max(1, maxIncidentEdges));
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        requireCompleteStorageState(graphId, storage);
+        if (storage.version() < MIN_CANONICAL_DOCUMENT_STORAGE_VERSION
+                || !ensureEndpointMetadataIndex(graphId)) {
+            return MatrixGraphStore.super.scanIncidentEdges(graphId, nodeId, effective, limit);
+        }
+
+        LinkedHashMap<String, StoredEdge> matches = new LinkedHashMap<>();
+        int fetchLimit = limit == Integer.MAX_VALUE ? Integer.MAX_VALUE : limit + 1;
+        if (effective != EdgeDirection.INCOMING) {
+            collectIndexedEdges(graphId, "sourceNodeId", nodeId, false, fetchLimit, matches);
+        }
+        if (effective != EdgeDirection.OUTGOING) {
+            collectIndexedEdges(graphId, "targetNodeId", nodeId, false, fetchLimit, matches);
+        }
+        if (effective == EdgeDirection.OUTGOING) {
+            collectIndexedEdges(graphId, "targetNodeId", nodeId, true, fetchLimit, matches);
+        } else if (effective == EdgeDirection.INCOMING) {
+            collectIndexedEdges(graphId, "sourceNodeId", nodeId, true, fetchLimit, matches);
+        }
+        boolean truncated = matches.size() > limit;
+        List<StoredEdge> result = matches.values().stream().limit(limit).toList();
+        return new IncidentEdges(result, truncated);
+    }
+
+    private void collectIndexedEdges(
+            String graphId,
+            String endpointField,
+            String nodeId,
+            boolean bidirectionalOnly,
+            int limit,
+            Map<String, StoredEdge> target) {
+        if (target.size() >= limit) return;
+        Map<String, String> filters = new LinkedHashMap<>();
+        filters.put("type", "graph_edge");
+        filters.put("graphId", graphId);
+        filters.put(endpointField, nodeId);
+        if (bidirectionalOnly) filters.put("bidirectional", "true");
+        for (Map<String, Object> raw : vectorStore.listVectorDocumentsByMetadata(filters, limit)) {
+            StoredEdge edge = deserializeStoredEdge(flattenDoc(raw));
+            if (edge == null) continue;
+            String key = edge.edgeType() + '\u0000' + edge.sourceNodeId() + '\u0000' + edge.targetNodeId();
+            target.putIfAbsent(key, edge);
+            if (target.size() >= limit) return;
+        }
+    }
+
+    private boolean ensureEndpointMetadataIndex(String graphId) {
+        if (graphStorageMetadata(graphId).version() >= CANONICAL_DOCUMENT_STORAGE_VERSION) return true;
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        requireCompleteStorageState(graphId, storage);
+        if (storage.version() != MIN_CANONICAL_DOCUMENT_STORAGE_VERSION) {
+            throw new IllegalStateException("Graph " + graphId
+                    + " is not eligible for endpoint-index promotion from storage version "
+                    + storage.version());
+        }
+        Path spool = null;
+        try {
+                spool = Files.createTempFile("kompile-graph-endpoint-index-", ".bin");
+                long[] spooledEdges = {0};
+                try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(spool))) {
+                    String edgePrefix = GRAPH_PREFIX + graphId + EDGE_PREFIX;
+                    scanVectorDocumentsStrict(page -> {
+                        for (Map<String, Object> raw : page) {
+                            String id = raw.get("id") instanceof String value ? value : null;
+                            if (id == null || !id.startsWith(edgePrefix)) continue;
+                            StoredEdge edge = deserializeStoredEdge(flattenDoc(raw));
+                            if (edge == null) continue;
+                            writeSpoolEdge(out, edge);
+                            spooledEdges[0]++;
+                        }
+                    });
+                }
+                if (spooledEdges[0] != storage.edgeCount()) {
+                    throw new IOException("Endpoint metadata index edge count does not match graph metadata: "
+                            + spooledEdges[0] + " != " + storage.edgeCount());
+                }
+                try (DataInputStream in = new DataInputStream(Files.newInputStream(spool))) {
+                    List<Document> documents = new ArrayList<>(Math.max(1, vectorScanPageSize));
+                    while (true) {
+                        StoredEdge edge = readSpoolEdge(in);
+                        if (edge == null) break;
+                        documents.add(createEdgeDocument(
+                                graphId, edge.sourceNodeId(), edge.targetNodeId(), edge.weight(),
+                                edge.edgeType(), edge.bidirectional(), edge.relationType(),
+                                edge.confidence(), edge.description(), edge.metadata()));
+                        if (documents.size() >= Math.max(1, vectorScanPageSize)) {
+                            persistEndpointIndexBatch(documents);
+                            documents.clear();
+                        }
+                    }
+                    persistEndpointIndexBatch(documents);
+                }
+                markEndpointMetadataIndexed(graphId, spooledEdges[0]);
+                if (!vectorStore.flushAndCommit()) {
+                    throw new IOException("Endpoint metadata index commit failed for " + graphId);
+                }
+                return true;
+            } catch (Exception failure) {
+                throw new IllegalStateException(
+                        "Could not build endpoint metadata index for graph " + graphId, failure);
+        } finally {
+                if (spool != null) {
+                    try {
+                        Files.deleteIfExists(spool);
+                    } catch (IOException cleanupFailure) {
+                        log.debug("Could not delete endpoint-index spool {}: {}",
+                                spool, cleanupFailure.getMessage());
+                    }
+                }
+        }
+    }
+
+    private void persistEndpointIndexBatch(List<Document> documents) throws IOException {
+        if (!documents.isEmpty()
+                && vectorStore.addStoredOnlyDocuments(documents) != documents.size()) {
+            throw new IOException("Endpoint metadata index rewrite was incomplete");
+        }
+    }
+
+    private void writeSpoolEdge(DataOutputStream out, StoredEdge edge) throws IOException {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("sourceNodeId", edge.sourceNodeId());
+        value.put("targetNodeId", edge.targetNodeId());
+        value.put("edgeType", edge.edgeType());
+        value.put("weight", edge.weight());
+        value.put("bidirectional", edge.bidirectional());
+        value.put("relationType", edge.relationType());
+        value.put("confidence", edge.confidence());
+        value.put("description", edge.description());
+        value.put("metadata", edge.metadata());
+        byte[] bytes = objectMapper.writeValueAsBytes(value);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
+
+    @SuppressWarnings("unchecked")
+    private StoredEdge readSpoolEdge(DataInputStream in) throws IOException {
+        int first = in.read();
+        if (first < 0) return null;
+        int second = in.read();
+        int third = in.read();
+        int fourth = in.read();
+        if ((second | third | fourth) < 0) {
+            throw new EOFException("Truncated endpoint-index spool row length");
+        }
+        int length = first << 24 | second << 16 | third << 8 | fourth;
+        if (length < 1 || length > 16 * 1024 * 1024) {
+            throw new IOException("Invalid endpoint-index spool row length: " + length);
+        }
+        byte[] bytes = in.readNBytes(length);
+        if (bytes.length != length) throw new EOFException("Truncated endpoint-index spool row");
+        Map<String, Object> value = objectMapper.readValue(bytes, Map.class);
+        return new StoredEdge(
+                String.valueOf(value.get("sourceNodeId")),
+                String.valueOf(value.get("targetNodeId")),
+                String.valueOf(value.get("edgeType")),
+                ((Number) value.get("weight")).doubleValue(),
+                Boolean.TRUE.equals(value.get("bidirectional")),
+                value.get("relationType") instanceof String relationType ? relationType : null,
+                value.get("confidence") instanceof Number confidence ? confidence.doubleValue() : null,
+                value.get("description") instanceof String description ? description : null,
+                value.get("metadata") instanceof Map<?, ?> metadata
+                        ? (Map<String, Object>) metadata : Map.of());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void markEndpointMetadataIndexed(String graphId, long edgeCount) throws IOException {
+        String id = GRAPH_PREFIX + graphId + META_SUFFIX;
+        Map<String, Object> raw = vectorStore.getVectorDocument(id);
+        if (raw == null) throw new IOException("Graph metadata is missing for " + graphId);
+        Object nested = raw.get("metadata");
+        Map<String, Object> metadata = nested instanceof Map<?, ?> map
+                ? new HashMap<>((Map<String, Object>) map)
+                : new HashMap<>(flattenDoc(raw));
+        metadata.keySet().removeAll(Set.of("id", "content", "preview", "lucene_internal_id", "metadata"));
+        metadata.put("storageVersion", CANONICAL_DOCUMENT_STORAGE_VERSION);
+        metadata.put("edgeCount", edgeCount);
+        if (vectorStore.addStoredOnlyDocuments(List.of(
+                new Document(id, objectMapper.writeValueAsString(metadata), metadata))) != 1) {
+            throw new IOException("Could not publish endpoint metadata index version for " + graphId);
+        }
+    }
+
+    private static void requireCompleteStorageState(
+            String graphId, GraphStorageMetadata storage) {
+        if (storage.version() == STORAGE_VERSION_IN_PROGRESS) {
+            throw new IllegalStateException("Graph " + graphId
+                    + " has an interrupted storage transaction and must be rebuilt or rolled back");
+        }
+    }
+
+    private ScanPage<MatrixGraphNode> scanLegacyNodes(
+            AdjacencyMatrixGraph graph, int cursor, int pageSize) {
+        if (cursor < 0 || pageSize <= 0) {
+            throw new IllegalArgumentException("cursor must be >= 0 and pageSize must be > 0");
+        }
+        List<MatrixGraphNode> nodes = new ArrayList<>(graph.getAllNodes());
+        nodes.sort(Comparator.comparing(MatrixGraphNode::getNodeId));
+        int from = Math.min(cursor, nodes.size());
+        int to = Math.min(nodes.size(), from + pageSize);
+        return new ScanPage<>(new ArrayList<>(nodes.subList(from, to)), to, to < nodes.size());
+    }
+
+    private ScanPage<StoredEdge> scanLegacyEdges(
+            AdjacencyMatrixGraph graph, int cursor, int pageSize) {
+        if (cursor < 0 || pageSize <= 0) {
+            throw new IllegalArgumentException("cursor must be >= 0 and pageSize must be > 0");
+        }
+        List<StoredEdge> page = new ArrayList<>(pageSize);
+        int seen = 0;
+        boolean hasMore = false;
+        List<String> edgeTypes = new ArrayList<>(graph.getEdgeTypes());
+        edgeTypes.sort(String::compareTo);
+        outer:
+        for (String edgeType : edgeTypes) {
+            AdjacencyMatrixGraph.SparseEdgeData sparse = graph.getSparseEdges(edgeType);
+            for (int i = 0; i < sparse.size(); i++) {
+                if (seen < cursor) {
+                    seen++;
+                    continue;
+                }
+                if (page.size() == pageSize) {
+                    hasMore = true;
+                    break outer;
+                }
+                int[] indices = sparse.indices.get(i);
+                String source = graph.getIndexToNodeId().get(indices[0]);
+                String target = graph.getIndexToNodeId().get(indices[1]);
+                AdjacencyMatrixGraph.EdgeMeta meta = sparse.edgeMetas.isEmpty()
+                        ? null : sparse.edgeMetas.get(i);
+                String relationType = sparse.relationTypes.isEmpty()
+                        ? null : sparse.relationTypes.get(i);
+                seen++;
+                if (source == null || target == null) continue;
+                AdjacencyMatrixGraph.EdgeMeta reverseMeta = graph.getEdgeMeta(
+                        edgeType, target, source);
+                if (meta == null && reverseMeta != null
+                        && Boolean.TRUE.equals(reverseMeta.bidirectional())) {
+                    continue;
+                }
+                page.add(new StoredEdge(source, target, edgeType, sparse.weights.get(i),
+                        meta != null && Boolean.TRUE.equals(meta.bidirectional()), relationType,
+                        meta != null ? meta.confidence() : null,
+                        meta != null ? meta.description() : null,
+                        meta != null ? meta.metadata() : Map.of()));
+            }
+        }
+        return new ScanPage<>(page, seen, hasMore);
     }
 
     private <T> ScanPage<T> scanGraphDocuments(String graphId, int cursor, int pageSize,
+                                                String documentMarker,
                                                 String expectedType,
                                                 java.util.function.Function<Map<String, Object>, T> decoder) {
         if (cursor < 0 || pageSize <= 0) {
             throw new IllegalArgumentException("cursor must be >= 0 and pageSize must be > 0");
         }
-        String graphPrefix = GRAPH_PREFIX + graphId + ":";
+        String graphPrefix = GRAPH_PREFIX + graphId + documentMarker;
         List<T> items = new ArrayList<>(pageSize);
         int scanCursor = cursor;
         boolean moreDocuments = true;
@@ -498,7 +1108,22 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 if (decoded != null) {
                     items.add(decoded);
                     if (items.size() == pageSize) {
-                        return new ScanPage<>(items, scanCursor, true);
+                        boolean hasMore = docs.size() == fetchSize;
+                        if (!hasMore) {
+                            for (int j = i + 1; j < docs.size(); j++) {
+                                Map<String, Object> remaining = docs.get(j);
+                                String remainingId = remaining.get("id") instanceof String value
+                                        ? value : null;
+                                if (remainingId == null || !remainingId.startsWith(graphPrefix)) continue;
+                                Map<String, Object> remainingFlat = flattenDoc(remaining);
+                                if (expectedType.equals(remainingFlat.get("type"))
+                                        && decoder.apply(remainingFlat) != null) {
+                                    hasMore = true;
+                                    break;
+                                }
+                            }
+                        }
+                        return new ScanPage<>(items, scanCursor, hasMore);
                     }
                 }
             }
@@ -526,13 +1151,17 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
     @Override
     public List<MatrixGraphNode> searchNodes(String graphId, String query, int limit) {
+        String resolvedGraphId = resolveGraphId(graphId);
         // Use vector store similarity search
         List<Document> results = vectorStore.similaritySearch(query, limit);
 
-        String nodePrefix = GRAPH_PREFIX + graphId + NODE_PREFIX;
+        String nodePrefix = GRAPH_PREFIX + resolvedGraphId + NODE_PREFIX;
         return results.stream()
                 .filter(doc -> doc.getId() != null && doc.getId().startsWith(nodePrefix))
-                .map(doc -> deserializeNode(doc))
+                .map(doc -> {
+                    String nodeId = doc.getId().substring(nodePrefix.length());
+                    return getNode(resolvedGraphId, nodeId).orElseGet(() -> deserializeNode(doc));
+                })
                 .filter(Objects::nonNull)
                 .limit(limit)
                 .collect(Collectors.toList());
@@ -543,14 +1172,14 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+    public synchronized boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                           double weight, String edgeType, boolean bidirectional) {
         return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
                 bidirectional, null, null, null);
     }
 
     @Override
-    public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+    public synchronized boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                           double weight, String edgeType, boolean bidirectional, String relationType) {
         return addEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
                 bidirectional, relationType, null, null);
@@ -558,61 +1187,182 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
     /** [M-7] Full-metadata override — persists confidence and description alongside weight/relationType. */
     @Override
-    public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
+    public synchronized boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                            double weight, String edgeType, boolean bidirectional,
                            String relationType, Double confidence, String description) {
+        graphId = resolveGraphId(graphId);
+        String type = edgeType != null ? edgeType : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        boolean added = graph.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional,
+        boolean added = graph.addEdge(sourceNodeId, targetNodeId, weight, type, bidirectional,
                 relationType, confidence, description);
         if (added) {
-            persistEdge(graphId, sourceNodeId, targetNodeId, weight, edgeType,
-                    bidirectional, relationType, confidence, description, null);
+            try {
+                persistEdge(graphId, sourceNodeId, targetNodeId, weight, type,
+                        bidirectional, relationType, confidence, description, null);
+            } catch (RuntimeException failure) {
+                graph.removeEdge(sourceNodeId, targetNodeId, type);
+                if (bidirectional) graph.removeEdge(targetNodeId, sourceNodeId, type);
+                throw failure;
+            }
         }
         return added;
     }
 
     @Override
-    public boolean mergeEdgeMetadata(String graphId,
+    public synchronized boolean mergeEdgeMetadata(String graphId,
                                      String sourceNodeId,
                                      String targetNodeId,
                                      String edgeType,
                                      Map<String, Object> additionalMetadata) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        return graph.mergeEdgeMetadata(edgeType, sourceNodeId, targetNodeId, additionalMetadata);
+        String type = edgeType != null ? edgeType : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
+        StoredEdge stored = storedEdge(graphId, type, sourceNodeId, targetNodeId);
+        if (stored == null) return false;
+        Map<String, Object> metadata = new LinkedHashMap<>(stored.metadata());
+        if (additionalMetadata != null) metadata.putAll(additionalMetadata);
+        persistEdge(graphId, stored.sourceNodeId(), stored.targetNodeId(), stored.weight(),
+                stored.edgeType(), stored.bidirectional(), stored.relationType(), stored.confidence(),
+                stored.description(), metadata);
+        return graph.mergeEdgeMetadata(
+                type, stored.sourceNodeId(), stored.targetNodeId(), additionalMetadata);
+    }
+
+    private StoredEdge storedEdge(
+            String graphId, String type, String sourceNodeId, String targetNodeId) {
+        Map<String, Object> raw = vectorStore.getVectorDocument(
+                edgeDocumentId(graphId, type, sourceNodeId, targetNodeId));
+        StoredEdge edge = raw == null ? null : deserializeStoredEdge(flattenDoc(raw));
+        if (edge != null && sourceNodeId.equals(edge.sourceNodeId())
+                && targetNodeId.equals(edge.targetNodeId()) && type.equals(edge.edgeType())) {
+            return edge;
+        }
+        raw = vectorStore.getVectorDocument(edgeDocumentId(graphId, type, targetNodeId, sourceNodeId));
+        edge = raw == null ? null : deserializeStoredEdge(flattenDoc(raw));
+        return edge != null && edge.bidirectional()
+                && targetNodeId.equals(edge.sourceNodeId())
+                && sourceNodeId.equals(edge.targetNodeId()) && type.equals(edge.edgeType())
+                ? edge : null;
     }
 
     @Override
-    public boolean removeEdge(String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
+    public synchronized boolean removeEdge(
+            String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
+        graphId = resolveGraphId(graphId);
+        String type = edgeType != null ? edgeType : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
-        if (graph == null || !graph.removeEdge(sourceNodeId, targetNodeId, edgeType)) {
-            return false;
+        boolean existedInCache = graph != null && graph.hasEdge(sourceNodeId, targetNodeId, type);
+        AdjacencyMatrixGraph.EdgeMeta cachedMeta = graph == null ? null
+                : graph.getEdgeMeta(type, sourceNodeId, targetNodeId);
+        boolean cachedCanonicalReverse = false;
+        if (cachedMeta == null && graph != null) {
+            cachedMeta = graph.getEdgeMeta(type, targetNodeId, sourceNodeId);
+            cachedCanonicalReverse = cachedMeta != null
+                    && Boolean.TRUE.equals(cachedMeta.bidirectional());
         }
-        vectorStore.delete(List.of(edgeDocumentId(graphId, edgeType, sourceNodeId, targetNodeId)));
-        return true;
+        boolean cachedBidirectional = cachedMeta != null
+                && Boolean.TRUE.equals(cachedMeta.bidirectional());
+        String edgeId = edgeDocumentId(graphId, type, sourceNodeId, targetNodeId);
+        if (cachedCanonicalReverse) {
+            edgeId = edgeDocumentId(graphId, type, targetNodeId, sourceNodeId);
+        }
+        if (existedInCache) {
+            if (!vectorStore.delete(List.of(edgeId))) return false;
+            graph.removeEdge(sourceNodeId, targetNodeId, type);
+            if (cachedBidirectional) graph.removeEdge(targetNodeId, sourceNodeId, type);
+            return true;
+        }
+        Map<String, Object> stored = vectorStore.getVectorDocument(edgeId);
+        StoredEdge storedEdge = stored == null ? null : deserializeStoredEdge(flattenDoc(stored));
+        if (storedEdge != null && (!sourceNodeId.equals(storedEdge.sourceNodeId())
+                || !targetNodeId.equals(storedEdge.targetNodeId())
+                || !type.equals(storedEdge.edgeType()))) {
+            storedEdge = null;
+        }
+        if (storedEdge == null) {
+            stored = null;
+            String reverseId = edgeDocumentId(graphId, type, targetNodeId, sourceNodeId);
+            Map<String, Object> reverse = vectorStore.getVectorDocument(reverseId);
+            StoredEdge reverseEdge = reverse == null ? null : deserializeStoredEdge(flattenDoc(reverse));
+            if (reverseEdge != null && reverseEdge.bidirectional()
+                    && targetNodeId.equals(reverseEdge.sourceNodeId())
+                    && sourceNodeId.equals(reverseEdge.targetNodeId())
+                    && type.equals(reverseEdge.edgeType())) {
+                edgeId = reverseId;
+                stored = reverse;
+                storedEdge = reverseEdge;
+            }
+        }
+        if (storedEdge == null) return false;
+        return vectorStore.delete(List.of(edgeId));
     }
 
     @Override
     public List<Map.Entry<String, Double>> getEdges(String graphId, String nodeId, String edgeType) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
             return graph.getNeighbors(nodeId, edgeType);
         }
-
-        return loadGraph(graphId)
-                .map(g -> g.getNeighbors(nodeId, edgeType))
-                .orElse(Collections.emptyList());
+        List<Map.Entry<String, Double>> neighbors = new ArrayList<>();
+        int canonicalEdgeCount = 0;
+        int cursor = 0;
+        ScanPage<StoredEdge> page;
+        do {
+            page = scanEdges(graphId, cursor, Math.max(1, vectorScanPageSize));
+            canonicalEdgeCount += page.items().size();
+            for (StoredEdge edge : page.items()) {
+                if (edgeType != null && !edgeType.equals(edge.edgeType())) continue;
+                if (nodeId.equals(edge.sourceNodeId())) {
+                    neighbors.add(Map.entry(edge.targetNodeId(), edge.weight()));
+                } else if (edge.bidirectional() && nodeId.equals(edge.targetNodeId())) {
+                    neighbors.add(Map.entry(edge.sourceNodeId(), edge.weight()));
+                }
+            }
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        GraphStorageMetadata storage = graphStorageMetadata(graphId);
+        if (storage.version() < MIN_CANONICAL_DOCUMENT_STORAGE_VERSION
+                || storage.edgeCount() > canonicalEdgeCount) {
+            return loadGraph(graphId)
+                    .map(loaded -> loaded.getNeighbors(nodeId, edgeType))
+                    .orElse(neighbors);
+        }
+        return neighbors;
     }
 
     @Override
     public boolean hasEdge(String graphId, String sourceNodeId, String targetNodeId, String edgeType) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
+        String type = edgeType != null ? edgeType : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
-            return graph.hasEdge(sourceNodeId, targetNodeId, edgeType);
+            return graph.hasEdge(sourceNodeId, targetNodeId, type);
         }
-
-        return loadGraph(graphId)
-                .map(g -> g.hasEdge(sourceNodeId, targetNodeId, edgeType))
-                .orElse(false);
+        Map<String, Object> exact = vectorStore.getVectorDocument(
+                edgeDocumentId(graphId, type, sourceNodeId, targetNodeId));
+        StoredEdge exactEdge = exact == null ? null : deserializeStoredEdge(flattenDoc(exact));
+        if (exactEdge != null && sourceNodeId.equals(exactEdge.sourceNodeId())
+                && targetNodeId.equals(exactEdge.targetNodeId())
+                && type.equals(exactEdge.edgeType())) {
+            return true;
+        }
+        Map<String, Object> reverse = vectorStore.getVectorDocument(
+                edgeDocumentId(graphId, type, targetNodeId, sourceNodeId));
+        StoredEdge reverseEdge = reverse == null ? null : deserializeStoredEdge(flattenDoc(reverse));
+        boolean foundReverse = reverseEdge != null && reverseEdge.bidirectional()
+                && targetNodeId.equals(reverseEdge.sourceNodeId())
+                && sourceNodeId.equals(reverseEdge.targetNodeId())
+                && type.equals(reverseEdge.edgeType());
+        if (foundReverse) return true;
+        if (graphStorageMetadata(graphId).version() < MIN_CANONICAL_DOCUMENT_STORAGE_VERSION) {
+            return loadGraph(graphId)
+                    .map(loaded -> loaded.hasEdge(sourceNodeId, targetNodeId, type))
+                    .orElse(false);
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -620,9 +1370,9 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public void storeNodeEmbeddings(String graphId, List<String> nodeIds, INDArray embeddings) {
+    public synchronized void storeNodeEmbeddings(String graphId, List<String> nodeIds, INDArray embeddings) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        graph.setNodeEmbeddings(nodeIds, embeddings);
 
         // Store embeddings in vector store
         List<Document> documents = new ArrayList<>();
@@ -631,19 +1381,27 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
             Optional<MatrixGraphNode> nodeOpt = graph.getNode(nodeId);
             if (nodeOpt.isPresent()) {
                 MatrixGraphNode node = nodeOpt.get();
-                Document doc = createNodeDocument(graphId, node);
+                Document doc = createNodeVectorDocument(graphId, node);
                 documents.add(doc);
             }
         }
 
+        if (documents.size() != nodeIds.size()) {
+            throw new IllegalArgumentException("Every embedding row must resolve to a graph node");
+        }
         if (!documents.isEmpty()) {
-            vectorStore.addWithEmbeddings(documents, embeddings);
-            vectorStore.flushAndCommit();
+            if (vectorStore.addWithEmbeddings(documents, embeddings) != documents.size()
+                    || !vectorStore.flushAndCommit()) {
+                throw new IllegalStateException("Node embedding persistence was incomplete");
+            }
+            graph.setNodeEmbeddings(nodeIds, embeddings);
         }
     }
 
     @Override
     public INDArray getNodeEmbeddings(String graphId, List<String> nodeIds) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null && graph.getNodeEmbeddings() != null) {
             int dim = graph.getEmbeddingDimension();
@@ -663,6 +1421,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     @Override
     public List<Map.Entry<String, Double>> findSimilarNodes(String graphId, INDArray queryEmbedding,
                                                              int k, double threshold) {
+        graphId = resolveGraphId(graphId);
         List<ScoredDocument> results = vectorStore.similaritySearchWithScores(queryEmbedding, k, threshold);
 
         String nodePrefix = GRAPH_PREFIX + graphId + NODE_PREFIX;
@@ -681,56 +1440,110 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Override
-    public int addNodesBatch(String graphId, List<MatrixGraphNode> nodes) {
+    public synchronized int addNodesBatch(String graphId, List<MatrixGraphNode> nodes) {
+        graphId = resolveGraphId(graphId);
         AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
         int count = 0;
 
-        List<Document> documents = new ArrayList<>();
+        List<Document> metadataDocuments = new ArrayList<>();
+        List<Document> vectorDocuments = new ArrayList<>();
+        Map<String, MatrixGraphNode> previousNodes = new HashMap<>();
+        List<MatrixGraphNode> newNodes = new ArrayList<>();
         for (MatrixGraphNode node : nodes) {
-            graph.addNode(node);
-            documents.add(createNodeDocument(graphId, node));
+            Optional<MatrixGraphNode> previous = graph.getNode(node.getNodeId());
+            if (previous.isPresent()) {
+                previousNodes.put(node.getNodeId(), previous.get());
+                node.setMatrixIndex(previous.get().getMatrixIndex());
+            } else {
+                graph.addNode(node);
+                newNodes.add(node);
+            }
+            metadataDocuments.add(createNodeMetadataDocument(graphId, node));
+            vectorDocuments.add(createNodeVectorDocument(graphId, node));
             count++;
         }
 
-        if (!documents.isEmpty()) {
-            vectorStore.add(documents);
-        }
-
-        return count;
-    }
-
-    @Override
-    public int addEdgesBatch(String graphId, List<EdgeDefinition> edges) {
-        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
-        int count = 0;
-
-        List<Document> documents = new ArrayList<>();
-        for (EdgeDefinition edge : edges) {
-            if (graph.addEdge(edge.sourceNodeId(), edge.targetNodeId(),
-                    edge.weight(), edge.edgeType(), edge.bidirectional(), edge.relationType())) {
-                documents.add(createEdgeDocument(graphId, edge.sourceNodeId(), edge.targetNodeId(),
-                        edge.weight(), edge.edgeType(), edge.bidirectional(), edge.relationType(),
-                        null, null, null));
-                count++;
+        if (!metadataDocuments.isEmpty()) {
+            try {
+                addStoredOnlyOrThrow(metadataDocuments, "graph node batch");
+            } catch (RuntimeException failure) {
+                String resolvedGraphId = graphId;
+                List<String> newMetadataIds = newNodes.stream()
+                        .map(node -> GRAPH_PREFIX + resolvedGraphId
+                                + NODE_METADATA_PREFIX + node.getNodeId())
+                        .toList();
+                if (!newMetadataIds.isEmpty() && !vectorStore.delete(newMetadataIds)) {
+                    failure.addSuppressed(new IllegalStateException(
+                            "Could not remove partially written node metadata"));
+                }
+                if (!previousNodes.isEmpty()) {
+                    try {
+                        addStoredOnlyOrThrow(previousNodes.values().stream()
+                                        .map(node -> createNodeMetadataDocument(resolvedGraphId, node)).toList(),
+                                "graph node batch compensation");
+                    } catch (RuntimeException compensation) {
+                        failure.addSuppressed(compensation);
+                    }
+                }
+                newNodes.forEach(node -> graph.removeNode(node.getNodeId()));
+                throw failure;
+            }
+            nodes.stream().filter(node -> previousNodes.containsKey(node.getNodeId()))
+                    .forEach(graph::addNode);
+            // Preserve main-process text embedding behavior. In the graph subprocess add() returns
+            // zero, but the canonical metadata documents above are already durable.
+            try {
+                vectorStore.add(vectorDocuments);
+            } catch (RuntimeException vectorFailure) {
+                log.warn("Canonical node metadata was stored, but optional vector enrichment failed: {}",
+                        vectorFailure.getMessage());
             }
         }
-        if (!documents.isEmpty()) {
-            vectorStore.add(documents);
+
+        return count;
+    }
+
+    @Override
+    public synchronized int addEdgesBatch(String graphId, List<EdgeDefinition> edges) {
+        graphId = resolveGraphId(graphId);
+        AdjacencyMatrixGraph graph = getOrCreateGraph(graphId);
+        List<Document> documents = new ArrayList<>();
+        List<EdgeDefinition> accepted = new ArrayList<>();
+        for (EdgeDefinition edge : edges) {
+            if (graph.getNode(edge.sourceNodeId()).isEmpty()
+                    || graph.getNode(edge.targetNodeId()).isEmpty()) {
+                continue;
+            }
+            String type = edge.edgeType() != null
+                    ? edge.edgeType() : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
+            documents.add(createEdgeDocument(graphId, edge.sourceNodeId(), edge.targetNodeId(),
+                    edge.weight(), type, edge.bidirectional(), edge.relationType(),
+                    null, null, null));
+            accepted.add(edge);
+        }
+        addStoredOnlyOrThrow(documents, "graph edge batch");
+        int count = 0;
+        for (EdgeDefinition edge : accepted) {
+            String type = edge.edgeType() != null
+                    ? edge.edgeType() : AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE;
+            if (graph.addEdge(edge.sourceNodeId(), edge.targetNodeId(),
+                    edge.weight(), type, edge.bidirectional(), edge.relationType())) count++;
         }
         return count;
     }
 
     @Override
-    public void flush() {
-        // Save all cached graphs
+    public synchronized void flush() {
         for (AdjacencyMatrixGraph graph : graphCache.values()) {
             try {
                 saveGraph(graph);
             } catch (IOException e) {
-                log.error("Failed to flush graph {}", graph.getGraphId(), e);
+                throw new IllegalStateException("Failed to flush graph " + graph.getGraphId(), e);
             }
         }
-        vectorStore.flushAndCommit();
+        if (!vectorStore.flushAndCommit()) {
+            throw new IllegalStateException("Final vector store graph commit failed");
+        }
     }
 
     @Override
@@ -744,6 +1557,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
     @Override
     public Map<String, Object> getGraphStatistics(String graphId) {
+        graphId = resolveGraphId(graphId);
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         AdjacencyMatrixGraph graph = graphCache.get(graphId);
         if (graph != null) {
             return graph.getStatistics();
@@ -759,7 +1574,8 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private AdjacencyMatrixGraph getOrCreateGraph(String graphId) {
-        return graphCache.computeIfAbsent(graphId, id -> {
+        String resolved = resolveGraphId(graphId);
+        return graphCache.computeIfAbsent(resolved, id -> {
             Optional<AdjacencyMatrixGraph> loaded = loadGraph(id);
             if (loaded.isPresent()) {
                 return loaded.get();
@@ -779,21 +1595,142 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         });
     }
 
+    private String resolveGraphId(String graphId) {
+        if (graphId == null || graphId.contains("~gen~") || generationGraphs.contains(graphId)) return graphId;
+        if (generationJournal != null) {
+            Optional<GraphGeneration.Pointer> authoritative = generationJournal.pointer(graphId);
+            if (authoritative.isPresent()) return authoritative.get().activePhysicalGraphId();
+        }
+        GenerationPointer pointer = pointer(graphId);
+        return pointer == null ? graphId : pointer.active();
+    }
+
+    private GenerationPointer pointer(String logicalGraphId) {
+        GenerationPointer cached = generationPointers.get(logicalGraphId);
+        if (cached != null) return cached;
+        return pointer(logicalGraphId, false);
+    }
+
+    private GenerationPointer pointer(String logicalGraphId, boolean refresh) {
+        GenerationPointer cached = generationPointers.get(logicalGraphId);
+        if (!refresh && cached != null) return cached;
+        try {
+            Map<String, Object> raw = vectorStore.getVectorDocumentStrict(pointerDocId(logicalGraphId));
+            if (raw == null) return cached;
+            Map<String, Object> doc = flattenDoc(raw);
+            String active = doc.get("activePhysicalGraphId") instanceof String value ? value : null;
+            if (active == null || active.isBlank()) return cached;
+            String previous = doc.get("previousPhysicalGraphId") instanceof String value ? value : null;
+            long revision = doc.get("revision") instanceof Number value ? value.longValue() : 0L;
+            GenerationPointer loaded = new GenerationPointer(active, previous, revision);
+            generationPointers.put(logicalGraphId, loaded);
+            if (active.contains("~gen~")) generationGraphs.add(active);
+            if (previous != null && previous.contains("~gen~")) generationGraphs.add(previous);
+            return loaded;
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Could not read graph generation pointer for " + logicalGraphId, e);
+        }
+    }
+
+    private void refreshGenerationPointersStrict() {
+        try {
+            scanVectorDocumentsStrict(page -> {
+                for (Map<String, Object> raw : page) {
+                    String id = raw.get("id") instanceof String value ? value : null;
+                    if (id == null || !id.startsWith(POINTER_PREFIX)) continue;
+                    Map<String, Object> doc = flattenDoc(raw);
+                    if (!"graph_generation_pointer".equals(doc.get("type"))) {
+                        throw new IOException("Malformed graph generation pointer " + id);
+                    }
+                    String logical = id.substring(POINTER_PREFIX.length());
+                    String active = doc.get("activePhysicalGraphId") instanceof String value
+                            ? value : null;
+                    if (active == null || active.isBlank()) {
+                        throw new IOException("Graph generation pointer has no active graph: " + id);
+                    }
+                    String previous = doc.get("previousPhysicalGraphId") instanceof String value
+                            ? value : null;
+                    long revision = doc.get("revision") instanceof Number value
+                            ? value.longValue() : 0L;
+                    generationPointers.put(logical, new GenerationPointer(active, previous, revision));
+                    if (active.contains("~gen~")) generationGraphs.add(active);
+                    if (previous != null && previous.contains("~gen~")) generationGraphs.add(previous);
+                }
+            });
+        } catch (IOException failure) {
+            throw new IllegalStateException("Could not refresh graph generation pointers", failure);
+        }
+    }
+
+    private void writePointer(String logicalGraphId, GenerationPointer pointer) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("type", "graph_generation_pointer");
+        metadata.put("logicalGraphId", logicalGraphId);
+        metadata.put("activePhysicalGraphId", pointer.active());
+        metadata.put("previousPhysicalGraphId", pointer.previous());
+        metadata.put("revision", pointer.revision());
+        metadata.values().removeIf(Objects::isNull);
+        try {
+            String json = objectMapper.writeValueAsString(metadata);
+            int written = vectorStore.addStoredOnlyDocuments(
+                    List.of(new Document(pointerDocId(logicalGraphId), json, metadata)));
+            if (written != 1) throw new IllegalStateException("Graph generation pointer was not persisted");
+            if (!vectorStore.flushAndCommit()) {
+                throw new IllegalStateException("Graph generation pointer commit failed");
+            }
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Could not encode graph generation pointer", e);
+        }
+    }
+
+    private boolean deletePhysicalGraph(String graphId) {
+        try {
+            AdjacencyMatrixGraph graph = graphCache.get(graphId);
+            awaitPendingNodeWrites("delete graph generation", graphId, "*");
+            List<String> ids = collectMatchingIdsStrict(GRAPH_PREFIX + graphId + ":");
+            String metaId = GRAPH_PREFIX + graphId + META_SUFFIX;
+            if (!ids.contains(metaId)) ids.add(metaId);
+            if (!ids.isEmpty()) {
+                if (!vectorStore.delete(ids) || !vectorStore.flushAndCommit()) {
+                    throw new IllegalStateException("Graph generation deletion was not committed");
+                }
+            }
+            graphCache.remove(graphId);
+            if (graph != null) graph.close();
+            generationGraphs.remove(graphId);
+            return graph != null || !ids.isEmpty();
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not delete graph generation " + graphId, e);
+        }
+    }
+
+    private static String pointerDocId(String logicalGraphId) {
+        return POINTER_PREFIX + logicalGraphId;
+    }
+
     private void saveGraphMetadata(AdjacencyMatrixGraph graph) throws IOException {
+        saveGraphMetadata(graph, CANONICAL_DOCUMENT_STORAGE_VERSION);
+    }
+
+    private void saveGraphMetadata(AdjacencyMatrixGraph graph, int storageVersion) throws IOException {
         String docId = GRAPH_PREFIX + graph.getGraphId() + META_SUFFIX;
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("graphId", graph.getGraphId());
         metadata.put("factSheetId", graph.getFactSheetId());
         metadata.put("nodeCount", graph.getNodeCount());
+        metadata.put("edgeCount", persistedLogicalEdgeCount(graph));
         metadata.put("edgeTypes", new ArrayList<>(graph.getEdgeTypes()));
         metadata.put("capacity", graph.getCurrentCapacity());
         metadata.put("embeddingDimension", graph.getEmbeddingDimension());
         metadata.put("type", "graph_metadata");
+        metadata.put("storageVersion", storageVersion);
         metadata.values().removeIf(Objects::isNull);
 
         Document doc = new Document(docId, objectMapper.writeValueAsString(metadata), metadata);
-        vectorStore.add(List.of(doc));
+        if (vectorStore.addStoredOnlyDocuments(List.of(doc)) != 1) {
+            throw new IOException("Could not persist graph metadata for " + graph.getGraphId());
+        }
     }
 
     /**
@@ -815,42 +1752,100 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         int embDim = graph.getEmbeddingDimension();
         List<MatrixGraphNode> liveNodes = graph.getAllNodes();
 
-        List<Document> documents = new ArrayList<>(liveNodes.size());
-        INDArray alignedEmbeddings = null;
+        List<Document> metadataDocuments = liveNodes.stream()
+                .map(node -> createNodeMetadataDocument(graph.getGraphId(), node))
+                .toList();
+        addStoredOnlyOrThrow(metadataDocuments, "graph nodes");
 
-        if (fullEmbeddings != null && embDim > 0 && !liveNodes.isEmpty()) {
-            alignedEmbeddings = Nd4j.zeros(DataType.FLOAT, liveNodes.size(), embDim);
-        }
-
-        for (int i = 0; i < liveNodes.size(); i++) {
-            MatrixGraphNode node = liveNodes.get(i);
-            documents.add(createNodeDocument(graph.getGraphId(), node));
-            if (alignedEmbeddings != null) {
+        if (fullEmbeddings == null || embDim <= 0 || liveNodes.isEmpty()) return;
+        List<MatrixGraphNode> embeddedNodes = new ArrayList<>();
+        List<INDArray> embeddedRows = new ArrayList<>();
+        // Bulk-copy once. A row is an NDArray view, so row.data().asFloat() would expose the
+        // parent's full backing buffer and could mistake another node's values for this row.
+        INDArray contiguousEmbeddings = fullEmbeddings.dup('c');
+        try {
+            float[] embeddingValues = contiguousEmbeddings.data().asFloat();
+            for (MatrixGraphNode node : liveNodes) {
                 int idx = node.getMatrixIndex();
-                if (idx >= 0 && idx < fullEmbeddings.rows()) {
-                    alignedEmbeddings.putRow(i, fullEmbeddings.getRow(idx));
+                long rowOffset = (long) idx * embDim;
+                if (idx < 0 || idx >= fullEmbeddings.rows() || rowOffset > Integer.MAX_VALUE
+                        || !hasUsableEmbedding(embeddingValues, (int) rowOffset, embDim)) {
+                    continue;
                 }
-                // idx out of range → row stays zero (no embedding for this node yet)
+                embeddedNodes.add(node);
+                embeddedRows.add(fullEmbeddings.getRow(idx));
             }
+        } finally {
+            contiguousEmbeddings.close();
         }
+        if (embeddedNodes.isEmpty()) return;
 
-        if (!documents.isEmpty()) {
-            if (alignedEmbeddings != null) {
-                vectorStore.addWithEmbeddings(documents, alignedEmbeddings);
-                alignedEmbeddings.close();
-            } else {
-                vectorStore.add(documents);
+        INDArray alignedEmbeddings = Nd4j.zeros(DataType.FLOAT, embeddedNodes.size(), embDim);
+        for (int i = 0; i < embeddedRows.size(); i++) {
+            alignedEmbeddings.putRow(i, embeddedRows.get(i));
+        }
+        try {
+            int written = vectorStore.addWithEmbeddings(embeddedNodes.stream()
+                    .map(node -> createNodeVectorDocument(graph.getGraphId(), node))
+                    .toList(), alignedEmbeddings);
+            if (written != embeddedNodes.size()) {
+                throw new IllegalStateException("Short graph-node embedding write: expected "
+                        + embeddedNodes.size() + " but wrote " + written);
             }
+        } finally {
+            alignedEmbeddings.close();
         }
     }
 
-    private void saveNode(String graphId, MatrixGraphNode node) {
-        Document doc = createNodeDocument(graphId, node);
-        vectorStore.add(List.of(doc));
+    private void saveNode(String graphId, MatrixGraphNode node, boolean forceVectorRefresh) {
+        persistNodeMetadata(graphId, node);
+        // addNode/updateNode are text changes and retain the historical re-embedding behavior.
+        // The embedding-disabled subprocess may drop this vector document, but never the metadata.
+        if (forceVectorRefresh) {
+            awaitPendingNodeWrites("refresh", graphId, node.getNodeId());
+            vectorStore.delete(List.of(nodeVectorDocumentId(graphId, node.getNodeId())));
+        }
+        try {
+            vectorStore.add(List.of(createNodeVectorDocument(graphId, node)));
+        } catch (RuntimeException vectorFailure) {
+            log.warn("Canonical metadata for node {} was stored, but optional vector enrichment failed: {}",
+                    node.getNodeId(), vectorFailure.getMessage());
+        }
     }
 
-    private Document createNodeDocument(String graphId, MatrixGraphNode node) {
-        String docId = GRAPH_PREFIX + graphId + NODE_PREFIX + node.getNodeId();
+    private boolean awaitPendingNodeWrites(String operation, String graphId, String nodeId) {
+        try {
+            vectorStore.awaitPendingEmbeddings();
+            return true;
+        } catch (RuntimeException e) {
+            // Anserini's barrier completes all snapshotted futures before reporting aggregate
+            // failure. Durable cleanup/replacement is therefore still safe and must be attempted.
+            log.warn("Async embedding barrier reported a failure before node {} for {}/{}: {}",
+                    operation, graphId, nodeId, e.getMessage());
+            return false;
+        }
+    }
+
+    private void persistNodeMetadata(String graphId, MatrixGraphNode node) {
+        addStoredOnlyOrThrow(
+                List.of(createNodeMetadataDocument(graphId, node)), "graph node metadata");
+    }
+
+    private Document createNodeMetadataDocument(String graphId, MatrixGraphNode node) {
+        return createNodeDocument(GRAPH_PREFIX + graphId + NODE_METADATA_PREFIX + node.getNodeId(), node,
+                "graph_node");
+    }
+
+    private Document createNodeVectorDocument(String graphId, MatrixGraphNode node) {
+        return createNodeDocument(nodeVectorDocumentId(graphId, node.getNodeId()), node,
+                "graph_node_vector");
+    }
+
+    private static String nodeVectorDocumentId(String graphId, String nodeId) {
+        return GRAPH_PREFIX + graphId + NODE_PREFIX + nodeId;
+    }
+
+    private Document createNodeDocument(String docId, MatrixGraphNode node, String documentType) {
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("nodeId", node.getNodeId());
@@ -861,7 +1856,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         metadata.put("factSheetId", node.getFactSheetId());
         metadata.put("createdAt", node.getCreatedAt());
         metadata.put("updatedAt", node.getUpdatedAt());
-        metadata.put("type", "graph_node");
+        metadata.put("type", documentType);
         metadata.values().removeIf(Objects::isNull);
 
         if (node.getMetadata() != null) {
@@ -875,12 +1870,41 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         return new Document(docId, content, metadata);
     }
 
-    private void saveEdges(AdjacencyMatrixGraph graph) {
-        String graphId = graph.getGraphId();
-        List<String> oldEdgeIds = collectMatchingIds(GRAPH_PREFIX + graphId + EDGE_PREFIX);
-        if (!oldEdgeIds.isEmpty()) {
-            vectorStore.delete(oldEdgeIds);
+    private static boolean hasUsableEmbedding(float[] values, int offset, int length) {
+        if (values == null || offset < 0 || length <= 0 || offset + length > values.length) return false;
+        boolean nonZero = false;
+        for (int i = offset; i < offset + length; i++) {
+            float value = values[i];
+            if (!Float.isFinite(value)) return false;
+            nonZero |= value != 0.0f;
         }
+        return nonZero;
+    }
+
+    private long persistedLogicalEdgeCount(AdjacencyMatrixGraph graph) {
+        long count = 0;
+        for (String edgeType : graph.getEdgeTypes()) {
+            AdjacencyMatrixGraph.SparseEdgeData sparse = graph.getSparseEdges(edgeType);
+            for (int i = 0; i < sparse.size(); i++) {
+                int[] pair = sparse.indices.get(i);
+                String source = graph.getIndexToNodeId().get(pair[0]);
+                String target = graph.getIndexToNodeId().get(pair[1]);
+                if (source == null || target == null) continue;
+                AdjacencyMatrixGraph.EdgeMeta meta = sparse.edgeMetas.isEmpty()
+                        ? null : sparse.edgeMetas.get(i);
+                AdjacencyMatrixGraph.EdgeMeta reverseMeta = graph.getEdgeMeta(edgeType, target, source);
+                if (meta == null && reverseMeta != null
+                        && Boolean.TRUE.equals(reverseMeta.bidirectional())) {
+                    continue;
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void saveEdges(AdjacencyMatrixGraph graph) throws IOException {
+        String graphId = graph.getGraphId();
 
         Map<Integer, String> nodeIdsByIndex = new HashMap<>();
         for (MatrixGraphNode node : graph.getAllNodes()) {
@@ -902,36 +1926,156 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 String relationType = hasRelationTypes ? sparseData.relationTypes.get(i) : null;
                 AdjacencyMatrixGraph.EdgeMeta meta =
                         hasEdgeMetas ? sparseData.edgeMetas.get(i) : null;
-                boolean bidirectional = meta != null && Boolean.TRUE.equals(meta.bidirectional());
-                if (bidirectional && sourceNodeId.compareTo(targetNodeId) > 0) {
+                AdjacencyMatrixGraph.EdgeMeta reverseMeta = graph.getEdgeMeta(
+                        edgeType, targetNodeId, sourceNodeId);
+                // addEdge(..., bidirectional=true) creates two sparse directions but stores the
+                // logical-edge metadata on the caller's original orientation only. Emit exactly
+                // that orientation; serializing the metadata-free reverse would duplicate or
+                // silently downgrade the relationship after restart.
+                if (meta == null && reverseMeta != null
+                        && Boolean.TRUE.equals(reverseMeta.bidirectional())) {
                     continue;
                 }
-                batch.add(createEdgeDocument(graphId, sourceNodeId, targetNodeId,
+                boolean bidirectional = meta != null && Boolean.TRUE.equals(meta.bidirectional());
+                Document document = createEdgeDocument(graphId, sourceNodeId, targetNodeId,
                         sparseData.weights.get(i), edgeType, bidirectional, relationType,
                         meta != null ? meta.confidence() : null,
                         meta != null ? meta.description() : null,
-                        meta != null ? meta.metadata() : null));
+                        meta != null ? meta.metadata() : null);
+                batch.add(document);
                 if (batch.size() == 1000) {
-                    vectorStore.add(batch);
+                    addStoredOnlyOrThrow(batch, "graph edges");
                     batch = new ArrayList<>(1000);
                 }
             }
         }
         if (!batch.isEmpty()) {
-            vectorStore.add(batch);
+            addStoredOnlyOrThrow(batch, "graph edges");
         }
+        deleteStaleEdgeDocuments(graph);
 
-        List<String> aggregates = collectMatchingIds(GRAPH_PREFIX + graphId + ADJ_PREFIX);
+        List<String> aggregates = collectMatchingIdsStrict(GRAPH_PREFIX + graphId + ADJ_PREFIX);
         aggregates.add(GRAPH_PREFIX + graphId + EMBD_SUFFIX);
-        vectorStore.delete(aggregates);
+        if (!vectorStore.delete(aggregates)) {
+            throw new IOException("Could not delete legacy adjacency artifacts for graph " + graphId);
+        }
+    }
+
+    private void deleteStaleEdgeDocuments(AdjacencyMatrixGraph graph) throws IOException {
+        String prefix = GRAPH_PREFIX + graph.getGraphId() + EDGE_PREFIX;
+        Path spool = Files.createTempFile("kompile-stale-graph-edges-", ".bin");
+        try {
+            try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(spool))) {
+                scanVectorDocumentsStrict(page -> {
+                    for (Map<String, Object> raw : page) {
+                        String id = raw.get("id") instanceof String value ? value : null;
+                        if (id == null || !id.startsWith(prefix)) continue;
+                        StoredEdge edge = deserializeStoredEdge(flattenDoc(raw));
+                        if (edge != null && isCanonicalLiveEdge(graph, edge)) continue;
+                        writeSpoolString(out, id);
+                    }
+                });
+            }
+            try (DataInputStream in = new DataInputStream(Files.newInputStream(spool))) {
+                List<String> ids = new ArrayList<>(1_000);
+                while (true) {
+                    String id = readSpoolString(in);
+                    if (id == null) break;
+                    ids.add(id);
+                    if (ids.size() == 1_000) {
+                        deleteEdgeIds(ids);
+                        ids.clear();
+                    }
+                }
+                deleteEdgeIds(ids);
+            }
+        } finally {
+            Files.deleteIfExists(spool);
+        }
+    }
+
+    private static boolean isCanonicalLiveEdge(AdjacencyMatrixGraph graph, StoredEdge edge) {
+        if (!graph.hasEdge(edge.sourceNodeId(), edge.targetNodeId(), edge.edgeType())) return false;
+        AdjacencyMatrixGraph.EdgeMeta meta = graph.getEdgeMeta(
+                edge.edgeType(), edge.sourceNodeId(), edge.targetNodeId());
+        AdjacencyMatrixGraph.EdgeMeta reverse = graph.getEdgeMeta(
+                edge.edgeType(), edge.targetNodeId(), edge.sourceNodeId());
+        return meta != null || reverse == null || !Boolean.TRUE.equals(reverse.bidirectional());
+    }
+
+    private void deleteEdgeIds(List<String> ids) throws IOException {
+        if (!ids.isEmpty() && !vectorStore.delete(new ArrayList<>(ids))) {
+            throw new IOException("Could not delete stale graph edge documents");
+        }
+    }
+
+    private static void writeSpoolString(DataOutputStream out, String value) throws IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
+
+    private static String readSpoolString(DataInputStream in) throws IOException {
+        int first = in.read();
+        if (first < 0) return null;
+        int second = in.read();
+        int third = in.read();
+        int fourth = in.read();
+        if ((second | third | fourth) < 0) throw new EOFException("Truncated edge-id spool length");
+        int length = first << 24 | second << 16 | third << 8 | fourth;
+        if (length < 1 || length > 16 * 1024 * 1024) {
+            throw new IOException("Invalid edge-id spool length: " + length);
+        }
+        byte[] bytes = in.readNBytes(length);
+        if (bytes.length != length) throw new EOFException("Truncated edge-id spool value");
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private void addStoredOnlyOrThrow(List<Document> documents, String description) {
+        if (documents == null || documents.isEmpty()) return;
+        int written = vectorStore.addStoredOnlyDocuments(documents);
+        if (written == documents.size()) return;
+        // Deterministic IDs make singleton retries idempotent. This repairs partial batch writers
+        // without accepting an ambiguous short count as success.
+        for (Document document : documents) {
+            if (vectorStore.addStoredOnlyDocuments(List.of(document)) != 1) {
+                throw new IllegalStateException("Short stored-only write for " + description
+                        + ": expected " + documents.size() + " but initial batch wrote " + written
+                        + " and singleton retry failed for " + document.getId());
+            }
+        }
+    }
+
+    private int countPersistableEdges(AdjacencyMatrixGraph graph) {
+        int count = 0;
+        Map<Integer, String> nodeIdsByIndex = new HashMap<>();
+        for (MatrixGraphNode node : graph.getAllNodes()) {
+            nodeIdsByIndex.put(node.getMatrixIndex(), node.getNodeId());
+        }
+        for (String edgeType : graph.getEdgeTypes()) {
+            AdjacencyMatrixGraph.SparseEdgeData sparse = graph.getSparseEdges(edgeType);
+            boolean hasEdgeMetas = !sparse.edgeMetas.isEmpty();
+            for (int i = 0; i < sparse.size(); i++) {
+                int[] pair = sparse.indices.get(i);
+                String source = nodeIdsByIndex.get(pair[0]);
+                String target = nodeIdsByIndex.get(pair[1]);
+                if (source == null || target == null) continue;
+                AdjacencyMatrixGraph.EdgeMeta meta = hasEdgeMetas ? sparse.edgeMetas.get(i) : null;
+                AdjacencyMatrixGraph.EdgeMeta reverse = graph.getEdgeMeta(edgeType, target, source);
+                if (meta == null && reverse != null && Boolean.TRUE.equals(reverse.bidirectional())) continue;
+                count++;
+            }
+        }
+        return count;
     }
 
     private void persistEdge(String graphId, String sourceNodeId, String targetNodeId,
                              double weight, String edgeType, boolean bidirectional,
                              String relationType, Double confidence, String description,
                              Map<String, Object> metadata) {
-        vectorStore.add(List.of(createEdgeDocument(graphId, sourceNodeId, targetNodeId,
-                weight, edgeType, bidirectional, relationType, confidence, description, metadata)));
+        addStoredOnlyOrThrow(List.of(createEdgeDocument(
+                graphId, sourceNodeId, targetNodeId, weight, edgeType, bidirectional,
+                relationType, confidence, description, metadata)), "graph edge");
     }
 
     private Document createEdgeDocument(String graphId, String sourceNodeId, String targetNodeId,
@@ -1022,7 +2166,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
         String content = objectMapper.writeValueAsString(edges);
         Document doc = new Document(docId, content, metadata);
-        vectorStore.add(List.of(doc));
+        vectorStore.addStoredOnlyDocuments(List.of(doc));
     }
 
     /**
@@ -1076,7 +2220,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
 
         String content = objectMapper.writeValueAsString(rows);
         Document doc = new Document(docId, content, metadata);
-        vectorStore.add(List.of(doc));
+        vectorStore.addStoredOnlyDocuments(List.of(doc));
         log.debug("Persisted node embeddings for graph '{}': {} rows × {} dim", graphId, rows.size(), dim);
     }
 
@@ -1114,6 +2258,37 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         return matched;
     }
 
+    private List<String> collectMatchingIdsStrict(String idPrefix) throws IOException {
+        List<String> matched = new ArrayList<>();
+        scanVectorDocumentsStrict(page -> {
+            for (Map<String, Object> document : page) {
+                Object rawId = document.get("id");
+                if (rawId instanceof String id && id.startsWith(idPrefix)) matched.add(id);
+            }
+        });
+        return matched;
+    }
+
+    private void scanVectorDocumentsStrict(VectorStore.DocumentPageConsumer consumer)
+            throws IOException {
+        boolean[] invoked = {false};
+        vectorStore.scanVectorDocumentsStrict(Math.max(1, vectorScanPageSize), page -> {
+            invoked[0] = true;
+            consumer.accept(page);
+        });
+        // Compatibility for stores/proxies that predate the strict snapshot callback. The Anserini
+        // implementation either invokes the callback or throws, so storage failures still fail closed.
+        if (!invoked[0]) {
+            int offset = 0;
+            List<Map<String, Object>> page;
+            do {
+                page = vectorStore.listVectorDocuments(offset, Math.max(1, vectorScanPageSize));
+                consumer.accept(page);
+                offset += page.size();
+            } while (page.size() == Math.max(1, vectorScanPageSize));
+        }
+    }
+
     /**
      * Flatten the map returned by {@link VectorStore#listVectorDocuments} so that
      * per-document metadata fields are accessible at the top level.
@@ -1126,6 +2301,26 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      * that nested map.  The deserialization helpers expect them at the top level,
      * so we merge the nested map up before passing the doc along.</p>
      */
+    private GraphStorageMetadata graphStorageMetadata(String graphId) {
+        String metadataId = GRAPH_PREFIX + graphId + META_SUFFIX;
+        Map<String, Object> raw = vectorStore.getVectorDocumentStrict(metadataId);
+        if (raw == null) raw = vectorStore.getVectorDocument(metadataId);
+        if (raw == null || raw.isEmpty()) return GraphStorageMetadata.LEGACY_UNKNOWN;
+        Map<String, Object> metadata = flattenDoc(raw);
+        int version = metadata.get("storageVersion") instanceof Number value
+                ? value.intValue() : 1;
+        int nodeCount = metadata.get("nodeCount") instanceof Number value
+                ? Math.max(0, value.intValue()) : 0;
+        long edgeCount = metadata.get("edgeCount") instanceof Number value
+                ? Math.max(0L, value.longValue()) : 0L;
+        return new GraphStorageMetadata(version, nodeCount, edgeCount);
+    }
+
+    private record GraphStorageMetadata(int version, int nodeCount, long edgeCount) {
+        private static final GraphStorageMetadata LEGACY_UNKNOWN =
+                new GraphStorageMetadata(1, 0, 0L);
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> flattenDoc(Map<String, Object> doc) {
         Object nested = doc.get("metadata");
@@ -1138,23 +2333,22 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
     }
 
     private Optional<AdjacencyMatrixGraph> loadGraphFromVectorStore(String graphId) {
+        requireCompleteStorageState(graphId, graphStorageMetadata(graphId));
         // Page through the full index and keep ONLY docs whose id starts with the
         // target graph prefix.  Non-matching docs are discarded after each page so
         // heap holds at most vectorScanPageSize raw docs at a time — never the whole
         // index at once (which OOM'd at 6 000-node / 70 000-edge scale).
-        String graphPrefix = GRAPH_PREFIX + graphId;
+        String graphPrefix = GRAPH_PREFIX + graphId + ":";
 
         // Find metadata document
-        Map<String, Object> metaDoc = null;
-        List<Map<String, Object>> nodeDocs = new ArrayList<>();
+        AtomicReference<Map<String, Object>> metaDocHolder = new AtomicReference<>();
+        Map<String, Map<String, Object>> nodeDocs = new LinkedHashMap<>();
         List<Map<String, Object>> edgeDocs = new ArrayList<>();
         List<Map<String, Object>> adjDocs = new ArrayList<>();
-        Map<String, Object> embdDoc = null; // single node-embeddings document per graph
+        AtomicReference<Map<String, Object>> embdDocHolder = new AtomicReference<>();
 
-        int offset = 0;
-        List<Map<String, Object>> page;
-        do {
-            page = vectorStore.listVectorDocuments(offset, vectorScanPageSize);
+        try {
+            scanVectorDocumentsStrict(page -> {
             for (Map<String, Object> rawDoc : page) {
                 String docId = (String) rawDoc.get("id");
                 if (docId == null || !docId.startsWith(graphPrefix)) {
@@ -1167,26 +2361,42 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
                 Map<String, Object> doc = flattenDoc(rawDoc);
 
                 String type = (String) doc.get("type");
-                if ("graph_metadata".equals(type)) {
-                    metaDoc = doc;
+                if ("graph_metadata".equals(type)
+                        && docId.equals(GRAPH_PREFIX + graphId + META_SUFFIX)) {
+                    metaDocHolder.set(doc);
                 } else if ("graph_node".equals(type)) {
-                    nodeDocs.add(doc);
+                    String nodeId = doc.get("nodeId") instanceof String value ? value : docId;
+                    // The dedicated metadata document is canonical. Legacy vector-bearing node
+                    // documents remain readable only when no canonical record exists.
+                    if (docId.contains(NODE_METADATA_PREFIX)) {
+                        nodeDocs.put(nodeId, doc);
+                    } else {
+                        nodeDocs.putIfAbsent(nodeId, doc);
+                    }
                 } else if ("graph_edge".equals(type)) {
                     edgeDocs.add(doc);
                 } else if ("adjacency_matrix".equals(type)) {
                     adjDocs.add(doc);
                 } else if ("node_embeddings".equals(type)) {
-                    embdDoc = doc;
+                    embdDocHolder.set(doc);
                 }
                 // Unknown types are silently discarded
             }
-            offset += page.size();
-        } while (page.size() == vectorScanPageSize);
+            });
+        } catch (IOException failure) {
+            throw new IllegalStateException("Strict graph snapshot scan failed for " + graphId, failure);
+        }
+
+        Map<String, Object> metaDoc = metaDocHolder.get();
+        Map<String, Object> embdDoc = embdDocHolder.get();
 
         if (metaDoc == null) {
             log.debug("No graph_metadata document found for graphId='{}' in vector store", graphId);
             return Optional.empty();
         }
+        int scannedVersion = metaDoc.get("storageVersion") instanceof Number value
+                ? value.intValue() : 1;
+        requireCompleteStorageState(graphId, new GraphStorageMetadata(scannedVersion, 0, 0));
 
         // Reconstruct graph
         Object capObj = metaDoc.get("capacity");
@@ -1204,7 +2414,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         // documents are keyed by the STORED indices, so we need this side-map to
         // translate them back to nodeIds before calling graph.addEdge(nodeId, …).
         Map<Integer, String> storedIndexToNodeId = new HashMap<>();
-        for (Map<String, Object> nodeDoc : nodeDocs) {
+        for (Map<String, Object> nodeDoc : nodeDocs.values()) {
             MatrixGraphNode node = deserializeNodeFromMetadata(nodeDoc);
             if (node != null) {
                 // Capture the persisted index BEFORE addNode() overwrites it.
@@ -1217,14 +2427,19 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         }
 
         int totalEdgesFailed = 0;
-        for (Map<String, Object> edgeDoc : edgeDocs) {
-            totalEdgesFailed += restoreEdgeDocument(graph, edgeDoc);
-        }
-        // Legacy aggregate documents are accepted only when no canonical edge docs exist.
-        if (edgeDocs.isEmpty()) {
+        // Restore legacy aggregates first, then overlay the complete canonical edge set. Before
+        // applying canonical records, clear both sparse orientations for every canonical endpoint
+        // pair so a directed canonical edge cannot retain a stale legacy reverse direction.
+        if (scannedVersion < CANONICAL_DOCUMENT_STORAGE_VERSION) {
             for (Map<String, Object> adjDoc : adjDocs) {
                 totalEdgesFailed += restoreAdjacencyMatrix(graph, adjDoc, storedIndexToNodeId);
             }
+        }
+        for (Map<String, Object> edgeDoc : edgeDocs) {
+            clearCanonicalEdgeEndpoints(graph, edgeDoc);
+        }
+        for (Map<String, Object> edgeDoc : edgeDocs) {
+            totalEdgesFailed += restoreEdgeDocument(graph, edgeDoc);
         }
         if (totalEdgesFailed > 0) {
             log.warn("Graph '{}': {} edges could not be resolved and were dropped "
@@ -1232,7 +2447,7 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
         }
 
         // Restore node embedding matrix (if one was persisted).
-        if (embdDoc != null) {
+        if (embdDoc != null && scannedVersion < CANONICAL_DOCUMENT_STORAGE_VERSION) {
             restoreNodeEmbeddings(graph, embdDoc, storedIndexToNodeId);
         }
 
@@ -1309,6 +2524,17 @@ public class VectorStoreMatrixGraphStore implements MatrixGraphStore {
      *
      * @return the count of edges that could NOT be resolved (for aggregate logging)
      */
+    @SuppressWarnings("unchecked")
+    private void clearCanonicalEdgeEndpoints(
+            AdjacencyMatrixGraph graph, Map<String, Object> edgeDoc) {
+        String source = edgeDoc.get("sourceNodeId") instanceof String value ? value : null;
+        String target = edgeDoc.get("targetNodeId") instanceof String value ? value : null;
+        String edgeType = edgeDoc.get("edgeType") instanceof String value ? value : null;
+        if (source == null || target == null || edgeType == null) return;
+        graph.removeEdge(source, target, edgeType);
+        graph.removeEdge(target, source, edgeType);
+    }
+
     @SuppressWarnings("unchecked")
     private int restoreEdgeDocument(AdjacencyMatrixGraph graph, Map<String, Object> edgeDoc) {
         try {

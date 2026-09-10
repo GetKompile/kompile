@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 
 /**
  * Drives a multi-turn conversation loop with graph tool-calling.
@@ -37,6 +38,9 @@ public final class ChatEngine {
             "relation", "node", "edge", "neighbor", "path", "timeline", "fact",
             "verify", "why not", "rank", "asset", "artifact", "connected",
             "organization", "people", "person");
+
+    private static final String THINK_OPEN = "<think>";
+    private static final String THINK_CLOSE = "</think>";
 
     private final InferenceRouter router;
     private final GraphToolBackend bridge;
@@ -211,10 +215,10 @@ public final class ChatEngine {
             List<ProtocolExchange> exchanges,
             ChatStreamListener listener) {
         ChatRequest firstRequest = new ChatRequest(messages, toolsJson, toolChoice);
-        java.util.function.Consumer<String> textConsumer = toolChoice == ChatRequest.ToolChoice.NONE
-                ? listener::onText
-                : ignored -> {};
-        ChatResponse first = router.generateStreaming(firstRequest, opts, textConsumer);
+        ProgressTextConsumer firstProgress = progressTextConsumer(toolChoice, listener);
+        ChatResponse first = router.generateStreaming(
+                firstRequest, opts, firstProgress);
+        firstProgress.complete();
         listener.onResponse(first);
         ProtocolExchange firstExchange = new ProtocolExchange(
                 firstRequest.toJson(), first.rawText(), first.protocolErrors());
@@ -235,7 +239,10 @@ public final class ChatEngine {
                         + String.join("; ", first.protocolErrors())
                         + ". Retry the same turn using the model's declared response protocol."));
         ChatRequest retryRequest = new ChatRequest(retryMessages, toolsJson, toolChoice);
-        ChatResponse retry = router.generateStreaming(retryRequest, opts, textConsumer);
+        ProgressTextConsumer retryProgress = progressTextConsumer(toolChoice, listener);
+        ChatResponse retry = router.generateStreaming(
+                retryRequest, opts, retryProgress);
+        retryProgress.complete();
         listener.onResponse(retry);
         ProtocolExchange retryExchange = new ProtocolExchange(
                 retryRequest.toJson(), retry.rawText(), retry.protocolErrors());
@@ -247,6 +254,109 @@ public final class ChatEngine {
                     + String.join("; ", retry.protocolErrors()));
         }
         return retry;
+    }
+
+    /**
+     * Preserve real token streaming without exposing a partial tool-call envelope.
+     * Content-only requests can forward every chunk. Tool-enabled requests may
+     * contain model-owned JSON/control syntax, so only thinking-block markup and
+     * body text are forwarded while the final structured response remains authoritative.
+     */
+    private static ProgressTextConsumer progressTextConsumer(
+            ChatRequest.ToolChoice toolChoice,
+            ChatStreamListener listener) {
+        if (toolChoice == ChatRequest.ToolChoice.NONE) {
+            return listener::onText;
+        }
+        return new ThinkingBlockStreamFilter(listener::onText);
+    }
+
+    private interface ProgressTextConsumer extends Consumer<String> {
+        default void complete() {}
+    }
+
+    /**
+     * Incrementally forwards one leading {@code <think>...</think>} block across
+     * arbitrary chunk boundaries. Once non-whitespace protocol text or the closing
+     * marker is observed, all remaining bytes are suppressed.
+     */
+    private static final class ThinkingBlockStreamFilter implements ProgressTextConsumer {
+        private final Consumer<String> downstream;
+        private final StringBuilder pending = new StringBuilder();
+        private boolean inThinking;
+        private boolean done;
+
+        private ThinkingBlockStreamFilter(Consumer<String> downstream) {
+            this.downstream = downstream;
+        }
+
+        @Override
+        public void accept(String chunk) {
+            if (done || chunk == null || chunk.isEmpty()) {
+                return;
+            }
+            pending.append(chunk);
+            drain();
+        }
+
+        private void drain() {
+            while (true) {
+                String marker = inThinking ? THINK_CLOSE : THINK_OPEN;
+                int markerIndex = pending.indexOf(marker);
+                if (markerIndex >= 0) {
+                    if (!inThinking) {
+                        if (!pending.substring(0, markerIndex).isBlank()) {
+                            done = true;
+                            pending.setLength(0);
+                            return;
+                        }
+                        pending.delete(0, markerIndex + marker.length());
+                        downstream.accept(marker);
+                        inThinking = true;
+                        continue;
+                    }
+
+                    if (markerIndex > 0) {
+                        downstream.accept(pending.substring(0, markerIndex));
+                    }
+                    pending.delete(0, markerIndex + marker.length());
+                    downstream.accept(marker);
+                    inThinking = false;
+                    done = true;
+                    pending.setLength(0);
+                    return;
+                }
+
+                // Keep only enough trailing characters to recognize a marker
+                // split across the next native/token IPC chunk.
+                int keep = marker.length() - 1;
+                if (pending.length() > keep) {
+                    int consumed = pending.length() - keep;
+                    if (inThinking) {
+                        downstream.accept(pending.substring(0, consumed));
+                    } else if (!pending.substring(0, consumed).isBlank()) {
+                        done = true;
+                        pending.setLength(0);
+                        return;
+                    }
+                    pending.delete(0, consumed);
+                }
+                return;
+            }
+        }
+
+        @Override
+        public void complete() {
+            if (!done && inThinking) {
+                if (pending.length() > 0) {
+                    downstream.accept(pending.toString());
+                }
+                downstream.accept(THINK_CLOSE);
+            }
+            pending.setLength(0);
+            inThinking = false;
+            done = true;
+        }
     }
 
     private static boolean hasGraphToolIntent(List<Message> history, String userInput) {

@@ -83,6 +83,7 @@ public class NoteSyncConnectionService {
                 .authStatusMessage(initialAuthMessage(req))
                 .autoCommit(req.getAutoCommit() != null ? req.getAutoCommit() : true)
                 .remoteSyncEnabled(req.getRemoteSyncEnabled() != null ? req.getRemoteSyncEnabled() : true)
+                .enabled(false)
                 .build();
 
         if (req.getProvider() == SyncProvider.OBSIDIAN) {

@@ -86,12 +86,13 @@ public class CodeIndexCommand implements Callable<Integer> {
                     Paths.get(directory).toAbsolutePath() :
                     Paths.get(System.getProperty("user.dir"));
 
-            String projectId = (project != null && !project.isEmpty()) ?
-                    project : dir.getFileName().toString();
+            String projectId = ProjectIdResolver.resolve(project, dir).projectId();
 
             LocalCodeIndexer indexer = new LocalCodeIndexer();
             LocalCodeIndexer.IndexResult result = indexer.index(
                     dir, projectId, include, exclude, force, System.out);
+            LocalCodeKGraphPublisher.ProjectionResult projection =
+                    LocalCodeKGraphPublisher.publish(dir, projectId, include, exclude);
 
             System.out.println();
             System.out.println("Index Summary:");
@@ -102,6 +103,8 @@ public class CodeIndexCommand implements Callable<Integer> {
             System.out.println("  Files (re-indexed):   " + (result.filesProcessed() - result.filesSkipped() - result.filesDeleted()));
             System.out.println("  Files (deleted):      " + result.filesDeleted());
             System.out.println("  Entities:             " + result.entitiesFound());
+            System.out.println("  Knowledge base:       " + projection.knowledgeBaseId());
+            System.out.println("  KGraph:               " + projection.graphPath());
             if (result.errors() > 0) {
                 System.out.println("  Errors:               " + result.errors());
             }
@@ -148,8 +151,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
                 List<Map<String, Object>> results = indexer.search(projectId, query, entityType, maxResults);
@@ -247,8 +250,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 SpathResolver resolver = new SpathResolver(projectId);
                 SpathResolver.SpathResult result = resolver.resolve(spathQuery, maxResults);
@@ -371,8 +374,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
                 CodeSearchEngine engine = new CodeSearchEngine(indexer);
@@ -457,8 +460,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
                 CodeSearchEngine engine = new CodeSearchEngine(indexer);
@@ -526,8 +529,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
                 CodeSearchEngine engine = new CodeSearchEngine(indexer);
@@ -597,14 +600,14 @@ public class CodeIndexCommand implements Callable<Integer> {
                         Paths.get(directory).toAbsolutePath() :
                         Paths.get(System.getProperty("user.dir"));
 
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : dir.getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project, dir).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
 
                 // Do an initial index first
                 System.out.println("Running initial index...");
                 indexer.index(dir, projectId, null, null, System.out);
+                LocalCodeKGraphPublisher.publish(dir, projectId, null, null);
 
                 // Start watching
                 IndexFileWatcher watcher = indexer.createWatcher(dir, projectId, System.out);
@@ -616,7 +619,11 @@ public class CodeIndexCommand implements Callable<Integer> {
 
                     @Override
                     public void onIndexUpdated(LocalCodeIndexer.IndexResult result) {
-                        // Output is handled by the watcher itself
+                        try {
+                            LocalCodeKGraphPublisher.publish(dir, projectId, null, null);
+                        } catch (Exception e) {
+                            System.err.println("[watch] KGraph publication failed: " + e.getMessage());
+                        }
                     }
 
                     @Override
@@ -693,8 +700,8 @@ public class CodeIndexCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             try {
-                String projectId = (project != null && !project.isEmpty()) ?
-                        project : Paths.get(System.getProperty("user.dir")).getFileName().toString();
+                String projectId = ProjectIdResolver.resolve(project,
+                        Paths.get(System.getProperty("user.dir"))).projectId();
 
                 LocalCodeIndexer indexer = new LocalCodeIndexer();
                 Map<String, Object> stats = indexer.getStats(projectId);

@@ -2,6 +2,8 @@ package ai.kompile.chat.local.android.model
 
 import android.app.Instrumentation
 import android.os.Bundle
+import android.os.Process
+import android.os.SystemClock
 import androidx.test.platform.app.InstrumentationRegistry
 import ai.kompile.chat.local.GenOptions
 import ai.kompile.chat.local.Message
@@ -32,7 +34,162 @@ class TensorG3QualificationTest {
         sendStatus("QUALIFICATION_PASS")
     }
 
-    private fun runDecode(expectedCacheHit: Boolean, passMarker: String) {
+    /** Functional evidence only: no environment-floor veto, cache deletion, or promotion marker. */
+    @Test
+    fun functionalQwenDecodeUsesRequestedPrecision() {
+        val weightOptimization = WeightOptimization.valueOf(requiredArgument("weight_optimization"))
+        runDecode(
+            expectedCacheHit = null,
+            passMarker = "FUNCTIONAL_DECODE_PASS",
+            strictQualification = false,
+            preparationOptions = ModelPreparationOptions(
+                weightOptimization = weightOptimization,
+                diagnosticMode = arguments.getString("diagnostic_mode")
+                    ?.let(ModelDiagnosticMode::valueOf) ?: ModelDiagnosticMode.OFF,
+            ),
+        )
+    }
+
+    /** Read-only, paged export; does not initialize a model or change its diagnostics. */
+    @Test
+    fun exportDiagnosticSnapshot() {
+        assertEquals(requiredArgument("expected_build_id"), BuildConfig.APK_BUILD_ID)
+        val relativePath = when (requiredArgument("diagnostic_file")) {
+            "smoke" -> "diagnostics/smoke-decode/smoke-decode.log"
+            "dsp" -> "diagnostics/dsp/dsp-diagnostics.json"
+            else -> error("diagnostic_file must be smoke or dsp")
+        }
+        val offset = arguments.getString("diagnostic_offset")?.toLong() ?: 0L
+        require(offset >= 0L) { "diagnostic_offset must be nonnegative" }
+        val file = File(context.filesDir, relativePath)
+        assertTrue("diagnostic file missing: $relativePath", file.isFile)
+        if (arguments.getString("diagnostic_copy") == "true") {
+            val digest = sha256(file)
+            val destination = File(requireNotNull(context.getExternalFilesDir(null)),
+                "diagnostic-${file.name}-$digest")
+            if (!destination.exists()) file.copyTo(destination, overwrite = false)
+            assertEquals(digest, sha256(destination))
+            sendStatus("DIAGNOSTIC_COPY:${destination.absolutePath},bytes=${destination.length()},sha256=$digest")
+            return
+        }
+        sendStatus("DIAGNOSTIC_FILE:$relativePath,bytes=${file.length()},characterOffset=$offset")
+        file.bufferedReader().use { reader ->
+            var remaining = offset
+            while (remaining > 0L) {
+                val skipped = reader.skip(remaining)
+                if (skipped == 0L) break
+                remaining -= skipped
+            }
+            require(remaining == 0L) { "diagnostic_offset exceeds file length" }
+            val buffer = CharArray(2048)
+            var exported = 0
+            while (exported < 65536) {
+                val count = reader.read(buffer, 0, minOf(buffer.size, 65536 - exported))
+                if (count < 0) break
+                sendStatus("DIAGNOSTIC_CHUNK:${offset + exported}:${String(buffer, 0, count)}")
+                exported += count
+            }
+            sendStatus("DIAGNOSTIC_NEXT_CHARACTER_OFFSET:${offset + exported}")
+        }
+    }
+
+    /** Export bounded preparation evidence only; never initialize or modify a model/cache. */
+    @Test
+    fun exportPreparationEvidence() {
+        assertEquals(requiredArgument("expected_build_id"), BuildConfig.APK_BUILD_ID)
+        val sourceSha = requiredSha256Argument("source_sha256")
+        val report = org.json.JSONObject()
+        val diagnostics = ai.kompile.chat.local.android.diagnostics.ImportDiagnosticStore(context).load()
+        report.put("importDiagnostics", org.json.JSONArray().apply {
+            diagnostics.forEach { entry ->
+                put(org.json.JSONObject().put("timestamp", entry.timestampEpochMillis)
+                    .put("details", ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy.copyText(entry)))
+            }
+        })
+        val cache = File(context.noBackupFilesDir, "sdx-model-cache/v1").canonicalFile
+        val entries = org.json.JSONArray()
+        var visited = 0
+        for (root in listOf(File(cache, "prepared/$sourceSha"), File(cache, "sources"))) {
+            if (!root.isDirectory) continue
+            for (file in root.walkTopDown().maxDepth(10)) {
+                check(++visited <= 10000) { "Preparation inventory exceeds diagnostic bound" }
+                check(file.canonicalPath.startsWith(cache.path + File.separator)) { "Cache path escaped root" }
+                if (!file.isFile) continue
+                val item = org.json.JSONObject().put("path", file.relativeTo(cache).path)
+                    .put("bytes", file.length()).put("modified", file.lastModified())
+                // Only small identity/phase metadata. Never read GGUF/SDZ weight payloads.
+                if ((file.extension == "path" || file.extension == "json") && file.length() <= 8192L) {
+                    file.bufferedReader().use { reader ->
+                        val chars = CharArray(8193)
+                        val count = reader.read(chars)
+                        check(count <= 8192) { "Metadata grew beyond diagnostic bound" }
+                        item.put("text", if (count > 0) String(chars, 0, count) else "")
+                    }
+                }
+                entries.put(item)
+            }
+        }
+        report.put("cacheEntries", entries)
+        val text = report.toString(2)
+        check(text.length <= 8 * 1024 * 1024) { "Preparation report exceeds diagnostic bound" }
+        val destination = File.createTempFile("preparation-evidence-", ".json",
+            requireNotNull(context.getExternalFilesDir(null)))
+        destination.writeText(text)
+        sendStatus("DIAGNOSTIC_COPY:${destination.absolutePath},bytes=${destination.length()},sha256=${sha256(destination)}")
+    }
+
+    /** Snapshot the exact failing artifact, never reimport or alter the runtime cache. */
+    @Test
+    fun exportCanonicalModelSnapshot() {
+        assertEquals(requiredArgument("expected_build_id"), BuildConfig.APK_BUILD_ID)
+        val sourceId = requiredSha256Argument("canonical_source_id")
+        val expectedHash = requiredSha256Argument("canonical_sdz_sha256")
+        val cache = File(context.noBackupFilesDir, "sdx-model-cache/v1").canonicalFile
+        val model = File(cache, "sources/$sourceId/model.sdz")
+        assertTrue("canonical model missing", model.isFile)
+        assertEquals(expectedHash, sha256(model))
+        val tokenizerFiles = listOf("tokenizer.json", "tokenizer_config.json").map { name ->
+            File(context.filesDir, "functional/$name").also {
+                assertTrue("tokenizer asset missing: $name", it.isFile)
+            }
+        }
+        val external = requireNotNull(context.getExternalFilesDir(null))
+        val destination = File(external, "diagnostic-snapshot-$sourceId")
+        require(!destination.exists()) { "snapshot already exists; do not overwrite evidence" }
+        require(external.usableSpace > model.length() + 128L * 1024 * 1024) {
+            "insufficient space for a preserved model snapshot"
+        }
+        check(destination.mkdirs())
+        val copy = File(destination, "model.sdz")
+        model.copyTo(copy, overwrite = false)
+        assertEquals(expectedHash, sha256(copy))
+        sendStatus("SNAPSHOT_MODEL:${copy.absolutePath},bytes=${copy.length()},sha256=$expectedHash")
+        // Keep small identity/compile/text-generation metadata in its original relative layout.
+        cache.walkTopDown().maxDepth(10).filter {
+            it.isFile && it.length() <= 1024 * 1024 &&
+                (it.extension == "json" || it.extension == "path")
+        }.forEach { file ->
+            val relative = file.relativeTo(cache).path
+            val output = File(destination, "cache-metadata/$relative")
+            check(output.parentFile!!.mkdirs() || output.parentFile!!.isDirectory)
+            file.copyTo(output, overwrite = false)
+            sendStatus("SNAPSHOT_METADATA:$relative,bytes=${file.length()},sha256=${sha256(output)}")
+        }
+        for (file in tokenizerFiles) {
+            file.copyTo(File(destination, file.name), overwrite = false)
+            sendStatus("SNAPSHOT_TOKENIZER:${file.name},sha256=${sha256(file)}")
+        }
+        sendStatus("SNAPSHOT_COMPLETE:${destination.absolutePath}")
+    }
+
+    private fun runDecode(
+        expectedCacheHit: Boolean?,
+        passMarker: String,
+        strictQualification: Boolean = true,
+        preparationOptions: ModelPreparationOptions = ModelPreparationOptions(
+            weightOptimization = WeightOptimization.Q4_K,
+        ),
+    ) {
         val expectedBuildId = requiredArgument("expected_build_id")
         val expectedSourceSha256 = requiredSha256Argument("expected_source_runtime_aar_sha256")
         val expectedProvenanceSha256 = requiredSha256Argument("expected_runtime_provenance_sha256")
@@ -49,41 +206,71 @@ class TensorG3QualificationTest {
         assertEquals(expectedProvenanceSha256, BuildConfig.RUNTIME_PROVENANCE_SHA256)
         assertEquals(expectedAotProvenanceSha256, BuildConfig.SDX_AOT_PROVENANCE_SHA256)
 
-        val model = File(context.filesDir, "qualification/model.gguf").canonicalFile
-        assertTrue("qualification model is missing: $model", model.isFile)
+        val modelDirectory = if (strictQualification) "qualification" else "functional"
+        val model = File(context.filesDir, "$modelDirectory/model.gguf").canonicalFile
+        assertTrue("test model is missing: $model", model.isFile)
         assertEquals(expectedModelBytes, model.length())
         assertEquals(expectedModelSha256, sha256(model))
-        sendStatus("PROCESS_PID:${android.os.Process.myPid()}")
+        sendStatus("PROCESS_PID:${Process.myPid()}")
         sendStatus("INPUT_VERIFIED")
-        preflightMemoryFloor(passMarker)
+        sendStatus("MODEL_PROFILE:${preparationOptions.conversionProfileJson()}")
+        sendStatus("RUN_POLICY:${if (strictQualification) "STRICT_QUALIFICATION" else "FUNCTIONAL"}")
+        if (strictQualification) {
+            preflightMemoryFloor()
+        } else {
+            recordMemory("FUNCTIONAL_PREFLIGHT")
+        }
 
         val options = GenOptions.builder()
             .temperature(0.0)
             .maxTokens(16)
             .build()
-        val messages = listOf(Message.user("Reply with exactly one short word."))
+        val messages = listOf(Message.user("Reply with the single word: ready"))
 
-        AcceleratedChatModelAndroid(
+        val answer = AcceleratedChatModelAndroid(
             context = context,
             modelPath = model.absolutePath,
             temperature = 0.0f,
             maxTokens = 16,
             verifiedSourceSha256 = expectedModelSha256,
-            verifiedSourceBytes = expectedModelBytes
+            verifiedSourceBytes = expectedModelBytes,
+            preparationOptions = preparationOptions,
+            onPreparationStage = { stage -> recordMemory("PREPARATION_STAGE:${stage.name}") },
         ).use { runtime ->
             val info = assertNotNull(runtime.preparationInfo).let { runtime.preparationInfo!! }
-            if (expectedCacheHit) {
+            if (expectedCacheHit == true) {
                 assertTrue("warm import did not reuse the exact target cache", info.cacheHit)
-            } else {
+            } else if (expectedCacheHit == false) {
                 assertFalse("cold import unexpectedly reused a target cache", info.cacheHit)
             }
             assertEquals(expectedModelSha256, info.sourceSha256)
             assertEquals(expectedModelBytes, info.sourceBytes)
+            assertEquals(preparationOptions.profileSha256(), info.conversionProfileSha256)
             assertEquals("LOCAL_TENSOR_G3_NNAPI", runtime.routeName)
+            sendStatus(
+                "PREPARED_MODEL:cacheHit=${info.cacheHit},profileSha256=${info.conversionProfileSha256}" +
+                    ",canonicalSdzBytes=${info.canonicalSdzBytes},contextLength=${info.contextLength}" +
+                    ",maxPrefillLength=${info.maxPrefillLength}"
+            )
+            recordMemory("BEFORE_DECODE")
             val answer = runtime.generate(messages, options)
             assertTrue("decode returned no text", answer.isNotBlank())
-            sendStatus(passMarker)
+            sendStatus("DECODE_TEXT:$answer")
+            recordMemory("AFTER_DECODE")
+            answer
         }
+        recordMemory("RUNTIME_CLOSED")
+        assertEquals("decode must answer the prompt, not merely return nonblank text", "ready", answer.trim())
+        sendStatus(passMarker)
+    }
+
+    private fun recordMemory(phase: String) {
+        val snapshot = currentModelPreparationMemorySnapshot()
+        sendStatus(
+            "$phase:elapsedRealtimeMillis=${SystemClock.elapsedRealtime()}" +
+                ",availableBytes=${snapshot.availableBytes},swapFreeBytes=${snapshot.swapFreeBytes}" +
+                ",readable=${snapshot.readable}"
+        )
     }
 
     private fun requiredArgument(name: String): String =
@@ -110,94 +297,38 @@ class TensorG3QualificationTest {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * The import pipeline legitimately needs 2.5 GB free RAM plus swap headroom to
-     * convert and optimize the canonical SDZ. The Pixel 8a shares its zram with
-     * every background app, so when the phone is under load the import dies in
-     * low-memory termination even though the flow itself is correct. Gate the
-     * run on a memory floor: wait up to 90s for other apps to settle, then fail
-     * fast with an unambiguous DEVICE_UNDER_LOAD diagnostic instead of letting
-     * the importer die mid-convert and misreporting it as a code regression.
-     */
-    private fun preflightMemoryFloor(passMarker: String) {
-        val minAvailableBytes = 2_500_000_000L
-        val minSwapFreeBytes = 2_000_000_000L
-        val deadline = android.os.SystemClock.elapsedRealtime() + 90_000L
-        var last = memorySnapshot()
-        while (android.os.SystemClock.elapsedRealtime() < deadline) {
-            requireReadableMemorySnapshot(last)
-            if (last.availableBytes >= minAvailableBytes &&
-                last.swapFreeBytes >= minSwapFreeBytes) {
-                break
-            }
-            sendStatus(
-                "MEMORY_PREFLIGHT_WAIT:" +
-                    "availableBytes=${last.availableBytes}" +
-                    ",swapFreeBytes=${last.swapFreeBytes}" +
-                    ",minAvailableBytes=$minAvailableBytes" +
-                    ",minSwapFreeBytes=$minSwapFreeBytes"
-            )
-            Thread.sleep(5_000)
-            last = memorySnapshot()
-        }
-        requireReadableMemorySnapshot(last)
-        sendStatus(
-            "MEMORY_PREFLIGHT:" +
-                "availableBytes=${last.availableBytes}" +
-                ",swapFreeBytes=${last.swapFreeBytes}" +
-                ",minAvailableBytes=$minAvailableBytes" +
-                ",minSwapFreeBytes=$minSwapFreeBytes" +
-                ",thresholdMet=${last.availableBytes >= minAvailableBytes &&
-                    last.swapFreeBytes >= minSwapFreeBytes}"
+    /** Qualification environment policy only; this is not a model-fit admission test. */
+    private fun preflightMemoryFloor() {
+        val preflight = awaitModelPreparationMemoryPreflight(
+            timeoutMillis = MODEL_PREPARATION_QUALIFICATION_WAIT_TIMEOUT_MILLIS,
+            onWaiting = { waiting ->
+                requireReadableMemoryPreflight(waiting)
+                sendStatus("MEMORY_PREFLIGHT_WAIT:${waiting.statusFields()}")
+            },
+            minimumAvailableBytes = TENSOR_G3_QUALIFICATION_MIN_AVAILABLE_BYTES,
+            minimumSwapFreeBytes = TENSOR_G3_QUALIFICATION_MIN_SWAP_FREE_BYTES,
         )
-        if (last.availableBytes < minAvailableBytes ||
-            last.swapFreeBytes < minSwapFreeBytes) {
-            sendStatus(
-                "DEVICE_UNDER_LOAD: " +
-                    "MemAvailable=${last.availableBytes / 1_000_000}MB " +
-                    "(need ${minAvailableBytes / 1_000_000}MB), " +
-                    "SwapFree=${last.swapFreeBytes / 1_000_000}MB " +
-                    "(need ${minSwapFreeBytes / 1_000_000}MB). " +
-                    "Close background apps and rerun; the import pipeline needs " +
-                    "the memory floor and $passMarker would not be meaningful."
-            )
-            throw IllegalStateException(
-                "DEVICE_UNDER_LOAD: insufficient free memory for import " +
-                    "(available=${last.availableBytes}B, swapFree=${last.swapFreeBytes}B)"
-            )
+        requireReadableMemoryPreflight(preflight)
+        sendStatus("MEMORY_PREFLIGHT:${preflight.statusFields()}")
+        if (!preflight.thresholdMet) {
+            val message = preflight.userMessage("qualification model")
+            sendStatus("DEVICE_UNDER_LOAD: Qualification environment criteria not met. $message")
+            throw IllegalStateException("DEVICE_UNDER_LOAD: $message")
         }
     }
 
-    private fun requireReadableMemorySnapshot(snapshot: MemorySnapshot) {
-        if (snapshot.availableBytes <= 0L || snapshot.swapFreeBytes < 0L) {
+    private fun requireReadableMemoryPreflight(preflight: ModelPreparationMemoryPreflight) {
+        if (!preflight.snapshot.readable) {
             sendStatus(
                 "MEMORY_PREFLIGHT_ERROR:" +
-                    "availableBytes=${snapshot.availableBytes}" +
-                    ",swapFreeBytes=${snapshot.swapFreeBytes}"
+                    "availableBytes=${preflight.snapshot.availableBytes}" +
+                    ",swapFreeBytes=${preflight.snapshot.swapFreeBytes}"
             )
             throw IllegalStateException(
                 "MEMORY_PREFLIGHT_ERROR: could not read MemAvailable/SwapFree from /proc/meminfo"
             )
         }
     }
-
-    private fun memorySnapshot(): MemorySnapshot {
-        var availableBytes = -1L
-        var swapFreeBytes = -1L
-        java.io.File("/proc/meminfo").useLines { lines ->
-            for (line in lines) {
-                when {
-                    line.startsWith("MemAvailable:") -> availableBytes =
-                        line.substringAfter(':').trim().substringBefore(' ').toLong() * 1024
-                    line.startsWith("SwapFree:") -> swapFreeBytes =
-                        line.substringAfter(':').trim().substringBefore(' ').toLong() * 1024
-                }
-            }
-        }
-        return MemorySnapshot(availableBytes, swapFreeBytes)
-    }
-
-    private data class MemorySnapshot(val availableBytes: Long, val swapFreeBytes: Long)
 
     private fun sendStatus(marker: String) {
         instrumentation.sendStatus(

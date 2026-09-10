@@ -7,7 +7,9 @@ package ai.kompile.knowledgegraph.unified;
 
 import ai.kompile.graph.reasoning.debug.UnifiedGraphDebugRenderer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +20,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /** HTTP transport for the portable {@code .kgraph} contract used by CLI and MCP clients. */
@@ -30,8 +34,22 @@ public class UnifiedGraphIOController {
 
     private final UnifiedGraphBridge bridge;
 
+    @Value("${kompile.graph.import.profile:COMPATIBILITY}")
+    private String importProfile = "COMPATIBILITY";
+
     public UnifiedGraphIOController(UnifiedGraphBridge bridge) {
         this.bridge = bridge;
+    }
+
+    /** Advertise the actual import boundary so clients never infer managed completeness from a URL. */
+    @GetMapping(value = "/import-capabilities", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, Object> importCapabilities() {
+        String profile = normalizedImportProfile();
+        return Map.of(
+                "profile", profile,
+                "managedCompleteness", "MANAGED".equals(profile),
+                "durability", "EPHEMERAL".equals(profile) ? "EPHEMERAL" : "COMPENSATING",
+                "projectBatchImport", false);
     }
 
     @GetMapping(value = "/export")
@@ -84,12 +102,28 @@ public class UnifiedGraphIOController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> importGraph(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "factSheetId", required = false) Long factSheetId) {
+            @RequestParam(value = "factSheetId", required = false) Long factSheetId,
+            @RequestParam(value = "requireManaged", defaultValue = "false") boolean requireManaged) {
         if (file == null || file.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "A non-empty .kgraph file is required"));
         }
+        String profile = normalizedImportProfile();
+        if (requireManaged && !"MANAGED".equals(profile)) {
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(Map.of(
+                    "error", "Managed .kgraph import is not available on this service",
+                    "profile", profile));
+        }
         try {
-            return ResponseEntity.ok(bridge.importBytes(file.getBytes(), factSheetId));
+            UnifiedGraphBridge.ImportSummary summary = bridge.importBytes(file.getBytes(), factSheetId);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("nodes", summary.nodes());
+            response.put("edges", summary.edges());
+            response.put("embeddings", summary.embeddings());
+            response.put("atoms", summary.atoms());
+            response.put("graphBuildEventPublished", summary.graphBuildEventPublished());
+            response.put("profile", profile);
+            response.put("durability", "EPHEMERAL".equals(profile) ? "EPHEMERAL" : "COMPENSATING");
+            return ResponseEntity.ok(response);
         } catch (IOException | IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", safeMessage(e)));
         }
@@ -99,5 +133,15 @@ public class UnifiedGraphIOController {
         return error.getMessage() == null || error.getMessage().isBlank()
                 ? "Invalid .kgraph payload"
                 : error.getMessage();
+    }
+
+    private String normalizedImportProfile() {
+        String value = importProfile == null ? "COMPATIBILITY" : importProfile.trim().toUpperCase(Locale.ROOT);
+        String normalized = switch (value) {
+            case "MANAGED", "EPHEMERAL" -> value;
+            default -> "COMPATIBILITY";
+        };
+        return "MANAGED".equals(normalized) && !bridge.hasDurableImportJournal()
+                ? "COMPATIBILITY" : normalized;
     }
 }

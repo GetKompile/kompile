@@ -44,6 +44,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final Logger LOG = LogManager.getLogger(GenericDenseSameDiffEncoder.class);
+    // Must remain representable in float16; a 1e-12 scalar underflows to zero before division.
+    private static final double MIN_L2_NORM = 1e-6;
 
     public enum PoolingStrategy {
         AUTO,
@@ -766,16 +768,15 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                         LOG.warn("[{}] Sum of squares returned invalid value: {}. Using epsilon.", this.modelIdentifier, sumVal);
                         sumVal = 0.0;
                     }
-                    double clampedVal = Math.max(sumVal, 1e-12);
-                    // Compute sqrt in Java as well to avoid any ND4J scalar issues
-                    double normVal = Math.sqrt(clampedVal);
+                    // Clamp the norm itself, matching vectorized and sequential batch paths.
+                    double normVal = l2Denominator(sumVal);
                     norm = Nd4j.scalar(sumOfSquares.dataType(), normVal);
                 } finally {
                     if (squared != null) squared.close();
                     if (sumOfSquares != null) sumOfSquares.close();
                 }
 
-                // With clamp already applied, norm is guaranteed to be >= sqrt(1e-12) ≈ 1e-6
+                // With clamp already applied, norm is guaranteed to be >= 1e-6.
                 normMax = norm;
                 // Use div instead of divi to avoid modifying reshapedEmbedding in place
                 // since we need to close it properly
@@ -886,7 +887,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             sum = weighted.sum(1);
             rawCounts = mask.sum(1);
             counts = rawCounts.reshape(logicalRows, 1).dup();
-            INDArray epsilon = Nd4j.scalar(1e-12f);
+            INDArray epsilon = Nd4j.scalar(1.0f);
             try {
                 boundedCounts = Transforms.max(counts, epsilon, false);
             } finally {
@@ -2298,7 +2299,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 // platforms), cascading into NaN after div.  Zeroing non-finite values preserves all
                 // finite components and produces a valid unit vector after normalization.  A row that was
                 // entirely NaN becomes all-zero; norm2 returns 0 for that row; the epsilon clamp raises
-                // it to 1e-12; division yields a near-zero but finite vector; isIndexableEmbedding
+                // it to the float16-safe norm floor; division yields a finite vector; isIndexableEmbedding
                 // correctly rejects it (completely broken FP16 forward pass).
                 sanitizeNonFinite(logicalEmbeddings);
                 // VECTORIZED L2 normalization using ND4J's native norm2 operation
@@ -2307,7 +2308,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
                 // Clamp norms to avoid division by zero, then reshape for broadcast
                 // Use Transforms.max for vectorized clamping with epsilon
-                INDArray epsilon = Nd4j.scalar(1e-12f);
+                INDArray epsilon = Nd4j.scalar((float) MIN_L2_NORM);
                 try {
                     boundedNorms = Transforms.max(rawNorms, epsilon, false);
                 } finally {
@@ -2450,6 +2451,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                     modelIdentifier, Arrays.toString(reshapedEmbedding.shape()));
 
             if (this.normalizeOutput) {
+                sanitizeNonFinite(reshapedEmbedding);
                 // L2 normalization
                 squared = reshapedEmbedding.mul(reshapedEmbedding);
                 sumOfSquares = squared.sum(true, 1);
@@ -2457,7 +2459,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 if (Double.isNaN(sumVal) || sumVal < 0) {
                     sumVal = 0.0;
                 }
-                double normVal = Math.sqrt(Math.max(sumVal, 1e-12));
+                double normVal = l2Denominator(sumVal);
                 normalized = reshapedEmbedding.div(normVal);
 
                 LOG.info("[{}] SHAPE EXTRACT FINAL: Normalized output shape={}, returning float[{}]",
@@ -2490,5 +2492,12 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 try { singleOutput.close(); } catch (Exception ignored) {}
             }
         }
+    }
+
+    static double l2Denominator(double sumOfSquares) {
+        if (!Double.isFinite(sumOfSquares) || sumOfSquares <= 0.0) {
+            return MIN_L2_NORM;
+        }
+        return Math.max(Math.sqrt(sumOfSquares), MIN_L2_NORM);
     }
 }

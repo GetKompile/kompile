@@ -67,6 +67,7 @@ public class DirectSubagentRunnerStdio {
     private volatile McpSessionTracker sessionTracker;
     private volatile SkillsInjection skillsInjection;
     private volatile SystemPromptManager systemPromptManager;
+    private volatile Map<String, String> baseEnvironment = Map.of();
     private volatile Map<String, String> extraEnvironment = Map.of();
     private volatile String lastTaskId;
 
@@ -95,8 +96,13 @@ public class DirectSubagentRunnerStdio {
         this.systemPromptManager = spm;
     }
 
+    /** Environment that every delegated agent inherits, independent of temporary policy overlays. */
+    public void setBaseEnvironment(Map<String, String> env) {
+        this.baseEnvironment = env != null ? Map.copyOf(env) : Map.of();
+    }
+
     public void setExtraEnvironment(Map<String, String> env) {
-        this.extraEnvironment = env != null ? env : Map.of();
+        this.extraEnvironment = env != null ? Map.copyOf(env) : Map.of();
     }
 
     public String getLastTaskId() {
@@ -108,6 +114,7 @@ public class DirectSubagentRunnerStdio {
         fork.setSessionTracker(sessionTracker);
         fork.setSkillsInjection(skillsInjection);
         fork.setSystemPromptManager(systemPromptManager);
+        fork.setBaseEnvironment(baseEnvironment);
         fork.setExtraEnvironment(extraEnvironment);
         return fork;
     }
@@ -222,8 +229,10 @@ public class DirectSubagentRunnerStdio {
         SubprocessAgentRunner runner = createManagedRunner(agentName, injectMcpTools);
         runner.setLaunchOverrides(modelOverride, thinkingOverride);
         runner.setSkipPermissions(true);
-        Map<String, String> env = new LinkedHashMap<>(extraEnvironment);
+        Map<String, String> env = new LinkedHashMap<>(baseEnvironment);
+        env.putAll(extraEnvironment);
         env.put("KOMPILE_SUBAGENT_DEPTH", String.valueOf(currentDepth + 1));
+        env.put("KOMPILE_AGENT_NAME", agentName);
         runner.setExtraEnvironment(env);
         runner.setOutputConsumer(line -> {
             synchronized (captured) {

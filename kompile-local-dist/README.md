@@ -6,7 +6,7 @@ MCP tools that orchestrate models, pipelines, crawl, and knowledge work inside a
 project without starting `kompile-app`. The native executable tier is an explicit
 `native` profile (`-Pnative`) over the same assembler.
 
-The local archive contains the CLI, model-serving and pipeline-serving
+The local archive contains the main and agent CLIs, model-serving and pipeline-serving
 artifacts, one backend's validated runtime closure, matching SDX packages, and the
 canonical Kompile build scripts. The JVM tier carries the runnable JARs; the
 native tier carries prebuilt native executables and side-loaded libraries when
@@ -47,7 +47,8 @@ canonical skip flags rather than using a separate packaging path:
 ```
 
 The native source-build target closure is
-`cli,model-serving,pipeline-serving`. Override `NATIVE_TARGETS` only
+`cli,agent,model-serving,pipeline-serving`. The agent CLI provides packaged-agent
+and `kompile spin` lifecycle support. Override `NATIVE_TARGETS` only
 for incremental development; a release archive still fails closed if any
 required local execution executable is absent.
 

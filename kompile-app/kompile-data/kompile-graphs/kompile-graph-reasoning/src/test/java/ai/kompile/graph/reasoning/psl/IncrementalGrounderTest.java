@@ -38,6 +38,17 @@ class IncrementalGrounderTest {
         return p;
     }
 
+    private static List<String> groundSignatures(List<GroundRule> rules) {
+        return rules.stream()
+                .map(rule -> rule.templateIndex() + "|" + rule.display())
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    private static void assertGroundingMatches(PslProgram expected, IncrementalGrounder actual) {
+        assertEquals(groundSignatures(expected.ground()), groundSignatures(actual.groundRules()));
+    }
+
     // ─── Initial grounding ───────────────────────────────────────────────────────
 
     @Nested
@@ -147,6 +158,110 @@ class IncrementalGrounderTest {
             IncrementalGrounder ig = new IncrementalGrounder(p);
             assertDoesNotThrow(() -> ig.removeAtom("State(nonexistent)"));
         }
+
+        @Test
+        void removingAtomFromProgramPreventsResurrection() {
+            PslProgram p = smallProgram();
+            IncrementalGrounder ig = new IncrementalGrounder(p);
+
+            ig.removeAtom("Link(alice, bob)");
+
+            assertFalse(p.contains("Link(alice, bob)"),
+                    "Removal must delete the atom from the wrapped program, not only prune rules");
+            assertTrue(ig.groundRules().isEmpty(),
+                    "A removed body atom must not reappear during affected-template replacement");
+
+            ig.addAtom(PslAtom.ground("Link", "alice", "bob"), 0.6);
+            assertTrue(p.contains("Link(alice, bob)"), "Explicit re-add must restore the atom");
+            assertEquals(0.6, p.value("Link(alice, bob)"), 1e-9);
+            assertEquals(1, ig.groundRuleCount(), "The explicitly re-added atom should ground the rule again");
+        }
+    }
+
+    // ─── Lifecycle equivalence ───────────────────────────────────────────────────
+
+    @Nested
+    class LifecycleEquivalence {
+
+        @Test
+        void addUpdateRemoveReaddMatchesFullGrounding() {
+            PslProgram p = smallProgram();
+            IncrementalGrounder ig = new IncrementalGrounder(p);
+
+            ig.addAtom(PslAtom.ground("Link", "alice", "bob"), 0.4);
+            assertEquals(0.4, p.value("Link(alice, bob)"), 1e-9);
+            assertGroundingMatches(p, ig);
+
+            ig.removeAtom("Link(alice, bob)");
+            assertFalse(p.contains("Link(alice, bob)"));
+            assertGroundingMatches(p, ig);
+
+            ig.addAtom(PslAtom.ground("Link", "alice", "bob"), 0.9);
+            assertEquals(0.9, p.value("Link(alice, bob)"), 1e-9);
+            assertGroundingMatches(p, ig);
+        }
+
+        @Test
+        void observedTargetTransitionsMatchFullGrounding() {
+            PslProgram p = smallProgram();
+            IncrementalGrounder ig = new IncrementalGrounder(p);
+
+            ig.addTargetAtom(PslAtom.ground("State", "alice"));
+            assertFalse(p.isObserved("State(alice)"));
+            assertEquals(0.0, p.value("State(alice)"), 1e-9);
+            assertGroundingMatches(p, ig);
+
+            ig.addAtom(PslAtom.ground("State", "alice"), 0.35);
+            assertTrue(p.isObserved("State(alice)"));
+            assertEquals(0.35, p.value("State(alice)"), 1e-9);
+            assertGroundingMatches(p, ig);
+        }
+
+        @Test
+        void batchedDeltasApplyInOrderAndMatchFullGrounding() {
+            PslProgram p = smallProgram();
+            IncrementalGrounder ig = new IncrementalGrounder(p);
+
+            ig.applyAtomDeltas(List.of(
+                    IncrementalGrounder.AtomDelta.remove(PslAtom.ground("Link", "alice", "bob")),
+                    IncrementalGrounder.AtomDelta.observe(
+                            PslAtom.ground("Link", "alice", "bob"), 0.6),
+                    IncrementalGrounder.AtomDelta.observe(
+                            PslAtom.ground("Link", "alice", "charlie"), 0.7),
+                    IncrementalGrounder.AtomDelta.target(PslAtom.ground("State", "charlie"))));
+
+            assertEquals(0.6, p.value("Link(alice, bob)"), 1e-9);
+            assertEquals(0.7, p.value("Link(alice, charlie)"), 1e-9);
+            assertTrue(p.contains("Link(alice, bob)"));
+            assertTrue(p.contains("Link(alice, charlie)"));
+            assertGroundingMatches(p, ig);
+        }
+
+        @Test
+        void duplicateRuleInstancesWithEqualWeightsRemainDistinct() {
+            PslRule duplicate = PslRule.parse("1.0: State(X) -> Prior(X) ^2");
+
+            PslProgram expected = new PslProgram();
+            expected.addRule(duplicate);
+            expected.addRule(duplicate);
+            expected.observe("State", 1.0, "alice");
+            expected.target("Prior", "alice");
+
+            PslProgram actual = new PslProgram();
+            actual.addRule(duplicate);
+            actual.addRule(duplicate);
+            actual.observe("State", 1.0, "alice");
+            actual.target("Prior", "alice");
+            IncrementalGrounder ig = new IncrementalGrounder(actual);
+
+            assertEquals(2, expected.ground().size(),
+                    "Full grounding must retain both equal template instances");
+            assertEquals(List.of(0, 1), ig.groundRules().stream()
+                    .map(GroundRule::templateIndex)
+                    .sorted()
+                    .collect(Collectors.toList()));
+            assertGroundingMatches(expected, ig);
+        }
     }
 
     // ─── Add rule ────────────────────────────────────────────────────────────────
@@ -251,6 +366,20 @@ class IncrementalGrounderTest {
         @Test
         void nullProgramThrows() {
             assertThrows(IllegalArgumentException.class, () -> new IncrementalGrounder(null));
+        }
+
+        @Test
+        void invalidBatchDoesNotPartiallyMutateProgram() {
+            PslProgram p = smallProgram();
+            IncrementalGrounder ig = new IncrementalGrounder(p);
+            List<IncrementalGrounder.AtomDelta> deltas = new java.util.ArrayList<>();
+            deltas.add(IncrementalGrounder.AtomDelta.observe(
+                    PslAtom.ground("State", "charlie"), 0.4));
+            deltas.add(null);
+
+            assertThrows(IllegalArgumentException.class, () -> ig.applyAtomDeltas(deltas));
+            assertFalse(p.contains("State(charlie)"),
+                    "A malformed batch must not apply an earlier entry without replacement");
         }
     }
 }

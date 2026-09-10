@@ -150,13 +150,15 @@ def extract_sdk_archive(source: Path, destination: Path) -> None:
         raise RuntimeError(f"unsupported DL4J SDK archive: {source}")
 
 
-def validate_sdk_assets(root: Path, description: str) -> None:
+def validate_sdk_assets(
+    root: Path, description: str, *, require_runtime: bool = True,
+) -> None:
     runtime_packages = [
         item for item in root.rglob("*")
         if item.is_file() and item.suffix.lower() in {".zip", ".aar"}
     ]
     platform_jars = list((root / "jars").glob("*.jar")) if (root / "jars").is_dir() else []
-    if not runtime_packages or not platform_jars:
+    if (require_runtime and not runtime_packages) or not platform_jars:
         raise RuntimeError(
             f"incomplete DL4J SDK assets from {description}: "
             f"runtime packages={len(runtime_packages)}, platform jars={len(platform_jars)}"
@@ -442,6 +444,14 @@ def dl4j_sdk_artifact_ids(build: dict[str, Any]) -> list[str]:
         return artifacts
     if backend == "cuda":
         cuda_version = str(build["cudaVersion"])
+        if "zluda" in str(build.get("dl4jLane", "")):
+            return [
+                f"nd4j-zluda-{cuda_version}",
+                f"nd4j-zluda-{cuda_version}-platform",
+                f"nd4j-cuda-{cuda_version}-preset",
+                "nd4j-cuda-backend-common",
+                "nd4j-presets-common",
+            ]
         base = f"nd4j-cuda-{cuda_version}"
         return [base, f"{base}-preset", f"{base}-platform"]
     raise RuntimeError(
@@ -455,9 +465,11 @@ def hydrate_dl4j_sdk_jars(
     repository: Path,
     destination: Path,
     classifier: str,
+    *,
+    build_override: dict[str, Any] | None = None,
 ) -> None:
     """Replace companion SDK jars with artifacts from the configured Maven repo."""
-    build = config["shard"]["build"]
+    build = build_override or config["shard"]["build"]
     backend = str(build["backend"])
     platform_name = str(build["javacppPlatform"])
     # The Java reactor (including samediff-llm) consumes the common CPU
@@ -465,7 +477,9 @@ def hydrate_dl4j_sdk_jars(
     artifacts = dl4j_sdk_artifact_ids(build)
 
     coordinates = [(artifact, "") for artifact in artifacts]
-    coordinates.extend([(artifacts[0], classifier), (artifacts[1], classifier)])
+    coordinates.append((artifacts[0], classifier))
+    if "zluda" not in str(build.get("dl4jLane", "")):
+        coordinates.append((artifacts[1], classifier))
     # A compile/accelerator classifier does not replace the base platform
     # classifier required by Java test dependencies. Hydrate both from the
     # configured repository before the reactor starts.
@@ -497,6 +511,40 @@ def hydrate_dl4j_sdk_jars(
     if not any(jars.glob("*.jar")):
         raise RuntimeError(
             f"configured DL4J Maven repository produced no SDK jars for {classifier}"
+        )
+
+
+def stage_local_dl4j_sdk_jars(
+    repository: Path,
+    destination: Path,
+    version: str,
+    build: dict[str, Any],
+    classifier: str,
+) -> None:
+    """Stage a Maven-only SDK shard from artifacts just installed by a source lane."""
+    artifacts = dl4j_sdk_artifact_ids(build)
+    source = repository / "org" / "eclipse" / "deeplearning4j"
+    jars = destination / "jars"
+    shutil.rmtree(jars, ignore_errors=True)
+    jars.mkdir(parents=True)
+    missing: list[str] = []
+    for artifact_id in artifacts:
+        artifact = source / artifact_id / version / f"{artifact_id}-{version}.jar"
+        if not artifact.is_file():
+            missing.append(f"{artifact_id}:{version}")
+            continue
+        shutil.copy2(artifact, jars / artifact.name)
+    classified = (
+        source / artifacts[0] / version /
+        f"{artifacts[0]}-{version}-{classifier}.jar"
+    )
+    if not classified.is_file():
+        missing.append(f"{artifacts[0]}:{version}:{classifier}")
+    else:
+        shutil.copy2(classified, jars / classified.name)
+    if missing:
+        raise RuntimeError(
+            "source-built DL4J Maven-only SDK is incomplete: " + ", ".join(missing)
         )
 
 
@@ -800,7 +848,9 @@ def distribution_backend_lane(config: dict[str, Any], variant: str) -> tuple[str
     if variant == "cuda":
         return "linux-x86_64-cuda-12-9", ["base"]
     if variant == "amd-zluda":
-        return "linux-x86_64-zluda", ["zluda"]
+        # ROCm 7.2.4 remains the qualified default; candidate ROCm versions use
+        # dedicated platform shards so selecting amd-zluda never promotes them.
+        return "linux-x86_64-zluda", ["cuda-12.9"]
     cpu_lane = {
         "linux-x86_64": "linux-x86_64-cpu",
         "linux-arm64": "linux-arm64-cpu",
@@ -832,14 +882,57 @@ def build_distribution(config: dict[str, Any], source: Path, repository: Path,
                 "--output-dir", str(assets),
             ]
             if prerequisite is not None:
-                lane_id, variants = prerequisite
+                lane_id, dl4j_variants = prerequisite
+                lane_id = str(variant_data.get("dl4jLane", lane_id))
+                if "dl4jVariant" in variant_data:
+                    dl4j_variants = [str(variant_data["dl4jVariant"])]
+                if len(dl4j_variants) != 1:
+                    raise RuntimeError(
+                        f"distribution prerequisite {lane_id} must select exactly one DL4J variant"
+                    )
+                require_sdk = bool(variant_data.get("requireSdk", True))
+                sdk_classifier = str(variant_data.get("sdkClassifier", ""))
+                backend_build = {
+                    "backend": "cuda",
+                    "cudaVersion": "12.9",
+                    "javacppPlatform": shard["build"]["javacppPlatform"],
+                    "dl4jLane": lane_id,
+                }
+                if not require_sdk and not sdk_classifier:
+                    raise RuntimeError(
+                        f"Maven-only distribution prerequisite {lane_id} must declare sdkClassifier"
+                    )
                 if uses_prebuilt_dl4j(config):
-                    download_dl4j_sdk_assets(config, lane_id, variant, sdk_assets)
+                    if require_sdk:
+                        download_dl4j_sdk_assets(
+                            config, lane_id, dl4j_variants[0], sdk_assets,
+                        )
+                    else:
+                        hydrate_dl4j_sdk_jars(
+                            config, source, repository, sdk_assets, sdk_classifier,
+                            build_override=backend_build,
+                        )
                 else:
                     run_dl4j_release_lane(
-                        config, source, repository, maven_output, sdk_assets, lane_id, variants,
+                        config, source, repository, maven_output, sdk_assets,
+                        lane_id, dl4j_variants, require_sdk=require_sdk,
                     )
-                    validate_sdk_assets(sdk_assets, f"DL4J source lane {lane_id}")
+                    if require_sdk:
+                        validate_sdk_assets(sdk_assets, f"DL4J source lane {lane_id}")
+                    else:
+                        stage_local_dl4j_sdk_jars(
+                            repository, sdk_assets, config["snapshotVersion"],
+                            backend_build, sdk_classifier,
+                        )
+                if not require_sdk:
+                    validate_sdk_assets(
+                        sdk_assets, f"DL4J Maven-only lane {lane_id}",
+                        require_runtime=False,
+                    )
+                    stage_dl4j_release_artifacts(
+                        repository, maven_output,
+                        dl4j_sdk_artifact_ids(backend_build),
+                    )
                 env["KOMPILE_SDX_ASSETS_DIR"] = str(sdk_assets)
                 command.extend(("--sdx-assets", str(sdk_assets)))
             else:
@@ -903,15 +996,15 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
                     download_dl4j_sdk_assets(
                         config, lane_id, dl4j_variant, sdk_assets,
                     )
-                    hydrate_dl4j_sdk_jars(
-                        config, source, repository, sdk_assets, classifier,
-                    )
-                    stage_dl4j_release_artifacts(
-                        repository,
-                        maven_output,
-                        dl4j_sdk_artifact_ids(build)
-                        if build.get("backend") in {"cpu", "cuda"} else [],
-                    )
+                hydrate_dl4j_sdk_jars(
+                    config, source, repository, sdk_assets, classifier,
+                )
+                stage_dl4j_release_artifacts(
+                    repository,
+                    maven_output,
+                    dl4j_sdk_artifact_ids(build)
+                    if build.get("backend") in {"cpu", "cuda"} else [],
+                )
             else:
                 run_dl4j_release_lane(
                     config,
@@ -945,7 +1038,7 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
 
             command = [
                 "bash", "./build-scripts/build-kompile-platform.sh", classifier,
-                "--variant", "full",
+                "--variant", str(variant.get("kompileVariant", "full")),
                 "--skip-dl4j",
                 "--maven-repo-local", str(repository),
                 "--nd4j-version", config["snapshotVersion"],

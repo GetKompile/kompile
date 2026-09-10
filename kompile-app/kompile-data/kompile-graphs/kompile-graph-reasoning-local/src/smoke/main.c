@@ -93,6 +93,11 @@ int main(int argc, char **argv) {
     /* ── 3. Open fixture ───────────────────────────────────────────────────── */
     long long session = kgr_open(thread, fixture_path);
     printf("  kgr_open session = %lld\n", session);
+    if (session == 0) {
+        const char *open_error = kgr_last_error(thread);
+        fprintf(stderr, "  kgr_open error: %s\n", open_error ? open_error : "(null)");
+        kgr_free(thread, open_error);
+    }
     CHECK("kgr_open returns non-zero handle", session > 0);
 
     /* ── 4. Catalog — non-empty, contains ask_graph_verify ────────────────── */

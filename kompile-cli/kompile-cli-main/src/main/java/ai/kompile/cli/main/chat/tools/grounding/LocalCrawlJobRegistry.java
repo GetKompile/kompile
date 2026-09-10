@@ -241,7 +241,10 @@ final class LocalCrawlJobRegistry {
                 return "CANCELLED";
             }
             ToolResult completed = result;
-            if (completed != null) {
+            // finishedAt is published only after finish()/cancel() persisted the
+            // terminal transcript marker, so gating on it keeps "terminal" and the
+            // stored transcript consistent for pollers.
+            if (completed != null && finishedAt != null) {
                 Object requested = completed.getMetadata().get("status");
                 if (requested != null && terminalStatus(String.valueOf(requested))) {
                     return String.valueOf(requested).toUpperCase(Locale.ROOT);
@@ -287,9 +290,24 @@ final class LocalCrawlJobRegistry {
             }
         }
 
+        /** Terminal stage derived WITHOUT the finishedAt publish gate — for finish() itself. */
+        private String terminalStageNow() {
+            if (cancelRequested) {
+                return "CANCELLED";
+            }
+            ToolResult completed = result;
+            if (completed != null) {
+                Object requested = completed.getMetadata().get("status");
+                if (requested != null && terminalStatus(String.valueOf(requested))) {
+                    return String.valueOf(requested).toUpperCase(Locale.ROOT);
+                }
+                return completed.isError() ? "FAILED" : "COMPLETED";
+            }
+            return "FAILED";
+        }
+
         private synchronized void finish() {
-            finishedAt = Instant.now();
-            String terminalStage = status();
+            String terminalStage = terminalStageNow();
             stage = terminalStage;
             stageDetail = switch (terminalStage) {
                 case "COMPLETED", "COMPLETED_WITH_ERRORS" -> "Project-local crawl finished";
@@ -297,8 +315,13 @@ final class LocalCrawlJobRegistry {
                 default -> "Project-local crawl failed";
             };
             progressPercent = 100;
-            stageUpdatedAt = finishedAt;
-            persist("JOB_TERMINAL");
+            stageUpdatedAt = Instant.now();
+            // Persist an explicitly terminal durable snapshot BEFORE publishing finishedAt.
+            // status() uses finishedAt as its in-memory publication gate, so pollers cannot
+            // observe terminal=true until the matching JOB_TERMINAL state is on disk.
+            Instant completedAt = Instant.now();
+            persistTerminal("JOB_TERMINAL", terminalStage, completedAt);
+            finishedAt = completedAt;
         }
 
         private synchronized void updateStage(String nextStage, String detail, int percent) {
@@ -338,12 +361,15 @@ final class LocalCrawlJobRegistry {
                 boolean cancelled = submitted.cancel(true);
                 if (cancelled && workerEntered.compareAndSet(false, true)) {
                     result = ToolResult.error("Project-local crawl cancelled before execution.");
-                    finishedAt = Instant.now();
                     stage = "CANCELLED";
                     stageDetail = "Project-local crawl was cancelled";
                     progressPercent = 100;
-                    stageUpdatedAt = finishedAt;
-                    persist("JOB_TERMINAL");
+                    stageUpdatedAt = Instant.now();
+                    // Same publish ordering as finish(): durable terminal state first,
+                    // then finishedAt makes that state visible to in-memory pollers.
+                    Instant completedAt = Instant.now();
+                    persistTerminal("JOB_TERMINAL", "CANCELLED", completedAt);
+                    finishedAt = completedAt;
                 }
             }
             return true;
@@ -394,11 +420,13 @@ final class LocalCrawlJobRegistry {
             payload.put("schema", "kompile-crawl-result/v1");
             payload.put("backend", "project-local");
             payload.put("jobId", jobId);
-            if (knowledgeBase != null) {
-                payload.put("knowledgeBase", knowledgeBase);
+            String resolvedKnowledgeBase = effectiveKnowledgeBase();
+            if (resolvedKnowledgeBase != null) {
+                payload.put("knowledgeBase", resolvedKnowledgeBase);
             }
             payload.put("status", status());
             payload.put("terminal", terminal());
+            payload.put("cancellable", !terminal() && !cancelRequested);
             payload.put("resultAvailable", terminal() && result != null);
             payload.put("stage", stage);
             if (stageDetail != null) payload.put("stageDetail", stageDetail);
@@ -416,7 +444,8 @@ final class LocalCrawlJobRegistry {
             ObjectNode state = mapper.valueToTree(payload());
             state.put("schema", LocalCrawlJobStore.SCHEMA);
             state.put("ownerPid", ProcessHandle.current().pid());
-            if (knowledgeBase != null) state.put("knowledgeBaseId", knowledgeBase);
+            String resolvedKnowledgeBase = effectiveKnowledgeBase();
+            if (resolvedKnowledgeBase != null) state.put("knowledgeBaseId", resolvedKnowledgeBase);
             ToolResult completed = result;
             if (completed != null) {
                 ObjectNode storedResult = state.putObject("result");
@@ -433,14 +462,50 @@ final class LocalCrawlJobRegistry {
             LocalCrawlJobStore.persist(projectRoot, persistentState(new ObjectMapper()), eventType);
         }
 
+        private void persistTerminal(String eventType, String terminalStatus, Instant completedAt) {
+            if (projectRoot == null) return;
+            ObjectNode state = persistentState(new ObjectMapper());
+            state.put("status", terminalStatus);
+            state.put("terminal", true);
+            state.put("resultAvailable", result != null);
+            state.put("finishedAt", completedAt.toString());
+            LocalCrawlJobStore.persist(projectRoot, state, eventType);
+        }
+
         private void attachHandle(ObjectMapper mapper,
                                   Map<String, Object> payload,
                                   Map<String, Object> metadata) {
             ObjectNode node = mapper.valueToTree(payload);
-            CrawlResultHandle.from(node, "project-local", jobId, knowledgeBase)
+            CrawlResultHandle.from(node, "project-local", jobId, effectiveKnowledgeBase())
                     .attachTo(metadata);
             payload.put("crawlResult", metadata.get("crawlResult"));
             payload.put("nextActions", metadata.get("nextActions"));
+        }
+
+        private String effectiveKnowledgeBase() {
+            ToolResult completed = result;
+            if (completed != null) {
+                String direct = metadataText(completed.getMetadata(), "knowledgeBase");
+                if (direct == null) {
+                    direct = metadataText(completed.getMetadata(), "knowledgeBaseId");
+                }
+                if (direct != null) return direct;
+
+                Object nested = completed.getMetadata().get("crawlResult");
+                if (nested instanceof Map<?, ?> handle) {
+                    Object selected = handle.get("knowledgeBase");
+                    if (selected != null && !String.valueOf(selected).isBlank()) {
+                        return String.valueOf(selected).trim();
+                    }
+                }
+            }
+            return knowledgeBase;
+        }
+
+        private static String metadataText(Map<String, Object> metadata, String key) {
+            Object value = metadata.get(key);
+            return value == null || String.valueOf(value).isBlank()
+                    ? null : String.valueOf(value).trim();
         }
 
         private static String json(ObjectMapper mapper, Map<String, Object> value) {

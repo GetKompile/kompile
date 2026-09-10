@@ -49,7 +49,7 @@ import java.util.stream.Stream;
  * can_spawn: true
  * agent_defaults.codex.model: gpt-5.6-terra
  * agent_defaults.codex.thinking.default: medium
- * agent_defaults.codex.thinking.models.gpt-5.6-sol: ultra
+ * agent_defaults.codex.thinking.models.gpt-5.6-sol: max
  * tools: read, write, edit, bash, grep, glob
  * deny_tools: patch
  * ---

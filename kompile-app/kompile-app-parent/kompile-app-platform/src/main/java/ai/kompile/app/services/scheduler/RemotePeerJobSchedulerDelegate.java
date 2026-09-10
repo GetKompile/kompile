@@ -172,8 +172,7 @@ public class RemotePeerJobSchedulerDelegate implements ExternalJobSchedulerDeleg
                 addAuth(rb, configService.getConfiguration());
                 HttpResponse<String> resp = httpClient.send(rb.build(), HttpResponse.BodyHandlers.ofString());
                 if (resp.statusCode() == 404) {
-                    // Worker no longer tracks it — completion callback has already (or will) arrive.
-                    return new ExternalJobStatus(jobId, "RUNNING", "not tracked by worker", Map.of());
+                    return new ExternalJobStatus(jobId, "UNKNOWN", "not tracked by worker", Map.of());
                 }
                 if (resp.statusCode() / 100 != 2) {
                     return new ExternalJobStatus(jobId, "UNKNOWN", "HTTP " + resp.statusCode(), Map.of());

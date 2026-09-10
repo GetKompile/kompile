@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -82,7 +83,8 @@ final class DeterministicCorpusSchemaInferencer {
                         ? copy(authoritative)
                         : new NodeType(type,
                                 "Corpus-inferred type supported by deterministic concept categories.",
-                                null));
+                                null,
+                                SchemaHierarchyVocabulary.parentForGeneratedType(type)));
             }
             if (observedTypes.isEmpty()) {
                 continue;
@@ -132,12 +134,19 @@ final class DeterministicCorpusSchemaInferencer {
 
             List<String> aliases = relationAliases(candidate, canonicalPredicate,
                     authoritative == null ? List.of() : authoritative.getAliases());
+            String connectionFamily = authoritative == null
+                    ? SchemaHierarchyVocabulary.connectionFamilyForPredicate(canonicalPredicate)
+                    : authoritative.getConnectionFamily();
+            if (authoritative == null && connectionFamily == null) {
+                continue;
+            }
             RelationshipType inferred = authoritative != null
                     ? new RelationshipType(authoritative.getType(), authoritative.getDescription(),
-                            authoritative.getProperties(), aliases)
+                            authoritative.getProperties(), aliases,
+                            authoritative.getConnectionFamily())
                     : new RelationshipType(canonicalPredicate,
                             "Corpus-inferred relationship supported by deterministic predicate and endpoint evidence.",
-                            null, aliases);
+                            null, aliases, connectionFamily);
             inferredRelations.putIfAbsent(canonicalPredicate, inferred);
             inferredPatterns.addAll(patterns);
         }
@@ -269,7 +278,8 @@ final class DeterministicCorpusSchemaInferencer {
     }
 
     private static NodeType copy(NodeType type) {
-        return new NodeType(type.getLabel(), type.getDescription(), type.getProperties());
+        return new NodeType(type.getLabel(), type.getDescription(), type.getProperties(),
+                type.getParentType());
     }
 
     private static String schemaName(String value) {

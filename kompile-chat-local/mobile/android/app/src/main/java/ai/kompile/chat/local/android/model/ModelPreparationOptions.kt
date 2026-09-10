@@ -1,6 +1,5 @@
 package ai.kompile.chat.local.android.model
 
-import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -120,7 +119,8 @@ enum class ModelDiagnosticMode(
 internal fun effectiveDiagnosticModeForRuntime(requested: ModelDiagnosticMode): ModelDiagnosticMode =
     requested
 
-internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI = "ggml-runtime-packed-gdn-v7"
+internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI =
+    "ggml-fixed-plan-rolling-context-q4-linears-v9"
 internal const val MODEL_PREPARATION_EMBEDDING_DATA_TYPE = "HALF"
 internal const val MODEL_PREPARATION_LOGITS_MODE = "LAST_POSITION_ONLY"
 
@@ -148,7 +148,38 @@ data class ModelPreparationOptions(
         append('}')
     }
 
-    fun profileSha256(): String = sha256(conversionProfileJson())
+    fun profileSha256(): String = SdxHashing.sha256Hex(conversionProfileJson())
+
+    /** Single-line human label for cache/UI display; the only place labels are composed. */
+    fun profileLabel(): String =
+        "$weightOptimization.label · $kvCacheOptimization.label · batch $tensorBatchSize · " +
+            "diagnostics $diagnosticMode.label"
+
+    /**
+     * Canonical trace/diagnostic field list for this profile. The single source of truth —
+     * ChatViewModel smoke traces and import diagnostics render from this instead of
+     * maintaining their own field lists that can drift from the wire format.
+     */
+    fun traceFields(sourceName: String, sourceBytes: Long): Map<String, Any?> = mapOf(
+        "source_name" to sourceName,
+        "source_bytes" to sourceBytes,
+        "profile_sha256" to profileSha256(),
+        "weight_optimization" to weightOptimization.name,
+        "conversion_mode" to weightOptimization.conversionMode,
+        "requantize_type" to weightOptimization.requantizeType,
+        "kv_cache_optimization" to kvCacheOptimization.name,
+        "tensor_batch_size" to tensorBatchSize,
+        "use_memory_mapping" to useMemoryMapping,
+        "diagnostic_mode" to diagnosticMode.name,
+    )
+
+    fun toWireBundle(bundle: android.os.Bundle): android.os.Bundle = bundle.apply {
+        putString(WireKeys.WEIGHT_OPTIMIZATION, weightOptimization.name)
+        putString(WireKeys.KV_CACHE_OPTIMIZATION, kvCacheOptimization.name)
+        putInt(WireKeys.TENSOR_BATCH_SIZE, tensorBatchSize)
+        putBoolean(WireKeys.USE_MEMORY_MAPPING, useMemoryMapping)
+        putString(WireKeys.DIAGNOSTIC_MODE, diagnosticMode.name)
+    }
 
     fun optionsJson(verifiedSourceSha256: String?, verifiedSourceBytes: Long?): String {
         require((verifiedSourceSha256 == null) == (verifiedSourceBytes == null)) {
@@ -174,6 +205,15 @@ data class ModelPreparationOptions(
     }
 
     companion object {
+        /** Wire keys shared by the preparation request bundle, the response bundle, and prefs. */
+        object WireKeys {
+            const val WEIGHT_OPTIMIZATION = "weight_optimization"
+            const val KV_CACHE_OPTIMIZATION = "kv_cache_optimization"
+            const val TENSOR_BATCH_SIZE = "tensor_batch_size"
+            const val USE_MEMORY_MAPPING = "use_memory_mapping"
+            const val DIAGNOSTIC_MODE = "diagnostic_mode"
+        }
+
         private fun jsonString(value: String): String = buildString(value.length + 2) {
             append('"')
             value.forEach { character ->
@@ -200,18 +240,19 @@ data class ModelPreparationOptions(
             kvCacheOptimization = enumValueOrDefault(kvCacheOptimization, KvCacheOptimization.INT8),
             tensorBatchSize = tensorBatchSize.coerceIn(1, 256),
             useMemoryMapping = useMemoryMapping,
-            diagnosticMode = enumValueOrDefault(diagnosticMode, ModelDiagnosticMode.OFF),
+            diagnosticMode = diagnosticModeOrDefault(diagnosticMode),
         )
 
         private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, fallback: T): T =
             runCatching { enumValueOf<T>(value.orEmpty()) }.getOrDefault(fallback)
 
-        private fun sha256(value: String): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-                .digest(value.toByteArray(Charsets.UTF_8))
-            return buildString(64) {
-                digest.forEach { append("%02x".format(Locale.ROOT, it.toInt() and 0xff)) }
-            }
+        private fun diagnosticModeOrDefault(value: String?): ModelDiagnosticMode {
+            val normalized = value?.trim().orEmpty()
+            return ModelDiagnosticMode.entries.firstOrNull { mode ->
+                mode.name.equals(normalized, ignoreCase = true) ||
+                    mode.wireValue.equals(normalized, ignoreCase = true)
+            } ?: ModelDiagnosticMode.OFF
         }
+
     }
 }

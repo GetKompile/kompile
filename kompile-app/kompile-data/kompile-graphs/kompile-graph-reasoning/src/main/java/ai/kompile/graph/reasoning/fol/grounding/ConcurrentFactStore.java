@@ -14,12 +14,10 @@ import ai.kompile.graph.reasoning.fol.FactStore;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Thread-safe wrapper over {@link FactStore} with optimistic MVCC for concurrent agents.
@@ -65,8 +63,9 @@ public final class ConcurrentFactStore {
     /** Marker returned by {@link #assertFact(Fact, long)} on a write-write conflict. */
     public static final long CONFLICT = -1L;
 
-    private final ConcurrentHashMap<String, Fact> store = new ConcurrentHashMap<>();
-    private final AtomicLong versionCounter = new AtomicLong(0L);
+    private final FactStore store = new FactStore();
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    private long versionCounter;
 
     // ─── Simple (unconditional) assert ──────────────────────────────────────────
 
@@ -80,8 +79,13 @@ public final class ConcurrentFactStore {
      */
     public long assertFact(Fact fact) {
         Objects.requireNonNull(fact, "fact must not be null");
-        store.put(fact.atomKey(), fact);
-        return versionCounter.incrementAndGet();
+        lock.writeLock().lock();
+        try {
+            store.assertFact(fact);
+            return ++versionCounter;
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     // ─── Optimistic (versioned) assert ──────────────────────────────────────────
@@ -101,19 +105,13 @@ public final class ConcurrentFactStore {
      */
     public long assertFact(Fact fact, long expectedVersion) {
         Objects.requireNonNull(fact, "fact must not be null");
-        // Spin-CAS on the version counter: only succeed if version == expectedVersion
-        while (true) {
-            long current = versionCounter.get();
-            if (current != expectedVersion) {
-                return CONFLICT; // write-write conflict detected
-            }
-            // Try to advance the version; if another thread beat us, retry the check
-            if (versionCounter.compareAndSet(current, current + 1)) {
-                store.put(fact.atomKey(), fact);
-                return current + 1;
-            }
-            // Another thread incremented the counter between our read and CAS → conflict
-            return CONFLICT;
+        lock.writeLock().lock();
+        try {
+            if (versionCounter != expectedVersion) return CONFLICT;
+            store.assertFact(fact);
+            return ++versionCounter;
+        } finally {
+            lock.writeLock().unlock();
         }
     }
 
@@ -126,7 +124,22 @@ public final class ConcurrentFactStore {
      * @return the current version counter value
      */
     public long version() {
-        return versionCounter.get();
+        lock.readLock().lock();
+        try {
+            return versionCounter;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /** Advance the shared KB revision for a mutation applied through another observed-fact view. */
+    public long markMutation() {
+        lock.writeLock().lock();
+        try {
+            return ++versionCounter;
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     /**
@@ -136,7 +149,12 @@ public final class ConcurrentFactStore {
      * @return the fact, or empty if absent
      */
     public Optional<Fact> factFor(String atomKey) {
-        return Optional.ofNullable(store.get(atomKey));
+        lock.readLock().lock();
+        try {
+            return store.factFor(atomKey);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     /**
@@ -146,7 +164,12 @@ public final class ConcurrentFactStore {
      * @return unmodifiable collection of all current facts
      */
     public Collection<Fact> allFacts() {
-        return Collections.unmodifiableCollection(store.values());
+        lock.readLock().lock();
+        try {
+            return List.copyOf(store.allFacts());
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     /**
@@ -161,9 +184,12 @@ public final class ConcurrentFactStore {
      * @return an immutable {@link Snapshot} of the current state
      */
     public Snapshot snapshot() {
-        List<Fact> facts = new ArrayList<>(store.values());
-        long ver = versionCounter.get();
-        return new Snapshot(facts, ver);
+        lock.readLock().lock();
+        try {
+            return new Snapshot(new ArrayList<>(store.allFacts()), versionCounter);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     /**
@@ -173,11 +199,26 @@ public final class ConcurrentFactStore {
      * @return the removed fact, or empty if absent; bumps the version if a fact was removed
      */
     public Optional<Fact> retract(String atomKey) {
-        Fact removed = store.remove(atomKey);
-        if (removed != null) {
-            versionCounter.incrementAndGet();
+        lock.writeLock().lock();
+        try {
+            Optional<Fact> removed = store.retract(atomKey);
+            if (removed.isPresent()) versionCounter++;
+            return removed;
+        } finally {
+            lock.writeLock().unlock();
         }
-        return Optional.ofNullable(removed);
+    }
+
+    /** Retract one provenance source from all atoms, preserving remaining sources. */
+    public int retractBySource(String sourceId) {
+        lock.writeLock().lock();
+        try {
+            int removed = store.retractBySource(sourceId);
+            if (removed > 0) versionCounter++;
+            return removed;
+        } finally {
+            lock.writeLock().unlock();
+        }
     }
 
     /**
@@ -186,7 +227,12 @@ public final class ConcurrentFactStore {
      * @return fact count
      */
     public int size() {
-        return store.size();
+        lock.readLock().lock();
+        try {
+            return store.size();
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     /**
@@ -198,8 +244,11 @@ public final class ConcurrentFactStore {
      */
     public void applyTo(FactStore target) {
         Objects.requireNonNull(target, "target must not be null");
-        for (Fact fact : store.values()) {
-            target.assertFact(fact);
+        lock.readLock().lock();
+        try {
+            for (Fact fact : store.allSourceFacts()) target.assertFact(fact);
+        } finally {
+            lock.readLock().unlock();
         }
     }
 }

@@ -75,9 +75,9 @@
          (see build-scripts/build-dl4j-backend.sh for the full custom-build script). -->
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
     <nd4j.backend>nd4j-native</nd4j.backend>
-    <!-- The Java backend POM and the classified native binary normally share an
-         artifactId. ZLUDA is the exception: Java APIs come from nd4j-zluda while
-         its native binary is attached to nd4j-cuda-12.9. -->
+    <!-- The Java backend POM and the classified native binary share an artifactId.
+         Version-qualified ZLUDA releases use nd4j-zluda-12.9 for both, with the
+         ROCm runtime version carried by the JavaCPP classifier extension. -->
     <nd4j.native.backend>${nd4j.backend}</nd4j.native.backend>
     <!-- Activated repository credentials belong in settings.xml under this id. -->
     <dl4j.repository.id>dl4j-release</dl4j.repository.id>
@@ -1028,6 +1028,7 @@
       <activation><property><name>kompile.backend</name><value>tpu</value></property></activation>
       <properties><nd4j.backend>nd4j-tpu</nd4j.backend><kompile.distribution.platform.classifier>${javacpp.platform}-tpu</kompile.distribution.platform.classifier></properties>
     </profile>
+    <!-- Legacy unversioned ZLUDA coordinates remain selectable for already-published builds. -->
     <profile>
       <id>backend-zluda</id>
       <activation><property><name>kompile.backend</name><value>zluda</value></property></activation>
@@ -1037,6 +1038,53 @@
         <javacpp.platform.extension>-zluda</javacpp.platform.extension>
         <kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-zluda</kompile.distribution.platform.classifier>
       </properties>
+    </profile>
+    <profile>
+      <id>backend-zluda-rocm-7.2.4</id>
+      <activation><property><name>kompile.backend</name><value>zluda-rocm-7.2.4</value></property></activation>
+      <properties>
+        <rocm.version>7.2.4</rocm.version>
+        <nd4j.backend>nd4j-zluda-12.9</nd4j.backend>
+        <nd4j.native.backend>nd4j-zluda-12.9</nd4j.native.backend>
+        <javacpp.platform.extension>-zluda-rocm-7.2.4</javacpp.platform.extension>
+        <kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-zluda-rocm-7.2.4</kompile.distribution.platform.classifier>
+      </properties>
+    </profile>
+    <profile>
+      <id>backend-zluda-rocm-10.0.0</id>
+      <activation><property><name>kompile.backend</name><value>zluda-rocm-10.0.0</value></property></activation>
+      <properties>
+        <rocm.version>10.0.0</rocm.version>
+        <nd4j.backend>nd4j-zluda-12.9</nd4j.backend>
+        <nd4j.native.backend>nd4j-zluda-12.9</nd4j.native.backend>
+        <javacpp.platform.extension>-zluda-rocm-10.0.0</javacpp.platform.extension>
+        <kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-zluda-rocm-10.0.0</kompile.distribution.platform.classifier>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <version>3.1.0</version>
+            <executions>
+              <execution>
+                <id>require-rocm-10-linux-x86-64</id>
+                <phase>validate</phase>
+                <goals><goal>run</goal></goals>
+                <configuration>
+                  <target>
+                    <condition property="kompile.rocm10.unsupported.platform">
+                      <not><equals arg1="${javacpp.platform}" arg2="linux-x86_64"/></not>
+                    </condition>
+                    <fail if="kompile.rocm10.unsupported.platform"
+                          message="ROCm 10 ZLUDA builds require javacpp.platform=linux-x86_64 (got ${javacpp.platform})"/>
+                  </target>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
 
     <!--

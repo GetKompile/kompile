@@ -18,6 +18,8 @@ package ai.kompile.loader.slack;
 
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.oauth.service.OAuthConnectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.slack.api.Slack;
 import com.slack.api.methods.MethodsClient;
 import com.slack.api.methods.SlackApiException;
@@ -64,6 +66,15 @@ public class SlackHistoryLoaderImpl implements DocumentLoader {
     private String slackToken = "";
     private boolean includeThreads = true;
     private int defaultDays = 30;
+    private final OAuthConnectionService oauthService;
+
+    public SlackHistoryLoaderImpl() { this(null); }
+
+    @Autowired
+    public SlackHistoryLoaderImpl(
+            @Autowired(required = false) OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -121,7 +132,8 @@ public class SlackHistoryLoaderImpl implements DocumentLoader {
         if (sourceDescriptor.getMetadata() != null && sourceDescriptor.getMetadata().containsKey("slackToken")) {
             return (String) sourceDescriptor.getMetadata().get("slackToken");
         }
-        return slackToken;
+        if (slackToken != null && !slackToken.isBlank()) return slackToken;
+        return oauthService == null ? null : oauthService.getValidAccessToken("slack");
     }
 
     private void loadAllChannelsHistory(MethodsClient client, DocumentSourceDescriptor sourceDescriptor,

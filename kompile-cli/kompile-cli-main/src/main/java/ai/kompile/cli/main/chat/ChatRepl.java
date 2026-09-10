@@ -19,6 +19,15 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.activity.AgentActivitySnapshotService;
+import ai.kompile.cli.main.chat.activity.ActivityIdentity;
+import ai.kompile.cli.main.chat.activity.ConversationActivityService;
+import ai.kompile.cli.main.chat.activity.LogActivityAdapter;
+import ai.kompile.cli.main.chat.activity.ProjectActivityController;
+import ai.kompile.cli.main.chat.activity.TaskActivityAdapter;
+import ai.kompile.cli.main.chat.activity.ToolCallTailReader;
+import ai.kompile.cli.mcp.stdio.TaskRecord;
+import ai.kompile.cli.mcp.stdio.TaskRegistry;
 import ai.kompile.cli.main.chat.agent.*;
 import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
 import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
@@ -27,18 +36,30 @@ import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
-import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerDiagnostics;
+import ai.kompile.cli.main.chat.enforcer.EnforcerEvaluator;
+import ai.kompile.cli.main.chat.enforcer.EnforcerJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator;
+import ai.kompile.cli.main.chat.enforcer.JudgeControl;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.cli.main.chat.harness.JudgeBackend;
+import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
+import ai.kompile.cli.main.chat.harness.JudgeLlmEvaluator;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
+import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
+import ai.kompile.cli.main.chat.mcp.McpDashboardController;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
@@ -99,7 +120,20 @@ import java.util.stream.Collectors;
  *   <li>{@link SessionLifecycleManager} — session restore, summary, mode switching</li>
  * </ul>
  */
-public class ChatRepl {
+public class ChatRepl implements AutoCloseable {
+
+    // Captured before constructor work (including judge warmup).
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
+    private final ChatUiSession uiSession = ChatUiSession.current();
+    private LineReader retainedReader;
+    private Terminal retainedTerminal;
+    private boolean hostManaged;
+    private boolean interactiveInitialized;
+    private volatile boolean interactiveFinished;
+    private final AtomicBoolean resourcesClosed = new AtomicBoolean();
+    private Runnable codeIndexAlertCleanup = () -> { };
+    private Runnable coordinationAlertCleanup = () -> { };
+    private Runnable enforcerAlertCleanup = () -> { };
 
     // ── Core state ────────────────────────────────────────────────────────────
 
@@ -112,6 +146,7 @@ public class ChatRepl {
     private final ChatMemory chatMemory;
     private final ReminderManager reminderManager;
     private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
+    private final AtomicBoolean sessionTitleSyncPending = new AtomicBoolean();
     private boolean ragEnabled;
     private String agentName;
     private String localAgentName;
@@ -122,20 +157,42 @@ public class ChatRepl {
 
     // Tool & agent system
     private final ToolRegistry toolRegistry;
+    private final McpBundleToolLoader mcpBundleTools;
+    private volatile McpDashboardController dashboardController;
     private final AgentRegistry agentRegistry;
     private final SkillRegistry skillRegistry;
     private final RoleManager roleManager;
     private final PermissionService permissionService;
     private final AgenticChatLoop agenticLoop;
     private final DirectLlmClient directClient;
+    private final PerformanceHarness performanceHarness;
+    private final JudgeLlmEvaluator directToolJudge;
+    /** The only supervisory REPL exposed in the activity panel. */
+    private final AuxiliaryChatRepl judgeRepl;
+    /** Optional model-backed enforcer transport; never registered as a second REPL view. */
+    private volatile AuxiliaryChatRepl enforcerRepl;
+
+    /** User control over the judge: durable guidance + one-shot override (/judge). */
+    private final ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
+    /** Persistent master switch loaded from ~/.kompile/harness-config.json. */
+    private volatile boolean judgeGloballyEnabled;
+    private volatile EnforcerJudge enforcerJudge;
+    /** Opt-in goal-drift monitor; constructed only when the project config enables it. */
+    private volatile ai.kompile.cli.main.chat.enforcer.DirectionJudge directionJudge;
+    private volatile AuxiliaryChatRepl directionRepl;
+    private final AtomicBoolean auxiliarySupervisionActive = new AtomicBoolean(false);
     private final BackgroundProcessManager processManager;
+    private final CoordinationStateManager coordinationManager;
+    private final ProjectActivityController projectActivityController;
+    private final ConversationActivityService conversationActivityService;
     private final AtomicBoolean acceptingProcessWakeups = new AtomicBoolean(false);
     private final BackgroundProcessManager.MonitorCallback processExitWakeListener =
-            this::handleProcessExitWakeup;
+            (entry, monitor) -> sessionContext.wrap(() -> handleProcessExitWakeup(entry, monitor)).run();
     private final TerminalRenderer renderer;
     private AsciiRenderer ascii;
     private final Path workingDirectory;
     private volatile ScheduledLoopManager scheduledLoopManager;
+    private volatile ScheduledLoopManager globalScheduledLoopManager;
 
     // Mode
     private final boolean localMode;
@@ -171,13 +228,15 @@ public class ChatRepl {
     private volatile LineReader activeReader;
     private volatile Terminal activeTerminal;
     private volatile boolean modelPickerActive;
-    private volatile boolean transcriptMouseEnabled;
+    /** Set by /clear so the owning ChatCommand starts a fresh transcript in this JVM. */
+    private volatile boolean newConversationRequested;
 
     // Persistent below-bar status line showing processes, subagents, queue
     private final StatusBar statusBar;
 
     // Interactive process/subagent rows reserved directly below the input area.
     private final StandardChatActivityPanel activityPanel;
+    private volatile Runnable auxiliaryActivityRedraw = () -> { };
 
     // Pending file/image attachments for the next message
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
@@ -242,9 +301,22 @@ public class ChatRepl {
     public ChatRepl(McpSseClient mcpClient, String baseUrl, String sessionId,
                     boolean ragEnabled, String agentName, boolean memoryEnabled,
                     ChatConfig chatConfig, Path workingDirectory) {
+        this(mcpClient, baseUrl, sessionId, ragEnabled, agentName, memoryEnabled,
+                chatConfig, workingDirectory, new TerminalRenderer());
+    }
+
+    /** Package-private renderer seam for exercising the real retained lifecycle. */
+    ChatRepl(McpSseClient mcpClient, String baseUrl, String sessionId,
+             boolean ragEnabled, String agentName, boolean memoryEnabled,
+             ChatConfig incomingConfig, Path workingDirectory, TerminalRenderer renderer) {
         this.mcpClient = mcpClient;
         this.localMode = (mcpClient == null);
+        ChatConfig chatConfig = incomingConfig == null ? null : incomingConfig.copy();
         this.chatConfig = chatConfig;
+        if (chatConfig != null && mcpClient == null) {
+            try { chatConfig.bindSession(sessionId); }
+            catch (IOException e) { throw new IllegalStateException("Cannot persist session authentication", e); }
+        }
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -262,17 +334,21 @@ public class ChatRepl {
         this.localAgentName = "coder";
         this.forceAgentic = false;
         this.chatHistory = new ChatHistory(sessionId);
+        this.workingDirectory = workingDirectory == null
+                ? Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                : workingDirectory.toAbsolutePath().normalize();
+        Path workDir = this.workingDirectory;
 
         // ChatMemory works in both modes: persistent memory + transcripts always,
         // RAG search only when server is connected
-        this.chatMemory = new ChatMemory(mcpClient, sessionId, memoryEnabled);
+        this.chatMemory = new ChatMemory(mcpClient, sessionId, memoryEnabled, workDir);
 
         // Initialize tool & agent system
         this.permissionService = new PermissionService();
         this.agentRegistry = new AgentRegistry();
-        this.renderer = new TerminalRenderer();
+        this.renderer = Objects.requireNonNull(renderer, "renderer");
         this.ascii = new AsciiRenderer(renderer);
-        this.permissionService.setPromptListener(prompt -> {
+        this.permissionService.setPromptListener(sessionContext.wrapConsumer(prompt -> {
             ChatCompleter.printAbove("");
             ChatCompleter.printAbove(renderer.yellow("Permission required: ")
                     + renderer.bold(prompt.permissionKey()));
@@ -281,12 +357,8 @@ public class ChatRepl {
             }
             ChatCompleter.printAbove(renderer.dim(
                     "  Enter y=yes, n=no, a=allow for session, v=deny for session"));
-        });
+        }));
 
-        this.workingDirectory = workingDirectory == null
-                ? Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
-                : workingDirectory.toAbsolutePath().normalize();
-        Path workDir = this.workingDirectory;
         this.reminderManager = new ReminderManager(objectMapper, sessionId, workDir);
 
         // Load custom agents from .kompile/agents/ and ~/.kompile/agents/
@@ -312,11 +384,13 @@ public class ChatRepl {
 
         // Create background process manager for this session
         this.processManager = new BackgroundProcessManager(sessionId, workDir);
+        this.coordinationManager = new CoordinationStateManager(workDir, sessionId, objectMapper);
 
         this.toolRegistry = ToolRegistryFactory.create(
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,
                 permissionService, renderer, processManager,
-                localMode ? chatConfig : null, roleManager);
+                localMode ? chatConfig : null, roleManager, null,
+                workDir, coordinationManager);
         SubagentRunner configuredSubagentRunner = toolRegistry.getSubagentRunner();
         if (configuredSubagentRunner != null) {
             configuredSubagentRunner.setReminderManager(reminderManager);
@@ -324,7 +398,7 @@ public class ChatRepl {
 
         // Create DirectLlmClient for local mode
         this.directClient = localMode && chatConfig != null
-                ? new DirectLlmClient(chatConfig, objectMapper) : null;
+                ? new DirectLlmClient(chatConfig, objectMapper, workDir) : null;
 
         this.agenticLoop = new AgenticChatLoop(
                 baseUrl, objectMapper, toolRegistry, permissionService,
@@ -337,28 +411,79 @@ public class ChatRepl {
 
         // Initialize background task manager
         this.backgroundTaskManager = new BackgroundTaskManager();
+        this.backgroundTaskManager.setBackgroundableCheck(
+                () -> withSessionContext(agenticLoop::isBlockingSubagentInvocationActive));
 
         // Initialize unified TUI (TopBar + scroll region + StatusBar)
         this.tui = new KompileTui(backgroundTaskManager, processManager, messageQueue, renderer);
         this.statusBar = tui.getStatusBar();
+        this.conversationActivityService = new ConversationActivityService();
+        ActivityIdentity activityIdentity = ActivityIdentity.conversation(sessionId, workDir);
+        this.conversationActivityService.setCurrentSession(activityIdentity);
+        Path taskRegistryRoot = workDir.resolve(".kompile").resolve("task-registry");
+        if (Files.isDirectory(taskRegistryRoot)) {
+            this.conversationActivityService.addReader(identity -> new TaskActivityAdapter(() ->
+                    new TaskRegistry(workDir).listAll().stream()
+                            .map(record -> new TaskActivityAdapter.TaskObservation(
+                                    record.getSessionId(), record.getTaskId(),
+                                    record.getStatus() == TaskRecord.Status.FAILED))
+                            .toList()));
+        }
+        this.conversationActivityService.addReader(identity -> new LogActivityAdapter(() ->
+                processManager.listAll().stream()
+                        .map(entry -> new LogActivityAdapter.LogObservation(
+                                entry.getMetadata().getOrDefault("sessionId", sessionId),
+                                entry.getId(), entry.getStartTime(), entry.getEndTime(),
+                                entry.getState() == BackgroundProcessManager.ProcessState.FAILED))
+                        .toList()));
+        this.projectActivityController = new ProjectActivityController(
+                new AgentActivitySnapshotService(
+                        coordinationManager, new ToolCallTailReader()),
+                sessionId, tui::getTerminalWidth);
+        this.projectActivityController.setConversationActivityBrowser(
+                conversationActivityService, activityIdentity, workDir);
         this.activityPanel = new StandardChatActivityPanel(
                 backgroundTaskManager, processManager, statusBar, tui::getReservedMiddleRows);
+        this.activityPanel.setProjectActivityView(projectActivityController);
+
+        HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
+        this.judgeGloballyEnabled = harnessConfig.isJudgeGlobalEnabled();
+        this.agenticLoop.setWorkflowGlobalEnabled(judgeGloballyEnabled);
+        this.judgeControl = ai.kompile.cli.main.chat.enforcer.JudgeControl.load(sessionId);
+        this.judgeControl.setEnabled(judgeGloballyEnabled);
+        this.agenticLoop.setJudgeControl(judgeControl);
+        this.judgeRepl = harnessConfig.isEnabled() && harnessConfig.isJudgeEnabled()
+                ? createModelAuxiliaryRepl(
+                        AuxiliaryChatRepl.Kind.JUDGE,
+                        harnessConfig.getJudgeProvider(), harnessConfig.getJudgeApiKey(),
+                        harnessConfig.getJudgeModel(), harnessConfig.getJudgeBaseUrl())
+                : AuxiliaryChatRepl.observer(
+                        AuxiliaryChatRepl.Kind.JUDGE, "disabled");
+        attachAuxiliaryRepl(judgeRepl);
+        this.enforcerRepl = null;
+
         this.agenticLoop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
             @Override
             public void onToolStart(String callId, String toolName, String rawInput) {
-                activityPanel.recordToolStart(callId, toolName, rawInput);
+                sessionContext.wrap(() -> activityPanel.recordToolStart(callId, toolName, rawInput)).run();
             }
 
             @Override
             public void onToolComplete(String callId, String toolName,
                                        String rawInput, ToolResult result) {
+                sessionContext.wrap(() -> {
                 activityPanel.recordToolComplete(callId, toolName, rawInput, result);
+                McpDashboardController dashboard = dashboardController;
+                if (dashboard != null) {
+                    dashboard.onToolComplete(toolName, rawInput, result);
+                }
+                }).run();
             }
 
             @Override
             public void onToolDenied(String callId, String toolName,
                                      String rawInput, String reason) {
-                activityPanel.recordToolDenied(callId, toolName, rawInput, reason);
+                sessionContext.wrap(() -> activityPanel.recordToolDenied(callId, toolName, rawInput, reason)).run();
             }
         });
 
@@ -374,23 +499,74 @@ public class ChatRepl {
         // Wire metrics into agentic loop
         this.agenticLoop.setSessionMetrics(sessionMetrics);
 
-        // Wire performance harness for multi-signal agent evaluation (local mode only)
-        if (localMode && directClient != null) {
-            PerformanceHarness harness = new PerformanceHarness(
-                    directClient, chatConfig, objectMapper, renderer, sessionMetrics, processManager);
-            this.agenticLoop.setPerformanceHarness(harness);
-        }
+        // Standard chat owns an in-process judge REPL. The explicit backend keeps
+        // the harness away from the persistent CLI judge-process pool.
+        this.performanceHarness = localMode && directClient != null
+                ? new PerformanceHarness(
+                        directClient, chatConfig, objectMapper, renderer, sessionMetrics,
+                        processManager, boundedJudgeBackend(judgeRepl, harnessConfig))
+                : null;
+        this.directToolJudge = performanceHarness == null && judgeRepl.isAvailable()
+                ? new JudgeLlmEvaluator(
+                        boundedJudgeBackend(judgeRepl, harnessConfig), objectMapper)
+                : null;
+        this.agenticLoop.setInlineEnforcerActivityListener(sessionContext.wrapConsumer(this::recordSupervisorActivity));
+        this.agenticLoop.setSupervisorFeedbackHandler((source, feedback, interrupt) ->
+                withSessionContext(() -> forwardSupervisorFeedback(source, feedback, interrupt)));
 
         // Wire cancel signal into agentic loop
         this.agenticLoop.setCancelSignal(cancelSignal);
 
-        // Load inline enforcer rules from project config if present. Never auto-enables:
-        // the user is prompted (interactive) or it stays off (/enforcer on to enable).
-        loadInlineEnforcerWithPrompt(workDir);
+        // A configured project policy activates deterministically. There is no startup
+        // question; /judge on|off owns this session and /judge global owns every session.
+        if (judgeGloballyEnabled) {
+            loadInlineEnforcer(workDir, true);
+        }
+
+        ai.kompile.cli.main.chat.enforcer.JudgementLog judgeControlLog =
+                ai.kompile.cli.main.chat.enforcer.JudgementLog.forSession(sessionId);
+        attachJudgeControlLog(judgeControlLog);
+
+        // Direction remains opt-in through directionMonitoring in the project policy,
+        // but no second startup prompt or user-facing supervisor concept is created.
+        // Constructed ONLY when the project enforcer config sets directionMonitoring=true.
+        // It never flips itself on, and it is intentionally NOT subject to the /judge
+        // one-shot override: direction monitoring is a separate supervision contract.
+        if (judgeGloballyEnabled) {
+            loadDirectionJudge(workDir);
+        }
 
         // Wire up extracted collaborators
         initCollaborators();
+        Consumer<BackgroundTaskManager.BackgroundTask> completionListener =
+                sessionContext.wrapConsumer(this::handleBackgroundTaskCompletion);
+        backgroundTaskManager.addCompletionListener(completionListener::accept);
         processManager.addMonitorListener(processExitWakeListener);
+
+        // Interactive Standard Chat exposes the same project-local MCP bundle
+        // surface as headless chat. Load last so no later constructor step can
+        // orphan a successfully-started stdio child.
+        this.mcpBundleTools = McpBundleToolLoader.loadInteractive(
+                workDir, toolRegistry, sessionId);
+        this.dashboardController = new McpDashboardController(
+                mcpBundleTools, tui, () -> callInSession(this::dashboardToolContext));
+    }
+
+    private ToolContext dashboardToolContext() {
+        AgentConfig agent = agentRegistry.get(localAgentName);
+        return new ToolContext(
+                sessionId, agent, permissionService, workingDirectory, toolRegistry);
+    }
+
+    public String handleDashboardCommand(String arguments) {
+        McpDashboardController dashboard = dashboardController;
+        if (dashboard == null) return "No project dashboard is configured.";
+        return dashboard.command(arguments).message();
+    }
+
+    void onDirectToolComplete(String toolName, String rawInput, ToolResult result) {
+        McpDashboardController dashboard = dashboardController;
+        if (dashboard != null) dashboard.onToolComplete(toolName, rawInput, result);
     }
 
     /**
@@ -434,6 +610,14 @@ public class ChatRepl {
     public boolean isForceAgentic() { return forceAgentic; }
     ReminderManager getReminderManager() { return reminderManager; }
 
+    void requestNewConversation() {
+        newConversationRequested = true;
+    }
+
+    boolean isNewConversationRequested() {
+        return newConversationRequested;
+    }
+
     /** Initialise the four extracted collaborator classes after construction. */
     private void initCollaborators() {
         this.messageHandler = new ChatMessageHandler(
@@ -441,7 +625,6 @@ public class ChatRepl {
                 chatHistory, chatMemory, sessionMetrics, renderer, ascii, agenticLoop,
                 backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments,
                 reminderManager);
-
         this.queueManager = new MessageQueueManager(
                 this, messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
                 renderer, ascii, autoDequeueEnabled);
@@ -460,53 +643,477 @@ public class ChatRepl {
                 pendingAttachments, reminderManager);
     }
 
-    // ── Inline enforcer loading (called from router on /enforcer on|reload) ──
+    private AuxiliaryChatRepl createModelAuxiliaryRepl(
+            AuxiliaryChatRepl.Kind kind,
+            String providerOverride,
+            String apiKeyOverride,
+            String modelOverride,
+            String baseUrlOverride) {
+        ChatConfig baseChatConfig = chatConfig != null
+                ? chatConfig : ChatConfig.loadOrFromEnv(workingDirectory);
+        if (baseChatConfig == null) {
+            return AuxiliaryChatRepl.observer(kind, "model client unavailable");
+        }
+
+        DirectLlmClient client = JudgeBackendFactory.createDirectJudgeClient(
+                baseChatConfig, providerOverride, apiKeyOverride, modelOverride, baseUrlOverride,
+                objectMapper, workingDirectory);
+        return client == null
+                ? AuxiliaryChatRepl.observer(kind, "model client unavailable")
+                : AuxiliaryChatRepl.modelBacked(kind, client, null);
+    }
+
+    private JudgeBackend boundedJudgeBackend(
+            AuxiliaryChatRepl repl, HarnessConfig config) {
+        ChatConfig effectiveChatConfig = chatConfig != null
+                ? chatConfig : ChatConfig.loadOrFromEnv(workingDirectory);
+        return JudgeBackendFactory.withResilience(
+                repl.verdictBackend(), config, objectMapper,
+                effectiveChatConfig, workingDirectory);
+    }
+
+    private <T> T callInSession(java.util.concurrent.Callable<T> callback) {
+        try {
+            return sessionContext.wrapCallable(callback).call();
+        } catch (RuntimeException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("Session callback failed", failure);
+        }
+    }
+
+    private boolean withSessionContext(java.util.function.BooleanSupplier callback) {
+        boolean[] result = new boolean[1];
+        sessionContext.wrap(() -> result[0] = callback.getAsBoolean()).run();
+        return result[0];
+    }
+
+    private void attachAuxiliaryRepl(AuxiliaryChatRepl auxiliaryRepl) {
+        if (auxiliaryRepl == null) return;
+        auxiliaryRepl.setMainChatControl((source, feedback, interrupt) ->
+                withSessionContext(() -> submitAuxiliaryFeedback(source, feedback, interrupt)));
+        auxiliaryRepl.addChangeListener(sessionContext.wrap(this::requestAuxiliaryActivityRedraw));
+        activityPanel.registerAuxiliaryRepl(auxiliaryRepl);
+    }
 
     /**
-     * Explicit load + enable. Used by {@code /enforcer on|reload} where the slash command
-     * itself is the user's opt-in — no extra prompt.
+     * Attach the session judgement log to every live judge so /judge judgements sees
+     * verdicts from the inline enforcer judge and any later-loaded replacement.
      */
+    private void attachJudgeControlLog(
+            ai.kompile.cli.main.chat.enforcer.JudgementLog judgementLog) {
+        if (enforcerJudge != null) {
+            enforcerJudge.setJudgementLog(judgementLog);
+        }
+    }
+
+    // ── Judge control accessors (used by ChatCommandRouter /judge) ────────────
+
+    public ai.kompile.cli.main.chat.enforcer.JudgeControl getJudgeControl() {
+        return judgeControl;
+    }
+
+    public boolean isJudgeGloballyEnabled() {
+        return judgeGloballyEnabled;
+    }
+
+    public boolean isJudgeSessionEnabled() {
+        return judgeControl.isEnabled();
+    }
+
+    /** Enable/disable judge evaluation/intervention without disabling judge chat. */
+    public boolean setJudgeSessionEnabled(boolean enabled) {
+        if (enabled && !judgeGloballyEnabled) {
+            return false;
+        }
+        judgeControl.setEnabled(enabled);
+        agenticLoop.setWorkflowSessionEnabled(enabled);
+        recordSupervisorActivity("[state] " + (enabled ? "ready" : "disabled for this session"));
+        return true;
+    }
+
+    /** Apply the persistent evaluation/intervention switch immediately to this REPL. */
+    public void setJudgeGloballyEnabled(boolean enabled) {
+        judgeGloballyEnabled = enabled;
+        judgeControl.setEnabled(enabled);
+        agenticLoop.setWorkflowGlobalEnabled(enabled);
+        agenticLoop.setWorkflowSessionEnabled(enabled);
+        if (performanceHarness != null) {
+            performanceHarness.setJudgeGlobalEnabled(enabled);
+        }
+        if (enabled) {
+            agenticLoop.reloadWorkflowConfiguration();
+            loadInlineEnforcer(workingDirectory, true);
+            loadDirectionJudge(workingDirectory);
+        } else {
+            clearJudgePolicy();
+        }
+        recordSupervisorActivity("[state] globally " + (enabled ? "enabled" : "disabled"));
+    }
+
+    /** Re-read all project judge policy components without another activation prompt. */
+    public void reloadJudgeConfiguration() {
+        if (!judgeGloballyEnabled) {
+            clearJudgePolicy();
+            return;
+        }
+        loadInlineEnforcer(workingDirectory, true);
+        loadDirectionJudge(workingDirectory);
+        agenticLoop.reloadWorkflowConfiguration();
+    }
+
+    /** Remove active project policy/direction components while retaining judge chat history. */
+    public void clearJudgePolicy() {
+        clearInlineJudgePolicy();
+        clearDirectionJudge();
+        agenticLoop.reloadWorkflowConfiguration();
+    }
+
+    private void clearInlineJudgePolicy() {
+        clearInlineJudgePolicy(false);
+    }
+
+    private void clearInlineJudgePolicy(boolean requested) {
+        EnforcerJudge previousJudge = enforcerJudge;
+        enforcerJudge = null;
+        agenticLoop.setInlineEnforcer(null, null, 0);
+        agenticLoop.setInlineEnforcerEnabled(requested);
+        replaceEnforcerRepl(null);
+        if (previousJudge != null) {
+            previousJudge.close();
+        }
+    }
+
+    /** Best-effort verdict history for the /judge judgements subcommand. */
+    public java.util.List<ai.kompile.cli.main.chat.enforcer.JudgementRecord> judgeHistory(int limit) {
+        java.util.List<ai.kompile.cli.main.chat.enforcer.JudgementRecord> all =
+                ai.kompile.cli.main.chat.enforcer.JudgementLog.readAll(sessionId);
+        if (limit > 0 && all.size() > limit) {
+            return all.subList(all.size() - limit, all.size());
+        }
+        return all;
+    }
+
+    /** Continue the judge-side conversation without enabling intervention. */
+    public String sendToJudge(String message) {
+        // Prefer the visible quality-judge REPL so the conversation appears in the
+        // same transcript that now also carries enforcer activity.
+        if (judgeRepl != null && judgeRepl.isAvailable()) {
+            try {
+                return judgeRepl.generate(message,
+                        ai.kompile.cli.main.chat.enforcer.EnforcerJudge.CHAT_SYSTEM_PROMPT);
+            } catch (Exception e) {
+                return "[judge chat failed: " + e.getMessage() + "]";
+            }
+        }
+
+        EnforcerJudge judge = enforcerJudge;
+        if (judge != null && judge.isAvailable()) {
+            try {
+                judgeRepl.observe("[judge chat via policy backend]\n> " + message);
+                String response = judge.chatWithJudge(message);
+                judgeRepl.observe(response);
+                return response;
+            } catch (Exception e) {
+                judgeRepl.observe("[judge chat error] " + e.getMessage());
+                return "[judge chat failed: " + e.getMessage() + "]";
+            }
+        }
+        return "[no judge backend is available — configure the harness judge or run /judge init]";
+    }
+
+    /** Human-readable judge backend summary for /judge status. */
+    public String describeJudge() {
+        if (judgeRepl != null && judgeRepl.isAvailable()) {
+            return "harness judge · " + judgeRepl.status() + " · " + judgeRepl.describe();
+        }
+        EnforcerJudge judge = enforcerJudge;
+        if (judge != null && judge.isAvailable()) {
+            return "policy judge · " + judge.judgeStatus();
+        }
+        return "no judge backend — configure the harness judge or run /judge on";
+    }
+
+    public boolean isJudgeChatAvailable() {
+        if (judgeRepl != null && judgeRepl.isAvailable()) return true;
+        EnforcerJudge judge = enforcerJudge;
+        return judge != null && judge.isAvailable();
+    }
+
+    /** Restart the inline enforcer judge's backend (no-op when it is not loaded). */
+    public String restartJudge() {
+        EnforcerJudge judge = enforcerJudge;
+        if (judge == null) {
+            return "No policy judge is loaded — nothing to restart. "
+                    + "Use /judge on to load one.";
+        }
+        return judge.restartJudge();
+    }
+
+    /** Switch the inline enforcer judge to another CLI agent (no-op when not loaded). */
+    public String modifyJudge(String selection) {
+        EnforcerJudge judge = enforcerJudge;
+        if (judge == null) {
+            return "No policy judge is loaded — nothing to modify. "
+                    + "Use /judge on to load one first.";
+        }
+        return judge.modifyJudge(selection);
+    }
+
+    private void replaceEnforcerRepl(AuxiliaryChatRepl replacement) {
+        AuxiliaryChatRepl previous = enforcerRepl;
+        enforcerRepl = replacement;
+        if (previous != null && previous != replacement) {
+            previous.close();
+        }
+    }
+
+    private void requestAuxiliaryActivityRedraw() {
+        auxiliaryActivityRedraw.run();
+    }
+
+    private boolean submitAuxiliaryFeedback(
+            String source, String feedback, boolean interrupt) {
+        ChatMessageHandler handler = messageHandler;
+        if (handler == null || feedback == null || feedback.isBlank()) return false;
+        String message = "[" + source + " feedback]\n" + feedback.strip();
+        return handler.handleUserFeedback(message, interrupt);
+    }
+
+    private boolean forwardSupervisorFeedback(
+            String source, String feedback, boolean interrupt) {
+        recordSupervisorFeedback(source, feedback, interrupt);
+        return submitAuxiliaryFeedback(source, feedback, interrupt);
+    }
+
+    private void recordSupervisorActivity(String event) {
+        appendSupervisorActivity(judgeRepl, event);
+    }
+
+    static void appendSupervisorActivity(AuxiliaryChatRepl repl, String event) {
+        if (repl == null || event == null || event.isBlank()) return;
+        if (event.startsWith("[state] ")) {
+            repl.observe("[judge state] "
+                    + event.substring("[state] ".length()).strip());
+        } else if (event.startsWith("[judge ")
+                || event.startsWith("[direction]")) {
+            repl.observe(event);
+        } else if (event.startsWith("[enforcer ")) {
+            repl.observe("[judge " + event.substring("[enforcer ".length()));
+        } else {
+            repl.observe("[judge] " + event);
+        }
+    }
+
+    private void recordSupervisorFeedback(
+            String source, String feedback, boolean interrupt) {
+        if (feedback == null || feedback.isBlank()) return;
+        judgeRepl.observe("[judge feedback -> main"
+                + (interrupt ? " · interrupt" : "") + "]\n" + feedback.strip());
+    }
+
+    private void closeAuxiliaryRepls() {
+        if (performanceHarness != null) {
+            performanceHarness.shutdown();
+        }
+        if (directToolJudge != null) directToolJudge.close();
+        EnforcerJudge judge = enforcerJudge;
+        if (judge != null) judge.close();
+        AuxiliaryChatRepl enforcer = enforcerRepl;
+        if (enforcer != null) enforcer.close();
+        AuxiliaryChatRepl direction = directionRepl;
+        if (direction != null) direction.close();
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge dj = directionJudge;
+        if (dj != null) dj.close();
+        judgeRepl.close();
+    }
+
+    private void activateAuxiliarySupervision() {
+        if (!auxiliarySupervisionActive.compareAndSet(false, true)) return;
+        if (performanceHarness != null) {
+            agenticLoop.setPerformanceHarness(performanceHarness);
+            agenticLoop.setJudgeToolCallInterceptor((userPrompt, assistantContext,
+                                                      toolName, toolInput) ->
+                    callInSession(() -> performanceHarness.evaluateToolCall(
+                            userPrompt, assistantContext, toolName, toolInput)));
+        } else if (directToolJudge != null) {
+            directToolJudge.setGuidanceSupplier(() -> callInSession(judgeControl::getGuidance));
+            agenticLoop.setJudgeToolCallInterceptor((userPrompt, assistantContext, toolName, toolInput) ->
+                    callInSession(() -> evaluateDirectToolCall(userPrompt, assistantContext, toolName, toolInput)));
+        }
+    }
+
+    private EnforcerToolCallDecision evaluateDirectToolCall(
+            String userPrompt, String assistantContext,
+            String toolName, String toolInput) {
+        try {
+            return directToolJudge.evaluateToolCall(
+                    userPrompt, assistantContext, toolName, toolInput);
+        } catch (Exception failure) {
+            return EnforcerToolCallDecision.allow(
+                    "Quality judge failed open: " + failure.getMessage());
+        }
+    }
+
+    // ── Judge policy loading (called from /judge and at deterministic startup) ──
+
+    /** Explicitly load and enable the configured project judge policy. */
     public void loadInlineEnforcer(Path workDir) {
         loadInlineEnforcer(workDir, true);
     }
 
-    /**
-     * Startup variant: enforcement is per-session opt-in, so a project config found on
-     * disk prompts the user before enabling. Declined (or non-interactive) sessions keep
-     * the rules loaded but DISABLED so {@code /enforcer on} can enable them instantly.
-     */
-    private void loadInlineEnforcerWithPrompt(Path workDir) {
-        EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
-        if (enforcerConfig == null || !enforcerConfig.isKeywordMode()
-                || !enforcerConfig.isEnforcementEnabled()) {
-            return;
-        }
-        Boolean choice = EnforcerActivationPrompt
-                .confirmViaConsole(enforcerConfig);
-        loadInlineEnforcer(workDir, Boolean.TRUE.equals(choice));
-    }
-
     private void loadInlineEnforcer(Path workDir, boolean enable) {
         EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
-        if (enforcerConfig == null || !enforcerConfig.isKeywordMode()) {
+        boolean requested = judgeGloballyEnabled && enable && (enforcerConfig == null
+                ? EnforcerConfig.exists(workDir) : enforcerConfig.isEnforcementEnabled());
+        if (!requested) {
+            clearInlineJudgePolicy();
             return;
         }
+        agenticLoop.setInlineEnforcerEnabled(true);
         try {
+            if (enforcerConfig == null) throw new IllegalStateException("Configured enforcement policy could not be loaded");
             String rulesText = enforcerConfig.buildRulesText(workDir);
-            if (rulesText == null || rulesText.isBlank()) return;
+            if (rulesText == null || rulesText.isBlank()) {
+                clearInlineJudgePolicy(true);
+                recordSupervisorActivity("[configuration error] requested enforcement policy has no readable rules");
+                return;
+            }
 
             EnforcerPolicy policy =
                     new EnforcerPolicy(rulesText, enforcerConfig.getMaxCorrections(), false);
-            KeywordEnforcerEvaluator evaluator =
-                    KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper, enforcerConfig);
+            EnforcerEvaluator evaluator;
+            EnforcerJudge replacementJudge = null;
+            AuxiliaryChatRepl replacement = null;
+            if (enforcerConfig.isKeywordMode()) {
+                evaluator = KeywordEnforcerEvaluator.fromPolicy(
+                        policy, objectMapper, enforcerConfig);
+            } else {
+                replacement = createModelAuxiliaryRepl(
+                        AuxiliaryChatRepl.Kind.ENFORCER,
+                        enforcerConfig.getJudgeProvider(), enforcerConfig.getJudgeApiKey(),
+                        enforcerConfig.getJudgeModel(), enforcerConfig.getJudgeBaseUrl());
+                HarnessConfig judgeConfig = HarnessConfig.load(objectMapper);
+                if (replacement.isAvailable()) {
+                    replacementJudge = new EnforcerJudge(
+                            boundedJudgeBackend(replacement, judgeConfig), objectMapper,
+                            () -> judgeControl.hasGuidance() ? judgeControl.getGuidance() : null);
+                    evaluator = replacementJudge;
+                } else {
+                    replacement.close();
+                    replacement = null;
+                    evaluator = null;
+                }
+            }
 
-            if (evaluator.isAvailable()) {
+            if (evaluator != null && evaluator.isAvailable()) {
+                EnforcerJudge previousJudge = enforcerJudge;
+                enforcerJudge = replacementJudge;
+                replaceEnforcerRepl(replacement);
+                if (previousJudge != null && previousJudge != replacementJudge) {
+                    previousJudge.close();
+                }
+                if (enforcerJudge != null) {
+                    // Keep the dedicated enforcer judge on the shared session log so
+                    // /judge judgements sees its verdicts (chat lane + tool verdicts).
+                    enforcerJudge.setJudgementLog(
+                            ai.kompile.cli.main.chat.enforcer.JudgementLog.forSession(sessionId));
+                }
                 agenticLoop.setInlineEnforcer(evaluator, policy, enforcerConfig.getMaxCorrections());
                 agenticLoop.setInlineEnforcerEnabled(enable);
+            } else {
+                clearInlineJudgePolicy(true);
+                recordSupervisorActivity("[configuration error] no usable judge policy evaluator");
             }
         } catch (Exception e) {
-            // Silently skip — don't break chat startup
+            clearInlineJudgePolicy(true);
+            recordSupervisorActivity("[configuration error] " + e.getMessage());
         }
+    }
+
+    // ── Direction judge loading (called at startup and from /judge reload) ──
+
+    /**
+     * Construct and bind the direction judge when — and only when — the project enforcer
+     * config explicitly sets {@code directionMonitoring=true}. A config without that flag,
+     * a missing judge backend, or any construction failure leaves direction monitoring OFF;
+     * nothing here can enable it implicitly.
+     */
+    public void loadDirectionJudge(Path workDir) {
+        EnforcerConfig enforcerConfig = EnforcerConfig.load(workDir);
+        if (!judgeGloballyEnabled || enforcerConfig == null
+                || !enforcerConfig.isDirectionMonitoring()) {
+            clearDirectionJudge();
+            return;
+        }
+        try {
+            AuxiliaryChatRepl replacement = createModelAuxiliaryRepl(
+                    AuxiliaryChatRepl.Kind.DIRECTION,
+                    enforcerConfig.getJudgeProvider(), enforcerConfig.getJudgeApiKey(),
+                    enforcerConfig.getJudgeModel(), enforcerConfig.getJudgeBaseUrl());
+            if (!replacement.isAvailable()) {
+                replacement.close();
+                clearDirectionJudge();
+                recordSupervisorActivity("[direction] unavailable — no judge backend; "
+                        + "staying OFF");
+                return;
+            }
+            ai.kompile.cli.main.chat.enforcer.DirectionJudge.Options options =
+                    new ai.kompile.cli.main.chat.enforcer.DirectionJudge.Options(
+                            enforcerConfig.getDirectionGoal(),
+                            enforcerConfig.getDirectionCheckEvery(),
+                            enforcerConfig.getDirectionMaxRedirects(),
+                            enforcerConfig.isDirectionReportOnly(),
+                            enforcerConfig.getDirectionConfidenceThreshold(),
+                            enforcerConfig.getDirectionCrossTurnDriftLimit());
+            ai.kompile.cli.main.chat.enforcer.DirectionJudge replacementJudge =
+                    new ai.kompile.cli.main.chat.enforcer.DirectionJudge(
+                            boundedJudgeBackend(replacement, HarnessConfig.load(objectMapper)),
+                            objectMapper, options);
+            replacementJudge.setJudgementLog(
+                    ai.kompile.cli.main.chat.enforcer.JudgementLog.forSession(sessionId));
+            replacementJudge.bindStateFile(
+                    ai.kompile.cli.main.chat.enforcer.JudgementLog.sessionDir(sessionId)
+                            .resolve("direction-state.json"));
+            replacementJudge.setGuidanceSupplier(() -> callInSession(() -> judgeControl.hasGuidance()
+                    ? judgeControl.getGuidance() : null));
+            agenticLoop.setDirectionJudge(replacementJudge);
+            AuxiliaryChatRepl previousRepl = directionRepl;
+            directionRepl = replacement;
+            ai.kompile.cli.main.chat.enforcer.DirectionJudge previousJudge = directionJudge;
+            directionJudge = replacementJudge;
+            if (previousRepl != null && previousRepl != replacement) {
+                previousRepl.close();
+            }
+            if (previousJudge != null && previousJudge != replacementJudge) {
+                previousJudge.close();
+            }
+            recordSupervisorActivity("[direction] enabled · " + replacementJudge.describe()
+                    + " · every " + options.checkEvery() + " iterations"
+                    + " · confidence >= " + options.confidenceThreshold()
+                    + (options.crossTurnDriftLimit() == 0
+                            ? " · cross-turn off"
+                            : " · cross-turn " + options.crossTurnDriftLimit())
+                    + (options.reportOnly() ? " · report-only" : ""));
+        } catch (Exception e) {
+            clearDirectionJudge();
+            recordSupervisorActivity("[direction] configuration error: " + e.getMessage());
+        }
+    }
+
+    private void clearDirectionJudge() {
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge previousJudge = directionJudge;
+        AuxiliaryChatRepl previousRepl = directionRepl;
+        directionJudge = null;
+        directionRepl = null;
+        agenticLoop.setDirectionJudge(null);
+        if (previousJudge != null) previousJudge.close();
+        if (previousRepl != null) previousRepl.close();
+    }
+
+    /** The live direction judge, or null when direction monitoring is off. */
+    public ai.kompile.cli.main.chat.enforcer.DirectionJudge getDirectionJudge() {
+        return directionJudge;
     }
 
     // ── Main REPL loop ────────────────────────────────────────────────────────
@@ -515,16 +1122,20 @@ public class ChatRepl {
      * Execute exactly one crawl instruction without constructing JLine or the TUI.
      * The same agentic loop, tool registry, transcript, checkpoint store and
      * lifecycle cleanup used by the interactive command are retained for CI and
-     * the FP&A production harness.
+     * production automation.
      */
     public void runHeadless(String message) throws Exception {
         if (message == null || message.isBlank()) {
             throw new IllegalArgumentException("Headless crawl message must not be blank");
         }
+        activateAuxiliarySupervision();
         lifecycleManager.restoreSession();
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
         restoreSessionTitle();
+        lifecycleManager.registerSession();
+        lifecycleManager.syncSessionTitle(currentSessionTitle());
+        registerProjectActivityPresence();
         if (!localMode) {
             try {
                 cachedTools = mcpClient.listTools();
@@ -547,6 +1158,7 @@ public class ChatRepl {
         } finally {
             acceptingProcessWakeups.set(false);
             messageHandler.shutdown();
+            closeAuxiliaryRepls();
             processManager.removeMonitorListener(processExitWakeListener);
             stopGeneratingSpinner();
             if (crawlRunStore != null && runController != null) {
@@ -555,14 +1167,71 @@ public class ChatRepl {
             }
             lifecycleManager.printSessionSummary(false);
             chatHistory.close();
-            Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
-            sessionMetrics.saveToFile(metricsFile, objectMapper);
+            if (chatHistory.getTranscriptFile() != null) {
+                Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
+                sessionMetrics.saveToFile(metricsFile, objectMapper);
+            }
             exportTranscriptToProject();
+            dashboardController.close();
+            mcpBundleTools.close();
+            projectActivityController.close();
             processManager.close();
+            coordinationManager.shutdown();
+        }
+    }
+
+    /** Idempotently release project MCP children even when run setup fails early. */
+    @Override
+    public void close() {
+        if (!resourcesClosed.compareAndSet(false, true)) return;
+        try {
+            if (interactiveInitialized && !interactiveFinished) finishInteractive(false, null);
+            else if (!interactiveInitialized) {
+                // Startup/role initialization can fail before the first prompt.
+                acceptingProcessWakeups.set(false);
+                messageHandler.shutdown();
+                closeAuxiliaryRepls();
+                stopGeneratingSpinner();
+                processManager.removeMonitorListener(processExitWakeListener);
+                tui.stop();
+                if (directClient != null) directClient.close();
+                processManager.close();
+                coordinationManager.shutdown();
+            }
+        } finally {
+            shutdownScheduledLoops();
+            projectActivityController.close();
+            dashboardController.close();
+            mcpBundleTools.close();
         }
     }
 
     public void run() throws Exception {
+        if (hostManaged) throw new IllegalStateException("The multi-session host owns input; do not run another REPL loop");
+        Terminal terminal = ChatCompleter.buildSystemTerminal();
+        IOException terminalFailure = null;
+        boolean normalEnd = false;
+        try {
+            initializeInteractive(terminal);
+            while (submitInteractiveLine(readInteractiveLine())) { }
+            normalEnd = true;
+        } catch (UserInterruptException | EndOfFileException end) {
+            normalEnd = true;
+        } catch (IOError failure) {
+            terminalFailure = terminalReadFailure(failure);
+        } finally {
+            try { finishInteractive(normalEnd, terminalFailure); }
+            finally { try { terminal.close(); } catch (Exception | IOError ignored) { } }
+        }
+        if (terminalFailure != null) throw terminalFailure;
+    }
+
+    /** Initialize once; a host calls read/submit sequentially, never another run loop. */
+    void initializeInteractive(Terminal terminal) throws Exception {
+        if (interactiveInitialized) throw new IllegalStateException("Chat already initialized");
+        interactiveInitialized = true;
+        retainedTerminal = terminal;
+        activateAuxiliarySupervision();
         // The real terminal is not available until after JLine is built; attach the
         // title controller below so OSC updates reach the active terminal stream.
 
@@ -570,6 +1239,9 @@ public class ChatRepl {
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
         restoreSessionTitle();
+        lifecycleManager.registerSession();
+        lifecycleManager.syncSessionTitle(currentSessionTitle());
+        registerProjectActivityPresence();
 
         // Pre-cache tools for completion (server mode only)
         if (!localMode) {
@@ -582,9 +1254,8 @@ public class ChatRepl {
             cachedTools = List.of();
         }
 
-        Terminal terminal = ChatCompleter.buildSystemTerminal();
-        Runnable codeIndexAlertCleanup = () -> { };
         renderer.attachTerminal(terminal, readyTerminalTitle(defaultTerminalTitle()));
+        renderer.updateProcessActivity(processManager.listRunning().size());
         // Clear tracking modes left behind by an older session so the host terminal
         // retains native transcript selection and paste behavior.
         disableTranscriptMouse(terminal);
@@ -597,7 +1268,9 @@ public class ChatRepl {
             initCollaborators();
         }
 
-        Path historyFile = new File(KompileHome.homeDirectory(), "chat_input_history").toPath();
+        Path historyFile = new File(KompileHome.homeDirectory(),
+                hostManaged ? "chat_input_history_" + UUID.nameUUIDFromBytes(
+                        sessionId.getBytes(java.nio.charset.StandardCharsets.UTF_8)) : "chat_input_history").toPath();
 
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)
@@ -614,6 +1287,7 @@ public class ChatRepl {
                 .variable(LineReader.HISTORY_FILE, historyFile)
                 .build();
 
+        retainedReader = reader;
         reader.getHistory().load();
         this.activeReader = reader;
         this.activeTerminal = terminal;
@@ -623,8 +1297,8 @@ public class ChatRepl {
         ChatCompleter.enableAutoTrigger(reader);
 
         // Standard chat owns the activity rows below the input. Down enters them,
-        // Up navigates back toward the prompt, Enter inspects, and Del kills an
-        // owned process. Normal typing/history remain the fallback.
+        // Up navigates back toward the prompt, Enter opens the selected activity,
+        // and Del stops owned work. Normal typing/history remain the fallback.
         bindStandardChatActivityKeys(
                 (LineReaderImpl) reader, messageQueue, activityPanel, tui,
                 id -> editingQueuedMessageId = id,
@@ -639,20 +1313,13 @@ public class ChatRepl {
                 if (messageHandler.requestBackground()) {
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
                     int releasedInput = messageHandler.pendingBackgroundInputCount();
-                    ChatCompleter.printAbove("");
-                    ChatCompleter.printAbove(renderer.yellow("  ◐ Task backgrounded")
-                            + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
-                    if (releasedInput > 0) {
-                        ChatCompleter.printAbove(renderer.dim("    " + releasedInput
-                                + " pending message(s) moved out of the queue for immediate processing"));
-                    } else {
-                        ChatCompleter.printAbove(renderer.dim("    Output is now retained in the task log"));
-                    }
+                    ChatCompleter.showNotice(renderer.yellow("  ◐ Subagent invocation backgrounded")
+                            + renderer.dim(" [" + (task != null ? task.getId() : "?") + "] · "
+                            + (releasedInput > 0 ? releasedInput + " pending message(s) released · " : "")
+                            + "Output retained in /jobs; ↓ selects the subagent"));
                     statusBar.getActiveSubagents().forEach(entry ->
                             refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), true));
-                    ChatCompleter.printAbove(renderer.dim(
-                            "    Use the rows below (↓ then Enter) or /jobs to inspect; new input is processed, not queued"));
-                    ChatCompleter.printAbove("");
+
                 }
                 return true;
             }
@@ -679,13 +1346,12 @@ public class ChatRepl {
         lineReader.getWidgets().put("cancel-operation", new Widget() {
             @Override
             public boolean apply() {
-                if (modelPickerActive) {
+                if (modelPickerActive || tui.isTemporaryWindowActive()) {
                     // Escape is an interruption for the picker itself. If a model
-                    // turn is also active, cancel that turn before unwinding the
-                    // nested picker read.
-                    if (messageHandler != null) {
-                        messageHandler.requestCancel();
-                    }
+                    // turn is also active, apply the same scoped cancellation policy
+                    // before unwinding the nested picker read. Active subagents keep
+                    // running and remain Delete-targeted.
+                    requestCancelFromInput();
                     ChatCompleter.markInterrupted();
                     requestStatusRedraw();
                     throw new UserInterruptException("");
@@ -699,16 +1365,7 @@ public class ChatRepl {
                     redisplayWithContent(lineReader, tui);
                     return true;
                 }
-                boolean cancelled = false;
-                if (messageHandler != null) {
-                    // The handler owns the active-turn thread; do not gate this on
-                    // llmBusy because tools/subagents may still be running while
-                    // the visible model state is between phases.
-                    cancelled = messageHandler.requestCancel();
-                } else if (llmBusy) {
-                    cancelSignal.set(true);
-                    cancelled = true;
-                }
+                boolean cancelled = requestCancelFromInput();
                 if (cancelled) {
                     // Keep this in the live status bar rather than printing a
                     // permanent transcript line. Typing the next message clears it.
@@ -753,7 +1410,7 @@ public class ChatRepl {
         ((LineReaderImpl) reader).getWidgets().put("show-todos", new Widget() {
             @Override
             public boolean apply() {
-                List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+                List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workingDirectory);
                 System.out.println();
                 if (todos.isEmpty()) {
                     System.out.println(renderer.dim("  No tasks in the current session."));
@@ -840,25 +1497,32 @@ public class ChatRepl {
         agentInfo.append(")");
         System.out.println(renderer.dim(agentInfo.toString()));
 
-        // Show enforcer status (enabled via the activation prompt, or loaded-but-off)
-        if (agenticLoop.isInlineEnforcerEnabled()) {
-            System.out.println(renderer.green("  Enforcer: " + agenticLoop.describeInlineEnforcer()
-                    + " — /enforcer off to disable"));
+        // Show the single judge control-plane status.
+        if (!judgeGloballyEnabled) {
+            System.out.println(renderer.yellow("  Judge: globally disabled — /judge global on"));
+        } else if (!judgeControl.isEnabled()) {
+            System.out.println(renderer.yellow("  Judge: disabled for this session — /judge on"));
+        } else if (agenticLoop.isInlineEnforcerEnabled()) {
+            System.out.println(renderer.green("  Judge policy: " + agenticLoop.describeInlineEnforcer()
+                    + " — /judge off to disable"));
         } else if (agenticLoop.describeInlineEnforcer() != null) {
-            System.out.println(renderer.dim("  Enforcer: " + agenticLoop.describeInlineEnforcer()
-                    + " — loaded but OFF, /enforcer on to enable"));
+            System.out.println(renderer.dim("  Judge policy: " + agenticLoop.describeInlineEnforcer()
+                    + " — loaded but OFF, /judge on to enable"));
         }
         System.out.println();
 
         // Start the unified TUI: TopBar + scroll region + StatusBar
-        tui.setAgentName(localMode ? activeModelDisplayName() : agentName);
+        tui.setAgentName(localMode ? activeModelTopPaneLabel() : agentName);
         tui.setSessionId(sessionId);
         tui.setMode(localMode ? "local" : "server");
         tui.setPlanningMode(agenticLoop.isPlanningMode());
         tui.setReservedRowsCalculator(StandardChatActivityPanel::reservedRowsForTerminal);
+        dashboardController.prepare();
         tui.start(terminal);
-        // The managed transcript owns wheel events while chat is active. This is
-        // reasserted before every prompt because JLine may reset terminal modes.
+        if (hostManaged && !tui.isTerminalAttached()) {
+            throw new IllegalStateException("--multi-session requires an ANSI-enabled TUI terminal");
+        }
+        // Managed selection/copy and wheel scrolling share the same mouse reports.
         enableTranscriptMouse(terminal);
         activityPanel.refresh();
 
@@ -866,12 +1530,22 @@ public class ChatRepl {
         // scroll region. Restore only after that clear, and route each line through
         // the TUI so the prior transcript remains visible above the live prompt.
         lifecycleManager.restoreSession(tui::printInScrollRegion);
+        dashboardController.requestRefresh();
 
         // Wire activity changes into both the compact status line and the
         // interactive process/subagent rows.
-        Runnable activityRedraw = () -> {
+        Runnable activityRedraw = sessionContext.wrap(() -> {
             activityPanel.refresh();
             refreshCurrentActivityView(tui, activityPanel);
+            renderer.updateProcessActivity(processManager.listRunning().size());
+        });
+        AtomicBoolean auxiliaryRefreshQueued = new AtomicBoolean(false);
+        auxiliaryActivityRedraw = () -> {
+            if (!auxiliaryRefreshQueued.compareAndSet(false, true)) return;
+            CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(sessionContext.wrap(() -> {
+                auxiliaryRefreshQueued.set(false);
+                activityRedraw.run();
+            }));
         };
         backgroundTaskManager.addChangeListener(activityRedraw);
         processManager.addChangeListener(activityRedraw);
@@ -880,12 +1554,13 @@ public class ChatRepl {
         AtomicBoolean processOutputRefreshQueued = new AtomicBoolean(false);
         processManager.addOutputListener((entry, line) -> {
             if (!processOutputRefreshQueued.compareAndSet(false, true)) return;
-            CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> {
+            CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(sessionContext.wrap(() -> {
                 processOutputRefreshQueued.set(false);
                 activityRedraw.run();
-            });
+            }));
         });
         tui.addResizeListener(activityRedraw);
+        projectActivityController.start(activityRedraw);
 
         // Wire subagent lifecycle tracking into the status bar
         SubagentRunner runner = toolRegistry.getSubagentRunner();
@@ -895,187 +1570,234 @@ public class ChatRepl {
             AtomicBoolean subagentOutputRefreshQueued = new AtomicBoolean(false);
             Runnable scheduleSubagentOutputRefresh = () -> {
                 if (!subagentOutputRefreshQueued.compareAndSet(false, true)) return;
-                CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> {
+                CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(sessionContext.wrap(() -> {
                     subagentOutputRefreshQueued.set(false);
                     Set<String> ids = Set.copyOf(dirtySubagentOutputs);
                     dirtySubagentOutputs.removeAll(ids);
                     ids.forEach(id -> refreshInlineSubagentBlock(
                             tui, activityPanel, id, false));
                     refreshCurrentActivityView(tui, activityPanel);
-                });
+                }));
             };
             runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
                 @Override
                 public void onSubagentStart(String id, String type, String description) {
+                    sessionContext.wrap(() -> {
                     statusBar.registerSubagent(id, type, description);
                     activityPanel.refresh();
                     refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
+                    }).run();
                 }
                 @Override
                 public void onSubagentStatus(String id, String status) {
+                    sessionContext.wrap(() -> {
                     statusBar.updateSubagentStatus(id, status);
                     activityPanel.refresh();
                     refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
+                    }).run();
                 }
                 @Override
                 public void onSubagentActivity(String id, String summary, String detail) {
+                    sessionContext.wrap(() -> {
                     statusBar.appendSubagentActivity(id, summary, detail);
                     activityPanel.refresh();
                     refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
+                    }).run();
                 }
                 @Override
                 public void onSubagentOutput(String id, String chunk) {
+                    sessionContext.wrap(() -> {
                     statusBar.appendSubagentOutput(id, chunk);
                     dirtySubagentOutputs.add(id);
                     scheduleSubagentOutputRefresh.run();
+                    }).run();
                 }
                 @Override
                 public void onSubagentEnd(String id) {
+                    sessionContext.wrap(() -> {
                     statusBar.unregisterSubagent(id);
                     activityPanel.refresh();
                     refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
+                    }).run();
                 }
             });
+            agenticLoop.setBackgroundEligibilityListener(sessionContext.wrap(() -> {
+                activityPanel.refresh();
+                statusBar.requestRedraw();
+                statusBar.getActiveSubagents().forEach(entry ->
+                        refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), false));
+                statusBar.getRecentSubagents().forEach(entry ->
+                        refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), false));
+                refreshCurrentActivityView(tui, activityPanel);
+            }));
         }
 
-        // Pass terminal ref to ChatCompleter for bottom border rendering.
-        // Streamed lines are recorded in the TUI, then emitted through JLine's
-        // thread-safe printAbove path so background output cannot corrupt typing.
+        // Pass terminal ref to ChatCompleter. Streamed lines are recorded in the
+        // TUI, then emitted through JLine's thread-safe printAbove path so
+        // background output cannot corrupt typing.
         ChatCompleter.setTerminalRef(reader, terminal);
-        ChatCompleter.setActivityListener(renderer::updateActivity);
-        // REDISPLAY is invoked synchronously by the input thread for completion
-        // changes; repaint the authoritative transcript before it restores input.
-        if (tui.isStarted()) {
-            ChatCompleter.setContentRedraw(tui::redrawContentView);
-            ChatCompleter.setContentOutput(tui::recordInScrollRegion);
-            ChatCompleter.setTranscriptBlockOutput(tui::upsertMainTranscriptBlock);
+        ChatCompleter.setActivityListener(sessionContext.wrapConsumer(renderer::updateActivity));
+        if (hostManaged || tui.isStarted()) {
+            // JLine post rows start below the prompt, which is the final row of the
+            // transcript scroll region. Render slash candidates in the already-reserved
+            // activity panel instead so opening autocomplete cannot scroll the transcript.
+            ChatCompleter.setCompletionDisplay(items -> withSessionContext(() -> activityPanel.updateCompletions(items)));
+            ChatCompleter.setContentRedraw(sessionContext.wrap(tui::redrawContentView));
+            ChatCompleter.setContentOutput(sessionContext.wrapConsumer(tui::recordInScrollRegion));
+            ChatCompleter.setAlertOutput(sessionContext.wrapConsumer(tui::showAlert));
+            ChatCompleter.setTranscriptBlockOutput((key, content) ->
+                withSessionContext(() -> tui.upsertMainTranscriptBlock(key, content)));
         } else {
+            ChatCompleter.setCompletionDisplay(null);
             ChatCompleter.setContentRedraw(null);
             ChatCompleter.setContentOutput(null);
+            ChatCompleter.setAlertOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
         }
 
         if (tui.isStarted()) {
-            codeIndexAlertCleanup = CodeIndexDiagnostics.installAlertSink(tui::showAlert);
+            if (!hostManaged) {
+                codeIndexAlertCleanup = CodeIndexDiagnostics.installAlertSink(tui::showAlert);
+                enforcerAlertCleanup = EnforcerDiagnostics.installAlertSink(tui::showAlert);
+            }
+            coordinationAlertCleanup = coordinationManager.installWarningSink(
+                    sessionContext.wrapConsumer(tui::showAlert));
         }
-        if (!forceAgentic) {
-            getScheduledLoopManager();
-        }
+        // Interactive standard and crawl chats both own local schedules. Headless
+        // crawl runs use runHeadless(), never reach this initialization, and stay one-shot.
+        getScheduledLoopManager();
+        getGlobalScheduledLoopManager();
         processManager.addMonitorListener(processExitWakeListener);
         messageHandler.startAcceptingExternalMessages();
         acceptingProcessWakeups.set(true);
-        try {
-            while (true) {
-                String line;
-                try {
-                    int termWidth = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
-                    tui.reestablishScrollRegion();
-                    // JLine can reset mouse modes while entering a prompt. Reassert
-                    // capture immediately before readLine so wheel reports reach the
-                    // viewport widget for every prompt.
-                    forceTranscriptMouseCapture(terminal);
-                    ChatCompleter.schedulePostRestore();
-                    String prompt = buildPrompt(termWidth);
-                    line = reader.readLine(prompt);
-                } catch (UserInterruptException e) {
-                    // Ctrl-C at the prompt is an explicit request to leave the
-                    // standard chat session. JLine has already cleared the
-                    // current input buffer, so exit through normal cleanup.
-                    break;
-                } catch (EndOfFileException e) {
-                    break;
-                } catch (IOError e) {
-                    // JLine wraps stty/terminal errors in IOError during
-                    // shutdown or when the terminal is interrupted. Exit
-                    // cleanly instead of crashing.
-                    break;
-                }
+        installResourceWakeups();
+        // JLine may invoke widgets from its redraw path, outside the lexical read call.
+        lineReader.getWidgets().replaceAll((name, widget) ->
+                () -> withSessionContext(widget::apply));
+    }
 
-                // Queue editing owns the whole line, including leading slash text.
-                // Saving updates the existing queue item in place instead of
-                // dispatching or appending a duplicate message.
-                if (editingQueuedMessageId != null) {
-                    finishQueuedMessageEdit(line);
-                    continue;
-                }
+    /** Only the input-owner thread may call this, for the foreground session. */
+    String readInteractiveLine() {
+        if (activeReader == null) throw new IllegalStateException("Chat is detached");
+        int termWidth = activeTerminal.getWidth() > 0 ? activeTerminal.getWidth() : 80;
+        tui.reestablishScrollRegion();
+        enableTranscriptMouse(activeTerminal);
+        ChatCompleter.schedulePostRestore();
+        String line = activeReader.readLine(buildPrompt(termWidth));
+        tui.clearSubmittedInput();
+        return line;
+    }
 
-                // A background tool may be waiting for a permission decision. JLine
-                // owns terminal input, so route this line to that request before treating
-                // it as a slash command or queued chat message.
-                if (permissionService.submitPromptResponse(line)) {
-                    continue;
-                }
+    /** Queue edits retain priority over host slash commands. */
+    boolean ownsInteractiveInput() {
+        return editingQueuedMessageId != null || permissionService.hasPendingPrompt();
+    }
 
-                if (line == null || line.isBlank()) {
-                    continue;
-                }
+    boolean submitInteractiveLine(String line) throws Exception {
+        // Queue editing owns the whole line, including leading slash text.
+        // Update the existing queue item rather than dispatching a duplicate.
+        if (editingQueuedMessageId != null) {
+            finishQueuedMessageEdit(line);
+            return true;
+        }
+        if (permissionService.submitPromptResponse(line)) return true;
+        if (line == null || line.isBlank()) return true;
 
-                String trimmed = line.trim();
-
-                String viewedSubagentId = activityPanel.viewedSubagentId();
-                if (!trimmed.startsWith("/") && !viewedSubagentId.isBlank()) {
-                    if (runner != null && runner.sendMessage(viewedSubagentId, trimmed)) {
-                        refreshCurrentActivityView(tui, activityPanel);
-                    } else {
-                        statusBar.appendSubagentActivity(
-                                viewedSubagentId,
-                                "follow-up unavailable",
-                                "\n  Follow-up was not sent: this subagent session is no longer interactive.");
-                        refreshCurrentActivityView(tui, activityPanel);
-                    }
-                    continue;
-                }
-
-                // Any accepted parent-chat input (including bracketed paste, which
-                // bypasses SELF_INSERT) returns from a process/tool transcript first.
-                if (!activityPanel.isViewingMain() && !trimmed.startsWith("/")) {
-                    activityPanel.returnToMain();
-                    tui.showMainView();
-                }
-
-                if (trimmed.startsWith("/")) {
-                    if (!commandRouter.handleSlashCommand(trimmed)) {
-                        break;
-                    }
-                } else {
-                    // JLine already painted this row; retain it so switching to a
-                    // process transcript and back reconstructs the full parent view.
-                    tui.rememberMainTranscriptLine("kompile> " + trimmed);
-                    messageHandler.handleChatMessage(trimmed);
-                }
+        String trimmed = line.trim();
+        String viewedSubagentId = activityPanel.viewedSubagentId();
+        if (!trimmed.startsWith("/") && !viewedSubagentId.isBlank()) {
+            if (activityPanel.trySendMessageToViewedSubagent(trimmed)) {
+                refreshCurrentActivityView(tui, activityPanel);
+                return true;
             }
-        } finally {
+            // The child no longer accepts follow-ups: continue this same message
+            // through Main instead of silently consuming it.
+            tui.showMainView();
+        }
+
+        // Accepted parent input, including bracketed paste and slash commands,
+        // returns from a process/tool transcript to Main before dispatch.
+        if (!activityPanel.isViewingMain()) {
+            activityPanel.returnToMain();
+            tui.showMainView();
+        }
+        if (trimmed.startsWith("/")) {
+            if (hostManaged && MultiChatSessionHost.unsupportedCommand(trimmed)) {
+                ChatCompleter.printAbove("This command is unavailable in --multi-session; use a separate ordinary chat invocation.");
+                return true;
+            }
+            if (hostManaged && trimmed.equalsIgnoreCase("/help")) {
+                ChatCompleter.printAbove(MultiChatSessionHost.HELP);
+            }
+            return tui.runCommandOutput(() -> commandRouter.handleSlashCommand(trimmed));
+        }
+        // The accepted editor rows are gone; keep one retained transcript copy.
+        tui.recordInScrollRegion("kompile> " + trimmed);
+        messageHandler.handleChatMessage(trimmed);
+        return true;
+    }
+
+    /** Final disposal only, never called when switching focus. */
+    void finishInteractive(boolean normalSessionEnd, IOException terminalFailure) {
+        if (interactiveFinished) return;
+        interactiveFinished = true;
+        LineReader reader = retainedReader;
+        Terminal terminal = retainedTerminal;
             acceptingProcessWakeups.set(false);
+            agenticLoop.setBackgroundEligibilityListener(null);
             messageHandler.shutdown();
+            stopGeneratingSpinner();
+            auxiliaryActivityRedraw = () -> { };
+            projectActivityController.close();
+            closeAuxiliaryRepls();
             processManager.removeMonitorListener(processExitWakeListener);
-            ScheduledLoopManager loops = scheduledLoopManager;
-            if (loops != null) loops.shutdown();
+            shutdownScheduledLoops();
             codeIndexAlertCleanup.run();
+            coordinationAlertCleanup.run();
+            enforcerAlertCleanup.run();
             tui.clearAlert();
             if (editingQueuedMessageId != null) {
                 messageQueue.cancelEdit(editingQueuedMessageId);
                 editingQueuedMessageId = null;
             }
             permissionService.cancelPendingPrompts();
-            reader.getHistory().save();
+            try {
+                if (reader != null) reader.getHistory().save();
+            } catch (IOException historyFailure) {
+                if (terminalFailure != null) {
+                    terminalFailure.addSuppressed(historyFailure);
+                } else {
+                    System.err.println("Warning: Could not save chat input history: "
+                            + historyFailure.getMessage());
+                }
+            }
 
             if (crawlRunStore != null && runController != null) {
                 crawlRunStore.checkpoint(runController, "session_closed");
                 crawlRunStore.event("session_closed", runController.state().name());
             }
 
-            // Log session summary to transcript and save metrics. The copyable resume
-            // command is emitted once after terminal restoration below.
-            lifecycleManager.printSessionSummary(false);
+            // A cleared conversation remains resumable as its own transcript, but do
+            // not flash an exit summary while the owning command redraws a fresh chat.
+            if (newConversationRequested) {
+                chatHistory.logSystem("Conversation cleared; continuing in a new transcript.");
+            } else if (normalSessionEnd) {
+                lifecycleManager.printSessionSummary(false);
+            } else {
+                chatHistory.logSystem(
+                        "Session interrupted unexpectedly; the transcript was preserved for resume.");
+            }
             chatHistory.close();
 
             // Save metrics JSON alongside transcript
-            Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
-            sessionMetrics.saveToFile(metricsFile, objectMapper);
+            if (chatHistory.getTranscriptFile() != null) {
+                Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
+                sessionMetrics.saveToFile(metricsFile, objectMapper);
+            }
 
             // Export the full transcript into the current project's versioned
             // data/chats/ surface so the conversation is locally versioned, not
@@ -1097,27 +1819,99 @@ public class ChatRepl {
                 directClient.close();
             }
 
+            // Close project MCP children before the general process manager.
+            dashboardController.close();
+            mcpBundleTools.close();
+
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
+            coordinationManager.shutdown();
 
             // Properly clean up JLine terminal state.
             // Catch Exception AND IOError — JLine wraps stty failures in
             // IOError (extends Error) when the thread is interrupted during
             // shutdown, especially in GraalVM native images.
             try {
-                disableTranscriptMouse(terminal);
-                terminal.writer().print("\033[2J");
-                terminal.writer().flush();
-                terminal.close();
+                if (!hostManaged && terminal != null) {
+                    disableTranscriptMouse(terminal);
+                    terminal.writer().print("\033[2J");
+                    terminal.writer().flush();
+                }
             } catch (Exception | IOError e) {
                 // Ignore cleanup errors - terminal may already be in bad state
             }
 
-            printPostExitResumeCommand(
-                    System.out,
-                    sessionId,
-                    shouldPrintPostExitResumeCommand(forceAgentic, chatHistory.getTranscriptFile()));
+            if (!newConversationRequested) {
+                boolean resumeAvailable = shouldPrintPostExitResumeCommand(
+                        forceAgentic, chatHistory.getTranscriptFile());
+                if (normalSessionEnd) {
+                    printPostExitResumeCommand(System.out, sessionId, resumeAvailable);
+                } else {
+                    printUnexpectedExitResumeCommand(System.err, sessionId, resumeAvailable);
+                }
+            }
+    }
+
+    void configureHost(ScheduledLoopManager projectLoops) {
+        if (interactiveInitialized) throw new IllegalStateException("Chat already initialized");
+        hostManaged = true;
+        globalScheduledLoopManager = Objects.requireNonNull(projectLoops);
+    }
+
+    void installRetainedOutput() {
+        ChatCompleter.setContentOutput(sessionContext.wrapConsumer(tui::recordInScrollRegion));
+        ChatCompleter.setTranscriptBlockOutput((key, content) ->
+                withSessionContext(() -> tui.upsertMainTranscriptBlock(key, content)));
+    }
+
+    void showHostMessage(String message) {
+        // Host controls, like ordinary slash commands, report in Main. Diagnostics
+        // use ChatCompleter directly so they do not steal an activity view's focus.
+        if (!activityPanel.isViewingMain()) {
+            activityPanel.returnToMain();
+            tui.showMainView();
         }
+        ChatCompleter.printAbove(message);
+    }
+
+    void dispatchHostProjectLoop(String prompt) {
+        if (interactiveFinished) {
+            throw new IllegalStateException("Project loop target (first session) is closed; restart the multi-session host");
+        }
+        dispatchScheduledLoop(prompt);
+    }
+
+    void detachInteractive() {
+        if (activeReader == null) return;
+        disableTranscriptMouse(activeTerminal);
+        ChatCompleter.detachTerminalRef(retainedReader);
+        tui.detachTerminal();
+        renderer.detachTerminal();
+        activeReader = null;
+        activeTerminal = null;
+    }
+
+    void attachInteractive() {
+        if (interactiveFinished) throw new IllegalStateException("Chat is closed");
+        activeReader = retainedReader;
+        activeTerminal = retainedTerminal;
+        renderer.attachTerminal(activeTerminal, readyTerminalTitle(defaultTerminalTitle()));
+        tui.attachLineReader(activeReader);
+        tui.attachTerminal(activeTerminal);
+        ChatCompleter.setTerminalRef(activeReader, activeTerminal);
+        enableTranscriptMouse(activeTerminal);
+        activityPanel.refresh();
+        tui.redrawContentView();
+    }
+
+    static IOException terminalReadFailure(IOError error) {
+        Throwable cause = error == null ? null : error.getCause();
+        String detail = cause != null && cause.getMessage() != null
+                ? cause.getMessage()
+                : error != null && error.getMessage() != null
+                        ? error.getMessage()
+                        : "unknown terminal error";
+        return new IOException("Terminal I/O failed: " + detail, error);
     }
 
     static boolean shouldPrintPostExitResumeCommand(boolean forceAgentic, Path transcriptFile) {
@@ -1136,31 +1930,79 @@ public class ChatRepl {
         out.flush();
     }
 
+    static void printUnexpectedExitResumeCommand(
+            PrintStream out, String sessionId, boolean enabled) {
+        if (!enabled || out == null || sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        out.println();
+        out.println("Chat ended unexpectedly; the transcript was preserved.");
+        out.println("Resume this interrupted chat:");
+        out.println("  kompile chat --resume " + sessionId + " --mode standard");
+        out.flush();
+    }
+
     ScheduledLoopManager getScheduledLoopManager() {
         ScheduledLoopManager existing = scheduledLoopManager;
         if (existing != null) return existing;
         synchronized (this) {
             if (scheduledLoopManager == null) {
                 scheduledLoopManager = new ScheduledLoopManager(
-                        this::dispatchScheduledLoop,
-                        ScheduledLoopManager.stateFileForProject(workingDirectory));
+                        sessionContext.wrapConsumer(this::dispatchScheduledLoop),
+                        ScheduledLoopManager.stateFileForSession(sessionId));
             }
             return scheduledLoopManager;
         }
     }
 
+    ScheduledLoopManager getGlobalScheduledLoopManager() {
+        ScheduledLoopManager existing = globalScheduledLoopManager;
+        if (existing != null) return existing;
+        synchronized (this) {
+            if (globalScheduledLoopManager == null) {
+                globalScheduledLoopManager = new ScheduledLoopManager(
+                        sessionContext.wrapConsumer(this::dispatchScheduledLoop),
+                        ScheduledLoopManager.stateFileForProject(workingDirectory));
+            }
+            return globalScheduledLoopManager;
+        }
+    }
+
+    private void shutdownScheduledLoops() {
+        ScheduledLoopManager sessionLoops = scheduledLoopManager;
+        if (sessionLoops != null) sessionLoops.shutdown();
+        ScheduledLoopManager globalLoops = globalScheduledLoopManager;
+        if (globalLoops != null && !hostManaged) globalLoops.shutdown();
+    }
+
     void dispatchScheduledLoop(String prompt) {
-        if (prompt == null || prompt.isBlank() || forceAgentic) return;
-        messageHandler.runIfAcceptingDispatches(() -> {
-            ChatCompleter.printAbove(renderer.cyan("  ⟳ Scheduled loop fired")
+        if (prompt == null || prompt.isBlank()) return;
+        messageHandler.runScheduledDispatch(sessionContext.wrap(() -> {
+            ChatCompleter.showNotice(renderer.cyan("  ⟳ Scheduled loop fired")
                     + renderer.dim(" → " + StringUtils.truncate(prompt, 60)));
             if (prompt.stripLeading().startsWith("/")) {
+                if (hostManaged) {
+                    // Scheduled callbacks never borrow the host's reader or change its focus.
+                    ChatCompleter.printAbove("Multi-session scheduled loops accept chat prompts, not slash commands.");
+                    return;
+                }
                 commandRouter.handleSlashCommand(prompt.strip());
             } else {
                 messageHandler.handleChatMessage(prompt.strip());
             }
             statusBar.requestRedraw();
-        });
+        }));
+    }
+
+    void installResourceWakeups() {
+        if (!forceAgentic) {
+            coordinationManager.activityWaits().setWakeHandler(sessionId, sessionContext.wrapConsumer(message -> {
+                if (!acceptingProcessWakeups.get()) {
+                    throw new IllegalStateException("Chat is not accepting resource wakeups");
+                }
+                messageHandler.handleExternalMessage(message);
+            }));
+        }
     }
 
     private void handleProcessExitWakeup(BackgroundProcessManager.ProcessEntry entry,
@@ -1182,8 +2024,28 @@ public class ChatRepl {
                 + (monitor.message().isBlank() ? ""
                 : "Monitor instructions: " + monitor.message() + "\n")
                 + "Inspect the process output if relevant, then continue the parent task.";
-        ChatCompleter.printAbove(renderer.cyan("  ↻ Monitored process " + entry.getId()
+        ChatCompleter.showNotice(renderer.cyan("  ↻ Monitored process " + entry.getId()
                 + " exited; waking agent"));
+        messageHandler.handleExternalMessage(message);
+    }
+
+    /** Turn a terminal Ctrl+B task into a mandatory agent turn, not just a UI notification. */
+    private void handleBackgroundTaskCompletion(BackgroundTaskManager.BackgroundTask task) {
+        if (task == null || !task.wasBackgrounded() || forceAgentic || cancelSignal.get()) return;
+        String output = task.getOutput() == null ? "" : task.getOutput().strip();
+        if (output.length() > 2_000) {
+            output = output.substring(0, 2_000) + "\n… [truncated; inspect the task log]";
+        }
+        String message = "[System background task completion]\n"
+                + "Background task " + task.getId() + " finished with state "
+                + task.getStatus().name().toLowerCase(Locale.ROOT) + ".\n"
+                + "Description: " + task.getDescription() + "\n"
+                + "Duration: " + task.getElapsedTime() + "\n"
+                + (task.getError() == null ? "" : "Error: " + task.getError().getMessage() + "\n")
+                + (output.isBlank() ? "" : "Captured output:\n" + output + "\n")
+                + "Review the completed task, use its result if relevant, and continue the user's work.";
+        ChatCompleter.showNotice(renderer.cyan(
+                "  ↻ Background task " + task.getId() + " finished; waking agent"));
         messageHandler.handleExternalMessage(message);
     }
 
@@ -1256,10 +2118,28 @@ public class ChatRepl {
 
     private String findTranscriptTitle(Path transcript) {
         try {
+            boolean insideReminderBlock = false;
             for (String line : Files.readAllLines(transcript)) {
-                if (line.startsWith("> ")) {
-                    String title = ChatSessionTitle.fromPrompt(line.substring(2));
-                    if (title != null) return title;
+                if (!line.startsWith("> ")) {
+                    continue;
+                }
+                String content = line.substring(2);
+                // Skip reminder decoration so resumed titles keep the original wording.
+                if (ReminderManager.opensReminderBlock(content)) {
+                    insideReminderBlock = true;
+                    continue;
+                }
+                if (insideReminderBlock) {
+                    if (ReminderManager.closesReminderBlock(content)) {
+                        insideReminderBlock = false;
+                    }
+                    continue;
+                }
+                String title = ChatSessionTitle.fromPrompt(content);
+                // Remaining '<' openers are command/infra wrappers, not user content.
+                if (title != null && !title.startsWith("<command-")
+                        && !title.startsWith("<local-command-")) {
+                    return title;
                 }
             }
         } catch (Exception ignored) {
@@ -1281,8 +2161,22 @@ public class ChatRepl {
 
     /** Set the title once from the first user prompt accepted by this session. */
     void initializeSessionTitleFromPrompt(String prompt) {
-        if (sessionTitle.initializeFromPrompt(prompt) && activeTerminal != null) {
-            renderer.setReadyTerminalTitle(sessionTitle.get());
+        if (sessionTitle.initializeFromPrompt(prompt)) {
+            // Persist the [title] marker so resume and compaction keep the original wording.
+            chatHistory.logSessionTitle(sessionTitle.get());
+            // The shared registry can block on another session's file lock/fsync.
+            // Mirror on the existing turn owner, never on the input thread.
+            sessionTitleSyncPending.set(true);
+            if (activeTerminal != null) {
+                renderer.setReadyTerminalTitle(sessionTitle.get());
+            }
+        }
+    }
+
+    /** Called by the turn owner before model work; no extra executor is needed. */
+    void syncPendingSessionTitle() {
+        if (sessionTitleSyncPending.compareAndSet(true, false)) {
+            lifecycleManager.syncSessionTitle(sessionTitle.get());
         }
     }
 
@@ -1371,22 +2265,15 @@ public class ChatRepl {
      * Builds the prompt string sized to the given terminal width.
      */
     private String buildPrompt(int termWidth) {
-        // Check for completed backgrounded task notifications
+        // Standard chat reports completion live via handleBackgroundTaskCompletion.
+        // Drain its legacy queue without replaying expired notices at the next prompt.
         List<BackgroundTaskManager.BackgroundTask> notifications = backgroundTaskManager.drainNotifications();
-        if (!notifications.isEmpty()) {
+        if (forceAgentic && !notifications.isEmpty()) {
             for (BackgroundTaskManager.BackgroundTask task : notifications) {
-                System.out.println();
-                System.out.println(renderer.green("  ✓ Backgrounded task completed") + renderer.dim(" [" + task.getId() + "] " + task.getElapsedTime()));
-                String desc = task.getDescription();
-                if (desc.length() > 60) desc = desc.substring(0, 57) + "...";
-                System.out.println(renderer.dim("    " + desc));
-                if (task.getOutput() != null && !task.getOutput().isEmpty()) {
-                    String preview = task.getOutput().replaceAll("\\s+", " ").trim();
-                    if (preview.length() > 70) preview = preview.substring(0, 67) + "...";
-                    System.out.println(renderer.dim("    → " + preview));
-                }
+                ChatCompleter.showNotice("Background task [" + task.getId() + "] "
+                        + task.getStatus().name().toLowerCase(Locale.ROOT) + " · "
+                        + task.getElapsedTime() + " · /jobs shows retained output");
             }
-            System.out.println();
         }
 
         StringBuilder prompt = new StringBuilder();
@@ -1424,7 +2311,7 @@ public class ChatRepl {
             chainInfo = renderer.dim(" [" + current + "/" + total + "]");
         }
         stopGeneratingSpinner(); // stop any previous spinner
-        if (ChatCompleter.hasLineReader()) {
+        if (!uiSession.usesLegacyOutput() || ChatCompleter.hasLineReader()) {
             // JLine owns the editable row. Activity belongs in the fixed status
             // bar; a carriage-return spinner corrupts the prompt and can scroll.
             ChatCompleter.setActivity("Thinking");
@@ -1444,7 +2331,7 @@ public class ChatRepl {
             spinner.stop();
             generatingSpinner = null;
         }
-        if (ChatCompleter.hasLineReader()) {
+        if (!uiSession.usesLegacyOutput() || ChatCompleter.hasLineReader()) {
             // First output is the transition from model thinking to streamed response.
             // Completion/error paths clear the activity explicitly later.
             String activity = ChatCompleter.getActivity();
@@ -1465,7 +2352,7 @@ public class ChatRepl {
         String content = line == null ? "" : line.strip();
         if (content.isBlank()) {
             messageQueue.cancelEdit(id);
-            tui.printInScrollRegion(renderer.dim("  Queue edit cancelled [" + id + "]"));
+            ChatCompleter.showNotice(renderer.dim("  Queue edit cancelled [" + id + "]"));
             activityPanel.refresh();
             return;
         }
@@ -1477,7 +2364,7 @@ public class ChatRepl {
             return;
         }
 
-        tui.printInScrollRegion(renderer.green("  ✓ Updated queued message [" + id + "]"));
+        ChatCompleter.showNotice(renderer.green("  ✓ Updated queued message [" + id + "]"));
         activityPanel.refresh();
         if (!llmBusy && isAutoDequeueEnabled()) {
             MessageQueue.QueuedMessage next = messageQueue.peek();
@@ -1523,7 +2410,7 @@ public class ChatRepl {
                     if (backgroundTaskManager.isInQueueChain()) {
                         backgroundTaskManager.endQueueChain();
                     }
-                    ChatCompleter.printAbove(renderer.yellow(
+                    ChatCompleter.showNotice(renderer.yellow(
                             "  Queue paused while [" + nextMsg.getId() + "] is being edited"));
                     statusBar.requestRedraw();
                     return;
@@ -1542,21 +2429,16 @@ public class ChatRepl {
                         messageHandler.dispatchNextQueuedMessage();
                 if (dequeued == null) {
                     backgroundTaskManager.endQueueChain();
-                    ChatCompleter.printAbove(renderer.yellow(
+                    ChatCompleter.showNotice(renderer.yellow(
                             "  Queue paused because the upcoming message is being edited"));
                     statusBar.requestRedraw();
                     return;
                 }
 
-                ChatCompleter.printAbove("");
-                ChatCompleter.printAbove(renderer.green("  ✓ Complete ")
-                        + renderer.dim("→ sending next (" + current + "/" + total + ")"));
-                ChatCompleter.printAbove(renderer.dim("     → ")
-                        + StringUtils.truncate(dequeued.getContent(), 60));
-                if (remaining > 0) {
-                    ChatCompleter.printAbove(renderer.dim("     (" + remaining + " more queued)"));
-                }
-                ChatCompleter.printAbove("");
+                ChatCompleter.showNotice(renderer.green("  ✓ Complete ")
+                        + renderer.dim("→ sending next (" + current + "/" + total + ") → ")
+                        + StringUtils.truncate(dequeued.getContent(), 60)
+                        + (remaining > 0 ? renderer.dim(" (" + remaining + " more queued)") : ""));
                 statusBar.requestRedraw();
                 sessionMetrics.recordMessageAutoDequeued();
                 return;
@@ -1567,9 +2449,7 @@ public class ChatRepl {
         if (backgroundTaskManager.isInQueueChain()) {
             int total = backgroundTaskManager.getQueueChainTotal();
             backgroundTaskManager.endQueueChain();
-            ChatCompleter.printAbove("");
-            ChatCompleter.printAbove(renderer.green("  ✓ All " + total + " queued messages processed"));
-            ChatCompleter.printAbove("");
+            ChatCompleter.showNotice(renderer.green("  ✓ All " + total + " queued messages processed"));
             statusBar.requestRedraw();
         }
     }
@@ -1641,6 +2521,11 @@ public class ChatRepl {
             StandardChatActivityPanel activityPanel, KompileTui tui,
             Consumer<String> queueEditStarted) {
         reader.getWidgets().put(STANDARD_CHAT_UP_WIDGET, () -> {
+            // The picker borrows this reader, not the chat queue/activity actions.
+            if (tui != null && tui.isTemporaryWindowActive()) {
+                reader.callWidget(LineReader.UP_LINE_OR_HISTORY);
+                return true;
+            }
             String text = reader.getBuffer().toString();
             if (activityPanel != null && activityPanel.isFocused()) {
                 if (text.isBlank() && activityPanel.selectPrevious()) {
@@ -1735,6 +2620,9 @@ public class ChatRepl {
 
         Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
         reader.getWidgets().put(STANDARD_CHAT_DOWN_WIDGET, () -> {
+            if (tui != null && tui.isTemporaryWindowActive()) {
+                return originalDown == null || originalDown.apply();
+            }
             String text = reader.getBuffer().toString();
             if (text.isBlank() && activityPanel.selectNext()) {
                 redisplayWithContent(reader, tui);
@@ -1750,6 +2638,9 @@ public class ChatRepl {
 
         Widget originalLeft = reader.getWidgets().get(LineReader.BACKWARD_CHAR);
         reader.getWidgets().put(STANDARD_CHAT_PARENT_WIDGET, () -> {
+            if (tui != null && tui.isTemporaryWindowActive()) {
+                return originalLeft == null || originalLeft.apply();
+            }
             if (reader.getBuffer().toString().isBlank() && activityPanel.selectParent()) {
                 redisplayWithContent(reader, tui);
                 return true;
@@ -1866,6 +2757,7 @@ public class ChatRepl {
         Widget originalAccept = reader.getWidgets().get(LineReader.ACCEPT_LINE);
         if (originalAccept != null) {
             reader.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
+                if (tui != null && tui.isTemporaryWindowActive()) return originalAccept.apply();
                 if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
                     showActivityView(tui, activityPanel.openSelectedView());
                     redisplayWithContent(reader, tui);
@@ -1881,13 +2773,14 @@ public class ChatRepl {
         Widget originalDelete = reader.getWidgets().get(LineReader.DELETE_CHAR);
         if (originalDelete != null) {
             reader.getWidgets().put(LineReader.DELETE_CHAR, () -> {
+                if (tui != null && tui.isTemporaryWindowActive()) return originalDelete.apply();
                 if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
                     String result = activityPanel.killSelected();
                     StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
                     if (view != null && !view.main()) {
                         showActivityView(tui, view);
                     } else {
-                        tui.printInScrollRegion(result);
+                        ChatCompleter.showNotice(result);
                     }
                     redisplayWithContent(reader, tui);
                     return true;
@@ -1902,6 +2795,7 @@ public class ChatRepl {
         Widget originalSelfInsert = reader.getWidgets().get(LineReader.SELF_INSERT);
         if (originalSelfInsert != null) {
             reader.getWidgets().put(LineReader.SELF_INSERT, () -> {
+                if (tui != null && tui.isTemporaryWindowActive()) return originalSelfInsert.apply();
                 ChatCompleter.clearInterruptedOnInput();
                 if (activityPanel.isFocused()) {
                     activityPanel.clearSelection();
@@ -1918,6 +2812,7 @@ public class ChatRepl {
         Widget originalBackspace = reader.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
         if (originalBackspace != null) {
             reader.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
+                if (tui != null && tui.isTemporaryWindowActive()) return originalBackspace.apply();
                 ChatCompleter.clearInterruptedOnInput();
                 if (activityPanel.isFocused()) {
                     activityPanel.clearSelection();
@@ -2044,32 +2939,28 @@ public class ChatRepl {
         }
     }
 
-    private void enableTranscriptMouse(Terminal terminal) {
-        forceTranscriptMouseCapture(terminal);
-    }
-
-    /** Re-send button-motion and SGR tracking before each prompt because JLine may reset it. */
-    private void forceTranscriptMouseCapture(Terminal terminal) {
+    /** Enable wheel reports and button-motion reports for transcript drag selection.
+     * Right-click copies the managed selection; terminal-native menus require the
+     * terminal's mouse override (usually Shift). Disabling capture also disables wheels.
+     */
+    static void enableTranscriptMouse(Terminal terminal) {
         if (terminal == null) return;
         try {
-            terminal.writer().print("\033[?1000h\033[?1002h\033[?1006h");
+            terminal.writer().print("\033[?1000l\033[?1003l\033[?1002h\033[?1006h");
             terminal.writer().flush();
-            transcriptMouseEnabled = true;
         } catch (RuntimeException | IOError ignored) {
-            // Mouse selection is best-effort; keyboard scrolling remains available.
+            // The terminal may already be shutting down.
         }
     }
 
-    /** Disable modes left by a prior session during shutdown. */
-    private void disableTranscriptMouse(Terminal terminal) {
+    /** Return mouse ownership to the terminal during startup reset, detach, and exit. */
+    static void disableTranscriptMouse(Terminal terminal) {
         if (terminal == null) return;
         try {
             terminal.writer().print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l");
             terminal.writer().flush();
         } catch (RuntimeException | IOError ignored) {
             // The terminal may already be shutting down.
-        } finally {
-            transcriptMouseEnabled = false;
         }
     }
 
@@ -2091,13 +2982,85 @@ public class ChatRepl {
         StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
         if (view == null || view.main()) {
             if (!tui.isMainContentView()) {
-                tui.showMainView();
+                // Re-check the panel selection while the TUI draw lock is held. A
+                // delayed Main refresh must not overwrite a child explicitly opened
+                // after this callback captured its view snapshot.
+                tui.showMainViewIf(activityPanel::isViewingMain);
             }
             return;
         }
-        // updateActivityView also performs an authoritative switch when a
-        // selection changed between asynchronous refresh callbacks.
+        // Explicit selection uses showActivityView. This refresh is identity-guarded
+        // so a delayed child callback cannot reopen it after the user returned to Main.
         tui.updateActivityView(view.key(), view.title(), view.content());
+    }
+
+    boolean handleProjectActivityCommand(String arguments) {
+        String input = arguments == null ? "" : arguments.strip();
+        if (input.isBlank() || input.equalsIgnoreCase("list")
+                || input.equalsIgnoreCase("local") || input.equalsIgnoreCase("status")) {
+            if (input.isBlank() && projectActivityController.isHistoricalBrowserVisible()) {
+                projectActivityController.closeBrowser();
+            }
+            return false;
+        }
+        String[] parts = input.split("\\s+", 2);
+        String command = parts[0].toLowerCase(Locale.ROOT);
+        String value = parts.length > 1 ? parts[1].strip() : "";
+        if (Set.of("session", "project", "global", "history", "outcomes", "transcript",
+                "detail", "enter", "next", "previous", "prev", "search", "confirm", "annotate")
+                .contains(command)) {
+            projectActivityController.openConversationActivity(input);
+            showActivityView(tui, activityPanel.openProjectActivity(""));
+            return true;
+        }
+        switch (command) {
+            case "agents", "dashboard" -> showActivityView(
+                    tui, liveProjectActivityView());
+            case "agent" -> {
+                if (value.isBlank()) {
+                    tui.printInScrollRegion(renderer.dim(
+                            "  Usage: /activity agent <session-prefix|agent|role>"));
+                } else {
+                    showActivityView(tui, liveProjectActivityView(value));
+                }
+            }
+            case "refresh" -> {
+                if (!activityPanel.isViewingProjectActivity()) {
+                    showActivityView(tui, liveProjectActivityView());
+                }
+                activityPanel.refreshProjectActivity();
+            }
+            case "close", "hide", "off" -> {
+                projectActivityController.closeBrowser();
+                activityPanel.returnToMain();
+                tui.showMainView();
+            }
+            default -> tui.printInScrollRegion(renderer.dim(
+                    "  Usage: /activity [agents | agent <filter> | refresh | close]"));
+        }
+        return true;
+    }
+
+    private StandardChatActivityPanel.ActivityView liveProjectActivityView() {
+        projectActivityController.closeBrowser();
+        return activityPanel.openProjectActivity("");
+    }
+
+    private StandardChatActivityPanel.ActivityView liveProjectActivityView(String filter) {
+        projectActivityController.closeBrowser();
+        return activityPanel.openProjectActivity(filter);
+    }
+
+    private void registerProjectActivityPresence() {
+        String provider = localMode && chatConfig != null
+                ? chatConfig.getProvider() : "kompile-server";
+        if (provider == null || provider.isBlank()) provider = "kompile-chat";
+        String role = roleManager.getActiveRoleName();
+        if (role == null || role.isBlank()) role = localAgentName;
+        String task = currentSessionTitle();
+        if (task == null || task.isBlank()) task = "Standard chat session";
+        coordinationManager.registerAgent(task, null, provider, 0,
+                ProcessHandle.current().pid(), sessionId, role);
     }
 
     private static void refreshInlineSubagentBlock(
@@ -2184,6 +3147,8 @@ public class ChatRepl {
 
     String getBaseUrl() { return baseUrl; }
 
+    Path getWorkingDirectory() { return workingDirectory; }
+
     boolean isRagEnabled() { return ragEnabled; }
     void setRagEnabled(boolean enabled) { this.ragEnabled = enabled; }
 
@@ -2240,6 +3205,67 @@ public class ChatRepl {
     void requestStatusRedraw() { statusBar.requestRedraw(); }
 
     /**
+     * Handle the configured cancel key without turning it into an implicit
+     * subagent kill key. A blocking subagent keeps running until the user
+     * backgrounds it with Ctrl+B or targets its activity row with Delete.
+     */
+    boolean requestCancelFromInput() {
+        if (agenticLoop.isBlockingSubagentInvocationActive()) {
+            String action = backgroundTaskManager.isCurrentTaskBackgroundable()
+                    ? "Ctrl+B backgrounds it; ↓ selects its row and Delete stops it"
+                    : "↓ selects its row and Delete stops it";
+            ChatCompleter.showNotice(renderer.dim("  Subagent continues · " + action));
+            requestStatusRedraw();
+            return false;
+        }
+        if (messageHandler != null) {
+            // The handler owns the active-turn thread; do not gate this on
+            // llmBusy because synchronous tools may run between model phases.
+            return messageHandler.requestCancel();
+        }
+        if (llmBusy) {
+            cancelSignal.set(true);
+            return true;
+        }
+        return false;
+    }
+
+    String configureResources(String args) {
+        if (!ai.kompile.cli.main.chat.tools.ResourceWizard.handles(args))
+            return ai.kompile.cli.main.chat.tools.ResourcePolicy.command(getWorkingDirectory(), args);
+        LineReader reader = activeReader;
+        if (reader == null) return "Resource wizard needs an interactive chat reader.";
+        try {
+            return ai.kompile.cli.main.chat.tools.ResourceWizard.run(getWorkingDirectory(), args, (lines, question) -> {
+                ChatCompleter.setTemporaryWindowActive(true);
+                tui.updateTemporaryWindow("Resource configuration", lines);
+                return reader.readLine(question);
+            });
+        } finally {
+            ChatCompleter.setTemporaryWindowActive(false);
+            tui.closeTemporaryWindow();
+            refreshCurrentActivityView(tui, activityPanel);
+        }
+    }
+
+    /** Run resume-all with a modal using the existing chat reader. */
+    int executeResumeAll(String args) {
+        LineReader reader = activeReader;
+        if (reader == null) return ResumeAllCommand.executeInline(args);
+        try {
+            return ResumeAllCommand.executeInline(args, (lines, question) -> {
+                ChatCompleter.setTemporaryWindowActive(true);
+                tui.updateTemporaryWindow("Resume recent sessions", lines);
+                return reader.readLine(question);
+            });
+        } finally {
+            ChatCompleter.setTemporaryWindowActive(false);
+            tui.closeTemporaryWindow();
+            refreshCurrentActivityView(tui, activityPanel);
+        }
+    }
+
+    /**
      * Open the provider/model switcher as a modal owned by the transcript region.
      * The outer chat prompt has already returned when this is called, so borrowing
      * the active reader is safe and keeps all selection input in the same terminal.
@@ -2265,11 +3291,9 @@ public class ChatRepl {
         String selectedVendor = SetupWizard.vendorForProvider(selectedProvider);
         String selectedModel = chatConfig.getModel();
         boolean committed = false;
-        modelPickerActive = true;
-        ChatCompleter.setTemporaryWindowActive(true);
-        tui.showTemporaryWindow("Provider and model", pickerLines(
-                "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel));
         try {
+            modelPickerActive = true;
+            ChatCompleter.setTemporaryWindowActive(true);
             while (true) {
                 tui.updateTemporaryWindow("Provider and model", pickerLines(
                         "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel));
@@ -2340,8 +3364,15 @@ public class ChatRepl {
                         continue;
                     }
                 }
+                // Credential/OAuth prompts write through the command-output sink.
+                // Give them a short page instead of appending below the provider list.
+                tui.updateTemporaryWindow("Provider authentication", List.of(
+                        SetupWizard.vendorLabel(selectedVendor) + " · "
+                                + SetupWizard.authMethodLabel(selectedAuth)));
                 SetupWizard.AuthenticationSelection authentication =
-                        SetupWizard.authenticate(reader, selectedVendor, selectedAuth);
+                        "global".equals(chatConfig.getAuthenticationScope())
+                                ? SetupWizard.authenticate(reader, selectedVendor, selectedAuth)
+                                : SetupWizard.authenticateSession(reader, selectedVendor, selectedAuth);
                 if (authentication == null) {
                     tui.updateTemporaryWindow("Provider and model", List.of(
                             "Authentication was not completed for "
@@ -2367,18 +3398,36 @@ public class ChatRepl {
                         authentication.apiKey(),
                         sameProvider ? chatConfig.getModel() : null,
                         selectedBaseUrl);
+                discoveryConfig.setAuthenticationScope(chatConfig.getAuthenticationScope());
+                discoveryConfig.setCredentialName(authentication.credentialName());
+                discoveryConfig.setAuthenticationMethod(authentication.authMethod().name()
+                        .toLowerCase(Locale.ROOT).replace('_', '-'));
                 if (sameProvider && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
                     discoveryConfig.setBaseUrl(chatConfig.getBaseUrl());
                 }
                 ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
                         selectedProvider, authentication.apiKey(), discoveryConfig);
-                List<String> models = SetupWizard.modelOptions(
-                        discovery, sameProvider ? chatConfig.getModel() : null);
+                // A transient failure must not collapse the picker to a manual
+                // id prompt. Retry once for transport-grade statuses before
+                // considering the last known good catalog.
+                if (isTransientDiscoveryFailure(discovery)) {
+                    discovery = SetupWizard.refreshModelDiscovery(
+                            selectedProvider, authentication.apiKey(), discoveryConfig);
+                }
+                ModelCatalogSelection.CatalogList catalog =
+                        ModelCatalogSelection.listForPicker(discovery, selectedProvider);
+                List<String> models = catalog.models();
+                String fallbackBanner = catalog.banner();
+                boolean usedFallback = catalog.fromFallback();
                 while (true) {
                     String defaultModel = models.isEmpty() ? null : models.get(0);
                     List<String> modelPickerLines = pickerLines(
                             "Choose a model for " + providerLabel(selectedVendor),
                             models, defaultModel, selectedVendor, selectedProvider, selectedModel);
+                    if (!fallbackBanner.isBlank()) {
+                        modelPickerLines.add("");
+                        modelPickerLines.add(renderer.yellow("  ⚠ " + fallbackBanner));
+                    }
                     if (!discovery.message().isBlank()) {
                         modelPickerLines.add("");
                         modelPickerLines.add("Discovery: "
@@ -2397,8 +3446,11 @@ public class ChatRepl {
                     if ("refresh".equalsIgnoreCase(modelInput.trim())) {
                         discovery = SetupWizard.refreshModelDiscovery(
                                 selectedProvider, authentication.apiKey(), discoveryConfig);
-                        models = SetupWizard.modelOptions(
-                                discovery, sameProvider ? chatConfig.getModel() : null);
+                        ModelCatalogSelection.CatalogList refreshed =
+                                ModelCatalogSelection.listForPicker(discovery, selectedProvider);
+                        models = refreshed.models();
+                        fallbackBanner = refreshed.banner();
+                        usedFallback = refreshed.fromFallback();
                         continue;
                     }
                     String modelChoice = modelInput.isBlank()
@@ -2467,7 +3519,32 @@ public class ChatRepl {
 
                     ChatConfig candidate = buildModelProviderCandidate(
                             selectedProvider, selectedModel, selectedBaseUrl);
+                    candidate.setCredentialName(authentication.credentialName());
+                    candidate.setAuthenticationMethod(authentication.authMethod().name()
+                            .toLowerCase(Locale.ROOT).replace('_', '-'));
                     candidate.setThinking(selectedThinking);
+                    if (candidate.supportsFastMode()) {
+                        List<String> fastChoices = SetupWizard.fastModeOptions(selectedProvider, selectedModel);
+                        String defaultFastChoice = candidate.isFastMode() ? "on" : "off";
+                        while (true) {
+                            List<String> lines = pickerLines("Choose fast mode (higher cost)",
+                                    fastChoices, defaultFastChoice, selectedVendor, selectedProvider, selectedModel);
+                            lines.add(candidate.fastModeCapabilities().notice());
+                            tui.updateTemporaryWindow("Provider and model", lines);
+                            String input = reader.readLine(
+                                    "picker fast (on/off, blank keeps current, back, Esc cancels): ");
+                            if (input == null || "cancel".equalsIgnoreCase(input.trim())) return;
+                            if ("back".equalsIgnoreCase(input.trim())) {
+                                backToModel = true;
+                                break;
+                            }
+                            String choice = input.isBlank() ? defaultFastChoice : parsePickerChoice(input, fastChoices);
+                            if (choice == null) continue;
+                            candidate.setFastMode("on".equals(choice));
+                            break;
+                        }
+                    }
+                    if (backToModel) continue;
                     if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
                         // API-key input is transient and write-only; it is never persisted
                         // into chat-config.json.
@@ -2489,6 +3566,11 @@ public class ChatRepl {
                     }
                     if (commitModelProviderSelection(candidate)) {
                         committed = true;
+                        if (usedFallback) {
+                            ChatCompleter.printAbove(renderer.yellow(
+                                    "  Selected from the last known good catalog — the live "
+                                            + "list could not be verified. Run /model → refresh later."));
+                        }
                     }
                     return;
                 }
@@ -2503,7 +3585,7 @@ public class ChatRepl {
             refreshCurrentActivityView(tui, activityPanel);
             if (committed) {
                 refreshModelDisplay();
-                ChatCompleter.printAbove(renderer.green("  Active model: ")
+                ChatCompleter.showNotice(renderer.green("  Active model: ")
                         + renderer.cyan(activeModelDisplayName())
                         + renderer.dim(" (applies to the next message)"));
             }
@@ -2516,16 +3598,14 @@ public class ChatRepl {
         String selected = model.trim();
         ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
                 chatConfig.getProvider(), null, chatConfig);
-        boolean known = discovery.models().stream()
-                .map(modelEntry -> modelEntry.id())
-                .anyMatch(candidateModel -> candidateModel.equalsIgnoreCase(selected));
-        boolean authoritativeList = discovery.status() == ModelDiscovery.Status.SUCCESS
-                && !discovery.models().isEmpty()
-                && !discovery.message().toLowerCase(Locale.ROOT).contains("stale");
-        if (!known && authoritativeList) {
-            ChatCompleter.printAbove(renderer.yellow("  Model is not in the provider's live model list: ")
+        ModelCatalogSelection.SelectionDecision decision =
+                ModelCatalogSelection.decisionFor(
+                        discovery, chatConfig.getProvider(), selected);
+        if (decision == ModelCatalogSelection.SelectionDecision.UNKNOWN) {
+            ChatCompleter.printAbove(renderer.yellow(
+                    "  Model is not in the provider's live model list or the last known good catalog: ")
                     + renderer.cyan(selected)
-                    + renderer.dim(" Refresh or enter it while discovery is unavailable."));
+                    + renderer.dim(" Use /model to browse, or retry when the provider is reachable."));
             return;
         }
         ChatConfig candidate = buildModelProviderCandidate(chatConfig.getProvider(), selected);
@@ -2537,6 +3617,73 @@ public class ChatRepl {
             return;
         }
         commitModelProviderSelection(candidate);
+        String note = ModelCatalogSelection.noteFor(decision, selected, chatConfig.getProvider());
+        if (!note.isBlank()) {
+            ChatCompleter.printAbove(renderer.yellow("  " + note));
+        }
+    }
+
+    /** Transport-grade discovery statuses worth one automatic retry. */
+    private static boolean isTransientDiscoveryFailure(ModelDiscovery.Result discovery) {
+        return discovery != null && (
+                discovery.status() == ModelDiscovery.Status.TIMEOUT
+                        || discovery.status() == ModelDiscovery.Status.UNAVAILABLE
+                        || discovery.status() == ModelDiscovery.Status.RATE_LIMITED);
+    }
+
+    void handleAuthenticationCommand(String arguments) {
+        if (!localMode || chatConfig == null) {
+            ChatCompleter.printAbove("Session authentication requires standard direct chat.");
+            return;
+        }
+        String[] args = arguments == null || arguments.isBlank() ? new String[0] : arguments.trim().split("\\s+");
+        try {
+            var store = ai.kompile.cli.main.auth.CredentialStore.create();
+            if (args.length == 0 || "list".equals(args[0])) {
+                ChatCompleter.printAbove("Authentication: " + chatConfig.getAuthenticationScope()
+                        + " / " + chatConfig.getProvider() + " / "
+                        + (chatConfig.getCredentialName() == null ? "vendor global default" : chatConfig.getCredentialName()));
+                for (var info : store.list(chatConfig.getProvider()))
+                    ChatCompleter.printAbove("  " + info.credentialName() + " (" + info.type() + ")"
+                            + (info.active() ? " [global default]" : ""));
+                ChatCompleter.printAbove("/auth session [name] — pin this session; /auth global — follow vendor default\n"
+                        + "/auth global <provider> <name> — select credential for all global-mode sessions of that provider\n"
+                        + "/auth default session|global — default mode for new sessions; /provider — choose vendor/account/model");
+                return;
+            }
+            if (args.length == 2 && "default".equals(args[0])) {
+                ChatConfig defaults = ChatConfig.loadGlobal();
+                if (defaults == null) defaults = new ChatConfig();
+                defaults.setAuthenticationScope(args[1]);
+                defaults.saveGlobal();
+                ChatCompleter.printAbove("New-session global authentication default: " + args[1]
+                        + " (project settings can override it).");
+                return;
+            }
+            if (args.length == 3 && "global".equals(args[0])) {
+                if (!store.switchCredential(args[1], args[2])) throw new IllegalArgumentException("Unknown credential");
+                ChatCompleter.printAbove("Global credential selected for " + args[1]
+                        + "; global-mode sessions use it on their next request. Session pins are unchanged.");
+                return;
+            }
+            ChatConfig candidate = chatConfig.copy();
+            if ("session".equals(args[0]) && args.length <= 2) {
+                candidate.setAuthenticationScope("session");
+                if (args.length == 2) candidate.setCredentialName(args[1]);
+                else candidate.pinActiveCredential();
+            } else if ("global".equals(args[0]) && args.length == 1) {
+                candidate.setAuthenticationScope("global");
+                candidate.setApiKey(null);
+            } else throw new IllegalArgumentException("Use /auth for authentication commands");
+            candidate.setAuthenticationMethod(null);
+            candidate.resolveRequestAuth(); // Fail closed before changing the active session.
+            if (updateChatConfig(candidate)) {
+                chatConfig.saveLoadedOrGlobal();
+                ChatCompleter.printAbove("Authentication scope: " + chatConfig.getAuthenticationScope());
+            }
+        } catch (IOException | RuntimeException e) {
+            ChatCompleter.printAbove("Authentication selection failed: " + e.getMessage());
+        }
     }
 
     private boolean commitModelProviderSelection(ChatConfig candidate) {
@@ -2548,13 +3695,13 @@ public class ChatRepl {
         }
         try {
             chatConfig.saveLoadedOrGlobal();
-        } catch (Exception ignored) {
-            // The in-session switch remains active even if persistence is unavailable.
+        } catch (Exception e) {
+            ChatCompleter.printAbove("Provider/model changed in memory, but session settings could not be saved: " + e.getMessage());
         }
         refreshModelDisplay();
         chatHistory.logSystem("Selected provider/model: " + activeModelDisplayName());
         if (!previous.equals(activeModelDisplayName())) {
-            ChatCompleter.printAbove(renderer.green("  Selected provider/model: ")
+            ChatCompleter.showNotice(renderer.green("  Selected provider/model: ")
                     + renderer.cyan(activeModelDisplayName())
                     + renderer.dim(" — current response continues; next message uses it."));
         }
@@ -2567,22 +3714,35 @@ public class ChatRepl {
 
     private ChatConfig buildModelProviderCandidate(
             String provider, String model, String baseUrlOverride) {
+        return buildModelProviderCandidateFrom(
+                chatConfig, provider, model, baseUrlOverride);
+    }
+
+    static ChatConfig buildModelProviderCandidateFrom(
+            ChatConfig activeConfig, String provider, String model,
+            String baseUrlOverride) {
         ChatConfig candidate = new ChatConfig();
-        candidate.applyLlmSettingsFrom(chatConfig);
+        candidate.applyLlmSettingsFrom(activeConfig);
+        // Authentication remains a managed provider capability. Flattening an
+        // OAuth/subscription credential into a transient API key loses its
+        // provider-owned headers and base URL (notably OpenAI Codex/Anthropic).
+        candidate.setApiKey(null);
         candidate.setProvider(provider);
         candidate.setModel(model);
+        candidate.setFastMode(provider != null && provider.equalsIgnoreCase(activeConfig.getProvider())
+                && activeConfig.isFastMode() && candidate.supportsFastMode());
         // Thinking is resolved for the selected model below; never carry an
         // incompatible value through the candidate-building step.
         candidate.setThinking(null);
-        // Never carry a credential across providers. For the current provider,
-        // preserve the resolved in-memory credential without persisting it.
-        if (provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
-            candidate.setApiKey(chatConfig.getApiKey());
+        // Never carry a credential across providers. Same-provider candidates
+        // resolve the active managed credential lazily after model selection.
+        if (provider != null && provider.equalsIgnoreCase(activeConfig.getProvider())) {
             candidate.setBaseUrl(baseUrlOverride == null
-                    ? chatConfig.getBaseUrl() : baseUrlOverride);
+                    ? activeConfig.getBaseUrl() : baseUrlOverride);
         } else {
             candidate.setApiKey(null);
             candidate.setBaseUrl(baseUrlOverride);
+            candidate.setAuthenticationMethod(null);
         }
         return candidate;
     }
@@ -2618,9 +3778,6 @@ public class ChatRepl {
                                      String provider, String model) {
         List<String> lines = new ArrayList<>();
         lines.add("Active: " + activeModelDisplayName());
-        lines.add("Selection is applied atomically after both values are chosen.");
-        lines.add("A response already in flight continues on its original request.");
-        lines.add("");
         lines.add(heading + ":");
         for (int i = 0; i < choices.size(); i++) {
             String display = "Choose a provider".equals(heading)
@@ -2651,8 +3808,24 @@ public class ChatRepl {
         return model == null || model.isBlank() ? provider : provider + " / " + model;
     }
 
-    private void refreshModelDisplay() {
-        tui.setAgentName(activeModelDisplayName());
+    private String activeModelTopPaneLabel() {
+        return modelTopPaneLabel(activeModelDisplayName(), chatConfig == null ? null : chatConfig.getThinking(),
+                chatConfig != null && chatConfig.supportsFastMode(), chatConfig != null && chatConfig.isFastMode());
+    }
+
+    static String modelTopPaneLabel(String modelDisplayName, String thinking,
+                                   boolean supportsFastMode, boolean fastMode) {
+        return modelTopPaneLabel(modelDisplayName, thinking)
+                + (supportsFastMode ? " / fast: " + (fastMode ? "on (requested)" : "off") : "");
+    }
+
+    static String modelTopPaneLabel(String modelDisplayName, String thinking) {
+        String effort = thinking == null || thinking.isBlank() ? "default" : thinking.trim();
+        return modelDisplayName + " / effort: " + effort;
+    }
+
+    void refreshModelDisplay() {
+        tui.setAgentName(activeModelTopPaneLabel());
         renderer.setReadyTerminalTitle(readyTerminalTitle(
                 "kompile chat (local) — " + activeModelDisplayName()));
         statusBar.requestRedraw();

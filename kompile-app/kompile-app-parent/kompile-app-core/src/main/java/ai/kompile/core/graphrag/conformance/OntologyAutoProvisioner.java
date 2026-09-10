@@ -9,6 +9,8 @@
  */
 package ai.kompile.core.graphrag.conformance;
 
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+
 /**
  * SPI for provisioning a governing ontology for a fact sheet's graph and, when the implementation
  * supports it, materializing schema-level type inferences back onto the graph. Implemented in
@@ -30,4 +32,12 @@ public interface OntologyAutoProvisioner {
      * @param factSheetId the fact sheet whose graph to provision an ontology for
      */
     void provisionOntology(long factSheetId);
+
+    /**
+     * Provision from the exact crawl schema when available. Implementations that predate schema
+     * handoff retain their behavior through the default method.
+     */
+    default void provisionOntology(long factSheetId, GraphSchema graphSchema) {
+        provisionOntology(factSheetId);
+    }
 }

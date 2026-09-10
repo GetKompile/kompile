@@ -23,12 +23,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.web.bind.annotation.*;
 
-import java.net.URI;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +35,7 @@ import java.util.Map;
  * REST controller for OAuth connection management.
  */
 @RestController("oauthConnectionController")
+@ConditionalOnExpression("'${spring.application.name:}' == 'kompile-app-crawl-manager'")
 @RequestMapping("/api/oauth")
 public class OAuthController {
 
@@ -90,15 +90,19 @@ public class OAuthController {
     public ResponseEntity<AuthorizationUrlResponse> initiateAuthorization(
             @PathVariable String providerId,
             @RequestParam(required = false) String redirectUri,
+            @RequestParam(required = false) String purpose,
             HttpServletRequest request) {
         try {
             // Build redirect URI from request if not provided
             if (redirectUri == null || redirectUri.isEmpty()) {
-                String baseUrl = getBaseUrl(request);
-                redirectUri = baseUrl + "/api/oauth/" + providerId + "/callback";
+                redirectUri = connectionService.getConfiguredRedirectUri(providerId);
+                if (redirectUri == null) {
+                    redirectUri = getBaseUrl(request) + "/api/oauth/" + providerId + "/callback";
+                }
             }
 
-            AuthorizationUrlResponse response = connectionService.initiateAuthorization(providerId, redirectUri);
+            AuthorizationUrlResponse response = connectionService.initiateAuthorization(
+                    providerId, redirectUri, purpose);
             return ResponseEntity.ok(response);
         } catch (IllegalArgumentException e) {
             log.warn("Invalid provider for authorization: {}", providerId);
@@ -110,6 +114,12 @@ public class OAuthController {
                             .providerId(providerId)
                             .build());
         }
+    }
+
+    /** Java-level compatibility for callers that do not select a credential purpose. */
+    public ResponseEntity<AuthorizationUrlResponse> initiateAuthorization(
+            String providerId, String redirectUri, HttpServletRequest request) {
+        return initiateAuthorization(providerId, redirectUri, null, request);
     }
 
     /**
@@ -125,17 +135,17 @@ public class OAuthController {
             @RequestParam(name = "error_description", required = false) String errorDescription,
             HttpServletRequest request) {
 
-        // Build the frontend redirect URL
-        String frontendUrl = getBaseUrl(request);
-
         if (error != null) {
             log.warn("OAuth callback error for {}: {} - {}", providerId, error, errorDescription);
-            String redirectUrl = frontendUrl + "/connections?error=" + URLEncoder.encode(error, StandardCharsets.UTF_8) +
-                    (errorDescription != null ? "&error_description=" + URLEncoder.encode(errorDescription, StandardCharsets.UTF_8) : "") +
-                    "&provider=" + URLEncoder.encode(providerId, StandardCharsets.UTF_8);
-            return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(redirectUrl))
-                    .build();
+            if (state != null && !state.isBlank()) {
+                try {
+                    connectionService.consumeDeniedAuthorization(providerId, state);
+                } catch (SecurityException invalidState) {
+                    log.warn("OAuth denial callback had invalid state for {}", providerId);
+                    return oauthResultPage(providerId, false, "OAuth state validation failed");
+                }
+            }
+            return oauthResultPage(providerId, false, "Authorization was denied");
         }
 
         if (code == null || state == null) {
@@ -145,30 +155,33 @@ public class OAuthController {
         }
 
         try {
-            String redirectUri = getBaseUrl(request) + "/api/oauth/" + providerId + "/callback";
-            OAuthConnectionDto connection = connectionService.completeAuthorization(
-                    providerId, code, state, redirectUri);
+            OAuthConnectionDto connection = connectionService.completeAuthorization(providerId, code, state);
 
-            // Redirect to frontend success page
-            String successUrl = frontendUrl + "/connections?success=true&provider=" + providerId;
-            return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(successUrl))
-                    .build();
+            return oauthResultPage(providerId, true, null);
         } catch (SecurityException e) {
             log.error("OAuth state validation failed for {}: {}", providerId, e.getMessage());
-            String errorUrl = frontendUrl + "/connections?error=invalid_state&provider=" + providerId;
-            return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(errorUrl))
-                    .build();
+            return oauthResultPage(providerId, false, "OAuth state validation failed");
         } catch (Exception e) {
             log.error("OAuth callback failed for {}: {}", providerId, e.getMessage());
-            String errorUrl = frontendUrl + "/connections?error=token_exchange_failed" +
-                    "&error_description=" + URLEncoder.encode(e.getMessage(), StandardCharsets.UTF_8) +
-                    "&provider=" + URLEncoder.encode(providerId, StandardCharsets.UTF_8);
-            return ResponseEntity.status(HttpStatus.FOUND)
-                    .location(URI.create(errorUrl))
-                    .build();
+            return oauthResultPage(providerId, false, "Token exchange failed");
         }
+    }
+
+    private static ResponseEntity<String> oauthResultPage(
+            String providerId, boolean success, String error) {
+        String provider = providerId == null ? "provider"
+                : providerId.replaceAll("[^A-Za-z0-9_-]", "");
+        String title = success ? "Connection complete" : "Connection failed";
+        String message = success
+                ? provider + " is now connected to Kompile."
+                : (error == null ? "OAuth connection failed." : error + ".");
+        String html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>"
+                + title + "</title></head><body><h1>" + title + "</h1><p>" + message
+                + "</p><script>if(window.opener){window.opener.postMessage({type:'oauth-complete'},"
+                + "window.location.origin);window.close();}</script></body></html>";
+        return ResponseEntity.status(success ? HttpStatus.OK : HttpStatus.BAD_REQUEST)
+                .contentType(MediaType.TEXT_HTML)
+                .body(html);
     }
 
     /**
@@ -254,6 +267,26 @@ public class OAuthController {
                     "providerId", providerId
             ));
         }
+    }
+
+    /**
+     * Runtime OAuth credential handoff for authenticated source ingestion: the folder-local
+     * crawl runtime has no in-process OAuth service, so the CLI bridges the locally connected
+     * token into the crawl request. Served only from the admin-token-gated /api/oauth boundary;
+     * the sibling /token endpoint keeps its boolean-only contract.
+     */
+    @GetMapping("/{providerId}/credential")
+    public ResponseEntity<Map<String, Object>> getCredential(@PathVariable String providerId) {
+        String token = connectionService.getValidAccessToken(providerId);
+        if (token == null || token.isBlank()) {
+            return ResponseEntity.status(HttpStatus.PRECONDITION_REQUIRED)
+                    .body(Map.of("hasToken", false, "providerId", providerId,
+                            "error", "No connected OAuth account for provider: " + providerId));
+        }
+        return ResponseEntity.ok(Map.of(
+                "hasToken", true,
+                "providerId", providerId,
+                "accessToken", token));
     }
 
     /**

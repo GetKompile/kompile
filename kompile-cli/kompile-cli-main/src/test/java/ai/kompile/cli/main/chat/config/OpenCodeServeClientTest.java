@@ -8,6 +8,9 @@ import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -98,5 +101,62 @@ class OpenCodeServeClientTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void normalizesNativeTextToolsAndUsageWithoutMixingToolOutputIntoAssistantText() {
+        OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:1", "session-1");
+        StringBuilder assistant = new StringBuilder();
+        List<String> activity = new ArrayList<>();
+        OpenCodeServeClient.ActivityListener listener =
+                new OpenCodeServeClient.ActivityListener() {
+                    @Override
+                    public void onToolStart(String callId, String name, String input) {
+                        activity.add("start:" + callId + ":" + name);
+                    }
+
+                    @Override
+                    public void onToolComplete(String callId, String name, String output,
+                                               int exitCode, boolean error) {
+                        activity.add("complete:" + callId + ":" + output);
+                    }
+
+                    @Override
+                    public void onTokenUsage(long input, long output,
+                                             long cacheRead, long cacheCreation) {
+                        activity.add("usage:" + input + ":" + output + ":" + cacheRead);
+                    }
+                };
+        var parser = new ai.kompile.cli.main.chat.PassthroughStreamParser();
+        var started = new HashSet<String>();
+        var completed = new HashSet<String>();
+
+        client.processProviderLine(
+                "{\"type\":\"text\",\"part\":{\"text\":\"answer\"}}",
+                parser, assistant, ignored -> { }, listener, started, completed);
+        client.processProviderLine(
+                "{\"type\":\"tool_use\",\"part\":{\"callID\":\"call-1\","
+                        + "\"tool\":\"bash\",\"state\":{\"status\":\"running\","
+                        + "\"input\":{\"command\":\"pwd\"}}}}",
+                parser, assistant, ignored -> { }, listener, started, completed);
+        client.processProviderLine(
+                "{\"type\":\"tool_use\",\"part\":{\"callID\":\"call-1\","
+                        + "\"tool\":\"bash\",\"state\":{\"status\":\"completed\","
+                        + "\"input\":{\"command\":\"pwd\"},"
+                        + "\"output\":[{\"type\":\"text\",\"text\":\"tool output\"}],"
+                        + "\"metadata\":{\"exit\":0}}}}",
+                parser, assistant, ignored -> { }, listener, started, completed);
+        client.processProviderLine(
+                "{\"type\":\"step_finish\",\"part\":{\"tokens\":{"
+                        + "\"input\":12,\"output\":3,\"cache\":{\"read\":4}}}}",
+                parser, assistant, ignored -> { }, listener, started, completed);
+
+        assertEquals("answer", assistant.toString());
+        assertEquals(List.of(
+                "start:call-1:bash",
+                "complete:call-1:tool output",
+                "usage:12:3:4"), activity);
     }
 }

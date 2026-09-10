@@ -46,7 +46,7 @@ can reference `releases/latest/download/<name>`.
 1. **Native binaries** in `bin/` — no JVM required, subprocesses re-exec the same image.
 2. **JBang/jar** — `jbang --catalog ./jbang-catalog.json kompile-server`, or plain
    `java -jar lib/kompile-server.jar`. Same `--subprocess=` semantics as the binary.
-3. **Dev tree** — `mvn spring-boot:run`, generated fpna-vN projects, `.boot-inf-extracted`.
+3. **Dev tree** — `mvn spring-boot:run`, generated planning-vN projects, `.boot-inf-extracted`.
 
 ## 2. The unified native image (`kompile-server`)
 
@@ -95,7 +95,7 @@ huge-object layout limit on this image). The same profile now also emits the exe
 
 ## 3. kompile-app-main as a meta-library application
 
-- Default packaging is a **thin library jar** — generated RAG projects (fpna-vN,
+- Default packaging is a **thin library jar** — generated RAG projects (planning-vN,
   kompile-rag-builds) depend on it and do their own `spring-boot:repackage`. This must not
   change; provider composition happens in the *consumer* pom.
 - Providers (loaders, vector stores, OCR/VLM, tools, embedding backends) are plain
@@ -175,7 +175,7 @@ tier* keeps runtime multi-backend selection (`BackendManager`, both jars on clas
 | Root `Dockerfile`, `Dockerfile.rockylinux8` | **Deprecated in-place** (headers added). Use `build-scripts/Dockerfile.cpu` / `.cuda`. |
 | Root `native-image/` | **Legacy/unwired** (README added). Canonical metadata is per-module `META-INF/native-image/`. |
 | Per-subprocess native profiles (`native-ingest`, …) | Kept as opt-in *separate* binaries; the unified image is the default story. |
-| fpna-vN trees, `relaunch-jvm.sh` | Dev dogfood instances, not reactor members. `relaunch-jvm.sh` hardcodes a personal JDK path; `dist/` has ~40 stray build logs — hygiene items, not build inputs. |
+| planning-vN trees, `relaunch-jvm.sh` | Dev dogfood instances, not reactor members. `relaunch-jvm.sh` hardcodes a personal JDK path; `dist/` has ~40 stray build logs — hygiene items, not build inputs. |
 
 ## 7. Verified native-dist status
 

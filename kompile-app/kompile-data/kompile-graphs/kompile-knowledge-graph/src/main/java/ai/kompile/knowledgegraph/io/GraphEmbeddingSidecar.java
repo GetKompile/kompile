@@ -135,6 +135,9 @@ public class GraphEmbeddingSidecar
             // Section 1: structural-KGE node embeddings
             out.writeInt(kgeNodes.size());
             for (GraphNode n : kgeNodes) {
+                if (n.getExternalId() == null || n.getExternalId().isBlank()) {
+                    throw new IllegalStateException("Structural embedding has no portable external ID");
+                }
                 INDArray emb = n.getKgEmbedding();
                 byte[] embBytes = safeBytes(emb);
                 out.writeUTF(n.getNodeType() == null ? NodeLevel.ENTITY.name() : n.getNodeType().name());
@@ -149,6 +152,9 @@ public class GraphEmbeddingSidecar
             // Section 2: edge-type relation embeddings (type-shared)
             out.writeInt(edgeTypeEmbs.size());
             for (Map.Entry<String, INDArray> entry : edgeTypeEmbs.entrySet()) {
+                if (entry.getKey() == null || entry.getKey().isBlank()) {
+                    throw new IllegalStateException("Edge-type embedding has no relation identity");
+                }
                 byte[] embBytes = safeBytes(entry.getValue());
                 out.writeUTF(entry.getKey());
                 out.writeUTF(storedAlgo == null ? "" : storedAlgo.name());
@@ -170,8 +176,8 @@ public class GraphEmbeddingSidecar
             }
 
         } catch (IOException e) {
-            log.warn("Failed to serialize embeddings for fact sheet {}: {}", factSheetId, e.getMessage());
-            return null;
+            throw new IllegalStateException(
+                    "Failed to serialize embeddings for fact sheet " + factSheetId, e);
         }
         return bos.toByteArray();
     }
@@ -185,6 +191,14 @@ public class GraphEmbeddingSidecar
     }
 
     @Override
+    public void validateArtifacts(Long factSheetId, UnifiedGraph graph) {
+        if (graph == null) return;
+        byte[] data = graph.artifact(ARTIFACT_NAME);
+        if (data == null || data.length == 0) return;
+        validateFraming(data);
+    }
+
+    @Override
     public int importArtifacts(Long factSheetId, UnifiedGraph graph) {
         return importInto(factSheetId, graph.artifact(ARTIFACT_NAME));
     }
@@ -192,6 +206,16 @@ public class GraphEmbeddingSidecar
     @Override
     public boolean reportsAppliedEmbeddings() {
         return true;
+    }
+
+    @Override
+    public boolean supportsExactRollback() {
+        return true;
+    }
+
+    @Override
+    public java.util.Set<String> managedArtifactPrefixes() {
+        return java.util.Set.of(ARTIFACT_NAME);
     }
 
     /** Map each fact-sheet node that the live store has a text embedding for to its vector. */
@@ -204,24 +228,33 @@ public class GraphEmbeddingSidecar
         try {
             byNodeId = graphService.exportNodeEmbeddings(factSheetId);
         } catch (Exception e) {
-            log.warn("Live-store embedding export failed for fact sheet {}: {}", factSheetId, e.getMessage());
-            return result;
+            throw new IllegalStateException(
+                    "Live-store embedding export failed for fact sheet " + factSheetId, e);
         }
         if (byNodeId == null || byNodeId.isEmpty()) {
             return result;
         }
         for (GraphNode n : graphService.getNodesInFactSheet(factSheetId)) {
             INDArray emb = byNodeId.get(n.getNodeId());
-            if (emb != null && n.getExternalId() != null) {
-                result.put(n, emb);
+            if (emb == null) continue;
+            if (n.getExternalId() == null || n.getExternalId().isBlank()) {
+                throw new IllegalStateException("Embedded graph node has no portable external ID: " + n.getNodeId());
             }
+            result.put(n, emb);
+        }
+        if (result.size() != byNodeId.size()) {
+            throw new IllegalStateException("Live-store embedding export was incomplete: expected "
+                    + byNodeId.size() + ", portable " + result.size());
         }
         return result;
     }
 
     private byte[] safeBytes(INDArray vec) {
         byte[] emb = converter.convertToDatabaseColumn(vec);
-        return emb == null ? new byte[0] : emb;
+        if (emb == null || emb.length == 0) {
+            throw new IllegalStateException("Embedding could not be serialized");
+        }
+        return emb;
     }
 
     /**
@@ -239,8 +272,7 @@ public class GraphEmbeddingSidecar
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(data))) {
             int magic = in.readInt();
             if (magic != MAGIC_V1 && magic != MAGIC_V2) {
-                log.warn("Embedding sidecar for fact sheet {} has an unexpected header; skipping", factSheetId);
-                return 0;
+                throw new IOException("Unexpected embedding sidecar header");
             }
 
             // Section 1: structural-KGE node embeddings
@@ -253,19 +285,19 @@ public class GraphEmbeddingSidecar
                 long updatedAtMs = (magic == MAGIC_V2) ? in.readLong() : -1L;
                 byte[] emb = readBlock(in);
 
-                if (externalId.isEmpty()) continue;
+                if (externalId.isEmpty()) throw new IOException("Structural embedding has no external ID");
                 INDArray vec = converter.convertToEntityAttribute(emb);
-                if (vec == null) continue;
+                if (vec == null) throw new IOException("Structural embedding could not be decoded");
 
                 NodeLevel level = parseLevel(typeName);
                 var node = graphService.getNodeByExternalIdInFactSheet(externalId, level, factSheetId);
-                if (node.isPresent()) {
-                    KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
-                    Instant updAt = updatedAtMs >= 0 ? Instant.ofEpochMilli(updatedAtMs) : null;
-                    long ver = version >= 0 ? version : 0L;
-                    graphService.storeNodeKgEmbedding(node.get().getNodeId(), vec, algo, ver, updAt);
-                    applied++;
-                }
+                if (node.isEmpty()) throw new IOException(
+                        "Structural embedding target node was not restored: " + externalId);
+                KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
+                Instant updAt = updatedAtMs >= 0 ? Instant.ofEpochMilli(updatedAtMs) : null;
+                long ver = version >= 0 ? version : 0L;
+                graphService.storeNodeKgEmbedding(node.get().getNodeId(), vec, algo, ver, updAt);
+                applied++;
             }
 
             // Section 2: edge-type relation embeddings
@@ -277,7 +309,7 @@ public class GraphEmbeddingSidecar
                 byte[] emb = readBlock(in);
 
                 INDArray vec = converter.convertToEntityAttribute(emb);
-                if (vec == null) continue;
+                if (vec == null) throw new IOException("Edge-type embedding could not be decoded");
 
                 KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
                 long ver = version >= 0 ? version : 0L;
@@ -293,7 +325,8 @@ public class GraphEmbeddingSidecar
                 throw new IOException("Trailing bytes in embedding sidecar");
             }
         } catch (IOException e) {
-            log.warn("Failed to read embedding sidecar for fact sheet {}: {}", factSheetId, e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to apply embedding sidecar for fact sheet " + factSheetId, e);
         }
         return applied;
     }
@@ -314,20 +347,26 @@ public class GraphEmbeddingSidecar
                 continue;
             }
             INDArray vec = converter.convertToEntityAttribute(emb);
-            if (vec == null) {
-                continue;
-            }
-            graphService.getNodeByExternalIdInFactSheet(externalId, parseLevel(typeName), factSheetId)
-                    .ifPresent(node -> byNodeId.put(node.getNodeId(), vec));
+            if (vec == null) throw new IOException("Live-store embedding could not be decoded");
+            GraphNode node = graphService
+                    .getNodeByExternalIdInFactSheet(externalId, parseLevel(typeName), factSheetId)
+                    .orElseThrow(() -> new IOException(
+                            "Live-store embedding target node was not restored: " + externalId));
+            byNodeId.put(node.getNodeId(), vec);
         }
         if (graphService == null || byNodeId.isEmpty()) {
             return 0;
         }
         try {
-            return graphService.applyNodeEmbeddings(byNodeId);
+            int applied = graphService.applyNodeEmbeddings(byNodeId);
+            if (applied != byNodeId.size()) {
+                throw new IllegalStateException("Live-store embedding apply was incomplete: expected "
+                        + byNodeId.size() + ", applied " + applied);
+            }
+            return applied;
         } catch (Exception e) {
-            log.warn("Live-store embedding apply failed for fact sheet {}: {}", factSheetId, e.getMessage());
-            return 0;
+            throw new IllegalStateException(
+                    "Live-store embedding apply failed for fact sheet " + factSheetId, e);
         }
     }
 
@@ -347,6 +386,42 @@ public class GraphEmbeddingSidecar
             throw new IOException("Invalid " + section + " embedding count: " + count);
         }
         return count;
+    }
+
+    private static void validateFraming(byte[] data) {
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(data))) {
+            int magic = in.readInt();
+            if (magic != MAGIC_V1 && magic != MAGIC_V2) {
+                throw new IOException("Unexpected embedding sidecar header");
+            }
+            int nodeCount = readCount(in, "structural node");
+            for (int i = 0; i < nodeCount; i++) {
+                in.readUTF();
+                in.readUTF();
+                in.readUTF();
+                in.readLong();
+                if (magic == MAGIC_V2) in.readLong();
+                readBlock(in);
+            }
+            int edgeCount = readCount(in, "edge type");
+            for (int i = 0; i < edgeCount; i++) {
+                in.readUTF();
+                in.readUTF();
+                in.readLong();
+                readBlock(in);
+            }
+            if (magic == MAGIC_V2) {
+                int liveCount = readCount(in, "live node");
+                for (int i = 0; i < liveCount; i++) {
+                    in.readUTF();
+                    in.readUTF();
+                    readBlock(in);
+                }
+            }
+            if (in.available() != 0) throw new IOException("Trailing bytes in embedding sidecar");
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Invalid embedding sidecar", e);
+        }
     }
 
     private static KGEmbeddingAlgorithm parseAlgorithm(String algoName) {

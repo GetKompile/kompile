@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.coordination;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
@@ -35,8 +36,16 @@ public class AgentEntry {
     @JsonProperty("sessionId")
     private String sessionId;
 
+    /** Session id used by the per-conversation tool-call JSONL stream. */
+    @JsonProperty("toolSessionId")
+    private String toolSessionId;
+
     @JsonProperty("agentName")
     private String agentName;
+
+    /** Optional Kompile role/agent profile (for example coder or architect). */
+    @JsonProperty("roleName")
+    private String roleName;
 
     @JsonProperty("agentType")
     private String agentType;
@@ -69,6 +78,7 @@ public class AgentEntry {
                       String parentSessionId, int depth, String task,
                       String workDir, long pid, Instant startedAt, int ttlSeconds) {
         this.sessionId = sessionId;
+        this.toolSessionId = sessionId;
         this.agentName = agentName;
         this.agentType = agentType;
         this.parentSessionId = parentSessionId;
@@ -84,7 +94,11 @@ public class AgentEntry {
     /**
      * Returns true if this entry has exceeded its TTL based on the last heartbeat.
      */
+    @JsonIgnore
     public boolean isStale() {
-        return Instant.now().isAfter(lastHeartbeat.plusSeconds(ttlSeconds));
+        Instant heartbeat = lastHeartbeat != null ? lastHeartbeat : startedAt;
+        if (heartbeat == null) return true;
+        int ttl = ttlSeconds > 0 ? ttlSeconds : 120;
+        return Instant.now().isAfter(heartbeat.plusSeconds(ttl));
     }
 }

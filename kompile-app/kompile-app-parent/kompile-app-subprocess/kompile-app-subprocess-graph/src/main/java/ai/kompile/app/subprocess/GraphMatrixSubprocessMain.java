@@ -38,6 +38,10 @@ import ai.kompile.knowledgegraph.domain.EntityMention;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
+import ai.kompile.knowledgegraph.generation.GraphGenerationCoordinator;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.matrix.store.VectorStoreMatrixGraphStore;
@@ -201,6 +205,7 @@ public class GraphMatrixSubprocessMain {
                 new ThreadPoolExecutor.AbortPolicy());
 
         httpServer.createContext("/health", exchange -> handleHealth(exchange));
+        httpServer.createContext("/capabilities", exchange -> handleCapabilities(exchange, objectMapper));
         httpServer.createContext("/invoke", exchange -> handleInvoke(
                 exchange, matrixStore, store, objectMapper, maxRequestBytes, maxResponseBytes));
         httpServer.setExecutor(rpcExecutor);
@@ -230,6 +235,21 @@ public class GraphMatrixSubprocessMain {
         try (var out = exchange.getResponseBody()) {
             out.write(bytes);
         }
+    }
+
+    private static void handleCapabilities(HttpExchange exchange, ObjectMapper mapper) throws IOException {
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            sendJson(exchange, 405, "{\"ok\":false,\"error\":\"only GET /capabilities is supported\"}");
+            return;
+        }
+        boolean authority = springContext != null
+                && !springContext.getBeansOfType(GraphGenerationCoordinator.class).isEmpty();
+        ObjectNode result = mapper.createObjectNode();
+        result.put("protocolVersion", 2);
+        result.put("generationLifecycle", authority);
+        result.put("generationRouting", authority);
+        result.put("generationAuthority", authority);
+        sendJson(exchange, 200, mapper.writeValueAsString(result));
     }
 
     static void handleInvoke(HttpExchange exchange,
@@ -265,6 +285,8 @@ public class GraphMatrixSubprocessMain {
             logger.error("[graph-matrix] invoke error: {}", e.getMessage(), e);
             ObjectNode err = mapper.createObjectNode();
             err.put("ok", false);
+            err.put("protocolVersion", 2);
+            err.put("code", generationErrorCode(e));
             err.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             responseJson = mapper.writeValueAsString(err);
         }
@@ -295,6 +317,14 @@ public class GraphMatrixSubprocessMain {
 
     private static String responseMethod(String response) {
         return response == null ? "unknown" : "serialized";
+    }
+
+    private static String generationErrorCode(Exception error) {
+        String message = error.getMessage() == null ? "" : error.getMessage().toLowerCase();
+        if (message.contains("conflict") || message.contains("stale")) return "STALE_REVISION";
+        if (message.contains("unsupported") || message.contains("not supported")) return "UNSUPPORTED";
+        if (message.contains("generation") || message.contains("journal")) return "INVALID_GENERATION";
+        return "INTERNAL_ERROR";
     }
 
     private static long positiveLongProperty(String name, long defaultValue) {
@@ -438,6 +468,27 @@ public class GraphMatrixSubprocessMain {
                                    MatrixGraphStore matrixStore,
                                    VectorStoreMatrixGraphStore store,
                                    ObjectMapper mapper) throws Exception {
+        JsonNode targetNode = root.path("generation");
+        if (!targetNode.isMissingNode() && !targetNode.isNull()) {
+            GraphGeneration.Target target = mapper.treeToValue(targetNode, GraphGeneration.Target.class);
+            String ownerJobId = root.path("generationOwnerJobId").asText("unowned");
+            GraphGenerationCoordinator coordinator = generationCoordinator();
+            GraphGenerationJournal.Entry entry = coordinator.acquire(target, ownerJobId);
+            try (GraphGenerationContext.Scope ignored =
+                         GraphGenerationContext.open(entry.generation(), ownerJobId)) {
+                return dispatchScoped(root, matrixStore, store, mapper, target);
+            } finally {
+                coordinator.release(target, ownerJobId);
+            }
+        }
+        return dispatchScoped(root, matrixStore, store, mapper, null);
+    }
+
+    private static String dispatchScoped(JsonNode root,
+                                         MatrixGraphStore matrixStore,
+                                         VectorStoreMatrixGraphStore store,
+                                         ObjectMapper mapper,
+                                         GraphGeneration.Target generationTarget) throws Exception {
         String methodName = root.path("method").asText();
         JsonNode argTypesNode = root.path("argTypes");
         JsonNode argsNode = root.path("args");
@@ -455,6 +506,13 @@ public class GraphMatrixSubprocessMain {
         if (root.has("service")) {
             String serviceFqcn = root.path("service").asText();
             return dispatchToService(serviceFqcn, methodName, argJsons, mapper);
+        }
+
+        if (generationTarget == null && firstArgumentTargetsPhysicalGeneration(methodName, argJsons)) {
+            throw new IllegalStateException("A physical generation graph requires a validated generation envelope");
+        }
+        if (generationTarget != null) {
+            bindRawGraphArgumentToGeneration(methodName, argJsons, generationTarget, mapper);
         }
 
         // --- Special case: saveGraph ---
@@ -483,6 +541,58 @@ public class GraphMatrixSubprocessMain {
         return serializeResult(methodName, rawResult, mapper);
     }
 
+    private static boolean firstArgumentTargetsPhysicalGeneration(
+            String methodName, List<JsonNode> args) {
+        if (args.isEmpty()) return false;
+        JsonNode first = args.get(0);
+        if (first.isTextual()) return first.asText().contains("~gen~");
+        return "saveGraph".equals(methodName)
+                && first.path("__saveGraphId").asText("").contains("~gen~");
+    }
+
+    private static void bindRawGraphArgumentToGeneration(
+            String methodName, List<JsonNode> args, GraphGeneration.Target target, ObjectMapper mapper) {
+        if (args.isEmpty()) return;
+        JsonNode first = args.get(0);
+        if (first.isTextual()) {
+            String graphId = first.asText();
+            if (graphId.equals(target.logicalGraphId())) {
+                args.set(0, mapper.getNodeFactory().textNode(target.physicalGraphId()));
+            } else if (!graphId.equals(target.physicalGraphId())) {
+                throw new IllegalStateException(
+                        "Generation-scoped store RPC cannot access graph " + graphId);
+            }
+        } else if ("saveGraph".equals(methodName) && first.isObject()) {
+            String graphId = first.path("__saveGraphId").asText("");
+            if (graphId.equals(target.logicalGraphId())) {
+                ((ObjectNode) first).put("__saveGraphId", target.physicalGraphId());
+            } else if (!graphId.equals(target.physicalGraphId())) {
+                throw new IllegalStateException(
+                        "Generation-scoped save cannot access graph " + graphId);
+            }
+        }
+    }
+
+    private static GraphGenerationCoordinator generationCoordinator() {
+        if (springContext == null) throw new IllegalStateException("Graph generation authority is unavailable");
+        Map<String, GraphGenerationCoordinator> coordinators =
+                springContext.getBeansOfType(GraphGenerationCoordinator.class);
+        if (coordinators.size() != 1) {
+            throw new IllegalStateException("Graph generation authority is unavailable");
+        }
+        return coordinators.values().iterator().next();
+    }
+
+    private static boolean isGenerationLifecycleMethod(String method) {
+        return "supportsGraphGenerations".equals(method)
+                || "beginFactSheetGeneration".equals(method)
+                || "validateFactSheetGeneration".equals(method)
+                || "activateFactSheetGeneration".equals(method)
+                || "abortFactSheetGeneration".equals(method)
+                || "rollbackFactSheetGeneration".equals(method)
+                || "getFactSheetGenerationStatus".equals(method);
+    }
+
     /**
      * Explicit (reflection-free) dispatch to service beans.
      * Switches on the interface FQCN, then on the method name.
@@ -498,7 +608,9 @@ public class GraphMatrixSubprocessMain {
             case "ai.kompile.knowledgegraph.service.KnowledgeGraphService" -> {
                 KnowledgeGraphService svc = (KnowledgeGraphService) serviceCache.computeIfAbsent(
                         serviceFqcn, k -> springContext.getBean(KnowledgeGraphService.class));
-                yield dispatchKnowledgeGraphService(svc, methodName, argJsons, mapper);
+                yield dispatchKnowledgeGraphService(
+                        svc, isGenerationLifecycleMethod(methodName) ? generationCoordinator() : null,
+                        methodName, argJsons, mapper);
             }
             case "ai.kompile.core.graphrag.GraphRagService" -> {
                 GraphRagService svc = (GraphRagService) serviceCache.computeIfAbsent(
@@ -596,6 +708,7 @@ public class GraphMatrixSubprocessMain {
                                                    List<JsonNode> args,
                                                    ObjectMapper mapper) throws Exception {
         Object rawResult = switch (method) {
+
             case "answerQuery" -> svc.answerQuery(argObj(args, 0, GraphRagQuery.class, mapper));
             default -> throw new IllegalArgumentException(
                     "[graph-matrix] GraphRagService: unknown method: " + method);
@@ -1088,10 +1201,33 @@ public class GraphMatrixSubprocessMain {
     // ── KnowledgeGraphService dispatcher ─────────────────────────────────────
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static String dispatchKnowledgeGraphService(KnowledgeGraphService svc, String method,
-                                                        List<JsonNode> args,
-                                                        ObjectMapper mapper) throws Exception {
+    static String dispatchKnowledgeGraphService(KnowledgeGraphService svc,
+                                                GraphGenerationCoordinator coordinator,
+                                                String method, List<JsonNode> args,
+                                                ObjectMapper mapper) throws Exception {
         Object rawResult = switch (method) {
+
+            // ── Authoritative graph-generation lifecycle ───────────────────────
+
+            case "supportsGraphGenerations" -> true;
+            case "beginFactSheetGeneration" -> coordinator.begin(
+                    argLong(args, 0), "factsheet_" + argLong(args, 0), argStr(args, 1),
+                    args.size() > 2 ? argStr(args, 2) : "unowned");
+            case "validateFactSheetGeneration" -> coordinator.validate(
+                    argObj(args, 0, GraphGeneration.Ref.class, mapper));
+            case "activateFactSheetGeneration" -> coordinator.activate(
+                    argObj(args, 0, GraphGeneration.Ref.class, mapper), argStr(args, 1));
+            case "abortFactSheetGeneration" -> {
+                String failure = args.size() > 1 && !isNullArg(args, 1) ? argStr(args, 1) : null;
+                coordinator.abort(
+                        argObj(args, 0, GraphGeneration.Ref.class, mapper),
+                        failure == null ? null : new IllegalStateException(failure));
+                yield null;
+            }
+            case "rollbackFactSheetGeneration" -> coordinator.rollback(
+                    argLong(args, 0), "factsheet_" + argLong(args, 0), argLong(args, 1), argStr(args, 2));
+            case "getFactSheetGenerationStatus" -> coordinator.status(
+                    "factsheet_" + argLong(args, 0));
 
             // ── Node management ───────────────────────────────────────────────
 
@@ -1479,7 +1615,19 @@ public class GraphMatrixSubprocessMain {
                 Duration grace = isNullArg(args, 2) ? null
                         : mapper.convertValue(arg(args, 2), Duration.class);
                 boolean dry   = argBool(args, 3);
-                yield svc.pruneNodes(ids, soft, grace, dry);
+                if (args.size() <= 4 || isNullArg(args, 4)) {
+                    yield svc.pruneNodes(ids, soft, grace, dry);
+                }
+                yield svc.pruneNodes(ids, soft, grace, dry, argLong(args, 4));
+            }
+
+            case "pruneNodesScoped" -> {
+                List<String> ids = argList(args, 0, String.class, mapper);
+                boolean soft = argBool(args, 1);
+                Duration grace = isNullArg(args, 2) ? null
+                        : mapper.convertValue(arg(args, 2), Duration.class);
+                boolean dry = argBool(args, 3);
+                yield svc.pruneNodes(ids, soft, grace, dry, argLong(args, 4));
             }
 
             case "pruneEdges" -> {
@@ -1637,6 +1785,7 @@ public class GraphMatrixSubprocessMain {
                                           ObjectMapper mapper) throws JsonProcessingException {
         ObjectNode response = mapper.createObjectNode();
         response.put("ok", true);
+        response.put("protocolVersion", 2);
 
         // AdjacencyMatrixGraph return methods — return ack, never the graph.
         if ("createGraph".equals(methodName) || "loadGraph".equals(methodName)) {
@@ -1810,6 +1959,12 @@ public class GraphMatrixSubprocessMain {
         // Enable the Anserini vector store so VectorStoreMatrixGraphStore can read/write graphs.
         context.getEnvironment().getSystemProperties().put("kompile.vectorstore.anserini.enabled", "true");
         context.getEnvironment().getSystemProperties().put("kompile.vectorstore.anserini.persistence-enabled", "true");
+        boolean generationAuthority = Boolean.parseBoolean(
+                System.getProperty("kompile.graph.generations.subprocess-authority", "false"));
+        context.getEnvironment().getSystemProperties().put(
+                "kompile.graph.generations.subprocess-authority", Boolean.toString(generationAuthority));
+        context.getEnvironment().getSystemProperties().put(
+                "kompile.graph.generations.enabled", Boolean.toString(generationAuthority));
 
         // Propagate the main app's data-dir / index paths if they were set as system properties
         // by the launcher (e.g. via -Dkompile.data.dir=...).  This ensures the subprocess reads

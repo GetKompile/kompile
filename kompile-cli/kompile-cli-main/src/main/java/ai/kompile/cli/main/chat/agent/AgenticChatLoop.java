@@ -17,16 +17,28 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.IdleTimeoutInputStream;
 import ai.kompile.cli.main.chat.config.ModelContextResolver;
+import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
 import ai.kompile.cli.main.chat.context.ConversationBoundaryPlanner;
 import ai.kompile.cli.main.chat.context.ConversationLedger;
+import ai.kompile.cli.main.chat.enforcer.EnforcerConversationContext;
+import ai.kompile.cli.main.chat.enforcer.EnforcerDecision;
+import ai.kompile.cli.main.chat.enforcer.EnforcerEvaluator;
+import ai.kompile.cli.main.chat.enforcer.EnforcerJudge;
+import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
+import ai.kompile.cli.main.chat.enforcer.JudgeToolPolicy;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.CompactionProgress;
+import ai.kompile.cli.main.chat.render.CompactionProgressIndicator;
 import ai.kompile.cli.main.chat.render.CompactionService;
 import ai.kompile.cli.main.chat.render.ConversationSummarizer;
 import ai.kompile.cli.main.chat.render.OutputTruncator;
@@ -35,6 +47,9 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.workflow.WorkflowController;
+import ai.kompile.cli.main.chat.workflow.WorkflowPolicy;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -46,6 +61,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
@@ -60,6 +76,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -82,6 +99,8 @@ import java.util.function.Supplier;
  */
 public class AgenticChatLoop {
 
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
+
     private static final int MAX_LIVE_TOOL_OUTPUT_LINES = 500;
     private static final int MAX_LIVE_TOOL_OUTPUT_CHARS = 30_000;
     private static final int MAX_LIVE_TOOL_LINE_CHARS = 4_000;
@@ -97,6 +116,68 @@ public class AgenticChatLoop {
         void onToolComplete(String callId, String toolName, String rawInput, ToolResult result);
         default void onToolDenied(String callId, String toolName, String rawInput, String reason) {
             onToolComplete(callId, toolName, rawInput, ToolResult.error(reason));
+        }
+    }
+
+    public interface ServerEventListener {
+        default void onBackendStarted(String agent, String processId) { }
+        default void onSources(JsonNode sources) { }
+        default void onStats(JsonNode stats) { }
+    }
+
+    /** Synchronous pre-execution review for a proposed main-REPL MCP tool call. */
+    @FunctionalInterface
+    public interface ToolCallInterceptor {
+        EnforcerToolCallDecision intercept(
+                String userPrompt, String assistantContext,
+                String toolName, String toolInput) throws Exception;
+    }
+
+    /** Direct feedback/control lane from an auxiliary REPL to the main REPL owner. */
+    @FunctionalInterface
+    public interface SupervisorFeedbackHandler {
+        boolean submit(String source, String feedback, boolean interrupt);
+    }
+
+    /**
+     * A queue item claimed at a model/tool boundary but not yet owned by the
+     * next provider request. Cancellation can restore the claim until accept()
+     * linearizes ownership at the outbound request boundary.
+     */
+    public static final class QueuedInput {
+        private enum State { CLAIMED, ACCEPTED, RESTORED }
+
+        private final String content;
+        private final BooleanSupplier acceptance;
+        private final Runnable restoration;
+        private State state = State.CLAIMED;
+
+        public QueuedInput(
+                String content, BooleanSupplier acceptance, Runnable restoration) {
+            this.content = content == null ? "" : content;
+            this.acceptance = acceptance != null ? acceptance : () -> true;
+            this.restoration = restoration != null ? restoration : () -> { };
+        }
+
+        public static QueuedInput immediate(String content) {
+            return new QueuedInput(content, () -> true, () -> { });
+        }
+
+        public String content() {
+            return content;
+        }
+
+        public synchronized boolean accept() {
+            if (state != State.CLAIMED) return state == State.ACCEPTED;
+            if (!acceptance.getAsBoolean()) return false;
+            state = State.ACCEPTED;
+            return true;
+        }
+
+        public synchronized void restore() {
+            if (state != State.CLAIMED) return;
+            state = State.RESTORED;
+            restoration.run();
         }
     }
 
@@ -118,6 +199,10 @@ public class AgenticChatLoop {
     private ToolResultStore toolResultStore; // persists tool outputs to disk
     private ai.kompile.cli.main.chat.ChatSessionMetrics sessionMetrics; // session metrics
     private volatile PerformanceHarness performanceHarness; // optional multi-signal agent evaluation
+    private volatile ToolCallInterceptor judgeToolCallInterceptor;
+    private volatile ToolCallInterceptor enforcerToolCallInterceptor;
+    private volatile SupervisorFeedbackHandler supervisorFeedbackHandler;
+    private volatile Consumer<String> inlineEnforcerActivityListener;
     private volatile AgentConfig currentAgentConfig; // currently active agent config (can be updated with roles)
     private final SidePanelManager sidePanelManager;
     private long lastRenderedSidePanelVersion = -1;
@@ -159,17 +244,41 @@ public class AgenticChatLoop {
     // Used by ChatRepl to stop the generating spinner.
     private volatile Runnable onFirstOutput;
     private volatile ToolActivityListener toolActivityListener;
+    private volatile ServerEventListener serverEventListener;
+    /** Raw server-model deltas for non-terminal transports such as JSONL. */
+    private volatile Consumer<String> assistantDeltaListener;
     private final AtomicLong transcriptBlockSequence = new AtomicLong();
-    private volatile Supplier<String> queuedMessageSupplier = () -> null;
+    private volatile Supplier<QueuedInput> queuedMessageSupplier = () -> null;
     private volatile ReminderManager reminderManager;
     private final AtomicReference<Consumer<String>> backgroundOutputConsumer = new AtomicReference<>();
+    private final AtomicBoolean blockingSubagentInvocation = new AtomicBoolean(false);
+    private volatile Runnable backgroundEligibilityListener = () -> { };
 
-    // Inline enforcer: keyword-based rule checker applied to every turn in the chat REPL.
+    // Inline enforcer: deterministic or LLM-backed checker applied to every turn.
     // Auto-loaded from .kompile/enforcer-config.json when present. Toggle with /enforcer on|off.
-    private volatile ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator inlineEnforcer;
-    private volatile ai.kompile.cli.main.chat.enforcer.EnforcerPolicy inlineEnforcerPolicy;
+    private volatile EnforcerEvaluator inlineEnforcer;
+    private volatile EnforcerPolicy inlineEnforcerPolicy;
     private volatile boolean inlineEnforcerEnabled = false;
+    // Configuration/user intent is independent of a loaded or available evaluator.
+    private volatile boolean inlineEnforcerRequested = false;
     private int inlineEnforcerMaxCorrections = 3;
+
+    // User control over the judge (guidance + one-shot report-only override), captured
+    // once per turn via beginTurn() so a single user decision covers every iteration
+    // and tool call inside that turn.
+    private volatile ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
+    private volatile ai.kompile.cli.main.chat.enforcer.JudgeControl.TurnSnapshot activeJudgeSnapshot =
+            ai.kompile.cli.main.chat.enforcer.JudgeControl.TurnSnapshot.NONE;
+
+    // Direction judge: goal-drift supervision for long conversations. Strictly opt-in
+    // (configured + enabled), and deliberately NOT subject to the one-shot /judge
+    // override: direction monitoring is its own supervision contract.
+    private volatile ai.kompile.cli.main.chat.enforcer.DirectionJudge directionJudge;
+
+    // Host-applied workflow state is deterministic and independent from probabilistic
+    // judge verdicts. The one-shot judge override therefore never bypasses this gate.
+    private final WorkflowController workflowController;
+
 
     /**
      * Server mode constructor - uses kompile-app REST endpoint.
@@ -232,7 +341,8 @@ public class AgenticChatLoop {
         // Set up exit callback for background process notifications
         if (processManager != null) {
             final TerminalRenderer r = this.renderer;
-            processManager.setExitCallback(entry -> {
+            Consumer<ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry> exitCallback =
+                    sessionContext.wrapConsumer(entry -> {
                 String durationStr = ai.kompile.cli.main.chat.tools.ProcessManagementTool.formatDuration(
                         entry.getDuration());
                 String desc = entry.getDescription() != null ? entry.getDescription() : entry.getCommand();
@@ -250,6 +360,7 @@ public class AgenticChatLoop {
                 emitLine(notification);
                 emitLine("");
             });
+            processManager.setExitCallback(exitCallback::accept);
         }
 
         // Initialize current agent config with default
@@ -259,6 +370,8 @@ public class AgenticChatLoop {
                 ? skillRegistry : ProjectChatContext.load(workingDirectory).skillRegistry();
         this.projectChatContext = ProjectChatContext.load(workingDirectory, effectiveSkills);
         this.agentsMdContent = projectChatContext.agentsMdContent();
+        this.workflowController = new WorkflowController(
+                workingDirectory, effectiveSkills, toolRegistry);
     }
 
     private SidePanelManager findSidePanelManager(ToolRegistry registry) {
@@ -297,6 +410,69 @@ public class AgenticChatLoop {
         this.toolActivityListener = listener;
     }
 
+    public void setJudgeToolCallInterceptor(ToolCallInterceptor interceptor) {
+        this.judgeToolCallInterceptor = interceptor;
+    }
+
+    public void setEnforcerToolCallInterceptor(ToolCallInterceptor interceptor) {
+        this.enforcerToolCallInterceptor = interceptor;
+        if (inlineEnforcer == null) {
+            this.inlineEnforcerEnabled = interceptor != null;
+            this.inlineEnforcerRequested = interceptor != null;
+        }
+    }
+
+    public void setSupervisorFeedbackHandler(SupervisorFeedbackHandler handler) {
+        this.supervisorFeedbackHandler = handler;
+    }
+
+    /** Bind the session's user-judge control (guidance + one-shot override). */
+    public void setJudgeControl(ai.kompile.cli.main.chat.enforcer.JudgeControl control) {
+        this.judgeControl = control;
+    }
+
+    /**
+     * Bind the direction judge. When present (and enabled), the loop periodically asks it
+     * whether the conversation is still moving toward the user's goal; drift verdicts
+     * redirect the agent in place and, after the redirect budget is exhausted, halt the
+     * turn via the supervisor feedback lane. The judge must already be configured and
+     * enabled by the caller — the loop never constructs or enables one implicitly.
+     */
+    public void setDirectionJudge(ai.kompile.cli.main.chat.enforcer.DirectionJudge judge) {
+        this.directionJudge = judge;
+    }
+
+    public ai.kompile.cli.main.chat.enforcer.DirectionJudge getDirectionJudge() {
+        return directionJudge;
+    }
+
+    public void setInlineEnforcerActivityListener(Consumer<String> listener) {
+        this.inlineEnforcerActivityListener = listener;
+    }
+
+    /**
+     * Observe raw assistant text chunks before terminal markdown rendering. Direct
+     * model clients already expose their raw stream; this closes the equivalent
+     * server-SSE gap for headless transports.
+     */
+    public void setAssistantDeltaListener(Consumer<String> listener) {
+        this.assistantDeltaListener = listener;
+    }
+
+    public void setServerEventListener(ServerEventListener listener) {
+        this.serverEventListener = listener;
+    }
+
+    private void notifyAssistantDelta(String chunk) {
+        Consumer<String> listener = assistantDeltaListener;
+        if (listener == null || chunk == null || chunk.isEmpty()) return;
+        try {
+            listener.accept(chunk);
+        } catch (RuntimeException ignored) {
+            // Output observers are transport concerns and must not fail the model turn.
+        }
+    }
+
     /**
      * Set pending attachments for the next chat turn.
      * They will be consumed (sent once) on the first direct-mode LLM call.
@@ -333,13 +509,24 @@ public class AgenticChatLoop {
     }
 
     /** Supply queued user guidance from the owning normal-REPL session. */
-    public void setQueuedMessageSupplier(Supplier<String> supplier) {
+    public void setQueuedMessageSupplier(Supplier<QueuedInput> supplier) {
         this.queuedMessageSupplier = supplier != null ? supplier : () -> null;
     }
 
     /** Apply active session and project reminders at the provider request boundary. */
     public void setReminderManager(ReminderManager reminderManager) {
         this.reminderManager = reminderManager;
+        bindReminderConstraints(inlineEnforcer);
+    }
+
+    private record ToolDetach(Consumer<String> output, Runnable detached,
+                              Consumer<ToolResult> completed) { }
+    private final AtomicReference<ToolDetach> toolDetach = new AtomicReference<>();
+
+    public void backgroundActiveTurn(Consumer<String> output, Runnable detached,
+                                     Consumer<ToolResult> completed) {
+        backgroundActiveTurn(output);
+        toolDetach.set(new ToolDetach(output, detached, completed));
     }
 
     /** Route subsequent turn output to a retained background task. */
@@ -350,17 +537,41 @@ public class AgenticChatLoop {
         }
     }
 
+    /**
+     * True only while the parent turn is synchronously waiting for TaskTool.
+     * Main-model thinking and retained interactive follow-ups are deliberately
+     * excluded: neither is the subagent invocation Ctrl+B is meant to detach.
+     */
+    public boolean isBlockingSubagentInvocationActive() {
+        return blockingSubagentInvocation.get();
+    }
+
+    /** Repaint the owning REPL when TaskTool enters or leaves its blocking phase. */
+    public void setBackgroundEligibilityListener(Runnable listener) {
+        backgroundEligibilityListener = listener != null ? listener : () -> { };
+    }
+
+    private void setBlockingSubagentInvocation(boolean active) {
+        if (blockingSubagentInvocation.getAndSet(active) == active) return;
+        try {
+            backgroundEligibilityListener.run();
+        } catch (RuntimeException ignored) {
+            // UI observers must never fail the tool invocation.
+        }
+    }
+
     /** Restore foreground output routing after the owning turn terminates. */
     public void clearBackgroundOutput() {
         backgroundOutputConsumer.set(null);
+        toolDetach.set(null);
     }
 
     boolean isOutputBackgrounded() {
         return backgroundOutputConsumer.get() != null;
     }
 
-    private String claimQueuedMessage() {
-        Supplier<String> supplier = queuedMessageSupplier;
+    private QueuedInput claimQueuedMessage() {
+        Supplier<QueuedInput> supplier = queuedMessageSupplier;
         return supplier != null ? supplier.get() : null;
     }
 
@@ -457,24 +668,63 @@ public class AgenticChatLoop {
     // ── Inline enforcer ─────────────────────────────────────────────────────
 
     /**
-     * Set the inline enforcer for this chat loop. When enabled, every LLM response
-     * is checked against keyword rules before being accepted. Violations trigger
-     * automatic correction attempts.
+     * Set the inline policy evaluator for this chat loop. When enabled, every LLM response
+     * is checked against the configured rules; an LLM judge also receives active reminder
+     * constraints. Violations trigger automatic correction attempts.
      */
-    public void setInlineEnforcer(ai.kompile.cli.main.chat.enforcer.KeywordEnforcerEvaluator evaluator,
-                                   ai.kompile.cli.main.chat.enforcer.EnforcerPolicy policy,
+    public void setInlineEnforcer(EnforcerEvaluator evaluator,
+                                   EnforcerPolicy policy,
                                    int maxCorrections) {
         this.inlineEnforcer = evaluator;
         this.inlineEnforcerPolicy = policy;
+        // Clearing readiness (e.g. a reload failure) is not a user request to disable policy.
+        if (evaluator != null || policy != null) this.inlineEnforcerRequested = true;
         this.inlineEnforcerMaxCorrections = maxCorrections;
         this.inlineEnforcerEnabled = evaluator != null && evaluator.isAvailable();
+        bindReminderConstraints(evaluator);
+        this.enforcerToolCallInterceptor = evaluator == null ? null
+                : (userPrompt, assistantContext, toolName, toolInput) ->
+                        evaluateInlineToolCall(evaluator, policy, userPrompt,
+                                assistantContext, toolName, toolInput);
+        emitInlineEnforcerActivity("[state] "
+                + (inlineEnforcerEnabled ? "ready" : "disabled"));
+    }
+
+    private void bindReminderConstraints(EnforcerEvaluator evaluator) {
+        if (evaluator instanceof EnforcerJudge judge) {
+            ReminderManager reminders = reminderManager;
+            judge.setReminderSupplier(reminders == null ? null : reminders::enforcementConstraints);
+        }
+    }
+
+    private EnforcerToolCallDecision evaluateInlineToolCall(
+            EnforcerEvaluator evaluator, EnforcerPolicy policy,
+            String userPrompt, String assistantContext,
+            String toolName, String toolInput) throws Exception {
+        if (!(evaluator instanceof EnforcerJudge) && !(evaluator instanceof EnforcerJudge.CapturedEvaluator)) {
+            return evaluator.evaluateToolCall(toolName, toolInput, policy);
+        }
+        List<EnforcerConversationContext.Message> messages = new ArrayList<>(2);
+        if (userPrompt != null && !userPrompt.isBlank()) {
+            messages.add(new EnforcerConversationContext.Message("user", userPrompt));
+        }
+        if (assistantContext != null && !assistantContext.isBlank()) {
+            messages.add(new EnforcerConversationContext.Message("assistant", assistantContext));
+        }
+        var context = EnforcerConversationContext.of(messages);
+        return evaluator instanceof EnforcerJudge.CapturedEvaluator captured
+                ? captured.evaluateToolCall(toolName, toolInput, policy, context)
+                : ((EnforcerJudge) evaluator).evaluateToolCall(toolName, toolInput, policy, context);
     }
 
     /**
      * Toggle enforcer on/off without changing configuration.
      */
     public void setInlineEnforcerEnabled(boolean enabled) {
+        this.inlineEnforcerRequested = enabled;
         this.inlineEnforcerEnabled = enabled && inlineEnforcer != null;
+        emitInlineEnforcerActivity("[state] "
+                + (inlineEnforcerEnabled ? "ready" : "disabled"));
     }
 
     public boolean isInlineEnforcerEnabled() {
@@ -484,6 +734,16 @@ public class AgenticChatLoop {
     public String describeInlineEnforcer() {
         if (inlineEnforcer == null) return null;
         return inlineEnforcer.describe();
+    }
+
+    private void emitInlineEnforcerActivity(String event) {
+        Consumer<String> listener = inlineEnforcerActivityListener;
+        if (listener == null || event == null || event.isBlank()) return;
+        try {
+            listener.accept(event);
+        } catch (RuntimeException ignored) {
+            // Monitoring must not change enforcement semantics.
+        }
     }
 
     /**
@@ -502,8 +762,9 @@ public class AgenticChatLoop {
     }
 
     /**
-     * Build the full system prompt by combining the agent's base prompt
-     * with AGENTS.md content and tool result store info.
+     * Build a cache-stable system prefix. Reusable agent/project/workflow instructions
+     * precede session-local result paths, and the changing result inventory stays in the
+     * durable index instead of rewriting this prompt after every tool call.
      */
     String buildSystemPrompt(AgentConfig agent) {
         StringBuilder sb = new StringBuilder();
@@ -513,24 +774,25 @@ public class AgenticChatLoop {
             sb.append(base.strip());
         }
 
-        // Tool result store info
-        if (toolResultStore != null) {
-            sb.append("\n\n# Tool Result Files\n\n");
-            sb.append("All tool call outputs are saved to: ").append(toolResultStore.getResultDir()).append("\n");
-            sb.append("After context compaction, you can use the `read` tool to access any previous tool output.\n");
-            sb.append("Compacted tool results include the file path — use `read` with that path to get the full output.\n");
-            sb.append("Use `glob` with pattern \"").append(toolResultStore.getResultDir()).append("/*.txt\" to list all saved results.\n");
-
-            // If there are already saved results, include a summary
-            String summary = toolResultStore.generateResultsSummary();
-            if (!summary.isEmpty()) {
-                sb.append("\n").append(summary);
-            }
-        }
-
         String projectPrompt = projectChatContext.renderSystemPrompt();
         if (!projectPrompt.isBlank()) {
             sb.append("\n\n").append(projectPrompt);
+        }
+
+        String workflowPrompt = workflowController.activeSystemPrompt();
+        if (!workflowPrompt.isBlank()) {
+            sb.append("\n\n").append(workflowPrompt);
+        }
+
+        if (toolResultStore != null) {
+            sb.append("\n\n# Tool Result Files\n\n");
+            sb.append("All tool call outputs for this session are saved to: ")
+                    .append(toolResultStore.getResultDir()).append("\n");
+            sb.append("After context compaction, use the `read` tool with a saved result path.\n");
+            sb.append("Use `glob` with pattern \"").append(toolResultStore.getResultDir())
+                    .append("/*.txt\" to list results, or read ")
+                    .append(toolResultStore.getResultDir().resolve("_index.txt"))
+                    .append(" for the complete index.\n");
         }
 
         return sb.toString();
@@ -577,10 +839,41 @@ public class AgenticChatLoop {
         return projectChatContext.agentsMdFiles();
     }
 
-    /** Bind durable context state before restoring or accepting the first turn. */
+    public boolean isWorkflowActive() {
+        return workflowController.isActive();
+    }
+
+    public boolean isWorkflowEnforced() {
+        return workflowController.isEnforced();
+    }
+
+    public WorkflowController.Status workflowStatus() {
+        return workflowController.status();
+    }
+
+    public void setWorkflowSessionMode(WorkflowPolicy.Mode mode, List<String> requiredSkills) {
+        workflowController.setSessionMode(mode, requiredSkills);
+    }
+
+    public void setWorkflowGlobalEnabled(boolean enabled) {
+        workflowController.setGlobalEnabled(enabled);
+    }
+
+    public void setWorkflowSessionEnabled(boolean enabled) {
+        workflowController.setSessionEnabled(enabled);
+    }
+
+    public void reloadWorkflowConfiguration() {
+        workflowController.reload();
+    }
+
+    /** Bind durable context state and provider cache affinity before the first turn. */
     public void configureConversationSession(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()
-                || sessionId.equals(conversationSessionId)) return;
+        if (sessionId == null || sessionId.isBlank()) return;
+        if (directLlmClient != null) {
+            directLlmClient.setPromptCacheSessionId(sessionId);
+        }
+        if (sessionId.equals(conversationSessionId)) return;
         conversationLedger.configureSession(sessionId);
         conversationSessionId = sessionId;
         if (conversationLedger.hasDurableState() && directLlmClient != null) {
@@ -637,14 +930,82 @@ public class AgenticChatLoop {
             List<CompactionService.ConversationEntry> entries,
             boolean clearHistory,
             boolean skipPortableSummary) {
+        return rebuildDirectHistory(entries, clearHistory, skipPortableSummary, true);
+    }
+
+    private int rebuildDirectHistory(
+            List<CompactionService.ConversationEntry> entries,
+            boolean clearHistory,
+            boolean skipPortableSummary,
+            boolean closeDanglingToolCalls) {
+        String replayModel = currentAgentConfig != null
+                && currentAgentConfig.getModelOverride() != null
+                && !currentAgentConfig.getModelOverride().isBlank()
+                ? currentAgentConfig.getModelOverride()
+                : directLlmClient.getConfiguredModel();
+        return rebuildDirectHistory(
+                entries, clearHistory, skipPortableSummary,
+                closeDanglingToolCalls, replayModel);
+    }
+
+    private int rebuildDirectHistory(
+            List<CompactionService.ConversationEntry> entries,
+            boolean clearHistory,
+            boolean skipPortableSummary,
+            boolean closeDanglingToolCalls,
+            String replayModel) {
         if (clearHistory) directLlmClient.clearHistory();
         int replayed = 0;
-        for (CompactionService.ConversationEntry entry : entries) {
-            if (entry == null || entry.content == null || entry.content.isBlank()) {
+        // Tool calls interrupted before execution have no durable result. Wire
+        // APIs reject an unanswered tool envelope, so each pending call is held
+        // until its result arrives (or the replay ends) and then closed with a
+        // synthetic cancellation result.
+        Map<String, CompactionService.ConversationEntry> pendingToolCalls = new LinkedHashMap<>();
+        for (int index = 0; index < entries.size();) {
+            CompactionService.ConversationEntry entry = entries.get(index);
+            if (entry == null || ((entry.content == null || entry.content.isBlank())
+                    && entry.type != CompactionService.EntryType.TOOL_CALL
+                    && entry.type != CompactionService.EntryType.TOOL_RESULT)) {
+                index++;
                 continue;
             }
             if (skipPortableSummary && entry.type == CompactionService.EntryType.SYSTEM
                     && entry.content.startsWith(ConversationLedger.SUMMARY_MARKER)) {
+                index++;
+                continue;
+            }
+            if (entry.type == CompactionService.EntryType.TOOL_CALL) {
+                List<DirectLlmClient.ReplayedToolCallInput> calls = new ArrayList<>();
+                while (index < entries.size()) {
+                    CompactionService.ConversationEntry call = entries.get(index);
+                    if (call == null || call.type != CompactionService.EntryType.TOOL_CALL) break;
+                    calls.add(new DirectLlmClient.ReplayedToolCallInput(
+                            call.toolName, call.toolCallId, call.content));
+                    if (call.toolCallId != null && !call.toolCallId.isBlank()) {
+                        pendingToolCalls.put(call.toolCallId, call);
+                    }
+                    index++;
+                }
+                directLlmClient.addReplayedToolCalls(calls, replayModel);
+                replayed += calls.size();
+                continue;
+            }
+            if (entry.type == CompactionService.EntryType.TOOL_RESULT) {
+                List<DirectLlmClient.ToolCallResultInput> results = new ArrayList<>();
+                while (index < entries.size()) {
+                    CompactionService.ConversationEntry toolResult = entries.get(index);
+                    if (toolResult == null
+                            || toolResult.type != CompactionService.EntryType.TOOL_RESULT) break;
+                    results.add(new DirectLlmClient.ToolCallResultInput(
+                            toolResult.toolCallId, toolResult.toolName,
+                            toolResult.content, false));
+                    if (toolResult.toolCallId != null) {
+                        pendingToolCalls.remove(toolResult.toolCallId);
+                    }
+                    index++;
+                }
+                directLlmClient.addReplayedToolResults(results, replayModel);
+                replayed += results.size();
                 continue;
             }
             switch (entry.type) {
@@ -659,22 +1020,22 @@ public class AgenticChatLoop {
                     directLlmClient.addToHistory(entry.role, entry.content);
                     replayed++;
                 }
-                case TOOL_CALL -> {
-                    // Provider-native envelopes cannot cross protocols safely, but
-                    // dropping a preserved tool exchange loses the very recent state
-                    // compaction promised to retain. Replay it as portable text.
-                    directLlmClient.addToHistory("assistant",
-                            "[Tool call " + entry.toolName + " " + entry.toolCallId + "]\n"
-                                    + entry.content);
-                    replayed++;
-                }
-                case TOOL_RESULT -> {
-                    directLlmClient.addToHistory("user",
-                            "[Tool result " + entry.toolName + " " + entry.toolCallId + "]\n"
-                                    + entry.content);
-                    replayed++;
-                }
+                case TOOL_CALL, TOOL_RESULT -> { }
             }
+            index++;
+        }
+        if (closeDanglingToolCalls) {
+            List<DirectLlmClient.ToolCallResultInput> cancellations = new ArrayList<>();
+            for (CompactionService.ConversationEntry pending : pendingToolCalls.values()) {
+                cancellations.add(new DirectLlmClient.ToolCallResultInput(
+                        pending.toolCallId, pending.toolName,
+                        "Tool call was cancelled before execution; no result was recorded.",
+                        true));
+            }
+            if (!cancellations.isEmpty()) {
+                directLlmClient.addReplayedToolResults(cancellations, replayModel);
+            }
+            replayed += cancellations.size();
         }
         resetReportedContextUsage();
         return replayed;
@@ -719,6 +1080,18 @@ public class AgenticChatLoop {
      * @return result describing tokens before/after and the summary text
      */
     public ForceCompactResult forceCompact(String focusInstruction) {
+        return forceCompact(focusInstruction, null);
+    }
+
+    /**
+     * Same as {@link #forceCompact(String)} with live progress reporting to the
+     * given callback (phase announcements only; never throws through the
+     * compaction itself).
+     */
+    public ForceCompactResult forceCompact(String focusInstruction,
+                                           CompactionProgress progress) {
+        CompactionProgress progressRef = progress == null
+                ? CompactionProgress.NO_OP : progress;
         if (directLlmClient == null) {
             return ForceCompactResult.unsupported(
                     "LLM-based /compact requires local mode (no DirectLlmClient configured).");
@@ -729,6 +1102,8 @@ public class AgenticChatLoop {
         if (conversationHistory.isEmpty()) {
             return ForceCompactResult.noop("Nothing to compact — conversation is empty.");
         }
+        progressRef.phase("Inspecting " + conversationHistory.size() + " conversation entr"
+                + (conversationHistory.size() == 1 ? "y" : "ies"));
 
         int tokensBefore = compactionService.estimateTokens(conversationHistory);
 
@@ -747,9 +1122,11 @@ public class AgenticChatLoop {
             // oversized tail would defeat the operation.
             toSummarize = new ArrayList<>(conversationHistory);
             toPreserve = new ArrayList<>();
+            preserveIndex = conversationHistory.size();
         }
 
         String modelOverride = currentAgentConfig != null ? currentAgentConfig.getModelOverride() : null;
+        progressRef.phase("Checking provider compaction support");
         DirectLlmClient.NativeCompactionResult nativeResult =
                 directLlmClient.tryNativeCompact(modelOverride);
         String strategy = "generic";
@@ -768,11 +1145,19 @@ public class AgenticChatLoop {
             summary = new ConversationSummarizer.SummaryResult(
                     portableSummary, 0L, 0L);
         } else {
+            progressRef.phase("Summarizing " + toSummarize.size() + " older entr"
+                    + (toSummarize.size() == 1 ? "y" : "ies") + " with the model");
             ConversationSummarizer summarizer = new ConversationSummarizer(directLlmClient);
             summary = summarizer.summarize(toSummarize, focusInstruction, modelOverride);
         }
 
+        if (isCancelled()) {
+            if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
+            return ForceCompactResult.failed("Compaction was cancelled; history unchanged.");
+        }
+
         if (summary.isEmpty() || looksLikeFailedSummary(summary.getSummary())) {
+            if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
             return ForceCompactResult.failed("Summarization returned empty output; history unchanged.");
         }
 
@@ -780,7 +1165,18 @@ public class AgenticChatLoop {
         candidate.add(CompactionService.ConversationEntry.system(
                 ConversationLedger.SUMMARY_MARKER + summary.getSummary()));
         candidate.addAll(toPreserve);
+        progressRef.phase("Measuring the compacted checkpoint");
         int tokensAfter = compactionService.estimateTokens(candidate);
+        if (tokensAfter >= tokensBefore) {
+            if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
+            return ForceCompactResult.failed(
+                    "Compaction did not reduce the active context; history unchanged.");
+        }
+        if (isCancelled()) {
+            if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
+            return ForceCompactResult.failed("Compaction was cancelled; history unchanged.");
+        }
+        progressRef.phase("Committing checkpoint");
         long coveredThrough = ledgerSnapshot.coveredThroughForPrefix(preserveIndex);
         String effectiveModel = modelOverride != null
                 ? modelOverride : directLlmClient.getConfiguredModel();
@@ -794,6 +1190,7 @@ public class AgenticChatLoop {
                         directLlmClient.getConfiguredProvider(), effectiveModel,
                         tokensBefore, tokensAfter, nativeResult.nativePayload());
         if (!checkpointCommitted) {
+            if (nativeResult.applied()) rebuildDirectHistoryForProviderSwitch();
             return ForceCompactResult.failed(
                     "Conversation changed while it was being summarized; history unchanged.");
         }
@@ -813,6 +1210,181 @@ public class AgenticChatLoop {
 
         return ForceCompactResult.ok(tokensBefore, tokensAfter, toPreserve.size(),
                 summary.getSummary());
+    }
+
+    /**
+     * Emergency compaction after a provider rejects an otherwise replay-safe request for
+     * exceeding its context window. Unlike manual compaction, this method never absorbs
+     * the pending user/tool-result payload into the checkpoint: that tail is resent once
+     * after the older complete exchanges have been summarized.
+     */
+    private ForceCompactResult compactForContextOverflow(
+            String currentMessage,
+            List<ToolCallResult> pendingToolResults,
+            String modelOverride) {
+        ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
+        List<CompactionService.ConversationEntry> history = snapshot.activeEntries();
+        int requestTailStart = pendingRequestTailStart(
+                history, currentMessage, pendingToolResults);
+        int normalPreserveIndex = ConversationBoundaryPlanner.preserveFrom(
+                history, compactionService, compactionService.preserveRecentTokens());
+        if (requestTailStart >= history.size()) {
+            return ForceCompactResult.failed(
+                    "The rejected request could not be isolated from retained history.");
+        }
+        int preserveIndex = normalPreserveIndex > 0
+                ? Math.min(requestTailStart, normalPreserveIndex)
+                : requestTailStart;
+        if (preserveIndex <= 0 || preserveIndex >= history.size()) {
+            return ForceCompactResult.failed(
+                    "No completed older exchange can be compacted without changing the rejected request.");
+        }
+
+        List<CompactionService.ConversationEntry> prefix = new ArrayList<>(
+                history.subList(0, preserveIndex));
+        List<CompactionService.ConversationEntry> tail = new ArrayList<>(
+                history.subList(preserveIndex, history.size()));
+        int tokensBefore = compactionService.estimateTokens(history);
+
+        ConversationSummarizer.SummaryResult summary;
+        try {
+            summary = new ConversationSummarizer(directLlmClient)
+                    .summarize(prefix,
+                            "Recover from a provider context-window rejection",
+                            modelOverride);
+        } catch (RuntimeException failure) {
+            summary = new ConversationSummarizer.SummaryResult("", 0, 0, false);
+        }
+        if (isCancelled()) {
+            return ForceCompactResult.failed("Context recovery was cancelled; history unchanged.");
+        }
+
+        String strategy = "overflow-recovery";
+        String summaryText = summary.isEmpty() || looksLikeFailedSummary(summary.getSummary())
+                ? null : summary.getSummary();
+        int tokensAfter = estimateCompactedTokens(summaryText, tail);
+        if (summaryText == null || tokensAfter >= tokensBefore) {
+            summaryText = compactionService.renderDigest(prefix);
+            strategy = "deterministic-overflow-recovery";
+            tokensAfter = estimateCompactedTokens(summaryText, tail);
+        }
+        if (summaryText == null || summaryText.isBlank() || tokensAfter >= tokensBefore) {
+            return ForceCompactResult.failed(
+                    "Compaction could not reduce the rejected request; history unchanged.");
+        }
+
+        if (isCancelled()) {
+            return ForceCompactResult.failed("Context recovery was cancelled; history unchanged.");
+        }
+
+        long coveredThrough = snapshot.coveredThroughForPrefix(preserveIndex);
+        String effectiveModel = modelOverride != null
+                ? modelOverride : directLlmClient.getConfiguredModel();
+        if (!conversationLedger.commitCompaction(
+                snapshot.version(), coveredThrough, summaryText, strategy,
+                directLlmClient.getConfiguredProvider(), effectiveModel,
+                tokensBefore, tokensAfter)) {
+            return ForceCompactResult.failed(
+                    "Conversation changed during context recovery; history unchanged.");
+        }
+
+        rebuildDirectHistoryForRetry(currentMessage, pendingToolResults, modelOverride);
+        if (sessionMetrics != null) {
+            sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
+            if (summary != null && strategy.equals("overflow-recovery")) {
+                sessionMetrics.recordTokenUsage(
+                        summary.getInputTokens(), summary.getOutputTokens(), 0, 0);
+            }
+        }
+        resetReportedContextUsage();
+        return ForceCompactResult.ok(tokensBefore, tokensAfter, tail.size(), summaryText);
+    }
+
+    private int estimateCompactedTokens(
+            String summary, List<CompactionService.ConversationEntry> tail) {
+        if (summary == null || summary.isBlank()) return Integer.MAX_VALUE;
+        List<CompactionService.ConversationEntry> candidate = new ArrayList<>();
+        candidate.add(CompactionService.ConversationEntry.system(
+                ConversationLedger.SUMMARY_MARKER + summary));
+        candidate.addAll(tail);
+        return compactionService.estimateTokens(candidate);
+    }
+
+    private int pendingRequestTailStart(
+            List<CompactionService.ConversationEntry> history,
+            String currentMessage,
+            List<ToolCallResult> pendingToolResults) {
+        int start = history.size();
+        if (currentMessage != null) {
+            for (int i = history.size() - 1; i >= 0; i--) {
+                CompactionService.ConversationEntry entry = history.get(i);
+                if (entry.type == CompactionService.EntryType.USER
+                        && Objects.equals(currentMessage, entry.content)) {
+                    start = i;
+                    break;
+                }
+            }
+        }
+
+        Set<String> pendingCallIds = new LinkedHashSet<>();
+        if (pendingToolResults != null) {
+            for (ToolCallResult result : pendingToolResults) {
+                if (result != null && result.callId != null) {
+                    pendingCallIds.add(result.callId);
+                }
+            }
+        }
+        if (!pendingCallIds.isEmpty()) {
+            for (int i = history.size() - 1; i >= 0; i--) {
+                CompactionService.ConversationEntry entry = history.get(i);
+                if ((entry.type == CompactionService.EntryType.TOOL_CALL
+                        || entry.type == CompactionService.EntryType.TOOL_RESULT)
+                        && pendingCallIds.contains(entry.toolCallId)) {
+                    start = Math.min(start, i);
+                }
+            }
+        }
+
+        if (start < history.size()) {
+            for (int i = start; i >= 0; i--) {
+                CompactionService.ConversationEntry entry = history.get(i);
+                if (entry.type == CompactionService.EntryType.USER) return i;
+            }
+        }
+        return start;
+    }
+
+    private void rebuildDirectHistoryForRetry(
+            String currentMessage, List<ToolCallResult> pendingToolResults,
+            String modelOverride) {
+        List<CompactionService.ConversationEntry> entries = new ArrayList<>(
+                conversationLedger.snapshot().activeEntries());
+        Set<String> pendingCallIds = new LinkedHashSet<>();
+        if (pendingToolResults != null) {
+            for (ToolCallResult result : pendingToolResults) {
+                if (result != null && result.callId != null) {
+                    pendingCallIds.add(result.callId);
+                }
+            }
+        }
+
+        boolean pendingUserRemoved = currentMessage == null;
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            CompactionService.ConversationEntry entry = entries.get(i);
+            if (!pendingUserRemoved && entry.type == CompactionService.EntryType.USER
+                    && Objects.equals(currentMessage, entry.content)) {
+                entries.remove(i);
+                pendingUserRemoved = true;
+                continue;
+            }
+            if (entry.type == CompactionService.EntryType.TOOL_RESULT
+                    && pendingCallIds.contains(entry.toolCallId)) {
+                entries.remove(i);
+            }
+        }
+        // Pending call envelopes deliberately remain dangling here: the exact matching
+        // tool results are supplied once on the retried request.
+        rebuildDirectHistory(entries, true, false, false, modelOverride);
     }
 
     private boolean looksLikeFailedSummary(String summary) {
@@ -843,11 +1415,23 @@ public class AgenticChatLoop {
                     chatConfig.getAutoCompactThreshold(),
                     limits.maxOutputTokens(),
                     chatConfig.getCompactionReserveTokens());
-            directLlmClient.setNativeCompactionTriggerTokens(
-                    compactionService.triggerTokens());
+            refreshNativeCompactionTrigger();
         } catch (Exception e) {
             // Budget refresh must never break a chat turn; keep the previous budget.
         }
+    }
+
+    private boolean hasAutoCompactableHistory() {
+        if (!compactionService.isAutoCompactEnabled()) return false;
+        var entries = conversationLedger.snapshot().activeEntries();
+        return compactionService.estimateTokens(entries) > compactionService.preserveRecentTokens()
+                && ConversationBoundaryPlanner.preserveFrom(
+                        entries, compactionService, compactionService.preserveRecentTokens()) > 0;
+    }
+
+    private void refreshNativeCompactionTrigger() {
+        directLlmClient.setNativeCompactionTriggerTokens(
+                hasAutoCompactableHistory() ? compactionService.triggerTokens() : 0);
     }
 
     /** Refresh policy immediately after a live /auto-compact configuration change. */
@@ -867,16 +1451,29 @@ public class AgenticChatLoop {
             String pendingMessage, String systemPrompt, ArrayNode toolDefs,
             String modelOverride) {
         if (directLlmClient == null) return;
-        if (!compactionService.isAutoCompactEnabled()) return;
-        long projectedInputTokens = projectedInputTokens(pendingMessage);
+        if (!hasAutoCompactableHistory()) return;
+        String pendingRequestMessage = reminderManager == null
+                ? pendingMessage : reminderManager.previewUserTurn(pendingMessage);
+        long projectedInputTokens = projectedInputTokens(pendingRequestMessage);
         if (lastReportedInputTokens <= 0L && toolDefs != null) {
             projectedInputTokens = saturatingAdd(projectedInputTokens,
                     compactionService.estimateTextTokens(toolDefs.toString()));
         }
-        DirectLlmClient.TokenCountResult exact = directLlmClient.countInputTokens(
-                pendingMessage, systemPrompt, toolDefs, null, modelOverride);
+        // This counter has no attachment input. Do not label a text-only count as
+        // authoritative for a request that will also send pending media/documents.
+        DirectLlmClient.TokenCountResult exact = pendingAttachments == null || pendingAttachments.isEmpty()
+                ? directLlmClient.countInputTokens(
+                        pendingRequestMessage, systemPrompt, toolDefs, null, modelOverride)
+                : DirectLlmClient.TokenCountResult.unsupported();
         if (exact.exact() && exact.inputTokens() > 0L) {
-            projectedInputTokens = Math.max(projectedInputTokens, exact.inputTokens());
+            // A count of this request supersedes both the estimate and older usage.
+            // Anchor growth to the raw user entry the caller appends next. The count
+            // already includes its reminder-decorated wire form, system prompt and tools.
+            projectedInputTokens = exact.inputTokens();
+            lastReportedInputTokens = exact.inputTokens();
+            lastReportedHistoryTokens = saturatingAdd(
+                    compactionService.estimateTokens(conversationLedger.snapshot().activeEntries()),
+                    compactionService.estimateTextTokens(pendingMessage));
         }
         if (!compactionService.needsCompaction(projectedInputTokens)) return;
 
@@ -892,46 +1489,88 @@ public class AgenticChatLoop {
 
         ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
         List<CompactionService.ConversationEntry> conversationHistory = snapshot.activeEntries();
-        int tokensBefore = compactionService.estimateTokens(conversationHistory);
-        ForceCompactResult forced = forceCompact(null);
-        if (forced.isSuccess()) {
-            emitLine(renderer.renderCompactionNotice(
-                    forced.getTokensBefore(), forced.getTokensAfter()));
-            resetReportedContextUsage();
-            return;
-        }
-        if (forced.getStatus() == ForceCompactResult.Status.NOOP) {
-            return;
-        }
-
-        // Summarization unavailable or failed — commit a deterministic portable
-        // digest at the same complete-exchange boundary. Raw events remain durable.
         int preserveIndex = ConversationBoundaryPlanner.preserveFrom(
                 conversationHistory, compactionService,
                 compactionService.preserveRecentTokens());
-        if (preserveIndex == 0) preserveIndex = conversationHistory.size();
-        List<CompactionService.ConversationEntry> tail = new ArrayList<>(
-                conversationHistory.subList(preserveIndex, conversationHistory.size()));
-        String digest = compactionService.renderDigest(
-                conversationHistory.subList(0, preserveIndex));
-        if (digest.isBlank()) return;
-        List<CompactionService.ConversationEntry> candidate = new ArrayList<>();
-        candidate.add(CompactionService.ConversationEntry.system(
-                ConversationLedger.SUMMARY_MARKER + digest));
-        candidate.addAll(tail);
-        int tokensAfter = compactionService.estimateTokens(candidate);
-        if (!conversationLedger.commitCompaction(
-                snapshot.version(), snapshot.coveredThroughForPrefix(preserveIndex), digest,
-                "deterministic", directLlmClient.getConfiguredProvider(),
-                directLlmClient.getConfiguredModel(), tokensBefore, tokensAfter)) {
+        // Fixed system instructions and tool definitions are not reducible. If
+        // every prior conversation entry belongs to the newest exchange, an LLM
+        // summary cannot create headroom and may actually grow a tiny history.
+        if (preserveIndex <= 0) {
             return;
         }
-        rebuildDirectHistoryForProviderSwitch();
-        if (sessionMetrics != null) {
-            sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
+        int tokensBefore = compactionService.estimateTokens(conversationHistory);
+        long irreducibleInputTokens = Math.max(0L, projectedInputTokens - tokensBefore);
+        if (irreducibleInputTokens >= compactionService.triggerTokens()) {
+            // The system prompt, tool schemas, and pending user input already fill
+            // the budget. Summarizing conversation history cannot cross the trigger.
+            return;
         }
-        emitLine(renderer.renderCompactionNotice(tokensBefore, tokensAfter));
-        resetReportedContextUsage();
+        // Auto-compaction runs silently otherwise (activity is not yet "Thinking"
+        // at this point); show the same live "Compacting" surface as /compact.
+        CompactionProgressIndicator autoProgress = CompactionProgressIndicator.start(
+                "compact:auto:" + System.nanoTime(), renderer,
+                conversationHistory.size(), tokensBefore,
+                this::emitLine, this::setForegroundActivity);
+        try {
+            ForceCompactResult forced = forceCompact(null, autoProgress);
+            if (forced.isSuccess()) {
+                autoProgress.complete(forced.getTokensBefore(), forced.getTokensAfter(),
+                        forced.getPreservedTurns());
+                resetReportedContextUsage();
+                return;
+            }
+            if (forced.getStatus() == ForceCompactResult.Status.NOOP) {
+                autoProgress.noop(forced.getMessage());
+                return;
+            }
+            if (isCancelled()) {
+                autoProgress.failed("Compaction was cancelled; retrying next turn.");
+                return;
+            }
+            autoProgress.phase("Writing a deterministic digest checkpoint");
+
+            // Summarization unavailable or failed — commit a deterministic portable
+            // digest at the same complete-exchange boundary. Raw events remain durable.
+            List<CompactionService.ConversationEntry> tail = new ArrayList<>(
+                    conversationHistory.subList(preserveIndex, conversationHistory.size()));
+            String digest = compactionService.renderDigest(
+                    conversationHistory.subList(0, preserveIndex));
+            if (digest.isBlank()) {
+                autoProgress.abandonIfActive(
+                        "Nothing could be summarized from the older history.");
+                return;
+            }
+            List<CompactionService.ConversationEntry> candidate = new ArrayList<>();
+            candidate.add(CompactionService.ConversationEntry.system(
+                    ConversationLedger.SUMMARY_MARKER + digest));
+            candidate.addAll(tail);
+            int tokensAfter = compactionService.estimateTokens(candidate);
+            if (tokensAfter >= tokensBefore || isCancelled()) {
+                autoProgress.failed(
+                        "A deterministic digest could not reduce the context; retrying next turn.");
+                return;
+            }
+            if (!conversationLedger.commitCompaction(
+                    snapshot.version(), snapshot.coveredThroughForPrefix(preserveIndex), digest,
+                    "deterministic", directLlmClient.getConfiguredProvider(),
+                    directLlmClient.getConfiguredModel(), tokensBefore, tokensAfter)) {
+                autoProgress.failed("Conversation changed during compaction; retrying next turn.");
+                return;
+            }
+            rebuildDirectHistoryForProviderSwitch();
+            if (sessionMetrics != null) {
+                sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
+            }
+            autoProgress.complete(tokensBefore, tokensAfter, tail.size());
+            resetReportedContextUsage();
+        } catch (RuntimeException autoCompactFailure) {
+            autoProgress.failed(AgenticChatLoop.describeThrowable(autoCompactFailure));
+            throw autoCompactFailure;
+        } finally {
+            // Catches any early return this refactor missed; a no-op when the
+            // indicator already reached a terminal state above.
+            autoProgress.abandonIfActive(null);
+        }
     }
 
     private long projectedInputTokens(String pendingMessage) {
@@ -963,7 +1602,7 @@ public class AgenticChatLoop {
         return compactionService.getMaxTokens();
     }
 
-    /** Prompt tokens the provider reported for the most recent direct-mode call (0 if none yet). */
+    /** Most recent provider-measured request size, from exact counting or usage (0 if none yet). */
     public long lastReportedInputTokens() {
         return lastReportedInputTokens;
     }
@@ -1048,15 +1687,24 @@ public class AgenticChatLoop {
      */
     public String chat(String message, String sessionId, String agentName,
                         String serverAgent, boolean ragEnabled) {
-        if (planningMode && exitPlanModeTool != null) {
-            return chatWithPlanning(message, sessionId, agentName, serverAgent, ragEnabled);
-        }
+        String originalUserPrompt = extractOriginalUserPrompt(message);
+        workflowController.beginTurn(originalUserPrompt, sessionId);
+        try {
+            if (planningMode && exitPlanModeTool != null) {
+                return chatWithPlanning(
+                        message, originalUserPrompt, sessionId, agentName, serverAgent, ragEnabled);
+            }
 
-        return chatInternal(message, sessionId, agentName, serverAgent, ragEnabled);
+            return chatInternal(
+                    message, originalUserPrompt, sessionId, agentName, serverAgent, ragEnabled);
+        } finally {
+            workflowController.completeTurn();
+        }
     }
 
-    private String chatWithPlanning(String message, String sessionId, String agentName,
-                                     String serverAgent, boolean ragEnabled) {
+    private String chatWithPlanning(String message, String originalUserPrompt,
+                                    String sessionId, String agentName,
+                                    String serverAgent, boolean ragEnabled) {
         exitPlanModeTool.reset();
 
         // Phase 1: Planning pass with planner agent
@@ -1071,10 +1719,11 @@ public class AgenticChatLoop {
         emitLine(renderer.bold(renderer.cyan("  ╰───────────────────────────────────────────────────────╯")));
         emitLine("");
 
-        String planResponse = chatInternal(message, sessionId, "planner", serverAgent, ragEnabled);
+        String planResponse = chatInternal(
+                message, originalUserPrompt, sessionId, "planner", serverAgent, ragEnabled);
 
         // Show the checklist after planning
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workingDirectory);
         if (!todos.isEmpty()) {
             emitLine("");
             emitLine(renderer.bold(renderer.cyan("  ── Plan Checklist ──")));
@@ -1101,7 +1750,9 @@ public class AgenticChatLoop {
             // state into execution would make the execution loop stop at its first
             // queue/tool boundary and could discard newly claimed input.
             exitPlanModeTool.reset();
-            String executionResponse = chatInternal(executionPrompt, sessionId, agentName, serverAgent, ragEnabled);
+            String executionResponse = chatInternal(
+                    executionPrompt, executionPrompt,
+                    sessionId, agentName, serverAgent, ragEnabled);
 
             return planResponse + "\n\n--- Execution ---\n\n" + executionResponse;
         }
@@ -1109,12 +1760,36 @@ public class AgenticChatLoop {
         return planResponse;
     }
 
-    private String chatInternal(String message, String sessionId, String agentName,
-                                 String serverAgent, boolean ragEnabled) {
+    private String chatInternal(String message, String originalUserPrompt,
+                                String sessionId, String agentName,
+                                String serverAgent, boolean ragEnabled) {
         configureConversationSession(sessionId);
         long turnStartMs = System.currentTimeMillis();
         AgentConfig agent = agentRegistry.get(agentName);
         if (agent == null) agent = agentRegistry.getDefault();
+
+        // Capture the user's judge posture (guidance + one-shot override) once per turn.
+        // beginTurn() also consumes the one-shot override, so a single /judge override
+        // decision covers every model iteration and tool call within this turn.
+        ai.kompile.cli.main.chat.enforcer.JudgeControl control = judgeControl;
+        if (control == null || !control.getSessionId().equals(sessionId)) {
+            control = ai.kompile.cli.main.chat.enforcer.JudgeControl.load(sessionId);
+            judgeControl = control;
+        }
+        if (control != null) {
+            activeJudgeSnapshot = control.beginTurn();
+        } else {
+            activeJudgeSnapshot = ai.kompile.cli.main.chat.enforcer.JudgeControl.TurnSnapshot.NONE;
+        }
+
+        // Direction judge turn lifecycle: reset per-turn counters and reuse the user's
+        // durable judge guidance in every direction prompt.
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge direction = directionJudge;
+        if (activeJudgeSnapshot.enabled() && direction != null) {
+            direction.beginTurn();
+            direction.setGuidanceSupplier(() -> activeJudgeSnapshot.hasGuidance()
+                    ? activeJudgeSnapshot.guidance() : null);
+        }
 
         // Initialize tool result store for this session
         this.toolResultStore = new ToolResultStore(sessionId);
@@ -1123,24 +1798,34 @@ public class AgenticChatLoop {
         activeToolAbortSignal.set(turnToolAbort);
         ToolContext toolContext = new ToolContext(
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
+        toolContext.bindJudgeControl(control, false);
         toolContext.linkAbortSignal(turnToolAbort);
-        toolContext.setOutputConsumer(this::emitLine);
+        toolContext.setOutputConsumer(sessionContext.wrapConsumer(this::emitLine));
 
         boolean progressiveToolLoading = usesProgressiveToolLoading();
         if (progressiveToolLoading) {
             toolRegistry.prepareProgressiveTools(agent);
         }
 
-        // Compose system prompt: agent prompt + AGENTS.md content + result store info
+        // Compose a stable prefix: agent/project/workflow first, session result path last.
         String systemPrompt = buildSystemPrompt(agent);
         ArrayNode initialToolDefs = toolDefinitions(agent, progressiveToolLoading);
 
         StringBuilder fullResponse = new StringBuilder();
         int iteration = 0;
+        int inlineEnforcerCorrections = inheritedEnforcerCorrectionCount(originalUserPrompt);
 
         String currentMessage = message;
+        // Only an accepted user input can replace the objective under review;
+        // internal continuations, corrections and redirects must not replace it.
+        String promptUnderReview = originalUserPrompt;
         List<ToolCallResult> pendingToolResults = null;
+        QueuedInput pendingQueuedInput = null;
+        boolean directionHaltedTurn = false;
+        boolean directionLoopCompleted = false;
+        boolean directHistoryHasUnsubmittedToolCalls = false;
 
+        try {
         // Refresh the compaction budget from the active model's real context window,
         // then auto-compact BEFORE this turn if the prior conversation is already near it.
         refreshCompactionBudget(agent);
@@ -1159,6 +1844,16 @@ public class AgenticChatLoop {
                 emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
                 fullResponse.append("\n[Interrupted by user]");
                 break;
+            }
+            if (directHistoryHasUnsubmittedToolCalls
+                    && (pendingToolResults == null || pendingToolResults.isEmpty())
+                    && directLlmClient != null) {
+                // A supervision redirect/correction replaced the message before the
+                // provider's tool calls ran. Rebuild so the new prompt is sent exactly
+                // once and the superseded calls close with synthetic results.
+                rebuildDirectHistoryForRetry(
+                        currentMessage, pendingToolResults, agent.getModelOverride());
+                directHistoryHasUnsubmittedToolCalls = false;
             }
 
             int nextStep = iteration + 1;
@@ -1185,15 +1880,73 @@ public class AgenticChatLoop {
             ArrayNode toolDefs = iteration == 1
                     ? initialToolDefs
                     : toolDefinitions(agent, progressiveToolLoading);
+            if (pendingQueuedInput != null) {
+                if (!pendingQueuedInput.accept()) {
+                    pendingQueuedInput.restore();
+                    pendingQueuedInput = null;
+                    break;
+                }
+                promptUnderReview = extractOriginalUserPrompt(pendingQueuedInput.content());
+                conversationLedger.append(
+                        CompactionService.ConversationEntry.user(currentMessage));
+                pendingQueuedInput = null;
+            }
             ConversationLedger.Snapshot ledgerBeforeRequest = conversationLedger.snapshot();
             String outboundMessage = reminderManager == null
-                    ? currentMessage : reminderManager.prependTo(currentMessage);
+                    ? currentMessage : reminderManager.decorateUserTurn(currentMessage);
+            String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
+            if (reminderContent != null) {
+                emitLine(renderer.renderReminderSection(reminderContent));
+            }
 
             StreamResult result;
+            boolean retryProjectionInstalled = false;
             if (isDirectMode()) {
+                List<DirectLlmClient.AttachmentInput> requestAttachments = pendingAttachments;
+                pendingAttachments = null;
                 result = streamDirectTurn(
                         outboundMessage, systemPrompt, toolDefs, pendingToolResults,
-                        agent.getModelOverride());
+                        agent.getModelOverride(), requestAttachments);
+                if (result.contextOverflow && result.contextOverflowRetrySafe
+                        && !isCancelled()) {
+                    emitLine(renderer.yellow(
+                            "  ↻ Provider context limit reached; compacting and retrying once"));
+                    CompactionProgressIndicator recoveryProgress =
+                            CompactionProgressIndicator.start(
+                                    "compact:recovery:" + System.nanoTime(), renderer,
+                                    conversationLedger.snapshot().activeEntries().size(),
+                                    compactionService.estimateTokens(
+                                            conversationLedger.snapshot().activeEntries()),
+                                    this::emitLine, this::setForegroundActivity);
+                    recoveryProgress.phase("Recovering from the context-window rejection");
+                    ForceCompactResult recovery;
+                    try {
+                        recovery = compactForContextOverflow(
+                                currentMessage, pendingToolResults, agent.getModelOverride());
+                    } catch (RuntimeException recoveryFailure) {
+                        // The recovery path can throw through; still close the block.
+                        recoveryProgress.failed(AgenticChatLoop.describeThrowable(recoveryFailure));
+                        throw recoveryFailure;
+                    }
+                    if (recovery.isSuccess()) {
+                        recoveryProgress.complete(recovery.getTokensBefore(),
+                                recovery.getTokensAfter(), recovery.getPreservedTurns());
+                        ledgerBeforeRequest = conversationLedger.snapshot();
+                        retryProjectionInstalled = true;
+                        try {
+                            result = streamDirectTurn(
+                                    outboundMessage, systemPrompt, toolDefs, pendingToolResults,
+                                    agent.getModelOverride(), requestAttachments);
+                        } catch (RuntimeException retryFailure) {
+                            rebuildDirectHistoryForProviderSwitch();
+                            throw retryFailure;
+                        }
+                    } else {
+                        // Failed/NOOP recovery: publish the reason and continue the
+                        // turn normally (no retry).
+                        recoveryProgress.abandonIfActive(recovery.getMessage());
+                    }
+                }
             } else {
                 result = streamServerTurn(
                         outboundMessage, sessionId, serverAgent, ragEnabled,
@@ -1210,6 +1963,26 @@ public class AgenticChatLoop {
                 break;
             }
 
+            if (result.failed) {
+                if (retryProjectionInstalled && directLlmClient != null) {
+                    rebuildDirectHistoryForProviderSwitch();
+                    directHistoryHasUnsubmittedToolCalls = false;
+                }
+                String failure = result.providerFailureMessage;
+                if (failure == null || failure.isBlank()) failure = result.text;
+                throw new ProviderChatException(failure == null || failure.isBlank()
+                        ? "Standard Chat provider request failed" : failure);
+            }
+            if (isDirectMode()) {
+                if (pendingToolResults != null && !pendingToolResults.isEmpty()) {
+                    directHistoryHasUnsubmittedToolCalls = false;
+                }
+                if (!result.toolCalls.isEmpty()) {
+                    directHistoryHasUnsubmittedToolCalls = true;
+                }
+            }
+
+            boolean rebuildAfterRejectedNativeCheckpoint = false;
             if ((result.nativeCompactionSummary != null
                     && !result.nativeCompactionSummary.isBlank())
                     || result.nativeCompactionPayload != null) {
@@ -1220,14 +1993,14 @@ public class AgenticChatLoop {
                     portableSummary = compactionService.renderDigest(
                             ledgerBeforeRequest.activeEntries());
                 }
-                int tokensAfter = result.contextInputTokens > 0L
-                        ? (int) Math.min(Integer.MAX_VALUE, result.contextInputTokens)
-                        : compactionService.estimateTextTokens(portableSummary);
+                int tokensAfter = compactionService.estimateTextTokens(
+                        ConversationLedger.SUMMARY_MARKER + portableSummary);
                 long coveredThrough = ledgerBeforeRequest.coveredThroughForPrefix(
                         ledgerBeforeRequest.activeEntries().size());
                 String model = agent.getModelOverride() != null
                         ? agent.getModelOverride() : directLlmClient.getConfiguredModel();
-                boolean committed = result.nativeCompactionPayload == null
+                boolean committed = tokensAfter < tokensBefore
+                        && (result.nativeCompactionPayload == null
                         ? conversationLedger.commitCompaction(
                                 ledgerBeforeRequest.version(), coveredThrough, portableSummary,
                                 "native-" + result.nativeCompactionStrategy,
@@ -1237,12 +2010,17 @@ public class AgenticChatLoop {
                                 ledgerBeforeRequest.version(), coveredThrough, portableSummary,
                                 "native-" + result.nativeCompactionStrategy,
                                 directLlmClient.getConfiguredProvider(), model,
-                                tokensBefore, tokensAfter, result.nativeCompactionPayload);
+                                tokensBefore, tokensAfter, result.nativeCompactionPayload));
                 if (committed) {
+                    // Usage belongs to the request before its native compaction checkpoint.
+                    // Do not carry that high-water mark into the newly shortened history.
+                    resetReportedContextUsage();
                     emitLine(renderer.renderCompactionNotice(tokensBefore, tokensAfter));
                     if (sessionMetrics != null) {
                         sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
                     }
+                } else {
+                    rebuildAfterRejectedNativeCheckpoint = true;
                 }
             }
 
@@ -1252,45 +2030,137 @@ public class AgenticChatLoop {
                 conversationLedger.append(
                         CompactionService.ConversationEntry.assistant(result.text));
             }
+            if (rebuildAfterRejectedNativeCheckpoint && directLlmClient != null) {
+                rebuildDirectHistoryForProviderSwitch();
+            }
 
             // ── Inline enforcer check ─────────────────────────────────────
-            if (inlineEnforcerEnabled && inlineEnforcer != null && !result.text.isEmpty()) {
-                ai.kompile.cli.main.chat.enforcer.EnforcerDecision decision =
-                        inlineEnforcer.evaluate(currentMessage, result.text, inlineEnforcerPolicy, iteration);
-                if (decision.isStop()) {
-                    // Hard stop — reject and notify
-                    emitLine("\n" + renderer.red("[enforcer] BLOCKED: "
-                            + String.join("; ", decision.getViolations())));
-                    fullResponse.append("\n[Blocked by enforcer]");
-                    break;
-                } else if (!decision.isCompliant()) {
-                    // Violation with correction — feed the correction prompt back
-                    emitLine("\n" + renderer.yellow("[enforcer] violation: "
-                            + String.join("; ", decision.getViolations())));
-                    emitLine(renderer.yellow("[enforcer] sending correction (attempt "
-                            + iteration + "/" + inlineEnforcerMaxCorrections + ")"));
-                    if (iteration <= inlineEnforcerMaxCorrections) {
-                        currentMessage = decision.getCorrectionPrompt();
-                        pendingToolResults = null;
-                        conversationLedger.append(
-                                CompactionService.ConversationEntry.user(currentMessage));
-                        continue;
-                    } else {
-                        emitLine(renderer.red("[enforcer] max corrections exceeded, accepting"));
+            if (activeJudgeSnapshot.enabled()
+                    && inlineEnforcerEnabled && inlineEnforcer != null && !result.text.isEmpty()) {
+                // User guidance rides with the prompt so the judge sees it verbatim.
+                String guidance = activeJudgeSnapshot.hasGuidance()
+                        ? promptUnderReview + "\n\n[USER GUIDANCE TO THE JUDGE]\n"
+                          + activeJudgeSnapshot.guidance()
+                        : promptUnderReview;
+                emitInlineEnforcerActivity("[turn review] assistant output · "
+                        + result.text.length() + " chars");
+                EnforcerDecision decision = null;
+                try {
+                    decision = inlineEnforcer.evaluate(
+                            guidance, result.text, inlineEnforcerPolicy,
+                            inlineEnforcerCorrections + 1);
+                } catch (Exception failure) {
+                    String feedback = "Enforcer evaluation failed: " + failure.getMessage();
+                    emitInlineEnforcerActivity("[turn decision] FAIL-OPEN · " + feedback);
+                    emitLine("\n" + renderer.yellow("[judge] " + feedback
+                            + " — failing open"));
+                    decision = EnforcerDecision.pass(feedback);
+                }
+                if (decision != null) {
+                    emitInlineEnforcerActivity("[turn decision] "
+                            + (decision.isCompliant() ? "ALLOW" : decision.isStop() ? "STOP" : "CORRECT")
+                            + (activeJudgeSnapshot.reportOnly() ? " (overridden: report-only)" : "")
+                            + " · " + decision.getReasoning());
+                    if (activeJudgeSnapshot.reportOnly()) {
+                        if (!decision.isCompliant()) {
+                            emitLine(renderer.yellow("[judge] (overridden) would flag: "
+                                    + String.join("; ", decision.getViolations())));
+                        }
+                    } else if (!decision.isCompliant()) {
+                        String violations = String.join("; ", decision.getViolations());
+                        emitLine("\n" + (decision.isStop()
+                                ? renderer.red("[judge] BLOCKED: " + violations)
+                                : renderer.yellow("[judge] violation: " + violations)));
+                        if (inlineEnforcerCorrections < inlineEnforcerMaxCorrections) {
+                            inlineEnforcerCorrections++;
+                            emitLine(renderer.yellow("[judge] sending correction (attempt "
+                                    + inlineEnforcerCorrections + "/"
+                                    + inlineEnforcerMaxCorrections + ")"));
+                            String correction = enforcerFeedback(decision);
+                            String userFeedback = enforcerFeedbackForUser(
+                                    correction, inlineEnforcerCorrections,
+                                    inlineEnforcerMaxCorrections, promptUnderReview);
+                            if (submitSupervisorFeedback("enforcer", userFeedback, true)) {
+                                fullResponse.append(
+                                        "\n[Interrupted by judge; correction queued as user feedback]");
+                                break;
+                            }
+                            // Headless/embedded callers have no main REPL owner. Preserve
+                            // their bounded in-loop correction behavior as a fallback.
+                            currentMessage = correction;
+                            pendingToolResults = null;
+                            conversationLedger.append(
+                                    CompactionService.ConversationEntry.user(currentMessage));
+                            continue;
+                        }
+                        emitLine(renderer.red("[judge] max corrections exceeded; response blocked"));
+                        fullResponse.append("\n[Blocked by judge policy]");
+                        break;
                     }
+                }
+            }
+
+            // ── Direction check (goal-drift supervision) ────────────────────
+            // Runs on EVERY model iteration, including the final text-only one: a
+            // drifting final answer is exactly the long-conversation derailment this
+            // judge exists to catch. In-place redirect: the agent keeps its context
+            // and receives a corrective instruction as the next message (tool calls
+            // in flight are superseded, never executed). Halt: the turn ends with a
+            // supervisor feedback hand-off, never a silent stop.
+            if (activeJudgeSnapshot.enabled() && direction != null && direction.isEnabled()) {
+                DirectionJudgement judgement = checkDirection(
+                        direction, originalUserPrompt, iteration, fullResponse, currentMessage,
+                        result.toolCalls.isEmpty());
+                if (judgement.redirected()) {
+                    currentMessage = judgement.redirectPrompt();
+                    pendingToolResults = null;
+                    conversationLedger.append(
+                            CompactionService.ConversationEntry.user(currentMessage));
+                    continue;
+                }
+                if (judgement.halted()) {
+                    directionHaltedTurn = true;
+                    fullResponse.append("\n[Direction judge halted the turn: ")
+                            .append(judgement.reason()).append("]");
+                    submitSupervisorFeedback("direction-judge",
+                            directionFeedback(judgement.reason(), judgement.redirectPrompt()),
+                            true);
+                    break;
                 }
             }
 
             // A queued message can continue the same owner immediately after a model
             // response, avoiding an end-of-turn dequeue/re-dispatch race.
             if (result.toolCalls.isEmpty()) {
-                String queuedMessage = claimQueuedMessage();
-                if (queuedMessage != null && !queuedMessage.isBlank()) {
-                    currentMessage = queuedMessage;
+                WorkflowController.FinalDecision workflowFinal =
+                        workflowController.beforeFinalResponse();
+                if (!workflowFinal.allowed()) {
+                    if (workflowFinal.retry()) {
+                        emitLine(renderer.yellow("[workflow] " + workflowFinal.reason()
+                                + " — sending correction"));
+                        currentMessage = workflowFinal.correctionPrompt();
+                        pendingToolResults = null;
+                        conversationLedger.append(
+                                CompactionService.ConversationEntry.user(currentMessage));
+                        continue;
+                    }
+                    emitLine(renderer.red("[workflow] BLOCKED: " + workflowFinal.reason()));
+                    fullResponse.append("\n[Blocked by workflow: ")
+                            .append(workflowFinal.reason()).append("]");
+                    submitSupervisorFeedback(
+                            "workflow", workflowFinal.correctionPrompt(), true);
+                    break;
+                }
+                pendingQueuedInput = claimQueuedMessage();
+                if (pendingQueuedInput != null
+                        && !pendingQueuedInput.content().isBlank()) {
+                    currentMessage = pendingQueuedInput.content();
                     pendingToolResults = null;
-                    conversationLedger.append(
-                            CompactionService.ConversationEntry.user(queuedMessage));
                     continue;
+                }
+                if (pendingQueuedInput != null) {
+                    pendingQueuedInput.restore();
+                    pendingQueuedInput = null;
                 }
                 if (runController != null) runController.afterStep();
                 break;
@@ -1299,6 +2169,7 @@ public class AgenticChatLoop {
             // Execute tool calls with proper rendering
             emitLine("");
             List<ToolCallResult> toolResults = new ArrayList<>();
+            workflowController.beginToolBatch();
 
             // Record the complete provider request before executing anything.
             // Every branch below publishes exactly one matching result, including
@@ -1327,15 +2198,61 @@ public class AgenticChatLoop {
 
                 // This is the safe steering point: the previous tool (if any) has
                 // returned and no next tool/subprocess has started yet.
-                queuedMessage = claimQueuedMessage();
+                pendingQueuedInput = claimQueuedMessage();
+                queuedMessage = pendingQueuedInput == null
+                        ? null : pendingQueuedInput.content();
                 if (queuedMessage != null && !queuedMessage.isBlank()) {
                     addSupersededToolResults(
                             result.toolCalls, toolIndex, toolResults, queuedMessage);
                     break;
                 }
+                if (pendingQueuedInput != null) {
+                    pendingQueuedInput.restore();
+                    pendingQueuedInput = null;
+                }
 
                 String normalizedToolName = TerminalRenderer.stripMcpPrefix(call.name);
                 String rawToolInput = call.arguments != null ? call.arguments.toString() : "";
+
+                ToolInterception supervision = interceptToolCall(
+                        originalUserPrompt, result.text, call.name, call.arguments);
+                String rewriteNotice = null;
+                if (isCancelled()) {
+                    String cancelled = "Cancelled during supervisory tool review";
+                    notifyToolDenied(call, rawToolInput, cancelled);
+                    toolResults.add(new ToolCallResult(
+                            call.id, call.name, cancelled, true));
+                    conversationLedger.append(CompactionService.ConversationEntry.toolResult(
+                            call.name, call.id, cancelled));
+                    if (sessionMetrics != null) {
+                        sessionMetrics.recordToolCall(call.name, true, 0);
+                    }
+                    break;
+                }
+                if (supervision.rewrittenArguments() != call.arguments) {
+                    call.arguments = supervision.rewrittenArguments();
+                    rawToolInput = call.arguments == null ? "" : call.arguments.toString();
+                    rewriteNotice = "Arguments rewritten by " + supervision.source()
+                            + " before execution: " + rawToolInput;
+                    emitLine(renderer.yellow("[" + supervision.source()
+                            + "] rewrote MCP tool arguments before execution"));
+                }
+                if (supervision.blocked()) {
+                    String denied = "Blocked by " + supervision.source()
+                            + ": " + supervision.reason();
+                    fireFirstOutput();
+                    notifyToolDenied(call, rawToolInput, denied);
+                    emitLine(renderer.renderToolCallDenied(call.name, denied));
+                    toolResults.add(new ToolCallResult(call.id, call.name, denied, true));
+                    conversationLedger.append(CompactionService.ConversationEntry.toolResult(
+                            call.name, call.id, denied));
+                    if (sessionMetrics != null) {
+                        sessionMetrics.recordToolCall(call.name, true, 0);
+                    }
+                    submitSupervisorFeedback(
+                            supervision.source(), supervision.feedback(), true);
+                    continue;
+                }
 
                 if (runController != null) {
                     AgentRunController.Decision decision = runController.beforeTool(call.name, call.arguments);
@@ -1364,8 +2281,10 @@ public class AgenticChatLoop {
                         + (call.id == null ? "" : call.id);
                 ToolTranscriptBlock transcriptBlock = new ToolTranscriptBlock(
                         transcriptKey, call.name, rawToolInput);
+                // Capture on the owner thread before task execution moves to a worker.
+                toolContext.setSubagentSupervision(captureSubagentSupervision(promptUnderReview, toolContext));
                 ToolContext callToolContext = toolContext.forkForToolExecution();
-                callToolContext.setOutputConsumer(transcriptBlock::appendOutput);
+                callToolContext.setOutputConsumer(sessionContext.wrapConsumer(transcriptBlock::appendOutput));
 
                 // JLine owns the cursor while the asynchronous REPL accepts queued
                 // input. In that mode the bottom status bar is the activity spinner;
@@ -1381,6 +2300,7 @@ public class AgenticChatLoop {
                         if (spinner != null) spinner.stop();
                         String errMsg = "Unknown tool: " + call.name;
                         ToolResult missing = ToolResult.error(errMsg);
+                        workflowController.afterTool(call.name, call.arguments, missing);
                         notifyToolComplete(call, rawToolInput, missing);
                         transcriptBlock.complete(missing);
                         toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
@@ -1391,9 +2311,33 @@ public class AgenticChatLoop {
                     }
 
                     long toolStart = System.currentTimeMillis();
-                    ToolResult toolResult = executeToolInterruptibly(
-                            tool, call.arguments, callToolContext, call.name);
+                    boolean subagentInvocation = "task".equals(normalizedToolName);
+                    if (subagentInvocation) {
+                        setBlockingSubagentInvocation(true);
+                    }
+                    ToolResult toolResult;
+                    String completionSession = sessionId + "-background-" + java.util.UUID.randomUUID();
+                    String completionInput = rawToolInput;
+                    try {
+                        toolResult = executeToolInterruptibly(
+                                tool, call.arguments, callToolContext, call.name,
+                                completed -> new ToolResultStore(completionSession).save(
+                                        call.name, call.id, completionInput,
+                                        completed.getOutput(), completed.isError()));
+                    } finally {
+                        if (subagentInvocation) {
+                            setBlockingSubagentInvocation(false);
+                        }
+                    }
                     long toolDurationMs = System.currentTimeMillis() - toolStart;
+                    if (rewriteNotice != null) {
+                        toolResult = new ToolResult(
+                                toolResult.getTitle(),
+                                rewriteNotice + "\n" + toolResult.getOutput(),
+                                toolResult.getMetadata(), toolResult.isError());
+                    }
+
+                    workflowController.afterTool(call.name, call.arguments, toolResult);
 
                     // Truncate large outputs
                     OutputTruncator.TruncationResult truncResult =
@@ -1410,7 +2354,8 @@ public class AgenticChatLoop {
 
                     // Render inline todo updates after todowrite calls
                     if ("todowrite".equals(call.name) && !toolResult.isError()) {
-                        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(toolContext.getSessionId());
+                        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(
+                                toolContext.getSessionId(), toolContext.getWorkingDirectory());
                         if (!todos.isEmpty()) {
                             emitLine(renderer.renderTodoList(todos));
                         }
@@ -1477,6 +2422,29 @@ public class AgenticChatLoop {
                     }
 
                     String errMsg = "Error: " + e.getMessage();
+                    if (!e.isPermissionDenied()) {
+                        workflowController.afterTool(
+                                call.name, call.arguments, ToolResult.error(errMsg));
+                    }
+                    toolResultStore.save(call.name, call.id, null, errMsg, true);
+                    toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
+                    conversationLedger.append(CompactionService.ConversationEntry.toolResult(
+                            call.name, call.id, errMsg));
+                    if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
+                } catch (Throwable unexpectedToolFailure) {
+                    // Never let a non-ToolExecutionException (LinkageError/NoClassDefFoundError
+                    // from a jar swapped under a running JVM, OOM, native crash recovery, ...)
+                    // escape this loop: it would unwind the turn thread with zero output, which
+                    // is exactly the "silent crash" signature. Report the failure as a normal
+                    // tool error so the model sees it and the turn continues.
+                    if (spinner != null) spinner.stop();
+                    String failure = describeThrowable(unexpectedToolFailure);
+                    ToolResult failed = ToolResult.error(failure);
+                    notifyToolComplete(call, rawToolInput, failed);
+                    transcriptBlock.complete(failed);
+
+                    String errMsg = "Error: " + failure;
+                    workflowController.afterTool(call.name, call.arguments, failed);
                     toolResultStore.save(call.name, call.id, null, errMsg, true);
                     toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
                     conversationLedger.append(CompactionService.ConversationEntry.toolResult(
@@ -1493,7 +2461,14 @@ public class AgenticChatLoop {
 
             // Also poll after the last tool, before the follow-up model request.
             if ((queuedMessage == null || queuedMessage.isBlank()) && !isCancelled()) {
-                queuedMessage = claimQueuedMessage();
+                pendingQueuedInput = claimQueuedMessage();
+                queuedMessage = pendingQueuedInput == null
+                        ? null : pendingQueuedInput.content();
+                if (queuedMessage != null && queuedMessage.isBlank()) {
+                    pendingQueuedInput.restore();
+                    pendingQueuedInput = null;
+                    queuedMessage = null;
+                }
             }
 
             if (runController != null) runController.afterStep();
@@ -1502,30 +2477,57 @@ public class AgenticChatLoop {
             pendingToolResults = toolResults;
             currentMessage = queuedMessage == null || queuedMessage.isBlank()
                     ? null : queuedMessage;
-            if (currentMessage != null) {
-                conversationLedger.append(
-                        CompactionService.ConversationEntry.user(currentMessage));
-            }
         }
-
-        // Cleanup old truncation files
-        truncator.cleanupOldFiles();
-
-        // A cancelled direct turn may have left provider-native tool-call envelopes
-        // without a submitted result. Reproject the durable ledger as portable text
-        // before the queued successor starts so the next provider request is valid.
-        if (isCancelled() && directLlmClient != null) {
-            rebuildDirectHistoryForProviderSwitch();
+        directionLoopCompleted = true;
+        } finally {
+            if (pendingQueuedInput != null) {
+                pendingQueuedInput.restore();
+            }
+            if (activeJudgeSnapshot.enabled() && direction != null) {
+                try {
+                    boolean countTurn = directionHaltedTurn
+                            || (directionLoopCompleted && !isCancelled());
+                    ai.kompile.cli.main.chat.enforcer.DirectionJudge.SessionState state =
+                            direction.completeTurn(countTurn);
+                    if (direction.getChecksThisTurn() > 0) {
+                        emitInlineEnforcerActivity("[direction] turn state · streak "
+                                + state.consecutiveDriftTurns() + "/"
+                                + (state.crossTurnDriftLimit() == 0
+                                        ? "off" : state.crossTurnDriftLimit())
+                                + " · total " + state.totalDriftTurns());
+                    }
+                } catch (RuntimeException failure) {
+                    emitInlineEnforcerActivity(
+                            "[direction] state FAIL-OPEN · " + failure.getMessage());
+                }
+            }
+            try {
+                truncator.cleanupOldFiles();
+                // A cancelled direct turn may have left provider-native tool-call
+                // envelopes without a submitted result. Reproject before the queued
+                // successor starts so the next provider request is valid.
+                if ((isCancelled() || directHistoryHasUnsubmittedToolCalls)
+                        && directLlmClient != null) {
+                    rebuildDirectHistoryForProviderSwitch();
+                    directHistoryHasUnsubmittedToolCalls = false;
+                }
+            } finally {
+                // Provider failures, including an unrecoverable context rejection,
+                // must release per-turn abort state just like normal completion.
+                activeToolAbortSignal.compareAndSet(turnToolAbort, null);
+            }
         }
 
         // Evaluate turn with performance harness if configured
         String output = fullResponse.toString();
-        if (performanceHarness != null && !output.isBlank()) {
+        if (activeJudgeSnapshot.enabled() && performanceHarness != null && !output.isBlank()
+                && !isCancelled()) {
             try {
                 long turnLatency = System.currentTimeMillis() - turnStartMs;
                 performanceHarness.evaluateTurnAsync(
                         agentName,
                         agent.getModelOverride(),
+                        originalUserPrompt,
                         output,
                         sessionId,
                         turnLatency);
@@ -1534,7 +2536,6 @@ public class AgenticChatLoop {
             }
         }
 
-        activeToolAbortSignal.compareAndSet(turnToolAbort, null);
         return output;
     }
 
@@ -1562,6 +2563,423 @@ public class AgenticChatLoop {
         }
     }
 
+    DirectSubagentSupervision.Contract captureSubagentSupervision(String userPrompt, ToolContext parent) {
+        EnforcerEvaluator captured = inlineEnforcer;
+        try {
+            if (captured instanceof EnforcerJudge judge) captured = judge.captureForChild();
+        } catch (RuntimeException failure) {
+            emitInlineEnforcerActivity("[child supervision] Cannot capture judge constraints: " + failure.getMessage());
+            captured = null; // Required review remains required, and reports unavailable explicitly.
+        }
+        EnforcerEvaluator evaluator = captured;
+        EnforcerPolicy policy = inlineEnforcerPolicy;
+        String objective = userPrompt + (activeJudgeSnapshot.hasGuidance()
+                ? "\n\n[USER GUIDANCE TO THE JUDGE]\n" + activeJudgeSnapshot.guidance() : "");
+        ReminderManager reminders = reminderManager;
+        if (reminders != null) objective += "\n\n[Captured reminder constraints]\n" + reminders.enforcementConstraints();
+        return new DirectSubagentSupervision.Contract(
+                workflowController.captureChildContract(), objective, evaluator, policy,
+                evaluator == null ? null : (childPrompt, assistant, name, input) ->
+                        evaluateInlineToolCall(evaluator, policy, childPrompt, assistant, name, input),
+                activeJudgeSnapshot.enabled() && inlineEnforcerRequested, inlineEnforcerMaxCorrections)
+                .withCeiling(parent);
+    }
+
+    private ToolInterception interceptToolCall(
+            String userPrompt, String assistantContext,
+            String toolName, JsonNode arguments) {
+        WorkflowController.Decision workflow =
+                workflowController.beforeTool(toolName, arguments);
+        if (!workflow.allowed()) {
+            return new ToolInterception(arguments, "workflow", workflow.reason(),
+                    workflow.correctionPrompt(), true);
+        }
+        if (!activeJudgeSnapshot.enabled()) {
+            return new ToolInterception(arguments, "", "", "", false);
+        }
+        String toolInput = arguments == null ? "{}" : arguments.toString();
+        // Controls enforce user confirmation/permission in the tool, not through the judge
+        // they are meant to correct. Workflow and child supervision remain independent.
+        if ("judge_control".equals(toolName)) {
+            return new ToolInterception(arguments, "judge control", "", "", false);
+        }
+        if (activeJudgeSnapshot.approvesCommand(toolName, toolInput)) {
+            EnforcerToolCallDecision mandate = ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy
+                    .evaluateFromSerializedArgs(toolName, toolInput);
+            if (mandate != null) {
+                return new ToolInterception(arguments, "shell mandate", mandate.blockMessage(),
+                        mandate.getCorrectionPrompt(), true);
+            }
+            emitInlineEnforcerActivity("[user command approval] " + toolName + " " + toolInput);
+            return new ToolInterception(arguments, "user approval", "", "", false);
+        }
+        NamedToolDecision enforcement = null;
+
+        ToolCallInterceptor enforcer = enforcerToolCallInterceptor;
+        if (inlineEnforcerEnabled && enforcer != null) {
+            emitInlineEnforcerActivity("[tool review] " + toolName + " " + toolInput);
+            EnforcerToolCallDecision readOnlyGit = JudgeToolPolicy.evaluateReadOnlyGitTool(
+                    toolName, toolInput, inlineEnforcerPolicy, objectMapper);
+            enforcement = readOnlyGit != null
+                    ? new NamedToolDecision("enforcer", readOnlyGit)
+                    : invokeToolInterceptor(
+                            "enforcer", enforcer, userPrompt, assistantContext,
+                            toolName, toolInput, false);
+        }
+        if (isCancelled()) {
+            return new ToolInterception(arguments, "", "", "", false);
+        }
+
+        // There is one tool reviewer. A configured policy judge is authoritative;
+        // only when no policy judge exists does the quality judge run as advisory.
+        // Routine bookkeeping never needs a speculative advisory model call.
+        ToolCallInterceptor judge = judgeToolCallInterceptor;
+        if (judge != null && enforcement == null
+                && !JudgeToolPolicy.isRoutineSessionTool(toolName)
+                && JudgeToolPolicy.evaluateReadOnlyGitTool(
+                        toolName, toolInput, inlineEnforcerPolicy, objectMapper) == null) {
+            String judgeToolInput = redactSensitiveToolInput(arguments);
+            NamedToolDecision advisory = invokeToolInterceptor(
+                    "judge", judge, userPrompt, assistantContext,
+                    toolName, judgeToolInput, false);
+            EnforcerToolCallDecision decision = advisory.decision();
+            emitInlineEnforcerActivity("[judge advisory"
+                    + (activeJudgeSnapshot.reportOnly() ? " · override armed" : "")
+                    + "] " + toolName + " · " + decision.getAction()
+                    + (decision.getReason().isBlank() ? "" : " · " + decision.getReason()));
+        }
+
+        if (enforcement == null) {
+            return new ToolInterception(arguments, "", "", "", false);
+        }
+
+        EnforcerToolCallDecision decision = enforcement.decision();
+        if (!decision.isAllowed()
+                || (decision.isRewrite() && decision.getRewrittenArgs() == null)) {
+            String reason = decision.blockMessage();
+            if (ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy.isShellTool(toolName)) {
+                reason += "\nUser controls: /judge approve <exact bash command> (next turn only),"
+                        + " or /judge feedback <correction>. Permissions and hard tool protections still apply.";
+            }
+            String feedback = decision.getCorrectionPrompt();
+            if (feedback.isBlank()) {
+                feedback = "The proposed MCP tool call '" + toolName
+                        + "' was blocked before execution. Revise the approach.\nReason: " + reason;
+            }
+            return new ToolInterception(
+                    arguments, enforcement.source(), reason, feedback, true);
+        }
+
+        if (decision.isRewrite()) {
+            return new ToolInterception(
+                    objectMapper.valueToTree(decision.getRewrittenArgs()),
+                    enforcement.source(), "", "", false);
+        }
+        return new ToolInterception(arguments, "", "", "", false);
+    }
+
+    private static String redactSensitiveToolInput(JsonNode arguments) {
+        if (arguments == null) return "{}";
+        JsonNode copy = arguments.deepCopy();
+        redactSensitiveFields(copy);
+        return copy.toString();
+    }
+
+    private static void redactSensitiveFields(JsonNode node) {
+        if (node == null) return;
+        if (node.isObject()) {
+            ObjectNode object = (ObjectNode) node;
+            List<String> names = new ArrayList<>();
+            object.fieldNames().forEachRemaining(names::add);
+            for (String name : names) {
+                JsonNode value = object.get(name);
+                if (isSensitiveField(name)) {
+                    object.put(name, "***REDACTED***");
+                } else {
+                    redactSensitiveFields(value);
+                }
+            }
+        } else if (node.isArray()) {
+            node.forEach(AgenticChatLoop::redactSensitiveFields);
+        }
+    }
+
+    private static boolean isSensitiveField(String name) {
+        if (name == null) return false;
+        String normalized = name.toLowerCase(Locale.ROOT)
+                .replace("_", "").replace("-", "");
+        return normalized.contains("apikey")
+                || normalized.contains("accesstoken")
+                || normalized.contains("refreshtoken")
+                || normalized.contains("password")
+                || normalized.contains("secret")
+                || normalized.contains("authorization")
+                || normalized.contains("cookie")
+                || normalized.contains("privatekey")
+                || normalized.contains("credential");
+    }
+
+    private NamedToolDecision invokeToolInterceptor(
+            String source,
+            ToolCallInterceptor interceptor,
+            String userPrompt,
+            String assistantContext,
+            String toolName,
+            String toolInput,
+            boolean failClosed) {
+        try {
+            EnforcerToolCallDecision decision = interceptor.intercept(
+                    userPrompt, assistantContext, toolName, toolInput);
+            if (decision == null) {
+                decision = failClosed
+                        ? EnforcerToolCallDecision.block(source + " returned no decision")
+                        : EnforcerToolCallDecision.allow(source + " returned no decision");
+            }
+            if ("enforcer".equals(source)) {
+                emitInlineEnforcerActivity("[tool decision] " + decision.getAction()
+                        + " · " + decision.getReason());
+            }
+            return new NamedToolDecision(source, decision);
+        } catch (Exception failure) {
+            String reason = source + " tool-call review failed: " + failure.getMessage();
+            EnforcerToolCallDecision decision = failClosed
+                    ? new EnforcerToolCallDecision(
+                            EnforcerToolCallDecision.Action.BLOCK,
+                            reason, List.of(reason),
+                            "Stop and choose a policy-compliant tool path.", null)
+                    : EnforcerToolCallDecision.allow(reason);
+            if ("enforcer".equals(source)) {
+                emitInlineEnforcerActivity("[tool decision] " + decision.getAction()
+                        + " · " + reason);
+            }
+            return new NamedToolDecision(source, decision);
+        }
+    }
+
+    private boolean submitSupervisorFeedback(
+            String source, String feedback, boolean interrupt) {
+        SupervisorFeedbackHandler handler = supervisorFeedbackHandler;
+        if (handler == null || feedback == null || feedback.isBlank()) return false;
+        try {
+            return handler.submit(source, feedback, interrupt);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static String enforcerFeedback(EnforcerDecision decision) {
+        if (decision != null && decision.getCorrectionPrompt() != null
+                && !decision.getCorrectionPrompt().isBlank()) {
+            return decision.getCorrectionPrompt();
+        }
+        String reason = decision == null || decision.getViolations().isEmpty()
+                ? "The active enforcer stopped the response."
+                : String.join("; ", decision.getViolations());
+        return "Stop the current path and produce a compliant response.\nReason: " + reason;
+    }
+
+    private static String enforcerFeedbackForUser(
+            String correction, int attempt, int maxCorrections, String originalUserPrompt) {
+        return "[correction " + attempt + "/" + maxCorrections + "]\n"
+                + "Original user request:\n"
+                + StringUtils.truncateWithSize(originalUserPrompt, 4_000) + "\n\n"
+                + correction;
+    }
+
+    /** Carry the configured correction budget across interrupting feedback turns. */
+    private static int inheritedEnforcerCorrectionCount(String message) {
+        if (message == null) return 0;
+        String normalized = message.stripLeading().replace("\r\n", "\n");
+        String prefix = "[enforcer feedback]\n[correction ";
+        if (!normalized.startsWith(prefix)) return 0;
+        int slash = normalized.indexOf('/', prefix.length());
+        int end = slash < 0 ? -1 : normalized.indexOf(']', slash + 1);
+        if (slash < 0 || end < 0) return 0;
+        try {
+            return Math.max(0, Integer.parseInt(normalized.substring(prefix.length(), slash)));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    /**
+     * Chat memory is provider context, not the user's request. Supervisors must
+     * judge the actual text after the injected memory envelope.
+     */
+    private static String extractOriginalUserPrompt(String message) {
+        if (message == null || message.isBlank()) return message == null ? "" : message;
+        String normalized = message.stripLeading();
+        if (!normalized.startsWith("<memory_context>")) return message;
+        int end = normalized.indexOf("</memory_context>");
+        if (end < 0) return message;
+        String userPrompt = normalized.substring(end + "</memory_context>".length()).stripLeading();
+        return userPrompt.isBlank() ? message : userPrompt;
+    }
+
+    // ── Direction judge (goal-drift supervision) ────────────────────────────
+
+    /** Outcome of one direction check: none / in-place redirect / turn halt. */
+    private record DirectionJudgement(
+            String redirectPrompt, String reason, boolean redirected, boolean halted) {
+        static final DirectionJudgement NONE =
+                new DirectionJudgement(null, null, false, false);
+        static DirectionJudgement redirect(String prompt) {
+            return new DirectionJudgement(prompt, null, true, false);
+        }
+        static DirectionJudgement halt(String reason, String redirect) {
+            return new DirectionJudgement(redirect, reason, false, true);
+        }
+    }
+
+    /**
+     * Run the direction judge at the configured cadence. Returns what, if anything,
+     * the turn should do about drift. The judge is NEVER trusted on a degraded check:
+     * unavailable backends, malformed verdicts, or low-confidence flags are fail-open.
+     */
+    private DirectionJudgement checkDirection(
+            ai.kompile.cli.main.chat.enforcer.DirectionJudge direction,
+            String turnGoal, int iteration, StringBuilder fullResponse,
+            String currentMessage, boolean finalResponse) {
+        if (!finalResponse && direction.getCheckEvery() > 1
+                && iteration % direction.getCheckEvery() != 0) {
+            return DirectionJudgement.NONE;
+        }
+        String outputSoFar = fullResponse.toString();
+        if (outputSoFar.isBlank() && (currentMessage == null || currentMessage.isBlank())) {
+            return DirectionJudgement.NONE;
+        }
+        String goal = firstNonBlankText(direction.getGoal(), turnGoal);
+        ai.kompile.cli.main.chat.enforcer.DirectionJudge.Verdict verdict;
+        emitInlineEnforcerActivity("[direction] check #" + (direction.getChecksThisTurn() + 1)
+                + " · iteration " + iteration);
+        try {
+            verdict = direction.checkTurn(
+                    goal, turnGoal == null ? "" : turnGoal,
+                    renderRecentConversation(), outputSoFar, iteration);
+        } catch (RuntimeException failure) {
+            emitInlineEnforcerActivity("[direction] FAIL-OPEN · " + failure.getMessage());
+            return DirectionJudgement.NONE;
+        }
+        if (verdict.failOpen()) {
+            emitInlineEnforcerActivity("[direction] FAIL-OPEN · " + verdict.reason());
+            return DirectionJudgement.NONE;
+        }
+        if (verdict.onTrack()) {
+            emitInlineEnforcerActivity("[direction] ON TRACK · " + verdict.reason());
+            return DirectionJudgement.NONE;
+        }
+        if (!direction.isActionable(verdict)) {
+            emitInlineEnforcerActivity("[direction] IGNORED · confidence "
+                    + verdict.confidence() + " < " + direction.getConfidenceThreshold());
+            return DirectionJudgement.NONE;
+        }
+        emitInlineEnforcerActivity("[direction] DRIFT · " + verdict.reason());
+        if (direction.isReportOnly()) {
+            emitLine(renderer.yellow("[direction] (report-only) drift: " + verdict.reason()));
+            return DirectionJudgement.NONE;
+        }
+        if (direction.isCrossTurnEscalationDue()) {
+            int streak = direction.projectedConsecutiveDriftTurns();
+            String haltReason = "persistent direction drift across " + streak
+                    + " consecutive turns: " + verdict.reason();
+            String recovery = persistentDirectionRedirect(
+                    goal, streak, verdict.redirectPrompt());
+            emitLine(renderer.red("[direction] HALTING turn — " + haltReason));
+            return DirectionJudgement.halt(haltReason, recovery);
+        }
+        // Confident drift verdict. Redirect in place while budget remains; otherwise
+        // halt the turn and hand control back through the supervisor lane.
+        if (verdict.redirectPrompt() != null && direction.canRedirect()) {
+            direction.recordRedirect();
+            String notice = "[direction] drift detected — redirecting in place: "
+                    + verdict.reason();
+            emitLine(renderer.yellow(notice));
+            return DirectionJudgement.redirect(verdict.redirectPrompt());
+        }
+        String haltReason = "direction drift exceeded redirect budget: " + verdict.reason();
+        emitLine(renderer.red("[direction] HALTING turn — " + haltReason));
+        return DirectionJudgement.halt(haltReason, verdict.redirectPrompt());
+    }
+
+    private static String persistentDirectionRedirect(
+            String goal, int streak, String judgeRedirect) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Persistent direction drift has recurred across ")
+                .append(streak).append(" consecutive turns. Stop the current approach and ")
+                .append("re-anchor before doing more work.");
+        if (goal != null && !goal.isBlank()) {
+            String boundedGoal = goal.strip();
+            if (boundedGoal.length() > 1_000) {
+                boundedGoal = boundedGoal.substring(0, 1_000) + "… [truncated]";
+            }
+            sb.append("\nOriginal goal: ").append(boundedGoal);
+        }
+        sb.append("\nState a concise recovery plan, identify which prior path failed to ")
+                .append("converge, and continue only with steps that directly serve the goal.");
+        if (judgeRedirect != null && !judgeRedirect.isBlank()) {
+            sb.append("\nDirection judge guidance: ").append(judgeRedirect.strip());
+        }
+        return sb.toString();
+    }
+
+    private static String directionFeedback(String reason, String redirectPrompt) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("The direction judge stopped this turn because the conversation was ")
+          .append("no longer moving toward the goal.\nReason: ")
+          .append(reason == null ? "unspecified" : reason);
+        if (redirectPrompt != null && !redirectPrompt.isBlank()) {
+            sb.append("\nSuggested redirection for your next turn: ").append(redirectPrompt);
+        }
+        return sb.toString();
+    }
+
+    private static String firstNonBlankText(String a, String b) {
+        if (a != null && !a.isBlank()) return a;
+        return b;
+    }
+
+    /**
+     * Render a bounded recent-conversation trail from the durable ledger for the
+     * direction judge: goal first, then the newest events last.
+     */
+    private String renderRecentConversation() {
+        try {
+            List<CompactionService.ConversationEntry> entries =
+                    conversationLedger.snapshot().activeEntries();
+            int from = Math.max(0, entries.size() - 40);
+            StringBuilder sb = new StringBuilder();
+            for (int i = from; i < entries.size(); i++) {
+                CompactionService.ConversationEntry entry = entries.get(i);
+                String label = switch (entry.type) {
+                    case USER -> "user";
+                    case ASSISTANT -> "assistant";
+                    case TOOL_CALL -> "tool_call " + entry.toolName;
+                    case TOOL_RESULT -> "tool_result";
+                    case SYSTEM -> "system";
+                };
+                String content = entry.content == null ? "" : entry.content.strip();
+                if (content.length() > 600) {
+                    content = content.substring(0, 600) + "… [truncated]";
+                }
+                if (content.isBlank()) continue;
+                sb.append(label).append(": ").append(content).append("\n");
+            }
+            return sb.toString();
+        } catch (RuntimeException ignored) {
+            return "(conversation trail unavailable)";
+        }
+    }
+
+    private record NamedToolDecision(
+            String source, EnforcerToolCallDecision decision) { }
+
+    private record ToolInterception(
+            JsonNode rewrittenArguments,
+            String source,
+            String reason,
+            String feedback,
+            boolean blocked) { }
+
     /**
      * Execute a synchronous tool away from the dispatch owner. Escape can then
      * release the owner immediately even if an extension blocks or swallows
@@ -1569,11 +2987,23 @@ public class AgenticChatLoop {
      * signal and terminate their underlying subprocess/network operation.
      */
     private ToolResult executeToolInterruptibly(
-            CliTool tool, JsonNode arguments, ToolContext context, String toolName)
+            CliTool tool, JsonNode arguments, ToolContext context, String toolName,
+            java.util.function.Function<ToolResult, Path> saveCompletion)
             throws ToolExecutionException {
         ToolContext executionContext = context.forkForToolExecution();
+        // Children may retain this signal/supplier and consumer before Ctrl+B.
+        // Switch their routing through stable indirections, not by replacing a
+        // context field after the child has already copied it.
+        AtomicBoolean detached = new AtomicBoolean(false);
+        executionContext.linkAbortSignal(new AtomicBoolean(false));
+        executionContext.linkAbortCheck(() -> !detached.get() && context.isAborted());
+        AtomicReference<Consumer<String>> output = new AtomicReference<>(context.getOutputConsumer());
+        executionContext.setOutputConsumer(sessionContext.wrapConsumer(line -> {
+            Consumer<String> sink = output.get();
+            if (sink != null) sink.accept(line);
+        }));
         FutureTask<ToolResult> execution = new FutureTask<>(
-                () -> tool.execute(arguments, executionContext));
+                sessionContext.wrapCallable(() -> tool.execute(arguments, executionContext)));
         Thread worker = new Thread(execution,
                 "chat-tool-" + (toolName == null ? "unknown"
                         : toolName.replaceAll("[^A-Za-z0-9_.-]", "_")));
@@ -1582,7 +3012,35 @@ public class AgenticChatLoop {
 
         try {
             while (true) {
+                ToolDetach transfer = blockingSubagentInvocation.get() ? toolDetach.getAndSet(null) : null;
+                if (transfer != null) {
+                    detached.set(true);
+                    output.set(transfer.output());
+                    setBlockingSubagentInvocation(false);
+                    transfer.detached().run();
+                    Thread completion = new Thread(sessionContext.wrap(() -> {
+                        ToolResult result;
+                        try {
+                            result = execution.get();
+                        } catch (Exception failure) {
+                            result = ToolResult.error(describeThrowable(failure instanceof ExecutionException
+                                    ? failure.getCause() : failure));
+                        }
+                        try {
+                            Path saved = saveCompletion.apply(result);
+                            if (saved != null) transfer.output().accept("\n[Final tool result saved to: " + saved + "]\n");
+                        } finally {
+                            transfer.completed().accept(result);
+                        }
+                    }), "chat-detached-tool-completion");
+                    completion.setDaemon(true);
+                    completion.start();
+                    return ToolResult.success("Task is still running in the background; this is not its final result. "
+                            + "Continue handling user input. Completion will be retained in the activity panel.");
+                }
                 if (isCancelled() || context.isAborted()) {
+                    output.set(ignored -> { });
+                    executionContext.abort();
                     executionContext.setOutputConsumer(ignored -> { });
                     execution.cancel(true);
                     throw new ToolExecutionException("Cancelled by user");
@@ -1595,6 +3053,8 @@ public class AgenticChatLoop {
             }
         } catch (InterruptedException e) {
             context.abort();
+            executionContext.abort();
+            output.set(ignored -> { });
             executionContext.setOutputConsumer(ignored -> { });
             execution.cancel(true);
             Thread.currentThread().interrupt();
@@ -1610,6 +3070,30 @@ public class AgenticChatLoop {
             throw new ToolExecutionException(
                     cause == null ? "Tool execution failed" : cause.getMessage(), cause);
         }
+    }
+
+    /**
+     * Human-readable, single-line description of any tool failure. Internal errors
+     * (NoClassDefFoundError / LinkageError / NoSuchMethodError) carry raw slashed
+     * class names like "ai/kompile/cli/main/chat/tools/GrepTool$LineEntry", which
+     * read as gibberish in transcripts; expand them into a diagnostic that names
+     * the failure class and points at the usual cause.
+     */
+    public static String describeThrowable(Throwable t) {
+        if (t == null) {
+            return "unknown tool failure";
+        }
+        if (t instanceof LinkageError || t instanceof ExceptionInInitializerError) {
+            String missing = t.getMessage() == null ? "" : t.getMessage().replace('/', '.');
+            String kind = t instanceof NoClassDefFoundError ? "class initialization/lookup failed"
+                    : t instanceof NoSuchMethodError ? "binary mismatch (stale build)"
+                    : "class linkage failure";
+            return "internal " + t.getClass().getSimpleName() + " (" + kind + ")"
+                    + (missing.isBlank() ? "" : ": " + missing)
+                    + " — the running process may have been built/deployed while this session was live";
+        }
+        return t.getMessage() == null || t.getMessage().isBlank()
+                ? t.getClass().getName() : t.getMessage();
     }
 
     /** One replaceable provider-style block for a running tool and its live output. */
@@ -1693,7 +3177,7 @@ public class AgenticChatLoop {
             updateScheduled = true;
             CompletableFuture.delayedExecutor(
                     LIVE_TOOL_FRAME_DELAY_MS, TimeUnit.MILLISECONDS)
-                    .execute(this::publishManagedUpdate);
+                    .execute(sessionContext.wrap(this::publishManagedUpdate));
         }
 
         private synchronized void publishManagedUpdate() {
@@ -1807,7 +3291,9 @@ public class AgenticChatLoop {
 
     private StreamResult streamDirectTurn(String message, String systemPrompt,
                                            ArrayNode toolDefs, List<ToolCallResult> toolResults,
-                                           String modelOverride) {
+                                           String modelOverride,
+                                           List<DirectLlmClient.AttachmentInput> attachments) {
+        refreshNativeCompactionTrigger();
         StreamResult result = new StreamResult();
 
         // Convert tool results to DirectLlmClient format
@@ -1820,24 +3306,83 @@ public class AgenticChatLoop {
             }
         }
 
-        // Consume pending attachments on the first call (they are sent only once)
-        List<DirectLlmClient.AttachmentInput> attachments = this.pendingAttachments;
-        this.pendingAttachments = null;
-
         StreamingMarkdownRenderer markdownRenderer =
                 new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
         java.util.function.Consumer<String> previousConsumer = directLlmClient.getOutputConsumer();
+        java.util.function.Consumer<DirectLlmClient.ConnectivityEvent> previousConnectivityConsumer =
+                directLlmClient.getConnectivityEventConsumer();
+        DirectLlmClient.ProviderActivityListener previousProviderActivityListener =
+                directLlmClient.getProviderActivityListener();
         DirectLlmClient.StreamResult directResult;
-        directLlmClient.setOutputConsumer(chunk -> {
+        AtomicBoolean reconnecting = new AtomicBoolean();
+        directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
             fireFirstOutput();
+            reconnecting.set(false);
             setForegroundActivity("Responding");
             markdownRenderer.accept(chunk);
-        });
+        }));
+        directLlmClient.setConnectivityEventConsumer(sessionContext.wrapConsumer(event -> {
+            markdownRenderer.flush();
+            reconnecting.set(true);
+            // Retry state is transient, not a permanent transcript notification.
+            String warning = "Reconnecting " + event.provider() + " · "
+                    + event.attempt() + "/" + event.maxAttempts()
+                    + " in " + event.delay().toMillis() + " ms (" + event.reason() + ")";
+            if (!ChatCompleter.showAlert(warning)) setForegroundActivity(warning);
+        }));
+        directLlmClient.setProviderActivityListener(
+                new DirectLlmClient.ProviderActivityListener() {
+                    @Override
+                    public void onToolStart(String callId, String name, String input) {
+                        sessionContext.wrap(() -> {
+                            if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onToolStart(callId, name, input);
+                            }
+                            ToolActivityListener listener = toolActivityListener;
+                            if (listener != null) listener.onToolStart(callId, name, input);
+                        }).run();
+                    }
+
+                    @Override
+                    public void onToolComplete(String callId, String name, String output,
+                                               int exitCode, boolean error) {
+                        sessionContext.wrap(() -> {
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onToolComplete(
+                                        callId, name, output, exitCode, error);
+                            }
+                            ToolActivityListener listener = toolActivityListener;
+                            if (listener != null) {
+                                ToolResult providerResult = error
+                                        ? ToolResult.error(output == null ? "" : output)
+                                        : ToolResult.success(output == null ? "" : output);
+                                listener.onToolComplete(
+                                        callId, name, "", providerResult);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onTokenUsage(long input, long output,
+                                             long cacheRead, long cacheCreation) {
+                        sessionContext.wrap(() -> {
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onTokenUsage(
+                                        input, output, cacheRead, cacheCreation);
+                            }
+                        }).run();
+                    }
+                });
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
         } finally {
+            // Tool-only, empty, failed and cancelled responses may emit no text.
+            if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
             markdownRenderer.flush();
             directLlmClient.setOutputConsumer(previousConsumer);
+            directLlmClient.setConnectivityEventConsumer(previousConnectivityConsumer);
+            directLlmClient.setProviderActivityListener(previousProviderActivityListener);
         }
 
         // Record token usage from API response
@@ -1858,6 +3403,10 @@ public class AgenticChatLoop {
         }
 
         result.text = directResult.text;
+        result.failed = directResult.failed && !directResult.cancelled;
+        result.contextOverflow = directResult.isContextOverflow();
+        result.contextOverflowRetrySafe = directResult.canRetryAfterContextOverflow();
+        result.providerFailureMessage = directResult.failureMessage;
         result.nativeCompactionSummary = directResult.nativeCompactionSummary;
         result.nativeCompactionStrategy = directResult.nativeCompactionStrategy;
         result.nativeCompactionPayload = directResult.nativeCompactionPayload;
@@ -1890,13 +3439,56 @@ public class AgenticChatLoop {
     }
 
     private StreamResult streamServerTurn(String message, String sessionId, String serverAgent,
-                                           boolean ragEnabled, String systemPrompt,
-                                           ArrayNode toolDefs, List<ToolCallResult> toolResults) {
+                                          boolean ragEnabled, String systemPrompt,
+                                          ArrayNode toolDefs, List<ToolCallResult> toolResults) {
+        ProviderConnectivityPolicy policy = ProviderConnectivityPolicy.forProvider("kompile");
+        for (int attempt = 1; attempt <= policy.maxAttempts(); attempt++) {
+            StreamResult result = streamServerTurnAttempt(
+                    message, sessionId, serverAgent, ragEnabled, systemPrompt,
+                    toolDefs, toolResults, policy);
+            if (result.terminalError != null && !result.terminalError.isBlank()) {
+                throw new ServerChatException(result.terminalError);
+            }
+            if (!result.retryableConnectivityFailure) return result;
+
+            boolean replaySafe = !result.streamStarted
+                    && result.text.isEmpty() && result.toolCalls.isEmpty();
+            if (!replaySafe || attempt == policy.maxAttempts()) {
+                String error = "[Kompile connection error: " + result.connectivityFailure + "]";
+                if (!replaySafe) {
+                    error += "\n[Response was not replayed because the server agent had already started.]";
+                }
+                emitLine(renderer.red(error));
+                throw new ServerChatException(error);
+            }
+
+            Duration delay = policy.retryDelay(attempt, result.connectivityHeaders);
+            String warning = "Reconnecting Kompile · " + (attempt + 1) + "/"
+                    + policy.maxAttempts() + " in " + delay.toMillis()
+                    + " ms (" + result.connectivityFailure + ")";
+            if (!ChatCompleter.showAlert(warning)) setForegroundActivity(warning);
+            try {
+                if (!waitForServerRetry(delay)) {
+                    result.retryableConnectivityFailure = false;
+                    return result;
+                }
+            } finally {
+                setForegroundActivity("Thinking");
+            }
+        }
+        throw new IllegalStateException("Unreachable server connectivity retry state");
+    }
+
+    private StreamResult streamServerTurnAttempt(
+            String message, String sessionId, String serverAgent,
+            boolean ragEnabled, String systemPrompt,
+            ArrayNode toolDefs, List<ToolCallResult> toolResults,
+            ProviderConnectivityPolicy policy) {
         StreamResult result = new StreamResult();
 
         StreamingMarkdownRenderer markdownRenderer =
                 new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
-
+        InputStream responseBody = null;
         try {
             ObjectNode request = objectMapper.createObjectNode();
             if (message != null) {
@@ -1935,6 +3527,11 @@ public class AgenticChatLoop {
                 request.set("toolResults", resultsArray);
             }
 
+            ArrayNode restoredHistory = serverChatHistory(message);
+            if (!restoredHistory.isEmpty()) {
+                request.set("chatHistory", restoredHistory);
+            }
+
             String effectiveSystemPrompt = systemPromptForServerAgent(systemPrompt, serverAgent);
             if (!effectiveSystemPrompt.isEmpty()) {
                 request.put("systemPromptOverride", effectiveSystemPrompt);
@@ -1947,23 +3544,32 @@ public class AgenticChatLoop {
                     .header("Content-Type", "application/json")
                     .header("Accept", "text/event-stream")
                     .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .timeout(Duration.ofMinutes(10))
+                    .timeout(policy.requestTimeout())
                     .build();
 
             HttpResponse<java.io.InputStream> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
-                result.text = "[Agent HTTP error " + response.statusCode() + "]";
+                response.body().close();
+                if (policy.isRetryableStatus(response.statusCode())) {
+                    result.retryableConnectivityFailure = true;
+                    result.connectivityFailure = "HTTP " + response.statusCode();
+                    result.connectivityHeaders = response.headers();
+                    return result;
+                }
+                result.terminalError = "Agent HTTP error " + response.statusCode();
                 return result;
             }
 
             // Parse SSE stream
-            InputStream responseBody = response.body();
+            responseBody = new IdleTimeoutInputStream(
+                    response.body(), policy.streamIdleTimeout());
             activeResponseBody.set(responseBody);
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody))) {
                 String eventType = null;
                 StringBuilder dataBuffer = new StringBuilder();
+                boolean terminalEvent = false;
                 String line;
 
                 while ((line = reader.readLine()) != null) {
@@ -1976,21 +3582,83 @@ public class AgenticChatLoop {
                         dataBuffer.append(line.substring(5).trim());
                     } else if (line.isEmpty() && eventType != null) {
                         String data = dataBuffer.toString();
+                        result.streamStarted = true;
+                        terminalEvent = terminalEvent || "complete".equals(eventType)
+                                || "cancelled".equals(eventType)
+                                || "error".equals(eventType);
                         processStreamEvent(eventType, data, result, markdownRenderer);
                         eventType = null;
                         dataBuffer.setLength(0);
                     }
                 }
+                if (!isCancelled() && !terminalEvent) {
+                    throw new IOException("Server connection closed before a terminal event");
+                }
             }
-            activeResponseBody.compareAndSet(responseBody, null);
             markdownRenderer.flush();
 
         } catch (Exception e) {
             markdownRenderer.flush();
-            result.text = "[Error: " + e.getMessage() + "]";
+            if (!isCancelled() && policy.isRetryableFailure(e)) {
+                result.retryableConnectivityFailure = true;
+                result.connectivityFailure = e.getMessage() == null
+                        ? e.getClass().getSimpleName() : e.getMessage();
+            } else {
+                result.terminalError = e.getMessage() == null
+                        ? e.getClass().getSimpleName() : e.getMessage();
+            }
+        } finally {
+            if (responseBody != null) {
+                activeResponseBody.compareAndSet(responseBody, null);
+            }
         }
 
         return result;
+    }
+
+    /** Project the restored canonical ledger into the server DTO's text history. */
+    private ArrayNode serverChatHistory(String currentMessage) {
+        ArrayNode history = objectMapper.createArrayNode();
+        List<CompactionService.ConversationEntry> entries =
+                conversationLedger.snapshot().activeEntries();
+        int end = entries.size();
+        if (end > 0) {
+            CompactionService.ConversationEntry last = entries.get(end - 1);
+            if (last.type == CompactionService.EntryType.USER
+                    && Objects.equals(last.content, currentMessage)) {
+                end--;
+            }
+        }
+        for (int i = 0; i < end; i++) {
+            CompactionService.ConversationEntry entry = entries.get(i);
+            if (entry.type != CompactionService.EntryType.SYSTEM
+                    && entry.type != CompactionService.EntryType.USER
+                    && entry.type != CompactionService.EntryType.ASSISTANT) {
+                continue;
+            }
+            if (entry.content == null || entry.content.isBlank()) continue;
+            ObjectNode item = objectMapper.createObjectNode();
+            item.put("role", entry.role);
+            item.put("content", entry.content);
+            history.add(item);
+        }
+        return history;
+    }
+
+    private boolean waitForServerRetry(Duration delay) {
+        long deadline = System.nanoTime() + delay.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (isCancelled()) return false;
+            try {
+                long remaining = deadline - System.nanoTime();
+                TimeUnit.NANOSECONDS.sleep(Math.min(
+                        remaining, TimeUnit.MILLISECONDS.toNanos(100)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return !isCancelled();
     }
 
     private void processStreamEvent(String eventType, String data, StreamResult result,
@@ -2004,6 +3672,7 @@ public class AgenticChatLoop {
                 }
                 fireFirstOutput();
                 setForegroundActivity("Responding");
+                notifyAssistantDelta(chunk);
                 markdownRenderer.accept(chunk);
                 result.text += chunk;
                 break;
@@ -2031,13 +3700,14 @@ public class AgenticChatLoop {
                     if (!processId.isBlank()) {
                         activeRemoteProcessId.set(processId);
                         if (isCancelled()) {
-                            activeRemoteProcessId.compareAndSet(processId, null);
                             cancelActiveTurn();
                         }
                     }
                     if (!agent.isEmpty()) {
                         emitLine(renderer.dim("[Agent: " + agent + "]"));
                     }
+                    ServerEventListener listener = serverEventListener;
+                    if (listener != null) listener.onBackendStarted(agent, processId);
                 } catch (Exception ignored) {}
                 break;
 
@@ -2048,6 +3718,8 @@ public class AgenticChatLoop {
                     if (sources.isArray() && sources.size() > 0) {
                         emitLine(renderer.dim("[Retrieved " + sources.size() + " documents]"));
                     }
+                    ServerEventListener listener = serverEventListener;
+                    if (listener != null) listener.onSources(sources.deepCopy());
                 } catch (Exception ignored) {}
                 break;
 
@@ -2056,9 +3728,31 @@ public class AgenticChatLoop {
                 try {
                     JsonNode stats = objectMapper.readTree(data);
                     long durationMs = stats.path("durationMs").asLong(0);
+                    JsonNode tokens = stats.path("tokenMetrics");
+                    long inputTokens = tokens.path("inputTokens").asLong(0L);
+                    long outputTokens = tokens.path("outputTokens").asLong(0L);
+                    long cacheReadTokens = tokens.path("cacheReadTokens").asLong(0L);
+                    long cacheCreationTokens = tokens.path("cacheCreationTokens").asLong(0L);
+                    if (sessionMetrics != null && (inputTokens > 0 || outputTokens > 0
+                            || cacheReadTokens > 0 || cacheCreationTokens > 0)) {
+                        sessionMetrics.recordTokenUsage(
+                                inputTokens, outputTokens,
+                                cacheReadTokens, cacheCreationTokens);
+                    }
+                    long contextInputTokens = tokens.has("contextInputTokens")
+                            ? tokens.path("contextInputTokens").asLong(0L)
+                            : inputTokens + cacheReadTokens + cacheCreationTokens;
+                    if (contextInputTokens > 0) {
+                        result.contextInputTokens = contextInputTokens;
+                        lastReportedInputTokens = contextInputTokens;
+                        lastReportedHistoryTokens = compactionService.estimateTokens(
+                                conversationLedger.snapshot().activeEntries());
+                    }
                     if (durationMs > 0) {
                         emitLine(renderer.dim("  [completed in " + durationMs + "ms]"));
                     }
+                    ServerEventListener listener = serverEventListener;
+                    if (listener != null) listener.onStats(stats.deepCopy());
                 } catch (Exception ignored) {}
                 break;
 
@@ -2067,16 +3761,19 @@ public class AgenticChatLoop {
                 try {
                     JsonNode error = objectMapper.readTree(data);
                     String msg = error.path("message").asText(data);
+                    result.terminalError = msg;
                     emitLine(renderer.red("\n[Error: " + msg + "]"));
-                    result.text += "\n[Error: " + msg + "]";
                 } catch (Exception e) {
+                    result.terminalError = data;
                     emitLine(renderer.red("\n[Error: " + data + "]"));
                 }
+                activeRemoteProcessId.set(null);
                 break;
 
             case "complete":
             case "cancelled":
                 markdownRenderer.flush();
+                activeRemoteProcessId.set(null);
                 break;
         }
     }
@@ -2092,10 +3789,31 @@ public class AgenticChatLoop {
     static class StreamResult {
         String text = "";
         List<ToolCallRequest> toolCalls = new ArrayList<>();
+        boolean failed;
+        boolean contextOverflow;
+        boolean contextOverflowRetrySafe;
+        String providerFailureMessage;
+        boolean streamStarted;
+        boolean retryableConnectivityFailure;
+        String connectivityFailure;
+        HttpHeaders connectivityHeaders;
+        String terminalError;
         String nativeCompactionSummary;
         String nativeCompactionStrategy;
         JsonNode nativeCompactionPayload;
         long contextInputTokens;
+    }
+
+    private static final class ServerChatException extends RuntimeException {
+        private ServerChatException(String message) {
+            super(message);
+        }
+    }
+
+    private static final class ProviderChatException extends RuntimeException {
+        private ProviderChatException(String message) {
+            super(message);
+        }
     }
 
     static class ToolCallRequest {

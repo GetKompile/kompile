@@ -88,6 +88,7 @@ import { HttpClient } from '@angular/common/http';
 import { backendUrl } from '../../../services/base.service';
 import { AdaptivePerformanceService, AdaptiveConfig, DEFAULT_ADAPTIVE_CONFIG } from '../../../services/adaptive-performance.service';
 import { DocumentService } from '../../../services/document.service';
+import { SourceProvider, SourceProviderService } from '../../../services/source-provider.service';
 import { SubprocessConfigService, SubprocessConfigResponse } from '../../../services/subprocess-config.service';
 
 export interface AddSourceDialogData {
@@ -98,7 +99,7 @@ export interface AddSourceDialogData {
 // AddSourceDialogResult is now imported from api-models.ts
 
 interface AddSourceFormModel {
-  sourceType: FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence'>;
+  sourceType: FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence' | 'jira' | 'reddit'>;
   urlInput: FormControl<string | null>;
   pathInput: FormControl<string | null>;
   fileNameInput: FormControl<string | null>;
@@ -133,6 +134,26 @@ interface AddSourceFormModel {
   confluenceSpaceKey: FormControl<string | null>;
   confluenceIncludeChildren: FormControl<boolean>;
   confluenceIncludeAttachments: FormControl<boolean>;
+  // Jira form controls
+  jiraBaseUrl: FormControl<string | null>;
+  jiraEmail: FormControl<string | null>;
+  jiraApiToken: FormControl<string | null>;
+  jiraProjectKey: FormControl<string | null>;
+  jiraJql: FormControl<string | null>;
+  jiraMaxIssues: FormControl<number>;
+  jiraIncludeComments: FormControl<boolean>;
+  jiraIncludeAttachments: FormControl<boolean>;
+  // Reddit form controls
+  redditSubreddit: FormControl<string | null>;
+  redditSortType: FormControl<'hot' | 'new' | 'top' | 'rising' | 'controversial'>;
+  redditTimePeriod: FormControl<'hour' | 'day' | 'week' | 'month' | 'year' | 'all'>;
+  redditPostLimit: FormControl<number>;
+  redditIncludeComments: FormControl<boolean>;
+  redditCommentDepth: FormControl<number>;
+  redditCommentLimit: FormControl<number>;
+  redditMinScore: FormControl<number>;
+  redditIncludeNsfw: FormControl<boolean>;
+  redditSearchQuery: FormControl<string | null>;
 }
 
 @Component({
@@ -187,6 +208,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   previewResult: SingleSourceCrawlPreviewResponse | null = null;
   previewError: string | null = null;
   isDragOver: boolean = false;
+  sourceProviders: SourceProvider[] = [];
 
   // Chunking configuration
   showChunkingOptions: boolean = false;
@@ -333,11 +355,12 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     private http: HttpClient,
     private adaptivePerformanceService: AdaptivePerformanceService,
     private documentService: DocumentService,
+    private sourceProviderService: SourceProviderService,
     private subprocessConfigService: SubprocessConfigService
   ) {
     this.availableLoaders = this.data.availableLoaders;
     this.addSourceForm = this.fb.group<AddSourceFormModel>({
-      sourceType: new FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence'>('file', { nonNullable: true, validators: Validators.required }),
+      sourceType: new FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence' | 'jira' | 'reddit'>('file', { nonNullable: true, validators: Validators.required }),
       urlInput: new FormControl('', { validators: [Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)] }),
       pathInput: new FormControl(''),
       fileNameInput: new FormControl(''),
@@ -371,7 +394,27 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       confluenceApiToken: new FormControl(''),
       confluenceSpaceKey: new FormControl(''),
       confluenceIncludeChildren: new FormControl(true, { nonNullable: true }),
-      confluenceIncludeAttachments: new FormControl(false, { nonNullable: true })
+      confluenceIncludeAttachments: new FormControl(false, { nonNullable: true }),
+      // Jira form controls
+      jiraBaseUrl: new FormControl('', { validators: [Validators.pattern(/^https:\/\/[A-Za-z0-9-]+\.atlassian\.net\/?$/i)] }),
+      jiraEmail: new FormControl('', { validators: [Validators.email] }),
+      jiraApiToken: new FormControl(''),
+      jiraProjectKey: new FormControl('', { validators: [Validators.pattern(/^[A-Za-z][A-Za-z0-9_]{0,31}$/)] }),
+      jiraJql: new FormControl(''),
+      jiraMaxIssues: new FormControl(250, { nonNullable: true }),
+      jiraIncludeComments: new FormControl(true, { nonNullable: true }),
+      jiraIncludeAttachments: new FormControl(false, { nonNullable: true }),
+      // Reddit form controls
+      redditSubreddit: new FormControl(''),
+      redditSortType: new FormControl<'hot' | 'new' | 'top' | 'rising' | 'controversial'>('hot', { nonNullable: true }),
+      redditTimePeriod: new FormControl<'hour' | 'day' | 'week' | 'month' | 'year' | 'all'>('week', { nonNullable: true }),
+      redditPostLimit: new FormControl(100, { nonNullable: true }),
+      redditIncludeComments: new FormControl(true, { nonNullable: true }),
+      redditCommentDepth: new FormControl(3, { nonNullable: true }),
+      redditCommentLimit: new FormControl(50, { nonNullable: true }),
+      redditMinScore: new FormControl(0, { nonNullable: true }),
+      redditIncludeNsfw: new FormControl(false, { nonNullable: true }),
+      redditSearchQuery: new FormControl('')
     });
   }
 
@@ -441,7 +484,22 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
           this.updateSubmitButtonState();
         })
     );
+    this.subscriptions.add(this.sourceProviderService.loadProviders(true).subscribe(providers => {
+      this.sourceProviders = providers;
+      this.updateSubmitButtonState();
+      this.cdr.markForCheck();
+    }));
     this.updateSubmitButtonState();
+  }
+
+  sourceProviderUnavailable(providerId: string): boolean {
+    const provider = this.sourceProviders.find(candidate => candidate.id === providerId);
+    return provider != null && !provider.available;
+  }
+
+  sourceProviderRequiresAuth(providerId: string): boolean {
+    const provider = this.sourceProviders.find(candidate => candidate.id === providerId);
+    return provider != null && provider.available && provider.requiresAuth;
   }
 
   /**
@@ -515,6 +573,10 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     const confluenceEmailControl = this.addSourceForm.controls.confluenceEmail;
     const confluenceApiTokenControl = this.addSourceForm.controls.confluenceApiToken;
     const confluenceSpaceKeyControl = this.addSourceForm.controls.confluenceSpaceKey;
+    const jiraBaseUrlControl = this.addSourceForm.controls.jiraBaseUrl;
+    const jiraEmailControl = this.addSourceForm.controls.jiraEmail;
+    const jiraProjectKeyControl = this.addSourceForm.controls.jiraProjectKey;
+    const redditSubredditControl = this.addSourceForm.controls.redditSubreddit;
 
     if (sourceType !== 'file') {
       this.selectedFile = null;
@@ -535,6 +597,10 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     confluenceEmailControl.clearValidators();
     confluenceApiTokenControl.clearValidators();
     confluenceSpaceKeyControl.clearValidators();
+    jiraBaseUrlControl.clearValidators();
+    jiraEmailControl.clearValidators();
+    jiraProjectKeyControl.clearValidators();
+    redditSubredditControl.clearValidators();
 
     if (sourceType === 'file') {
       urlControl.setValidators([Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)]);
@@ -571,9 +637,20 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
         Validators.required,
         Validators.pattern(/^https?:\/\/.+/i)
       ]);
-      confluenceEmailControl.setValidators([Validators.required, Validators.email]);
-      confluenceApiTokenControl.setValidators([Validators.required]);
+      confluenceEmailControl.setValidators([Validators.email]);
       confluenceSpaceKeyControl.setValidators([Validators.required]);
+    } else if (sourceType === 'jira') {
+      jiraBaseUrlControl.setValidators([
+        Validators.required,
+        Validators.pattern(/^https:\/\/[A-Za-z0-9-]+\.atlassian\.net\/?$/i)
+      ]);
+      jiraEmailControl.setValidators([Validators.email]);
+      jiraProjectKeyControl.setValidators([Validators.pattern(/^[A-Za-z][A-Za-z0-9_]{0,31}$/)]);
+    } else if (sourceType === 'reddit') {
+      redditSubredditControl.setValidators([
+        Validators.required,
+        Validators.pattern(/^(?:(?:https?:\/\/(?:www\.)?reddit\.com)?\/?r\/)?[A-Za-z0-9_]{2,21}(?:\/.*)?$/i)
+      ]);
     }
 
     urlControl.updateValueAndValidity({ emitEvent: false });
@@ -588,6 +665,10 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     confluenceEmailControl.updateValueAndValidity({ emitEvent: false });
     confluenceApiTokenControl.updateValueAndValidity({ emitEvent: false });
     confluenceSpaceKeyControl.updateValueAndValidity({ emitEvent: false });
+    jiraBaseUrlControl.updateValueAndValidity({ emitEvent: false });
+    jiraEmailControl.updateValueAndValidity({ emitEvent: false });
+    jiraProjectKeyControl.updateValueAndValidity({ emitEvent: false });
+    redditSubredditControl.updateValueAndValidity({ emitEvent: false });
     this.updateSubmitButtonState();
     this.cdr.markForCheck();
   }
@@ -626,11 +707,19 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       isValid = this.addSourceForm.controls.confluenceBaseUrl.valid &&
                 !!this.addSourceForm.controls.confluenceBaseUrl.value &&
                 this.addSourceForm.controls.confluenceEmail.valid &&
-                !!this.addSourceForm.controls.confluenceEmail.value &&
-                this.addSourceForm.controls.confluenceApiToken.valid &&
-                !!this.addSourceForm.controls.confluenceApiToken.value &&
                 this.addSourceForm.controls.confluenceSpaceKey.valid &&
                 !!this.addSourceForm.controls.confluenceSpaceKey.value;
+    } else if (sourceType === 'jira') {
+      isValid = this.addSourceForm.controls.jiraBaseUrl.valid &&
+                !!this.addSourceForm.controls.jiraBaseUrl.value?.trim() &&
+                this.addSourceForm.controls.jiraEmail.valid &&
+                this.addSourceForm.controls.jiraProjectKey.valid &&
+                !this.sourceProviderUnavailable('jira');
+    } else if (sourceType === 'reddit') {
+      isValid = this.addSourceForm.controls.redditSubreddit.valid &&
+                !!this.addSourceForm.controls.redditSubreddit.value?.trim() &&
+                !this.sourceProviderUnavailable('reddit') &&
+                !this.sourceProviderRequiresAuth('reddit');
     }
     this.isSubmitButtonDisabled = !isValid || this.isSubmitting;
     this.cdr.markForCheck();
@@ -2142,6 +2231,52 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       };
     }
 
+    if (formValues.sourceType === 'jira') {
+      const previewLimit = this.previewDocumentLimit('jira');
+      return {
+        ...base,
+        sourceType: 'jira',
+        label: formValues.jiraProjectKey ? `Jira: ${formValues.jiraProjectKey}` : 'Jira issues',
+        pathOrUrl: formValues.jiraBaseUrl || undefined,
+        maxDepth: 0,
+        maxDocuments: previewLimit,
+        properties: this.compactPreviewProperties({
+          email: formValues.jiraEmail,
+          apiToken: formValues.jiraApiToken,
+          projectKey: formValues.jiraProjectKey,
+          jql: formValues.jiraJql,
+          maxIssues: previewLimit,
+          includeComments: formValues.jiraIncludeComments,
+          includeAttachments: formValues.jiraIncludeAttachments,
+          source_kind: 'jira_preview'
+        })
+      };
+    }
+
+    if (formValues.sourceType === 'reddit') {
+      const previewLimit = this.previewDocumentLimit('reddit');
+      return {
+        ...base,
+        sourceType: 'reddit',
+        label: `Reddit: ${formValues.redditSubreddit}`,
+        pathOrUrl: formValues.redditSubreddit || undefined,
+        maxDepth: formValues.redditIncludeComments ? Math.min(formValues.redditCommentDepth, 2) : 0,
+        maxDocuments: previewLimit,
+        properties: this.compactPreviewProperties({
+          sortType: formValues.redditSortType,
+          timePeriod: formValues.redditTimePeriod,
+          postLimit: previewLimit,
+          includeComments: formValues.redditIncludeComments,
+          commentDepth: Math.min(formValues.redditCommentDepth, 2),
+          commentLimit: Math.min(formValues.redditCommentLimit, 10),
+          minScore: formValues.redditMinScore,
+          includeNsfw: formValues.redditIncludeNsfw,
+          searchQuery: formValues.redditSearchQuery,
+          source_kind: 'reddit_preview'
+        })
+      };
+    }
+
     return null;
   }
 
@@ -2160,6 +2295,12 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     if (sourceType === 'discord') {
       const limit = this.addSourceForm.controls.discordMessageLimit.value;
       return limit && limit > 0 ? Math.min(limit, 100) : 25;
+    }
+    if (sourceType === 'jira') {
+      return Math.min(this.addSourceForm.controls.jiraMaxIssues.value || 25, 25);
+    }
+    if (sourceType === 'reddit') {
+      return Math.min(this.addSourceForm.controls.redditPostLimit.value || 25, 25);
     }
     return 25;
   }
@@ -2234,11 +2375,23 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       return this.addSourceForm.controls.confluenceBaseUrl.valid &&
              !!this.addSourceForm.controls.confluenceBaseUrl.value &&
              this.addSourceForm.controls.confluenceEmail.valid &&
-             !!this.addSourceForm.controls.confluenceEmail.value &&
-             this.addSourceForm.controls.confluenceApiToken.valid &&
-             !!this.addSourceForm.controls.confluenceApiToken.value &&
              this.addSourceForm.controls.confluenceSpaceKey.valid &&
              !!this.addSourceForm.controls.confluenceSpaceKey.value;
+    } else if (sourceType === 'jira') {
+      this.addSourceForm.controls.jiraBaseUrl.markAsTouched();
+      this.addSourceForm.controls.jiraEmail.markAsTouched();
+      this.addSourceForm.controls.jiraProjectKey.markAsTouched();
+      return this.addSourceForm.controls.jiraBaseUrl.valid &&
+             !!this.addSourceForm.controls.jiraBaseUrl.value?.trim() &&
+             this.addSourceForm.controls.jiraEmail.valid &&
+             this.addSourceForm.controls.jiraProjectKey.valid &&
+             !this.sourceProviderUnavailable('jira');
+    } else if (sourceType === 'reddit') {
+      this.addSourceForm.controls.redditSubreddit.markAsTouched();
+      return this.addSourceForm.controls.redditSubreddit.valid &&
+             !!this.addSourceForm.controls.redditSubreddit.value?.trim() &&
+             !this.sourceProviderUnavailable('reddit') &&
+             !this.sourceProviderRequiresAuth('reddit');
     }
     return false;
   }
@@ -2386,6 +2539,28 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       result.confluenceSpaceKey = formValues.confluenceSpaceKey ?? undefined;
       result.confluenceIncludeChildren = formValues.confluenceIncludeChildren;
       result.confluenceIncludeAttachments = formValues.confluenceIncludeAttachments;
+    } else if (formValues.sourceType === 'jira') {
+      result.sourceType = 'jira';
+      result.jiraBaseUrl = formValues.jiraBaseUrl ?? undefined;
+      result.jiraEmail = formValues.jiraEmail || undefined;
+      result.jiraApiToken = formValues.jiraApiToken || undefined;
+      result.jiraProjectKey = formValues.jiraProjectKey || undefined;
+      result.jiraJql = formValues.jiraJql || undefined;
+      result.jiraMaxIssues = formValues.jiraMaxIssues;
+      result.jiraIncludeComments = formValues.jiraIncludeComments;
+      result.jiraIncludeAttachments = formValues.jiraIncludeAttachments;
+    } else if (formValues.sourceType === 'reddit') {
+      result.sourceType = 'reddit';
+      result.redditSubreddit = formValues.redditSubreddit ?? undefined;
+      result.redditSortType = formValues.redditSortType;
+      result.redditTimePeriod = formValues.redditTimePeriod;
+      result.redditPostLimit = formValues.redditPostLimit;
+      result.redditIncludeComments = formValues.redditIncludeComments;
+      result.redditCommentDepth = formValues.redditCommentDepth;
+      result.redditCommentLimit = formValues.redditCommentLimit;
+      result.redditMinScore = formValues.redditMinScore;
+      result.redditIncludeNsfw = formValues.redditIncludeNsfw;
+      result.redditSearchQuery = formValues.redditSearchQuery || undefined;
     }
 
     this.dialogRef.close(result);

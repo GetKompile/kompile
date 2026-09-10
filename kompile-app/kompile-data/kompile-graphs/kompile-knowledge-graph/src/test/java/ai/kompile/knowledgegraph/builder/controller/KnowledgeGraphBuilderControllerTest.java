@@ -22,6 +22,9 @@ import ai.kompile.knowledgegraph.builder.domain.ExtractionLogRecord;
 import ai.kompile.knowledgegraph.builder.domain.TripleProposal;
 import ai.kompile.knowledgegraph.builder.service.ExtractionJobService;
 import ai.kompile.knowledgegraph.builder.service.GraphBuilderRegistry;
+import ai.kompile.knowledgegraph.builder.service.GraphBuildingIntegrationService;
+import ai.kompile.core.retrievers.RetrievedDoc;
+import org.springframework.test.util.ReflectionTestUtils;
 import ai.kompile.knowledgegraph.builder.storage.GraphStorageRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +55,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Mock private GraphBuilderRegistry builderRegistry;
     @Mock private ExtractionJobService jobService;
+    @Mock private GraphBuildingIntegrationService integrationService;
 
     private KnowledgeGraphBuilderController controller;
 
@@ -141,17 +145,31 @@ class KnowledgeGraphBuilderControllerTest {
     // ─── Job Management ─────────────────────────────────────────────
 
     @Test
-    void startJob_success() {
+    void startJob_successDispatchesExactRequest() {
+        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
         when(builderRegistry.hasBuilder("llm")).thenReturn(true);
         when(jobService.hasRunningJob(1L)).thenReturn(false);
         ExtractionJob job = stubJob("job-1", 1L);
         when(jobService.createJob(eq(1L), eq("llm"), any())).thenReturn(job);
 
-        var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", null, null);
+        var chunks = List.of(new RetrievedDoc("c1", "Alice works at Acme.", Map.of()));
+        var config = new BuilderConfig("custom-provider", "exact-model", null, null,
+                List.of(), List.of(), 0.0, false, 0.9, null, Map.of());
+        var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", config, null, chunks);
         var response = controller.startJob(request);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("job-1", response.getBody().jobId());
+        verify(integrationService).runExistingJobAsync(same(job), eq(chunks), same(config), isNull());
+    }
+
+    @Test
+    void startJobRequiresPositiveFactSheetBeforeAnyDispatch() {
+        for (Long factSheet : java.util.Arrays.asList(null, 0L, -1L)) {
+            var request = new KnowledgeGraphBuilderController.StartJobRequest(factSheet, "llm", null, null);
+            assertEquals(HttpStatus.BAD_REQUEST, controller.startJob(request).getStatusCode());
+        }
+        verifyNoInteractions(jobService, integrationService, builderRegistry);
     }
 
     @Test
@@ -164,6 +182,38 @@ class KnowledgeGraphBuilderControllerTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         assertNotNull(response.getBody().errorMessage());
+    }
+
+    @Test
+    void startJobWithoutDispatcherDoesNotCreatePendingJob() {
+        when(builderRegistry.hasBuilder("llm")).thenReturn(true);
+        var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", null, null);
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, controller.startJob(request).getStatusCode());
+        verify(jobService, never()).createJob(any(), any(), any());
+    }
+
+    @Test
+    void startJobWithoutSourcesFailsBeforeCreatingJob() {
+        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        when(builderRegistry.hasBuilder("llm")).thenReturn(true);
+        var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", null, null);
+        assertEquals(HttpStatus.BAD_REQUEST, controller.startJob(request).getStatusCode());
+        verify(jobService, never()).createJob(any(), any(), any());
+        verifyNoInteractions(integrationService);
+    }
+
+    @Test
+    void rejectedDispatchFailsCreatedJobInsteadOfLeavingItPending() {
+        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
+        when(builderRegistry.hasBuilder("llm")).thenReturn(true);
+        var job = stubJob("rejected-job", 1L);
+        when(jobService.createJob(any(), any(), any())).thenReturn(job);
+        when(integrationService.runExistingJobAsync(any(), any(), any(), any()))
+                .thenThrow(new java.util.concurrent.RejectedExecutionException());
+        var request = new KnowledgeGraphBuilderController.StartJobRequest(1L, "llm", null, null,
+                List.of(new RetrievedDoc("c1", "Text", Map.of())));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, controller.startJob(request).getStatusCode());
+        verify(jobService).failJob(eq("rejected-job"), anyString());
     }
 
     @Test
@@ -208,6 +258,7 @@ class KnowledgeGraphBuilderControllerTest {
 
     @Test
     void cancelJob_success() {
+        ReflectionTestUtils.setField(controller, "integrationService", integrationService);
         ExtractionJob job = stubJob("job-1", 1L);
         job.setStatus(ExtractionJob.JobStatus.CANCELLED);
         when(jobService.cancelJob("job-1")).thenReturn(job);
@@ -215,6 +266,7 @@ class KnowledgeGraphBuilderControllerTest {
         var response = controller.cancelJob("job-1");
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(true, response.getBody().get("cancelled"));
+        verify(integrationService).requestCancellation("job-1");
     }
 
     @Test

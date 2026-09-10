@@ -16,7 +16,11 @@
 
 package ai.kompile.core.crawl.graph;
 
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import ai.kompile.core.graphrag.model.Graph;
+import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -25,7 +29,9 @@ import org.springframework.ai.document.Document;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,11 +47,11 @@ import java.util.concurrent.atomic.AtomicReference;
 @Data
 @Builder
 @NoArgsConstructor
-@AllArgsConstructor
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
 public class UnifiedCrawlJob {
 
     public enum Status {
-        PENDING, RUNNING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, COMPLETED_PENDING_GRAPH,
+        PENDING, RUNNING, ACTIVATING, PAUSED, COMPLETED, COMPLETED_PENDING_EMBEDDING, COMPLETED_PENDING_GRAPH,
         FAILED, CANCELLING, CANCELLED
     }
 
@@ -58,6 +64,79 @@ public class UnifiedCrawlJob {
 
     /** The original request */
     private UnifiedCrawlRequest request;
+
+    /**
+     * Exact corpus-wide schema frozen by the prepass for this job. Internal lifecycle state: callers
+     * receive schema summaries through graph/ontology APIs rather than every job-status payload.
+     */
+    @JsonIgnore
+    private GraphSchema frozenGraphSchema;
+
+    /** Full document-topic census and accepted hierarchy bindings for audit/resume. */
+    @JsonIgnore
+    private Map<String, Object> corpusTopicEvidence;
+
+    /** Durable/correlatable replacement-generation identity; contains no secret token. */
+    private volatile GraphGenerationSnapshot graphGeneration;
+
+    /** Published active-pointer result after successful replacement activation. */
+    private volatile GraphActivationSnapshot graphActivation;
+
+    /** Freeze once; retries and deferred subsets must never replace the corpus-wide schema. */
+    public synchronized void setFrozenGraphSchema(GraphSchema schema) {
+        if (frozenGraphSchema == null && schema != null) {
+            frozenGraphSchema = SchemaHierarchyVocabulary.withBaseline(schema);
+        }
+    }
+
+    /** Defensive snapshot so downstream stages cannot mutate the job's authoritative schema. */
+    public synchronized GraphSchema getFrozenGraphSchema() {
+        return frozenGraphSchema == null
+                ? null : SchemaHierarchyVocabulary.withBaseline(frozenGraphSchema);
+    }
+
+    /** Replace the in-progress census with its bound form once schema unification succeeds. */
+    public synchronized void setCorpusTopicEvidence(Map<String, Object> evidence) {
+        corpusTopicEvidence = copyEvidenceMap(evidence);
+    }
+
+    /** Defensive immutable copy so audit consumers cannot mutate job lifecycle state. */
+    public synchronized Map<String, Object> getCorpusTopicEvidence() {
+        return copyEvidenceMap(corpusTopicEvidence);
+    }
+
+    private static Map<String, Object> copyEvidenceMap(Map<String, Object> source) {
+        if (source == null || source.isEmpty()) return Map.of();
+        Map<String, Object> copy = new LinkedHashMap<>();
+        source.forEach((key, value) -> copy.put(key, copyEvidenceValue(value)));
+        return Collections.unmodifiableMap(copy);
+    }
+
+    private static Object copyEvidenceValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            map.forEach((key, nested) -> copy.put(String.valueOf(key), copyEvidenceValue(nested)));
+            return Collections.unmodifiableMap(copy);
+        }
+        if (value instanceof List<?> list) {
+            return List.copyOf(list.stream().map(UnifiedCrawlJob::copyEvidenceValue).toList());
+        }
+        return value;
+    }
+
+    /** Builder hooks preserve the same defensive-copy invariants as the lifecycle setters. */
+    public static class UnifiedCrawlJobBuilder {
+        public UnifiedCrawlJobBuilder frozenGraphSchema(GraphSchema schema) {
+            this.frozenGraphSchema = schema == null
+                    ? null : SchemaHierarchyVocabulary.withBaseline(schema);
+            return this;
+        }
+
+        public UnifiedCrawlJobBuilder corpusTopicEvidence(Map<String, Object> evidence) {
+            this.corpusTopicEvidence = copyEvidenceMap(evidence);
+            return this;
+        }
+    }
 
     /** Current job status */
     @Builder.Default
@@ -1166,6 +1245,8 @@ public class UnifiedCrawlJob {
                 .recentlyDiscoveredItems(recentlyDiscoveredItems.isEmpty() ? null : new ArrayList<>(recentlyDiscoveredItems))
                 .entityTypeCounts(entityTypeCounts.isEmpty() ? null : snapshotEntityTypeCounts())
                 .relationshipTypeCounts(relationshipTypeCounts.isEmpty() ? null : snapshotRelationshipTypeCounts())
+                .graphGeneration(graphGeneration)
+                .graphActivation(graphActivation)
                 .createdAt(createdAt)
                 .startedAt(startedAt)
                 .completedAt(completedAt)
@@ -1239,6 +1320,8 @@ public class UnifiedCrawlJob {
         private List<DiscoveredItem> recentlyDiscoveredItems;
         private Map<String, Long> entityTypeCounts;
         private Map<String, Long> relationshipTypeCounts;
+        private GraphGenerationSnapshot graphGeneration;
+        private GraphActivationSnapshot graphActivation;
         private Instant createdAt;
         private Instant startedAt;
         private Instant completedAt;
@@ -1286,4 +1369,21 @@ public class UnifiedCrawlJob {
         private long llmCallPeakLatencyMs;
         private List<LlmCallRecord> recentLlmCalls;
     }
+
+    public record GraphGenerationSnapshot(
+            long factSheetId,
+            String logicalGraphId,
+            String physicalGraphId,
+            String generationId,
+            String expectedActivePhysicalGraphId,
+            long expectedRevision,
+            String state,
+            String error) { }
+
+    public record GraphActivationSnapshot(
+            String logicalGraphId,
+            String activePhysicalGraphId,
+            String previousPhysicalGraphId,
+            long revision,
+            Instant activatedAt) { }
 }

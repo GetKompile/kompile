@@ -240,6 +240,7 @@ public class KompileModelManager {
         entry.path = model.has("path") ? model.get("path").asText() : null;
         entry.modelFile = model.has("model_file") ? model.get("model_file").asText() : "model.sdz";
         entry.vocabFile = model.has("vocab_file") ? model.get("vocab_file").asText() : "vocab.txt";
+        entry.checksum = model.hasNonNull("checksum") ? model.get("checksum").asText() : null;
         entry.status = model.has("status") ? model.get("status").asText() : null;
 
         // Parse metadata
@@ -305,16 +306,33 @@ public class KompileModelManager {
      */
     private ModelBundle buildBundleFromRegistry(RegistryModelEntry entry) throws IOException {
         // Resolve paths - registry uses relative paths from the model cache directory
-        Path modelDir = baseCachePath.resolve(entry.path);
-        Path modelPath = modelDir.resolve(entry.modelFile);
-        Path vocabPath = modelDir.resolve(entry.vocabFile);
+        Path cacheRoot = baseCachePath.toAbsolutePath().normalize();
+        Path modelDir = cacheRoot.resolve(entry.path).normalize();
+        Path modelPath = modelDir.resolve(entry.modelFile).normalize();
+        Path vocabPath = modelDir.resolve(entry.vocabFile).normalize();
+        if (!modelDir.startsWith(cacheRoot)
+                || !modelPath.startsWith(modelDir)
+                || !vocabPath.startsWith(modelDir)) {
+            throw new IOException("Registry model path escapes the configured model cache: "
+                    + entry.modelId);
+        }
 
         // Verify files exist
-        if (!Files.exists(modelPath)) {
+        if (!Files.isRegularFile(modelPath)) {
             throw new IOException("Model file not found at registry path: " + modelPath);
         }
-        if (!Files.exists(vocabPath)) {
+        if (!Files.isRegularFile(vocabPath)) {
             throw new IOException("Vocabulary file not found at registry path: " + vocabPath);
+        }
+        if (entry.checksum != null && !entry.checksum.isBlank()) {
+            String expected = entry.checksum.startsWith("sha256:")
+                    ? entry.checksum.substring("sha256:".length())
+                    : entry.checksum;
+            String actual = calculateSha256(modelPath);
+            if (!expected.equalsIgnoreCase(actual)) {
+                throw new IOException("Registry checksum mismatch for " + entry.modelId
+                        + ": expected " + expected + ", got " + actual);
+            }
         }
 
         // Build metadata map
@@ -351,16 +369,33 @@ public class KompileModelManager {
      */
     private CrossEncoderBundle buildCrossEncoderBundleFromRegistry(RegistryModelEntry entry) throws IOException {
         // Resolve paths - registry uses relative paths from the model cache directory
-        Path modelDir = baseCachePath.resolve(entry.path);
-        Path modelPath = modelDir.resolve(entry.modelFile);
-        Path vocabPath = modelDir.resolve(entry.vocabFile);
+        Path cacheRoot = baseCachePath.toAbsolutePath().normalize();
+        Path modelDir = cacheRoot.resolve(entry.path).normalize();
+        Path modelPath = modelDir.resolve(entry.modelFile).normalize();
+        Path vocabPath = modelDir.resolve(entry.vocabFile).normalize();
+        if (!modelDir.startsWith(cacheRoot)
+                || !modelPath.startsWith(modelDir)
+                || !vocabPath.startsWith(modelDir)) {
+            throw new IOException("Registry cross-encoder path escapes the model cache: "
+                    + entry.modelId);
+        }
 
         // Verify files exist
-        if (!Files.exists(modelPath)) {
+        if (!Files.isRegularFile(modelPath)) {
             throw new IOException("Cross-encoder model file not found at registry path: " + modelPath);
         }
-        if (!Files.exists(vocabPath)) {
+        if (!Files.isRegularFile(vocabPath)) {
             throw new IOException("Cross-encoder vocabulary file not found at registry path: " + vocabPath);
+        }
+        if (entry.checksum != null && !entry.checksum.isBlank()) {
+            String expected = entry.checksum.startsWith("sha256:")
+                    ? entry.checksum.substring("sha256:".length())
+                    : entry.checksum;
+            String actual = calculateSha256(modelPath);
+            if (!expected.equalsIgnoreCase(actual)) {
+                throw new IOException("Registry checksum mismatch for " + entry.modelId
+                        + ": expected " + expected + ", got " + actual);
+            }
         }
 
         // Build metadata map
@@ -452,6 +487,7 @@ public class KompileModelManager {
         String path;
         String modelFile;
         String vocabFile;
+        String checksum;
         String status;
         Integer embeddingDim;
         Integer hiddenSize;

@@ -132,18 +132,46 @@ public class KClawController {
     }
 
     @DeleteMapping("/sessions/{sessionKey}")
-    public ResponseEntity<Void> clearSession(@PathVariable String sessionKey) {
-        sessionService.clearSession(sessionKey);
+    public ResponseEntity<?> clearSession(
+            @PathVariable String sessionKey,
+            @RequestParam(required = false) String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            sessionService.clearSession(sessionKey);
+        } else {
+            if (agentService == null) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(Map.of("error", "Agent service not available"));
+            }
+            agentService.clearSession(agentId, sessionKey);
+        }
         return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/sessions/{sessionKey}/history")
-    public ResponseEntity<?> getSessionHistory(@PathVariable String sessionKey) {
-        List<ReActMessage> messages = sessionService.loadSession(sessionKey);
+    public ResponseEntity<?> getSessionHistory(
+            @PathVariable String sessionKey,
+            @RequestParam(required = false) String agentId) {
+        List<ReActMessage> messages;
+        int tokenCount;
+        if (agentId == null || agentId.isBlank()) {
+            messages = sessionService.loadSession(sessionKey);
+            tokenCount = sessionService.estimateTokenCount(sessionKey);
+        } else {
+            if (agentService == null) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(Map.of("error", "Agent service not available"));
+            }
+            messages = agentService.getSessionHistory(agentId, sessionKey);
+            tokenCount = messages.stream()
+                    .map(ReActMessage::getContent)
+                    .filter(java.util.Objects::nonNull)
+                    .mapToInt(content -> content.length() / 4)
+                    .sum();
+        }
         return ResponseEntity.ok(Map.of(
                 "sessionKey", sessionKey,
                 "messages", messages,
-                "tokenCount", sessionService.estimateTokenCount(sessionKey)
+                "tokenCount", tokenCount
         ));
     }
 

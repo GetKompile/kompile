@@ -16,6 +16,7 @@
 package ai.kompile.app.learning.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
+import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.core.kgembedding.KGEmbeddingConfig;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.TrainingProgress;
@@ -73,6 +74,8 @@ import java.util.Map;
  */
 public class LearningSubprocessMain {
 
+    /** In-JVM heap/off-heap/GPU watchdog; started from the args {@code memoryWatchdog} section. */
+    private static volatile SubprocessMemoryWatchdog memoryWatchdog;
     /** Heartbeat interval sent to the parent so it can detect stale processes. */
     private static final long HEARTBEAT_INTERVAL_MS = 5_000L;
 
@@ -132,15 +135,26 @@ public class LearningSubprocessMain {
             return;
         }
 
+        String operationField = rawArgs.get("operation") != null
+                ? String.valueOf(rawArgs.get("operation")).toUpperCase()
+                : "";
         String algorithmField = rawArgs.get("algorithm") != null
                 ? String.valueOf(rawArgs.get("algorithm")).toUpperCase()
                 : "";
 
         reporter.startHeartbeat(HEARTBEAT_INTERVAL_MS);
 
+        // Start the in-JVM watchdog (if the parent sent thresholds) BEFORE training so the
+        // load/alloc phases are covered too. kill=0 (or no section) keeps legacy behaviour.
+        startMemoryWatchdog(rawArgs);
+
         int exitCode = 0;
         try {
-            if ("PSL".equals(algorithmField)) {
+            if (PortableGraphLearningSubprocessArgs.OPERATION.equals(operationField)) {
+                PortableGraphLearningSubprocessArgs portableArgs =
+                        MAPPER.convertValue(rawArgs, PortableGraphLearningSubprocessArgs.class);
+                exitCode = runPortableGraphLearning(portableArgs, reporter);
+            } else if ("PSL".equals(algorithmField)) {
                 ReasoningLearningSubprocessArgs reasoningArgs =
                         MAPPER.convertValue(rawArgs, ReasoningLearningSubprocessArgs.class);
                 exitCode = runPslLearning(reasoningArgs, reporter);
@@ -155,12 +169,115 @@ public class LearningSubprocessMain {
                 exitCode = runTraining(learningArgs, reporter);
             }
         } catch (Throwable t) {
-            reporter.reportFailed("Unhandled error: " + t.getMessage());
+            t.printStackTrace(System.err);
+            Throwable root = t;
+            while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+            String detail = root.getMessage() == null || root.getMessage().isBlank()
+                    ? root.getClass().getName()
+                    : root.getClass().getName() + ": " + root.getMessage();
+            reporter.reportFailed("Unhandled " + t.getClass().getName() + " (root=" + detail + ")");
             exitCode = 1;
         } finally {
             reporter.stopHeartbeat();
+            closeMemoryWatchdog();
         }
         System.exit(exitCode);
+    }
+
+    /**
+     * Start the in-JVM {@link SubprocessMemoryWatchdog} from the optional
+     * {@code memoryWatchdog} args section: {@code {heapStopPercent, heapCriticalPercent,
+     * heapKillPercent, checkIntervalMs, offHeapStopPercent, offHeapCriticalPercent,
+     * offHeapKillPercent, gpuStopPercent, gpuCriticalPercent, gpuKillPercent}}.
+     * A {@code heapKillPercent <= 0} (or a missing section) disables the watchdog.
+     */
+    private static void startMemoryWatchdog(Map<String, Object> rawArgs) {
+        try {
+            Object section = rawArgs.get("memoryWatchdog");
+            if (!(section instanceof Map<?, ?> cfg)) {
+                return; // Parent did not send thresholds — legacy behaviour, no watchdog.
+            }
+            int heapStop = intArg(cfg.get("heapStopPercent"), 80);
+            int heapCritical = intArg(cfg.get("heapCriticalPercent"), 90);
+            int heapKill = intArg(cfg.get("heapKillPercent"), 95);
+            long intervalMs = longArg(cfg.get("checkIntervalMs"), 2_000L);
+            int offHeapStop = intArg(cfg.get("offHeapStopPercent"), 80);
+            int offHeapCritical = intArg(cfg.get("offHeapCriticalPercent"), 90);
+            int offHeapKill = intArg(cfg.get("offHeapKillPercent"), 95);
+            int gpuStop = intArg(cfg.get("gpuStopPercent"), 75);
+            int gpuCritical = intArg(cfg.get("gpuCriticalPercent"), 85);
+            int gpuKill = intArg(cfg.get("gpuKillPercent"), 92);
+            if (heapKill <= 0) {
+                System.err.println("[NATIVE-MEM] watchdog disabled (heapKillPercent<=0)");
+                return;
+            }
+            memoryWatchdog = new SubprocessMemoryWatchdog(
+                    heapStop, heapCritical, heapKill, intervalMs,
+                    gpuStop, gpuCritical, gpuKill,
+                    offHeapStop, offHeapCritical, offHeapKill);
+            memoryWatchdog.start();
+            System.err.printf(
+                    "[NATIVE-MEM] watchdog active: heap stop=%d%%/crit=%d%%/kill=%d%%; "
+                            + "off-heap %d/%d/%d; interval=%dms%n",
+                    heapStop, heapCritical, heapKill,
+                    offHeapStop, offHeapCritical, offHeapKill, intervalMs);
+            System.err.flush();
+        } catch (Throwable t) {
+            // A watchdog failure must never break the learning job.
+            memoryWatchdog = null;
+            System.err.println("[NATIVE-MEM] watchdog start failed (non-fatal): " + t.getMessage());
+        }
+    }
+
+    private static int intArg(Object value, int fallback) {
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return value == null ? fallback : Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static long longArg(Object value, long fallback) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? fallback : Long.parseLong(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static void closeMemoryWatchdog() {
+        SubprocessMemoryWatchdog watchdog = memoryWatchdog;
+        memoryWatchdog = null;
+        if (watchdog != null) {
+            try {
+                watchdog.close();
+            } catch (Throwable ignored) {
+                // Shutdown is best-effort.
+            }
+        }
+    }
+
+    private static int runPortableGraphLearning(
+            PortableGraphLearningSubprocessArgs args,
+            LearningSubprocessProgressReporter reporter) {
+        try {
+            probeMem("PORTABLE_GRAPH_LEARNING:before-load");
+            PortableGraphLearningJob.Result result = PortableGraphLearningJob.run(args);
+            probeMem("PORTABLE_GRAPH_LEARNING:after-save");
+            reporter.reportCompleted(result.embedding().finalLoss(),
+                    result.outputPath().toString(), result.graph().entityCount(),
+                    result.graph().relationCount());
+            return 0;
+        } catch (OutOfMemoryError oom) {
+            probeMem("PORTABLE_GRAPH_LEARNING:at-OOM");
+            reporter.reportFailed("OOM during portable graph learning: " + oom.getMessage());
+            return 1;
+        } catch (Exception e) {
+            reporter.reportFailed("Portable graph learning failed: " + e.getMessage());
+            return 1;
+        }
     }
 
     // ── training ─────────────────────────────────────────────────────────────

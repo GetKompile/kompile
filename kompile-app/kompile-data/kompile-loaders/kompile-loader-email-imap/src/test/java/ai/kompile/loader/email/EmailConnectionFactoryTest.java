@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -69,6 +70,25 @@ class EmailConnectionFactoryTest {
 
         String decoded = new String(Base64.getDecoder().decode(token), StandardCharsets.UTF_8);
         assertEquals("user=\001auth=Bearer token\001\001", decoded);
+    }
+
+    @Test
+    void tlsModesUseDefaultTrustStoreAndVerifyServerIdentity() {
+        Properties implicitTls = factory.buildProperties(EmailConnectionConfig.builder()
+                .host("imap.example.com")
+                .security(EmailConnectionConfig.Security.SSL)
+                .build());
+        assertEquals("true", implicitTls.getProperty("mail.imaps.ssl.checkserveridentity"));
+        assertNull(implicitTls.getProperty("mail.imaps.ssl.trust"));
+
+        Properties startTls = factory.buildProperties(EmailConnectionConfig.builder()
+                .host("imap.example.com")
+                .port(143)
+                .security(EmailConnectionConfig.Security.STARTTLS)
+                .build());
+        assertEquals("true", startTls.getProperty("mail.imap.ssl.checkserveridentity"));
+        assertEquals("true", startTls.getProperty("mail.imap.starttls.required"));
+        assertNull(startTls.getProperty("mail.imap.ssl.trust"));
     }
 
     // ── testConnection (negative path) ───────────────────────────────────

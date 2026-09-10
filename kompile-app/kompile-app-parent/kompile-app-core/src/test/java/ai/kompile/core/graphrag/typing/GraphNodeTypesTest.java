@@ -71,6 +71,39 @@ class GraphNodeTypesTest {
     }
 
     @Test
+    void includesPrepassSchemaParentInReasoningHierarchy() {
+        Map<String, Object> metadata = Map.of(
+                "entity_type", "EMPLOYEE",
+                "schema.parentType", "PERSON");
+
+        assertEquals(List.of("EMPLOYEE", "PERSON"),
+                GraphNodeTypes.resolveTypeMemberships(metadata));
+        List<GraphNodeTypes.TypeHierarchyEdge> hierarchy =
+                GraphNodeTypes.resolveTypeHierarchy(metadata);
+        assertEquals(1, hierarchy.size());
+        assertEquals("EMPLOYEE", hierarchy.get(0).type());
+        assertEquals("PERSON", hierarchy.get(0).parentType());
+    }
+
+    @Test
+    void includesFullPrepassAncestorClosure() {
+        Map<String, Object> metadata = Map.of(
+                "entity_type", "LAW",
+                "schema.parentType", "DOCUMENT",
+                "schema.typeAncestors", List.of("DOCUMENT", "CREATIVE_WORK"));
+
+        assertEquals(List.of("LAW", "DOCUMENT", "CREATIVE_WORK"),
+                GraphNodeTypes.resolveTypeMemberships(metadata));
+        List<GraphNodeTypes.TypeHierarchyEdge> hierarchy =
+                GraphNodeTypes.resolveTypeHierarchy(metadata);
+        assertEquals(2, hierarchy.size());
+        assertEquals("LAW", hierarchy.get(0).type());
+        assertEquals("DOCUMENT", hierarchy.get(0).parentType());
+        assertEquals("DOCUMENT", hierarchy.get(1).type());
+        assertEquals("CREATIVE_WORK", hierarchy.get(1).parentType());
+    }
+
+    @Test
     void hierarchyFallsBackFromSubtypeToCategoryWhenTypeMissing() {
         List<GraphNodeTypes.TypeHierarchyEdge> hierarchy = GraphNodeTypes.resolveTypeHierarchy(Map.of(
                 "entity_subtype", "RedWine",

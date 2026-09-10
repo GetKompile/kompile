@@ -25,6 +25,7 @@ import lombok.NoArgsConstructor;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Entity representing a Fact Sheet - a named collection of facts (documents/files).
@@ -46,6 +47,11 @@ public class FactSheet {
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
     private Long id;
+
+    /** Stable machine-independent identity used by portable project and graph archives. */
+    @Column(name = "portable_id", length = 36, unique = true)
+    @Builder.Default
+    private String portableId = UUID.randomUUID().toString();
 
     /**
      * Name of the fact sheet (user-defined).
@@ -251,6 +257,9 @@ public class FactSheet {
     @PrePersist
     protected void onCreate() {
         Instant now = Instant.now();
+        if (portableId == null || portableId.isBlank()) {
+            portableId = UUID.randomUUID().toString();
+        }
         if (createdAt == null) {
             createdAt = now;
         }

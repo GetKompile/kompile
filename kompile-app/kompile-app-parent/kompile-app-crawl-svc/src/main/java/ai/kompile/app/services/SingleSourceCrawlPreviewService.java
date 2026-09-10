@@ -135,7 +135,7 @@ public class SingleSourceCrawlPreviewService {
         }
 
         DocumentSourceDescriptor.SourceType sourceType = resolveDescriptorSourceType(normalizedType, request);
-        DocumentSourceDescriptor descriptor = buildDescriptor(request, sourceType);
+        DocumentSourceDescriptor descriptor = buildDescriptor(request, sourceType, previewLimit);
 
         if (shouldUseCrawler(sourceType)) {
             Optional<Crawler> crawler = selectCrawler(sourceType, request.properties());
@@ -1135,13 +1135,28 @@ public class SingleSourceCrawlPreviewService {
                 .build();
     }
 
-    private DocumentSourceDescriptor buildDescriptor(SingleSourcePreviewRequest request,
-                                                     DocumentSourceDescriptor.SourceType sourceType) {
+    private DocumentSourceDescriptor buildDescriptor(
+            SingleSourcePreviewRequest request,
+            DocumentSourceDescriptor.SourceType sourceType,
+            int previewLimit) {
         String pathOrUrl = resolveSeed(request, sourceType);
         Map<String, Object> metadata = mutableProperties(request.properties());
         metadata.put("dryRun", true);
         metadata.put("preview", true);
         metadata.put("sourceType", sourceType.name());
+        if (sourceType == DocumentSourceDescriptor.SourceType.JIRA) {
+            metadata.put("maxIssues", Math.min(previewLimit,
+                    Math.max(1, asInteger(metadata.get("maxIssues"), previewLimit))));
+            metadata.put("commentLimit", Math.min(20,
+                    Math.max(0, asInteger(metadata.get("commentLimit"), 20))));
+        } else if (sourceType == DocumentSourceDescriptor.SourceType.REDDIT) {
+            metadata.put("postLimit", Math.min(previewLimit,
+                    Math.max(1, asInteger(metadata.get("postLimit"), previewLimit))));
+            metadata.put("commentDepth", Math.min(2,
+                    Math.max(1, asInteger(metadata.get("commentDepth"), 2))));
+            metadata.put("commentLimit", Math.min(10,
+                    Math.max(0, asInteger(metadata.get("commentLimit"), 10))));
+        }
         if (request.label() != null && !request.label().isBlank()) {
             metadata.put("label", request.label());
         }
@@ -1165,6 +1180,8 @@ public class SingleSourceCrawlPreviewService {
             case "slack" -> DocumentSourceDescriptor.SourceType.SLACK;
             case "slack_history", "slack-history" -> DocumentSourceDescriptor.SourceType.SLACK_HISTORY;
             case "confluence" -> DocumentSourceDescriptor.SourceType.CONFLUENCE;
+            case "jira" -> DocumentSourceDescriptor.SourceType.JIRA;
+            case "reddit" -> DocumentSourceDescriptor.SourceType.REDDIT;
             case "discord" -> DocumentSourceDescriptor.SourceType.DISCORD;
             case "discord_history", "discord-history" -> DocumentSourceDescriptor.SourceType.DISCORD_HISTORY;
             default -> parseSourceType(normalizedType);

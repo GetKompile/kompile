@@ -33,21 +33,26 @@ import java.util.Objects;
  *       atoms that appear in it, plus a scaled dual {@code u_r} (one per atom per rule).</li>
  *   <li>Global consensus variables {@code z} (one per atom) must agree with all local
  *       copies.</li>
- *   <li><b>x-update</b> (per rule, closed-form):
+ *   <li><b>x-update</b> (per rule, proximal step):
  *     <ul>
  *       <li>Squared-hinge logical rule: solve the quadratic
- *           {@code min w·(c·x - b)²₊ + (ρ/2)‖x - ẑ‖²} exactly, element-wise.</li>
+ *           {@code min w·(c·x - b)²₊ + (ρ/2)‖x - ẑ‖²} with a bounded
+ *           projected-gradient proximal step.</li>
  *       <li>Linear-hinge logical rule: soft-threshold solution.</li>
- *       <li>Arithmetic ground rule: project {@code ẑ} onto the half-space
- *           {@code Σ c_i x_i ≤/=/≥ rhs} (equality handled as two projections).</li>
+ *       <li>Arithmetic ground rule: solve the bounded half-space projection for
+ *           {@code Σ c_i x_i ≤/=/≥ rhs}; equality uses a signed multiplier solve.</li>
  *     </ul>
  *   </li>
  *   <li><b>z-update</b>: for each atom, average the local copies {@code x_r + u_r} over
  *       all rules that reference it, project to {@code [0,1]}, and fix observed atoms to
  *       their observed value.</li>
  *   <li><b>Dual update</b>: {@code u_r ← u_r + x_r - z} for each atom in rule {@code r}.</li>
- *   <li><b>Stopping</b>: primal residual {@code ‖x - z‖_F ≤ ε_primal} and dual residual
- *       {@code ρ‖Δz‖_F ≤ ε_dual} simultaneously.</li>
+ *   <li><b>Stopping</b>: in stacked local-copy space, primal residual
+ *       {@code ‖x - Rz‖² = Σ|x_rj-z_i|²} and dual residual
+ *       {@code ‖ρRΔz‖² = ρ²Σ refCount(i)·Δz_i²}, where {@code R} replicates each consensus
+ *       coordinate per local copy; both use only free mapped copies.
+ *       A normalized per-coordinate primal/stationarity gate also enforces the caller's
+ *       requested accuracy, so aggregate relative thresholds cannot stop early.</li>
  * </ol>
  *
  * <p>Supports both logical {@link GroundRule}s and arithmetic {@link ArithmeticGroundRule}s
@@ -116,9 +121,10 @@ public class AdmmHlMrfInference implements HlMrfSolver {
      * @param logicalRules   grounded logical rules
      * @param arithmeticRules grounded arithmetic rules (may be empty)
      * @param maxIterations  iteration cap (use {@link #DEFAULT_MAX_ITERATIONS} for the canonical limit)
-     * @param tolerance      tolerance used as {@code ε_abs} when &gt; {@link #DEFAULT_EPS_ABS}
-     * @param hardWeight     unused by ADMM (hard constraints are enforced exactly via dual);
-     *                       retained for interface compatibility
+     * @param tolerance      positive requested normalized accuracy; invalid values fall back to
+     *                       the configured {@code ε_abs}
+     * @param hardWeight     penalty used only when reporting the final objective for hard
+     *                       arithmetic constraints; retained for interface compatibility
      */
     public HlMrfMapInference.Result solve(PslProgram program,
                                           List<GroundRule> logicalRules,
@@ -128,7 +134,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
                                           double hardWeight) {
         List<String> atoms = new ArrayList<>(program.atomKeys());
         int n = atoms.size();
-        if (n == 0 || (logicalRules.isEmpty() && arithmeticRules.isEmpty())) {
+        if (logicalRules.isEmpty() && arithmeticRules.isEmpty()) {
             Map<String, Double> snap = program.valueSnapshot();
             for (String t : program.targetKeys()) snap.put(t, priorProvider.priorFor(t, PriorContext.EMPTY));
             return new HlMrfMapInference.Result(snap, logicalRules, 0, 0.0, true);
@@ -192,8 +198,15 @@ public class AdmmHlMrfInference implements HlMrfSolver {
 
         // ─── ADMM iterations ─────────────────────────────────────────────────
 
-        double eps = Math.max(epsAbs, tolerance);
+        // A caller-supplied positive tolerance is an explicit normalized-accuracy request. Do
+        // not silently weaken it with the configured absolute epsilon; invalid caller values
+        // retain the solver's configured epsilon instead.
+        double eps = effectiveTolerance(tolerance, epsAbs);
+        double relativeEps = effectiveRelativeTolerance(epsRel);
+        int activeLocalCopyCount = countActiveLocalCopies(
+                ruleAtomIdx, aRuleAtomIdx, isObserved);
         boolean converged = false;
+        boolean hardArithmeticFeasible = true;
         int iter;
 
         for (iter = 0; iter < maxIterations; iter++) {
@@ -201,13 +214,14 @@ public class AdmmHlMrfInference implements HlMrfSolver {
             // 1. x-update: per logical rule, closed-form proximal step
             for (int r = 0; r < rl; r++) {
                 GroundRule gr = logicalRules.get(r);
-                xUpdateLogical(gr, x[r], u[r], z, ruleAtomIdx[r], rho);
+                xUpdateLogical(gr, x[r], u[r], z, ruleAtomIdx[r], isObserved, rho);
             }
 
             // 2. x-update: per arithmetic rule, project onto the constraint halfspace
             for (int r = 0; r < ra; r++) {
                 ArithmeticGroundRule agr = arithmeticRules.get(r);
-                xUpdateArithmetic(agr, xa[r], ua[r], z, aRuleAtomIdx[r], rho);
+                hardArithmeticFeasible &= xUpdateArithmetic(
+                        agr, xa[r], ua[r], z, aRuleAtomIdx[r], isObserved, rho);
             }
 
             // 3. z-update: global consensus average, clamped to [0,1]
@@ -235,12 +249,18 @@ public class AdmmHlMrfInference implements HlMrfSolver {
                 }
             }
 
-            // 4. Dual update: u += x - z
+            // 4. Dual update: u += x - z. Observed atoms are fixed variables, not
+            // consensus variables; their local copies and duals must remain pinned.
             double primalResidual2 = 0.0;
             for (int r = 0; r < rl; r++) {
                 for (int j = 0; j < ruleAtomIdx[r].length; j++) {
                     int ai = ruleAtomIdx[r][j];
                     if (ai < 0) continue;
+                    if (isObserved[ai]) {
+                        x[r][j] = zNew[ai];
+                        u[r][j] = 0.0;
+                        continue;
+                    }
                     double diff = x[r][j] - zNew[ai];
                     primalResidual2 += diff * diff;
                     u[r][j] += diff;
@@ -250,31 +270,46 @@ public class AdmmHlMrfInference implements HlMrfSolver {
                 for (int j = 0; j < aRuleAtomIdx[r].length; j++) {
                     int ai = aRuleAtomIdx[r][j];
                     if (ai < 0) continue;
+                    if (isObserved[ai]) {
+                        xa[r][j] = zNew[ai];
+                        ua[r][j] = 0.0;
+                        continue;
+                    }
                     double diff = xa[r][j] - zNew[ai];
                     primalResidual2 += diff * diff;
                     ua[r][j] += diff;
                 }
             }
 
-            // 5. Dual residual: ρ·‖z_new - z‖
-            double dualResidual2 = 0.0;
-            for (int i = 0; i < n; i++) {
-                double dz = zNew[i] - z[i];
-                dualResidual2 += rho * rho * dz * dz;
-            }
+            // 5. Dual residual: the stacked replication residual is
+            //   ||ρ R (z_new-z)||² = ρ² Σ_i refCount[i]·(Δz_i)².
+            // It is not the square of an atom-level aggregate; doing that would add an
+            // erroneous refCount² factor and make stopping depend on decomposition.
+            double dualResidual2 = dualResidual2(rho, zNew, z, refCount);
 
-            // Count total local copies (= sum of rule literal counts)
-            int totalCopies = 0;
-            for (int[] ri : ruleAtomIdx) totalCopies += ri.length;
-            for (int[] ri : aRuleAtomIdx) totalCopies += ri.length;
+            // Stopping criterion (Bach et al. UAI 2013, Section 3.3), restricted to free
+            // local copies. Observed atoms are pinned and unmapped literals are not variables
+            // in this consensus system, so neither contributes to a norm threshold.
+            double localNorm = Math.sqrt(activeLocalNorm2(
+                    x, xa, ruleAtomIdx, aRuleAtomIdx, isObserved));
+            double consensusNorm2 = activeConsensusNorm2(zNew, refCount, isObserved);
+            double ePrimal = Math.sqrt(activeLocalCopyCount) * eps
+                    + relativeEps * Math.max(localNorm, Math.sqrt(consensusNorm2));
+            double eDual = Math.sqrt(activeLocalCopyCount) * eps + relativeEps * rho
+                    * Math.sqrt(dualNorm2(u, ua, ruleAtomIdx, aRuleAtomIdx));
 
-            // Stopping criterion (Bach et al. UAI 2013, Section 3.3)
-            double ePrimal = Math.sqrt(totalCopies) * eps + epsRel * Math.sqrt(primalNorm2(x, xa));
-            double eDual = Math.sqrt(n) * eps + epsRel * rho * Math.sqrt(dualNorm2(u, ua));
+            // Aggregate thresholds can become permissive when epsRel is large or when one
+            // atom is replicated many times. Require normalized per-coordinate primal and
+            // stationarity (dual-step) accuracy as well. The scale is the coordinate's own
+            // magnitude, so this gate is independent of atom count, replication, and rho.
+            boolean perCoordinateAccuracy = perCoordinateAccuracy(
+                    x, xa, zNew, z, ruleAtomIdx, aRuleAtomIdx, isObserved, refCount, eps);
 
             z = zNew;
 
-            if (Math.sqrt(primalResidual2) <= ePrimal && Math.sqrt(dualResidual2) <= eDual) {
+            if (Math.sqrt(primalResidual2) <= ePrimal
+                    && Math.sqrt(dualResidual2) <= eDual
+                    && perCoordinateAccuracy) {
                 converged = true;
                 break;
             }
@@ -288,6 +323,23 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         double obj = 0.0;
         for (GroundRule gr : logicalRules) obj += gr.potential(resultValues, hardWeight);
         for (ArithmeticGroundRule agr : arithmeticRules) obj += agr.potential(resultValues, hardWeight);
+
+        // Hard arithmetic constraints are exact local projections, not finite penalties.  Do not
+        // report convergence for an infeasible observed/free box or for a final consensus point
+        // that still violates a feasible hard relation.
+        if (converged) {
+            if (!hardArithmeticFeasible) {
+                converged = false;
+            } else {
+                for (ArithmeticGroundRule agr : arithmeticRules) {
+                    if (agr.hard() && agr.distanceToSatisfaction(resultValues)
+                            > HlMrfMapInference.HARD_VIOLATION_TOLERANCE) {
+                        converged = false;
+                        break;
+                    }
+                }
+            }
+        }
 
         // Capture final scaled duals: admmDuals[ruleIndex] = { atomKey -> u[r][j] }
         // Only logical rules; arithmetic duals are not attributed per-atom in the same way.
@@ -332,7 +384,8 @@ public class AdmmHlMrfInference implements HlMrfSolver {
     private static final int SUB_ITER = 100;
 
     private static void xUpdateLogical(GroundRule gr, double[] x, double[] u,
-                                       double[] z, int[] atomIdx, double rho) {
+                                       double[] z, int[] atomIdx, boolean[] isObserved,
+                                       double rho) {
         int k = atomIdx.length;
         if (k == 0) return;
 
@@ -343,6 +396,10 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         // zHat_j = z[atomIdx[j]] - u[j]
         double[] zHat = new double[k];
         for (int j = 0; j < k; j++) {
+            if (atomIdx[j] >= 0 && isObserved[atomIdx[j]]) {
+                x[j] = z[atomIdx[j]];
+                u[j] = 0.0;
+            }
             zHat[j] = atomIdx[j] >= 0 ? z[atomIdx[j]] - u[j] : 0.5;
         }
 
@@ -381,7 +438,7 @@ public class AdmmHlMrfInference implements HlMrfSolver {
             double wCoef = d > 0.0 ? (sq ? 2.0 * w * d : w) : 0.0;
             double maxDelta = 0.0;
             for (int j = 0; j < k; j++) {
-                if (atomIdx[j] < 0) continue;
+                if (atomIdx[j] < 0 || isObserved[atomIdx[j]]) continue;
                 // Gradient: hinge contribution + proximal term
                 double gHinge = (d > 0.0) ? wCoef * c[j] : 0.0;
                 double gProx = rho * (x[j] - zHat[j]);
@@ -397,104 +454,448 @@ public class AdmmHlMrfInference implements HlMrfSolver {
     // ─── x-update for an arithmetic ground rule ──────────────────────────────
 
     /**
-     * Closed-form projection for an arithmetic ground rule.
+     * Solve the arithmetic-rule local proximal problem over the unit box.  Observed atoms are
+     * fixed coordinates, not variables in this subproblem.  The soft update is reduced to a
+     * monotone one-dimensional multiplier equation; this is necessary because clipping a
+     * half-space projection is not, in general, the projection onto the intersection.
      *
-     * <p>An arithmetic rule introduces the constraint {@code Σ c_i x_i ≤/=/≥ rhs}.
-     * The ADMM x-update is:
-     * <pre>
-     *   argmin_{x ∈ [0,1]^k}  w · max(ℓ(x), 0)^p  +  (ρ/2)‖x - ẑ‖²
-     * </pre>
-     * For LEQ: project {@code ẑ} onto the halfspace {@code {x : c·x ≤ rhs}}.
-     * The closed-form projector onto a halfspace is:
-     * <pre>
-     *   if c·ẑ ≤ rhs:  x* = ẑ                 (already feasible)
-     *   else:          x* = ẑ - ((c·ẑ - rhs) / ‖c‖²) · c
-     * </pre>
-     * For GEQ: negate and use LEQ.
-     * For EQ: project onto the hyperplane (same formula, always applied).
-     * After the halfspace projection, clip each component to [0,1].
-     *
-     * <p>The soft weighting {@code w · max(ℓ,0)^p} is incorporated as a penalty-scaled
-     * projection: scale {@code ẑ} toward the boundary by the ratio {@code ρ/(ρ + 2w)}
-     * for squared hinge (p=2) — equivalent to the Moreau proximal for squared hinge.
+     * @return {@code false} only when a hard relation is infeasible after observed coordinates
+     *         are fixed.  Soft rules always return {@code true}.
      */
-    private static void xUpdateArithmetic(ArithmeticGroundRule agr, double[] xa, double[] ua,
-                                          double[] z, int[] atomIdx, double rho) {
+    private static boolean xUpdateArithmetic(ArithmeticGroundRule agr, double[] xa, double[] ua,
+                                             double[] z, int[] atomIdx, boolean[] isObserved,
+                                             double rho) {
         int k = xa.length;
-        if (k == 0) return;
+        if (k == 0) return true;
 
-        double[] coefs = agr.coefficients();
-        double rhs = agr.rhs();
-        double w = agr.hard() ? 1e6 : agr.weight();
-        boolean sq = agr.squared();
-
-        // Adjusted target: zHat_j = z[atomIdx[j]] - ua[j]
-        double[] zHat = new double[k];
+        double[] coefficients = agr.coefficients();
+        double[] v = new double[k];
+        boolean[] free = new boolean[k];
         for (int j = 0; j < k; j++) {
-            zHat[j] = atomIdx[j] >= 0 ? z[atomIdx[j]] - ua[j] : 0.5;
+            int atom = atomIdx[j];
+            if (atom >= 0 && isObserved[atom]) {
+                xa[j] = z[atom];
+                ua[j] = 0.0;
+                v[j] = z[atom];
+            } else if (atom >= 0) {
+                v[j] = z[atom] - ua[j];
+                free[j] = true;
+            } else {
+                // A grounded atom absent from the program is a fixed zero in the final map.
+                v[j] = 0.0;
+            }
         }
 
-        // Helper: ℓ(y) = Σ coefs[j]*y[j] - rhs
-        RelOp op = agr.op();
+        double[] a = coefficients.clone();
+        double b = agr.rhs();
+        if (agr.op() == RelOp.GEQ) {
+            // c·x >= rhs is (-c)·x <= -rhs.  Both sides must be negated.
+            for (int j = 0; j < k; j++) a[j] = -a[j];
+            b = -b;
+        }
 
-        // For EQ: handle as LEQ + GEQ (two projections, take the one that reduces ℓ more)
-        if (op == RelOp.EQ) {
-            // Project as if LEQ, then as if GEQ, choose the one with smaller |ℓ|
-            double[] xLEQ = projectHalfspace(zHat, coefs, rhs, 1.0, rho, w, sq);
-            double[] xGEQ = projectHalfspace(zHat, coefs, rhs, -1.0, rho, w, sq);
-            double dLEQ = Math.abs(dot(coefs, xLEQ) - rhs);
-            double dGEQ = Math.abs(dot(coefs, xGEQ) - rhs);
-            double[] best = dLEQ <= dGEQ ? xLEQ : xGEQ;
-            System.arraycopy(best, 0, xa, 0, k);
+        // Move all fixed coordinates to the right-hand side of the free subproblem.
+        for (int j = 0; j < k; j++) {
+            if (!free[j]) {
+                b -= a[j] * v[j];
+                a[j] = 0.0;
+            }
+        }
+
+        double[] x = new double[k];
+        for (int j = 0; j < k; j++) x[j] = free[j] ? clamp01(v[j]) : v[j];
+        if (agr.hard()) {
+            boolean feasible = agr.op() == RelOp.EQ
+                    ? projectHardEquality(x, v, a, b, free)
+                    : projectHardHalfspace(x, v, a, b, free);
+            System.arraycopy(x, 0, xa, 0, k);
+            return feasible;
+        }
+
+        double weight = agr.weight();
+        if (weight > 0.0 && hasFreeCoefficient(a, free)) {
+            if (agr.op() == RelOp.EQ) {
+                if (agr.squared()) {
+                    solveSoftEqualitySquared(x, v, a, b, free, rho, weight);
+                } else {
+                    solveSoftEqualityLinear(x, v, a, b, free, rho, weight);
+                }
+            } else if (agr.squared()) {
+                solveSoftHalfspaceSquared(x, v, a, b, free, rho, weight);
+            } else {
+                solveSoftHalfspaceLinear(x, v, a, b, free, rho, weight);
+            }
+        }
+        System.arraycopy(x, 0, xa, 0, k);
+        return true;
+    }
+
+    private static final int ROOT_ITERATIONS = 100;
+    private static final int ROOT_BRACKET_ITERATIONS = 1024;
+    private static final double ROOT_TOLERANCE = 1.0e-12;
+    private static final double FEASIBILITY_TOLERANCE = 1.0e-12;
+
+    private static void solveSoftHalfspaceSquared(double[] x, double[] v, double[] a,
+                                                    double b, boolean[] free, double rho,
+                                                    double weight) {
+        double t0 = affine(x, a, b);
+        if (!Double.isFinite(t0) || t0 <= 0.0) return;
+
+        // s is the hinge excess.  KKT gives x=clip(v-(2w/rho)s*a), s=max(t(x),0).
+        double lo = 0.0;
+        double hi = Math.max(1.0, t0);
+        double residual = softSquaredHalfspaceResidual(hi, v, a, b, free, rho, weight);
+        boolean bracketed = Double.isFinite(residual) && residual <= 0.0;
+        for (int bracket = 0; !bracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+            if (!Double.isFinite(hi)) break;
+            double nextHi = hi * 2.0;
+            if (!Double.isFinite(nextHi) || nextHi <= hi) break;
+            hi = nextHi;
+            residual = softSquaredHalfspaceResidual(hi, v, a, b, free, rho, weight);
+            bracketed = Double.isFinite(residual) && residual <= 0.0;
+        }
+        if (!bracketed) {
+            if (Double.isFinite(hi)) {
+                applyMultiplier(x, v, a, hi, 2.0 * weight / rho, free);
+            }
+            return;
+        }
+        for (int i = 0; i < ROOT_ITERATIONS && hi - lo > ROOT_TOLERANCE; i++) {
+            double mid = 0.5 * (lo + hi);
+            double midResidual = softSquaredHalfspaceResidual(mid, v, a, b, free, rho, weight);
+            if (!Double.isFinite(midResidual)) {
+                if (midResidual > 0.0) lo = mid;
+                else if (midResidual < 0.0) hi = mid;
+                else break;
+            } else if (midResidual > 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        applyMultiplier(x, v, a, 0.5 * (lo + hi), 2.0 * weight / rho, free);
+    }
+
+    private static double softSquaredHalfspaceResidual(double excess, double[] v, double[] a,
+                                                        double b, boolean[] free, double rho,
+                                                        double weight) {
+        return affineWithMultiplier(v, a, b, excess, 2.0 * weight / rho, free) - excess;
+    }
+
+    private static void solveSoftHalfspaceLinear(double[] x, double[] v, double[] a,
+                                                  double b, boolean[] free, double rho,
+                                                  double weight) {
+        double t0 = affine(x, a, b);
+        if (!Double.isFinite(t0) || t0 <= 0.0) return;
+
+        double tAtWeight = affineWithMultiplier(v, a, b, weight, 1.0 / rho, free);
+        if (!Double.isFinite(tAtWeight)) return;
+        double multiplier;
+        if (tAtWeight >= 0.0) {
+            multiplier = weight;
         } else {
-            double sign = (op == RelOp.LEQ) ? 1.0 : -1.0; // GEQ → negate
-            double[] xNew = projectHalfspace(zHat, coefs, rhs, sign, rho, w, sq);
-            System.arraycopy(xNew, 0, xa, 0, k);
+            multiplier = bisectDecreasing(v, a, b, free, 0.0, weight, rho);
+        }
+        if (!Double.isFinite(multiplier)) return;
+        applyMultiplier(x, v, a, multiplier, 1.0 / rho, free);
+    }
+
+    private static void solveSoftEqualityLinear(double[] x, double[] v, double[] a,
+                                                 double b, boolean[] free, double rho,
+                                                 double weight) {
+        double t0 = affine(x, a, b);
+        if (!Double.isFinite(t0) || Math.abs(t0) <= ROOT_TOLERANCE) return;
+
+        double multiplier;
+        if (t0 > 0.0) {
+            double tAtWeight = affineWithMultiplier(v, a, b, weight, 1.0 / rho, free);
+            if (!Double.isFinite(tAtWeight)) return;
+            multiplier = tAtWeight <= 0.0
+                    ? bisectDecreasing(v, a, b, free, 0.0, weight, rho)
+                    : weight;
+        } else {
+            double tAtNegativeWeight = affineWithMultiplier(v, a, b, -weight, 1.0 / rho, free);
+            if (!Double.isFinite(tAtNegativeWeight)) return;
+            multiplier = tAtNegativeWeight >= 0.0
+                    ? bisectDecreasing(v, a, b, free, -weight, 0.0, rho)
+                    : -weight;
+        }
+        if (!Double.isFinite(multiplier)) return;
+        applyMultiplier(x, v, a, multiplier, 1.0 / rho, free);
+    }
+
+    private static void solveSoftEqualitySquared(double[] x, double[] v, double[] a,
+                                                  double b, boolean[] free, double rho,
+                                                  double weight) {
+        double t0 = affine(x, a, b);
+        if (!Double.isFinite(t0) || Math.abs(t0) <= ROOT_TOLERANCE) return;
+
+        // μ is the equality multiplier: x=clip(v-μa/rho), μ=2w(c·x-b).
+        double lo;
+        double hi;
+        if (t0 > 0.0) {
+            lo = 0.0;
+            hi = 1.0;
+            double residual = equalitySquaredResidual(hi, v, a, b, free, rho, weight);
+            boolean bracketed = Double.isFinite(residual) && residual <= 0.0;
+            for (int bracket = 0; !bracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+                if (!Double.isFinite(hi)) break;
+                double nextHi = hi * 2.0;
+                if (!Double.isFinite(nextHi) || nextHi <= hi) break;
+                hi = nextHi;
+                residual = equalitySquaredResidual(hi, v, a, b, free, rho, weight);
+                bracketed = Double.isFinite(residual) && residual <= 0.0;
+            }
+            if (!bracketed) {
+                if (Double.isFinite(hi)) {
+                    applyMultiplier(x, v, a, hi, 1.0 / rho, free);
+                }
+                return;
+            }
+        } else {
+            lo = -1.0;
+            hi = 0.0;
+            double residual = equalitySquaredResidual(lo, v, a, b, free, rho, weight);
+            boolean bracketed = Double.isFinite(residual) && residual >= 0.0;
+            for (int bracket = 0; !bracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+                if (!Double.isFinite(lo)) break;
+                double nextLo = lo * 2.0;
+                if (!Double.isFinite(nextLo) || nextLo >= lo) break;
+                lo = nextLo;
+                residual = equalitySquaredResidual(lo, v, a, b, free, rho, weight);
+                bracketed = Double.isFinite(residual) && residual >= 0.0;
+            }
+            if (!bracketed) {
+                if (Double.isFinite(lo)) {
+                    applyMultiplier(x, v, a, lo, 1.0 / rho, free);
+                }
+                return;
+            }
+        }
+        for (int i = 0; i < ROOT_ITERATIONS && hi - lo > ROOT_TOLERANCE; i++) {
+            double mid = 0.5 * (lo + hi);
+            double midResidual = equalitySquaredResidual(mid, v, a, b, free, rho, weight);
+            if (!Double.isFinite(midResidual)) {
+                if (midResidual > 0.0) lo = mid;
+                else if (midResidual < 0.0) hi = mid;
+                else break;
+            } else if (midResidual > 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        applyMultiplier(x, v, a, 0.5 * (lo + hi), 1.0 / rho, free);
+    }
+
+    private static double equalitySquaredResidual(double multiplier, double[] v, double[] a,
+                                                  double b, boolean[] free, double rho,
+                                                  double weight) {
+        return affineWithMultiplier(v, a, b, multiplier, 1.0 / rho, free)
+                - multiplier / (2.0 * weight);
+    }
+
+    private static double bisectDecreasing(double[] v, double[] a, double b, boolean[] free,
+                                           double lo, double hi, double rho) {
+        for (int i = 0; i < ROOT_ITERATIONS && hi - lo > ROOT_TOLERANCE; i++) {
+            double mid = 0.5 * (lo + hi);
+            double value = affineWithMultiplier(v, a, b, mid, 1.0 / rho, free);
+            if (!Double.isFinite(value)) {
+                if (value > 0.0) lo = mid;
+                else if (value < 0.0) hi = mid;
+                else return Double.NaN;
+            } else if (value > 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return 0.5 * (lo + hi);
+    }
+
+    private static boolean projectHardHalfspace(double[] x, double[] v, double[] a,
+                                                 double b, boolean[] free) {
+        double min = boxExtreme(a, free, false);
+        if (!Double.isFinite(min) || !Double.isFinite(b)) {
+            setBoxExtreme(x, a, free, false);
+            return false;
+        }
+        if (min > b + FEASIBILITY_TOLERANCE) {
+            setBoxExtreme(x, a, free, false);
+            return false;
+        }
+        double target = clampNearLowerFeasibleBound(b, min);
+        if (target <= min) {
+            setBoxExtreme(x, a, free, false);
+            return true;
+        }
+        double t0 = affine(x, a, target);
+        if (!Double.isFinite(t0)) {
+            setBoxExtreme(x, a, free, false);
+            return false;
+        }
+        if (t0 <= FEASIBILITY_TOLERANCE) return true;
+
+        double lo = 0.0;
+        double hi = Math.max(1.0, t0);
+        double residual = affineWithMultiplier(v, a, target, hi, 1.0, free);
+        boolean bracketed = Double.isFinite(residual) && residual <= 0.0;
+        for (int bracket = 0; !bracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+            if (!Double.isFinite(hi)) break;
+            double nextHi = hi * 2.0;
+            if (!Double.isFinite(nextHi) || nextHi <= hi) break;
+            hi = nextHi;
+            residual = affineWithMultiplier(v, a, target, hi, 1.0, free);
+            bracketed = Double.isFinite(residual) && residual <= 0.0;
+        }
+        if (!bracketed) {
+            setBoxExtreme(x, a, free, false);
+            return false;
+        }
+        double multiplier = bisectDecreasing(v, a, target, free, lo, hi, 1.0);
+        if (!Double.isFinite(multiplier)) {
+            setBoxExtreme(x, a, free, false);
+            return false;
+        }
+        applyMultiplier(x, v, a, multiplier, 1.0, free);
+        return true;
+    }
+
+    private static boolean projectHardEquality(double[] x, double[] v, double[] a,
+                                                double b, boolean[] free) {
+        double min = boxExtreme(a, free, false);
+        double max = boxExtreme(a, free, true);
+        if (!Double.isFinite(min) || !Double.isFinite(max) || !Double.isFinite(b)) {
+            setBoxExtreme(x, a, free, Double.isFinite(b) && b > max);
+            return false;
+        }
+        if (b < min - FEASIBILITY_TOLERANCE || b > max + FEASIBILITY_TOLERANCE) {
+            setBoxExtreme(x, a, free, b > max);
+            return false;
+        }
+        double target = clampNearFeasibleInterval(b, min, max);
+        if (target == min) {
+            setBoxExtreme(x, a, free, false);
+            return true;
+        }
+        if (target == max) {
+            setBoxExtreme(x, a, free, true);
+            return true;
+        }
+        double initialResidual = affine(x, a, target);
+        if (!Double.isFinite(initialResidual)) {
+            setBoxExtreme(x, a, free, initialResidual < 0.0);
+            return false;
+        }
+        if (Math.abs(initialResidual) <= FEASIBILITY_TOLERANCE) return true;
+
+        double lo = -1.0;
+        double hi = 1.0;
+        double loResidual = affineWithMultiplier(v, a, target, lo, 1.0, free);
+        boolean loBracketed = Double.isFinite(loResidual) && loResidual >= 0.0;
+        for (int bracket = 0; !loBracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+            if (!Double.isFinite(lo)) break;
+            double nextLo = lo * 2.0;
+            if (!Double.isFinite(nextLo) || nextLo >= lo) break;
+            lo = nextLo;
+            loResidual = affineWithMultiplier(v, a, target, lo, 1.0, free);
+            loBracketed = Double.isFinite(loResidual) && loResidual >= 0.0;
+        }
+        double hiResidual = affineWithMultiplier(v, a, target, hi, 1.0, free);
+        boolean hiBracketed = Double.isFinite(hiResidual) && hiResidual <= 0.0;
+        for (int bracket = 0; !hiBracketed && bracket < ROOT_BRACKET_ITERATIONS; bracket++) {
+            if (!Double.isFinite(hi)) break;
+            double nextHi = hi * 2.0;
+            if (!Double.isFinite(nextHi) || nextHi <= hi) break;
+            hi = nextHi;
+            hiResidual = affineWithMultiplier(v, a, target, hi, 1.0, free);
+            hiBracketed = Double.isFinite(hiResidual) && hiResidual <= 0.0;
+        }
+        if (!loBracketed || !hiBracketed) {
+            setBoxExtreme(x, a, free, initialResidual < 0.0);
+            return false;
+        }
+        double multiplier = bisectDecreasing(v, a, target, free, lo, hi, 1.0);
+        if (!Double.isFinite(multiplier)) {
+            setBoxExtreme(x, a, free, initialResidual < 0.0);
+            return false;
+        }
+        applyMultiplier(x, v, a, multiplier, 1.0, free);
+        return true;
+    }
+
+    private static double clampNearLowerFeasibleBound(double target, double minimum) {
+        return target < minimum && target >= minimum - FEASIBILITY_TOLERANCE
+                ? minimum : target;
+    }
+
+    private static double clampNearFeasibleInterval(double target, double minimum, double maximum) {
+        if (target < minimum && target >= minimum - FEASIBILITY_TOLERANCE) return minimum;
+        if (target > maximum && target <= maximum + FEASIBILITY_TOLERANCE) return maximum;
+        return target;
+    }
+
+    private static boolean hasFreeCoefficient(double[] a, boolean[] free) {
+        for (int j = 0; j < a.length; j++) {
+            if (free[j] && a[j] != 0.0) return true;
+        }
+        return false;
+    }
+
+    private static double affine(double[] x, double[] a, double b) {
+        return dot(x, a) - b;
+    }
+
+    private static double affineWithMultiplier(double[] v, double[] a, double b,
+                                               double multiplier, double scale, boolean[] free) {
+        double sum = 0.0;
+        for (int j = 0; j < v.length; j++) {
+            double coordinate = free[j]
+                    ? projectedCoordinate(v[j], a[j], multiplier, scale) : v[j];
+            sum += a[j] * coordinate;
+        }
+        return sum - b;
+    }
+
+    private static void applyMultiplier(double[] x, double[] v, double[] a,
+                                        double multiplier, double scale, boolean[] free) {
+        for (int j = 0; j < v.length; j++) {
+            x[j] = free[j] ? projectedCoordinate(v[j], a[j], multiplier, scale) : v[j];
         }
     }
 
-    /**
-     * Project onto the halfspace {@code sign*(c·x - rhs) ≤ 0} with the penalty-scaled proximal.
-     *
-     * @param sign 1.0 for LEQ (c·x ≤ rhs), -1.0 for GEQ (c·x ≥ rhs → -c·x ≤ -rhs)
-     */
-    private static double[] projectHalfspace(double[] zHat, double[] coefs, double rhs,
-                                             double sign, double rho, double w, boolean sq) {
-        int k = zHat.length;
-        double[] c = new double[k];
-        double b = rhs;
-        for (int j = 0; j < k; j++) c[j] = sign * coefs[j];
-        // sign*b stays the same
+    private static double projectedCoordinate(double value, double coefficient,
+                                              double multiplier, double scale) {
+        if (coefficient == 0.0 || multiplier == 0.0 || scale == 0.0) {
+            return clamp01(value);
+        }
+        double shifted = value - scale * multiplier * coefficient;
+        return Double.isNaN(shifted) ? clamp01(value) : clamp01(shifted);
+    }
 
-        double cz = dot(c, zHat); // c · zHat
-        double excess = cz - b;   // positive when we violate the halfspace
+    private static double clamp01(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
+    }
 
-        // For soft constraints, scale the gap toward the boundary
-        // Moreau prox for w*max(c·x - b, 0)^p:
-        //   p=2 (sq): closed-form shrinkage factor = ρ/(ρ + 2w) on the excess
-        //   p=1 (linear): soft-threshold the excess
-        double[] x = zHat.clone();
-        if (excess > 0) {
-            double alpha; // how much to shrink toward the boundary
-            if (sq) {
-                // gradient-descent correction: x = zHat - (2w*d/(ρ + 2w)) * c/‖c‖² * ‖c‖
-                double cNorm2 = dot(c, c);
-                if (cNorm2 > 1e-10) {
-                    alpha = (2.0 * w * excess) / (rho * cNorm2 + 2.0 * w);
-                    for (int j = 0; j < k; j++) x[j] -= alpha * c[j];
-                }
-            } else {
-                // soft-threshold: project if the penalty gradient pulls inside
-                double cNorm2 = dot(c, c);
-                if (cNorm2 > 1e-10) {
-                    alpha = Math.min(excess, w / rho) / cNorm2;
-                    for (int j = 0; j < k; j++) x[j] -= alpha * c[j];
-                }
+    private static double boxExtreme(double[] a, boolean[] free, boolean maximum) {
+        double value = 0.0;
+        for (int j = 0; j < a.length; j++) {
+            if (!free[j]) continue;
+            if (maximum) value += a[j] > 0.0 ? a[j] : 0.0;
+            else value += a[j] < 0.0 ? a[j] : 0.0;
+        }
+        return value;
+    }
+
+    private static void setBoxExtreme(double[] x, double[] a, boolean[] free, boolean maximum) {
+        for (int j = 0; j < x.length; j++) {
+            if (!free[j]) continue;
+            if (maximum && a[j] > 0.0) x[j] = 1.0;
+            if (!maximum && a[j] < 0.0) x[j] = 1.0;
+            if (a[j] != 0.0 && ((maximum && a[j] < 0.0) || (!maximum && a[j] > 0.0))) {
+                x[j] = 0.0;
             }
         }
-        // Clip to [0,1]
-        for (int j = 0; j < k; j++) x[j] = Math.max(0.0, Math.min(1.0, x[j]));
-        return x;
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -513,17 +914,139 @@ public class AdmmHlMrfInference implements HlMrfSolver {
         return s;
     }
 
-    private static double primalNorm2(double[][] x, double[][] xa) {
-        double s = 0;
-        for (double[] v : x) for (double vi : v) s += vi * vi;
-        for (double[] v : xa) for (double vi : v) s += vi * vi;
+    private static int countActiveLocalCopies(int[][] ruleAtomIdx,
+                                               int[][] arithmeticAtomIdx,
+                                               boolean[] isObserved) {
+        int count = 0;
+        for (int[] atoms : ruleAtomIdx) {
+            for (int atom : atoms) {
+                if (atom >= 0 && !isObserved[atom]) count++;
+            }
+        }
+        for (int[] atoms : arithmeticAtomIdx) {
+            for (int atom : atoms) {
+                if (atom >= 0 && !isObserved[atom]) count++;
+            }
+        }
+        return count;
+    }
+
+    private static double activeLocalNorm2(double[][] x, double[][] xa,
+                                           int[][] ruleAtomIdx, int[][] arithmeticAtomIdx,
+                                           boolean[] isObserved) {
+        double s = 0.0;
+        for (int r = 0; r < x.length; r++) {
+            for (int j = 0; j < x[r].length; j++) {
+                int atom = ruleAtomIdx[r][j];
+                if (atom >= 0 && !isObserved[atom]) s += x[r][j] * x[r][j];
+            }
+        }
+        for (int r = 0; r < xa.length; r++) {
+            for (int j = 0; j < xa[r].length; j++) {
+                int atom = arithmeticAtomIdx[r][j];
+                if (atom >= 0 && !isObserved[atom]) s += xa[r][j] * xa[r][j];
+            }
+        }
         return s;
     }
 
-    private static double dualNorm2(double[][] u, double[][] ua) {
-        double s = 0;
-        for (double[] v : u) for (double vi : v) s += vi * vi;
-        for (double[] v : ua) for (double vi : v) s += vi * vi;
+    private static double activeConsensusNorm2(double[] z, int[] refCount,
+                                               boolean[] isObserved) {
+        double s = 0.0;
+        for (int i = 0; i < z.length; i++) {
+            if (!isObserved[i] && refCount[i] > 0) {
+                s += refCount[i] * z[i] * z[i];
+            }
+        }
         return s;
+    }
+
+    /**
+     * Squared norm of the stacked consensus dual residual. Each local copy contributes one
+     * {@code dz_i}; replication therefore contributes {@code refCount[i]}, not its square.
+     */
+    static double dualResidual2(double rho, double[] zNew, double[] z, int[] refCount) {
+        double s = 0.0;
+        for (int i = 0; i < zNew.length; i++) {
+            if (refCount[i] > 0) {
+                double dz = zNew[i] - z[i];
+                s += refCount[i] * dz * dz;
+            }
+        }
+        return rho * rho * s;
+    }
+
+    /**
+     * Squared norm of the stacked scaled-dual vector. Do not aggregate copies by atom: opposing
+     * local duals are distinct coordinates, and aggregating them would cancel valid dual energy.
+     */
+    static double dualNorm2(double[][] u, double[][] ua,
+                            int[][] ruleAtomIdx, int[][] arithmeticAtomIdx) {
+        double s = 0.0;
+        for (int r = 0; r < u.length; r++) {
+            for (int j = 0; j < u[r].length; j++) {
+                if (ruleAtomIdx[r][j] >= 0) s += u[r][j] * u[r][j];
+            }
+        }
+        for (int r = 0; r < ua.length; r++) {
+            for (int j = 0; j < ua[r].length; j++) {
+                if (arithmeticAtomIdx[r][j] >= 0) s += ua[r][j] * ua[r][j];
+            }
+        }
+        return s;
+    }
+
+    private static boolean perCoordinateAccuracy(double[][] x, double[][] xa,
+                                                  double[] zNew, double[] z,
+                                                  int[][] ruleAtomIdx, int[][] arithmeticAtomIdx,
+                                                  boolean[] isObserved, int[] refCount,
+                                                  double tolerance) {
+        double maxPrimal = 0.0;
+        for (int r = 0; r < x.length; r++) {
+            for (int j = 0; j < x[r].length; j++) {
+                int atom = ruleAtomIdx[r][j];
+                if (atom >= 0 && !isObserved[atom]) {
+                    maxPrimal = Math.max(maxPrimal,
+                            normalizedDifference(x[r][j], zNew[atom]));
+                }
+            }
+        }
+        for (int r = 0; r < xa.length; r++) {
+            for (int j = 0; j < xa[r].length; j++) {
+                int atom = arithmeticAtomIdx[r][j];
+                if (atom >= 0 && !isObserved[atom]) {
+                    maxPrimal = Math.max(maxPrimal,
+                            normalizedDifference(xa[r][j], zNew[atom]));
+                }
+            }
+        }
+
+        double maxStationarity = 0.0;
+        for (int i = 0; i < zNew.length; i++) {
+            if (!isObserved[i] && refCount[i] > 0) {
+                maxStationarity = Math.max(maxStationarity,
+                        normalizedDifference(zNew[i], z[i]));
+            }
+        }
+        return maxPrimal <= tolerance && maxStationarity <= tolerance;
+    }
+
+    private static double normalizedDifference(double value, double reference) {
+        // Truth values are bounded by [0,1], so the domain scale is the coordinate's unit
+        // bound. This keeps a small movement toward a zero optimum small instead of making
+        // every nonzero-versus-zero comparison report a relative error of one.
+        double scale = Math.max(1.0, Math.max(Math.abs(value), Math.abs(reference)));
+        return Math.abs(value - reference) / scale;
+    }
+
+    static double effectiveTolerance(double tolerance, double configuredEpsAbs) {
+        if (Double.isFinite(tolerance) && tolerance > 0.0) return tolerance;
+        return Double.isFinite(configuredEpsAbs) && configuredEpsAbs > 0.0
+                ? configuredEpsAbs : DEFAULT_EPS_ABS;
+    }
+
+    private static double effectiveRelativeTolerance(double configuredEpsRel) {
+        return Double.isFinite(configuredEpsRel) && configuredEpsRel >= 0.0
+                ? configuredEpsRel : DEFAULT_EPS_REL;
     }
 }

@@ -388,13 +388,26 @@ public class AnseriniEmbeddingConfiguration {
         private final Map<String, BatchSizeOverride> modelOverrides = new ConcurrentHashMap<>();
 
         public AnseriniEmbeddingProperties(@Value("${kompile.data.dir:#{null}}") String dataDir) {
-            String effectiveDataDir = dataDir;
-            if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
-                effectiveDataDir = System.getProperty("user.home") + "/.kompile";
-            }
             this.objectMapper = JsonUtils.newStandardMapper();
-            this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
+            this.configFilePath = resolveConfigFilePath(dataDir);
             log.info("AnseriniEmbeddingProperties initialized, config path: {}", configFilePath);
+        }
+
+        static Path resolveConfigFilePath(String dataDir) {
+            if (dataDir == null || dataDir.isBlank()) {
+                return Paths.get(System.getProperty("user.home"), ".kompile", "config", CONFIG_FILENAME);
+            }
+            Path dataPath = Paths.get(dataDir).toAbsolutePath().normalize();
+            Path dataConfig = dataPath.resolve("config").resolve(CONFIG_FILENAME);
+            Path projectRoot = dataPath.getParent();
+            if (projectRoot != null && "data".equals(dataPath.getFileName().toString())) {
+                Path projectConfig = projectRoot.resolve("config").resolve(CONFIG_FILENAME);
+                if (Files.isRegularFile(projectConfig)
+                        || Files.isRegularFile(projectRoot.resolve("kompile.project.json"))) {
+                    return projectConfig;
+                }
+            }
+            return dataConfig;
         }
 
         /**

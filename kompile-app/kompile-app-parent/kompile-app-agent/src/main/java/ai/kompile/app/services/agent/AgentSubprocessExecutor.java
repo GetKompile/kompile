@@ -30,8 +30,12 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -54,6 +58,7 @@ public class AgentSubprocessExecutor {
     private final AgentRegistryService agentRegistry;
     private final AgentProcessDiagnosticService diagnosticService;
     private final ClaudeStreamParser streamParser;
+    private final Path configRoot;
 
     @Autowired(required = false)
     private BuiltInToolDiscoveryService toolDiscoveryService;
@@ -70,12 +75,60 @@ public class AgentSubprocessExecutor {
     // Track running processes by processId for interrupt support
     private final Map<String, Process> runningProcesses = new ConcurrentHashMap<>();
 
+    /** A command carrying a temporary scoped MCP configuration that must be deleted after use. */
+    public static final class PreparedCommand implements AutoCloseable {
+        private final List<String> command;
+        private final Path ephemeralMcpConfig;
+        private final java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        private PreparedCommand(List<String> command, Path ephemeralMcpConfig) {
+            this.command = List.copyOf(command);
+            this.ephemeralMcpConfig = ephemeralMcpConfig;
+        }
+
+        public List<String> command() {
+            return command;
+        }
+
+        Path ephemeralMcpConfig() {
+            return ephemeralMcpConfig;
+        }
+
+        public void deleteEphemeralMcpConfig() {
+            close();
+        }
+
+        @Override
+        public void close() {
+            if (!closed.compareAndSet(false, true) || ephemeralMcpConfig == null) {
+                return;
+            }
+            try {
+                Files.deleteIfExists(ephemeralMcpConfig);
+            } catch (IOException failure) {
+                log.warn("Could not delete temporary scoped MCP configuration");
+            }
+        }
+    }
+
+    @Autowired
     public AgentSubprocessExecutor(AgentRegistryService agentRegistry,
                                     AgentProcessDiagnosticService diagnosticService,
                                     ClaudeStreamParser streamParser) {
+        this(agentRegistry, diagnosticService, streamParser,
+                Path.of(System.getProperty("user.home"), ".kompile", "config"));
+    }
+
+    AgentSubprocessExecutor(
+            AgentRegistryService agentRegistry,
+            AgentProcessDiagnosticService diagnosticService,
+            ClaudeStreamParser streamParser,
+            Path configRoot) {
         this.agentRegistry = agentRegistry;
         this.diagnosticService = diagnosticService;
         this.streamParser = streamParser;
+        this.configRoot = Objects.requireNonNull(configRoot, "configRoot");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -157,11 +210,125 @@ public class AgentSubprocessExecutor {
                                       List<String> agentArgs, String prompt, String workingDirectory) {
         List<String> command = buildInteractiveCommand(agent, skipPermissions, injectMcpTools, agentArgs);
 
+        return appendPrompt(command, agent, prompt, workingDirectory);
+    }
+
+    /**
+     * Build a one-shot command whose only injected MCP endpoint is the supplied bearer URL.
+     * Caller-provided MCP flags are rejected so they cannot replace or augment the server binding.
+     */
+    public PreparedCommand buildScopedCommand(
+            AgentProvider agent,
+            boolean skipPermissions,
+            List<String> agentArgs,
+            String prompt,
+            String workingDirectory,
+            String scopedMcpSseUrl) {
+        if (!supportsScopedMcpIsolation(agent)) {
+            throw new IllegalArgumentException(
+                    "Agent does not expose verified strict MCP configuration isolation");
+        }
+        validateScopedAgentArgs(agent, agentArgs);
+
         if (isCodexAgent(agent)) {
-            command.add("exec");
-            command.add("--json");
-            command.add(prompt);
-            return command;
+            validateMcpUrl(scopedMcpSseUrl, true);
+            List<String> command = buildInteractiveCommand(agent, skipPermissions, false, null);
+            command.add("-c");
+            command.add("mcp_servers.kompile_private_graph.url=\"" + scopedMcpSseUrl + "\"");
+            if (agentArgs != null && !agentArgs.isEmpty()) {
+                command.addAll(agentArgs);
+            }
+            return new PreparedCommand(appendCodexPrompt(command, prompt, true), null);
+        }
+
+        List<String> command = buildInteractiveCommand(
+                agent, skipPermissions, false, null);
+        Path config = null;
+        try {
+            config = addMcpServerArgs(command, agent, scopedMcpSseUrl, true);
+            if (config == null) {
+                throw new IllegalStateException("Could not create temporary scoped MCP configuration");
+            }
+            command.add("--strict-mcp-config");
+            if (agentArgs != null && !agentArgs.isEmpty()) {
+                command.addAll(agentArgs);
+            }
+            return new PreparedCommand(
+                    appendPrompt(command, agent, prompt, workingDirectory), config);
+        } catch (RuntimeException failure) {
+            if (config != null) {
+                new PreparedCommand(List.of(), config).close();
+            }
+            throw failure;
+        }
+    }
+
+    /** Build a strict empty-MCP command for provisioned turns that disabled tool injection. */
+    public PreparedCommand buildIsolatedCommand(
+            AgentProvider agent,
+            boolean skipPermissions,
+            List<String> agentArgs,
+            String prompt,
+            String workingDirectory) {
+        if (!supportsScopedMcpIsolation(agent)) {
+            throw new IllegalArgumentException(
+                    "Agent does not expose verified strict MCP configuration isolation");
+        }
+        validateScopedAgentArgs(agent, agentArgs);
+        if (isCodexAgent(agent)) {
+            List<String> command = buildInteractiveCommand(agent, skipPermissions, false, null);
+            if (agentArgs != null && !agentArgs.isEmpty()) {
+                command.addAll(agentArgs);
+            }
+            return new PreparedCommand(appendCodexPrompt(command, prompt, true), null);
+        }
+        List<String> command = buildInteractiveCommand(agent, skipPermissions, false, null);
+        Path config = writeTemporaryMcpConfigFile(null);
+        try {
+            if (config == null) {
+                throw new IllegalStateException("Could not create temporary isolated MCP configuration");
+            }
+            command.add(agent.getMcpConfigFlag());
+            command.add(config.toString());
+            command.add("--strict-mcp-config");
+            if (agentArgs != null && !agentArgs.isEmpty()) {
+                command.addAll(agentArgs);
+            }
+            return new PreparedCommand(
+                    appendPrompt(command, agent, prompt, workingDirectory), config);
+        } catch (RuntimeException failure) {
+            if (config != null) {
+                new PreparedCommand(List.of(), config).close();
+            }
+            throw failure;
+        }
+    }
+
+    public boolean supportsMcpInjection(AgentProvider agent) {
+        return agent != null && agent.isMcpSupported()
+                && (agent.getMcpConfigFlag() != null || agent.getMcpServerFlag() != null);
+    }
+
+    public boolean supportsScopedMcpIsolation(AgentProvider agent) {
+        if (agent == null || !agent.isMcpSupported() || agent.getHelpOutput() == null) {
+            return false;
+        }
+        if (isCodexAgent(agent)) {
+            return agent.getHelpOutput().contains("--ignore-user-config")
+                    && agent.getHelpOutput().contains("--config");
+        }
+        return agent.getMcpConfigFlag() != null
+                && agent.getHelpOutput().contains("--strict-mcp-config");
+    }
+
+    private List<String> appendPrompt(
+            List<String> command,
+            AgentProvider agent,
+            String prompt,
+            String workingDirectory) {
+
+        if (isCodexAgent(agent)) {
+            return appendCodexPrompt(command, prompt, false);
         }
 
         // Add the prompt - handle Gemini's workspace restrictions
@@ -180,6 +347,20 @@ public class AgentSubprocessExecutor {
             command.add(prompt);
         }
 
+        return command;
+    }
+
+    private List<String> appendCodexPrompt(
+            List<String> command,
+            String prompt,
+            boolean isolated) {
+        command.add("exec");
+        if (isolated) {
+            command.add("--ignore-user-config");
+            command.add("--ephemeral");
+        }
+        command.add("--json");
+        command.add(prompt);
         return command;
     }
 
@@ -393,24 +574,46 @@ public class AgentSubprocessExecutor {
             return;
         }
 
+        addMcpServerArgs(command, agent, mcpSseUrl, false);
+    }
+
+    private Path addMcpServerArgs(
+            List<String> command,
+            AgentProvider agent,
+            String mcpSseUrl,
+            boolean ephemeral) {
+        validateMcpUrl(mcpSseUrl, ephemeral);
+
         // Config-file injection is the mechanism real CLIs actually support (claude's
         // --mcp-config takes a JSON file/string; it has no --mcp-server option), so it
         // wins over the name:url pair form, which is kept as a fallback for CLIs that
         // genuinely advertise a server flag.
         if (agent.getMcpConfigFlag() != null) {
-            Path configFile = writeMcpConfigFile(mcpSseUrl);
+            Path configFile = ephemeral
+                    ? writeScopedMcpConfigFile(mcpSseUrl)
+                    : writeMcpConfigFile(mcpSseUrl);
             if (configFile != null) {
                 command.add(agent.getMcpConfigFlag());
                 command.add(configFile.toString());
-                log.info("Injecting MCP config for agent '{}': {} {} (server: {})",
-                        agent.getName(), agent.getMcpConfigFlag(), configFile, mcpSseUrl);
+                if (ephemeral) {
+                    log.info("Injecting temporary scoped MCP config for agent '{}'", agent.getName());
+                } else {
+                    log.info("Injecting MCP config for agent '{}': {} {} (server: {})",
+                            agent.getName(), agent.getMcpConfigFlag(), configFile, mcpSseUrl);
+                }
             }
+            return configFile;
         } else if (agent.getMcpServerFlag() != null) {
             command.add(agent.getMcpServerFlag());
             command.add("kompile-app:" + mcpSseUrl);
-            log.info("Injecting MCP server for agent '{}': {} kompile-app:{}",
-                    agent.getName(), agent.getMcpServerFlag(), mcpSseUrl);
+            if (ephemeral) {
+                log.info("Injecting scoped MCP server for agent '{}' (URL redacted)", agent.getName());
+            } else {
+                log.info("Injecting MCP server for agent '{}': {} kompile-app:{}",
+                        agent.getName(), agent.getMcpServerFlag(), mcpSseUrl);
+            }
         }
+        return null;
     }
 
     /**
@@ -420,7 +623,7 @@ public class AgentSubprocessExecutor {
      */
     private Path writeMcpConfigFile(String sseUrl) {
         try {
-            Path dir = Path.of(System.getProperty("user.home"), ".kompile", "config");
+            Path dir = configRoot;
             Files.createDirectories(dir);
             Path file = dir.resolve("agent-mcp-config.json");
             String json = "{\n"
@@ -438,6 +641,103 @@ public class AgentSubprocessExecutor {
         } catch (IOException e) {
             log.warn("Could not write agent MCP config file, skipping MCP injection: {}", e.getMessage());
             return null;
+        }
+    }
+
+    private Path writeScopedMcpConfigFile(String sseUrl) {
+        return writeTemporaryMcpConfigFile(sseUrl);
+    }
+
+    private Path writeTemporaryMcpConfigFile(String sseUrl) {
+        Path file = null;
+        try {
+            Path dir = configRoot.resolve("agent-mcp-scopes");
+            Files.createDirectories(dir);
+            restrictPermissions(dir, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE));
+            Set<PosixFilePermission> ownerReadWrite = Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE);
+            file = Files.getFileAttributeView(dir, PosixFileAttributeView.class) != null
+                    ? Files.createTempFile(dir, "scope-", ".json",
+                    PosixFilePermissions.asFileAttribute(ownerReadWrite))
+                    : Files.createTempFile(dir, "scope-", ".json");
+            String json;
+            if (sseUrl == null) {
+                json = "{\n  \"mcpServers\": {}\n}\n";
+            } else {
+                json = "{\n"
+                        + "  \"mcpServers\": {\n"
+                        + "    \"kompile-private-graph\": {\n"
+                        + "      \"type\": \"sse\",\n"
+                        + "      \"url\": \"" + sseUrl + "\"\n"
+                        + "    }\n"
+                        + "  }\n"
+                        + "}\n";
+            }
+            Files.writeString(file, json);
+            restrictPermissions(file, ownerReadWrite);
+            return file;
+        } catch (IOException failure) {
+            if (file != null) {
+                try {
+                    Files.deleteIfExists(file);
+                } catch (IOException ignored) {
+                    // Best effort after a failed create/write.
+                }
+            }
+            log.warn("Could not write temporary scoped MCP config");
+            return null;
+        }
+    }
+
+    private static void restrictPermissions(Path path, Set<PosixFilePermission> permissions)
+            throws IOException {
+        try {
+            Files.setPosixFilePermissions(path, permissions);
+        } catch (UnsupportedOperationException ignored) {
+            // Non-POSIX platforms rely on the user's private Kompile home permissions.
+        }
+    }
+
+    private static void validateMcpUrl(String value, boolean scoped) {
+        URI uri;
+        try {
+            uri = URI.create(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Invalid MCP endpoint URL", invalid);
+        }
+        String host = uri.getHost();
+        boolean loopback = host != null && ("localhost".equalsIgnoreCase(host)
+                || "127.0.0.1".equals(host) || "::1".equals(host));
+        if (!"http".equalsIgnoreCase(uri.getScheme()) || !loopback
+                || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw new IllegalArgumentException("MCP endpoint must be an HTTP loopback URL");
+        }
+        if (scoped && (uri.getPath() == null || !uri.getPath().startsWith("/mcp/scoped/")
+                || !uri.getPath().endsWith("/sse"))) {
+            throw new IllegalArgumentException("Scoped MCP endpoint path is invalid");
+        }
+    }
+
+    private void validateScopedAgentArgs(AgentProvider agent, List<String> agentArgs) {
+        if (agentArgs == null) {
+            return;
+        }
+        for (String argument : agentArgs) {
+            String normalized = argument == null ? "" : argument.toLowerCase(Locale.ROOT);
+            if (normalized.startsWith("--mcp") || normalized.startsWith("-mcp")
+                    || normalized.startsWith("--strict-mcp-config")
+                    || (isCodexAgent(agent) && (normalized.equals("-c")
+                    || normalized.startsWith("--config")
+                    || normalized.equals("-p")
+                    || normalized.startsWith("--profile")
+                    || normalized.startsWith("--ignore-user-config")))) {
+                throw new IllegalArgumentException(
+                        "Provisioned-agent CLI arguments may not override scoped MCP configuration");
+            }
         }
     }
 

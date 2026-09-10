@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.agent;
 
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
+import ai.kompile.core.graphrag.agent.ExtractionLlmService.ExtractionLlmException;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent.ExtractionConfig;
@@ -81,7 +82,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractWithNullChunksReturnsEmptyGraph() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         ExtractionResult result = agent.extract(null, null);
 
@@ -103,32 +104,26 @@ class LlmRelationExtractionAgentTest {
     }
 
     @Test
-    void extractWithNoRegistryReturnsEmptyGraph() {
+    void extractWithNoRegistryFails() {
         // No registry set
         RetrievedDoc doc = new RetrievedDoc("id1", "Some text about Alice.", Map.of());
-        ExtractionResult result = agent.extract(List.of(doc), null);
-
-        assertNotNull(result);
-        assertTrue(result.graph().getEntities().isEmpty());
+        assertThrows(ExtractionLlmException.class, () -> agent.extract(List.of(doc), null));
     }
 
     @Test
-    void extractWithNoAvailableLlmReturnsEmptyGraph() {
+    void extractWithNoAvailableLlmFails() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(anyString())).thenReturn(null);
-        when(registry.getOrFallback(isNull())).thenReturn(null);
+        when(registry.select(anyString(), isNull())).thenReturn(null);
+        when(registry.select(isNull(), isNull())).thenReturn(null);
 
         RetrievedDoc doc = new RetrievedDoc("id1", "Some text about Alice.", Map.of());
-        ExtractionResult result = agent.extract(List.of(doc), null);
-
-        assertNotNull(result);
-        assertTrue(result.graph().getEntities().isEmpty());
+        assertThrows(ExtractionLlmException.class, () -> agent.extract(List.of(doc), null));
     }
 
     @Test
     void extractParsesValidJsonResponse() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         String validJson = """
                 {
@@ -154,7 +149,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractHandlesMarkdownFencedJson() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         String fencedJson = """
                 ```json
@@ -176,7 +171,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractSkipsBlankChunks() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         RetrievedDoc blank = new RetrievedDoc("id1", "   ", Map.of());
         ExtractionResult result = agent.extract(List.of(blank), ExtractionConfig.defaults());
@@ -189,7 +184,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractDeduplicatesEntitiesById() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         // Two chunks both return entity with same id
         String json = """
@@ -210,7 +205,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractMergesEntityAndRelationEvidenceAcrossChunks() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
         when(llmService.complete(anyString())).thenReturn(
                 """
                 {"entities":[
@@ -259,7 +254,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractFiltersLowConfidenceEntities() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         String json = """
                 {
@@ -285,7 +280,7 @@ class LlmRelationExtractionAgentTest {
     @Test
     void extractUsesRequestedLlmProvider() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback("claude-cli")).thenReturn(llmService);
+        when(registry.select("claude-cli", null)).thenReturn(llmService);
 
         String json = """
                 {"entities":[{"id":"e1","name":"Alice","type":"PERSON","description":"x"}],"relations":[]}
@@ -298,27 +293,47 @@ class LlmRelationExtractionAgentTest {
 
         ExtractionResult result = agent.extract(List.of(doc), config);
         assertNotNull(result);
-        verify(registry).getOrFallback("claude-cli");
+        verify(registry).select("claude-cli", null);
     }
 
     @Test
-    void extractHandlesLlmExceptionGracefully() {
+    void extractPropagatesLlmFailure() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
         when(llmService.complete(anyString())).thenThrow(new RuntimeException("LLM timeout"));
 
         RetrievedDoc doc = new RetrievedDoc("id1", "Alice is here.", Map.of());
-        // Should not throw, should return empty graph
-        ExtractionResult result = agent.extract(List.of(doc), ExtractionConfig.defaults());
+        assertThrows(RuntimeException.class, () -> agent.extract(List.of(doc), ExtractionConfig.defaults()));
+    }
 
-        assertNotNull(result);
-        assertNotNull(result.graph());
+    @Test
+    void exactModelIsPassedToRegistryWithoutFallback() {
+        agent.setLlmServiceRegistry(registry);
+        when(registry.select("custom-provider", "exact-model")).thenReturn(llmService);
+        when(llmService.complete(anyString())).thenReturn("{\"entities\":[],\"relations\":[]}");
+        var config = new ExtractionConfig(List.of(), List.of(), 0.0,
+                Map.of("llmProvider", "custom-provider", "modelName", "exact-model"));
+        agent.extract(List.of(new RetrievedDoc("c1", "Text", Map.of())), config);
+        verify(registry).select("custom-provider", "exact-model");
+        verify(registry, never()).getOrFallback(any());
+    }
+
+    @Test
+    void missingExactModelFailsWithoutProviderCall() {
+        agent.setLlmServiceRegistry(registry);
+        when(registry.select("custom-provider", "missing-model"))
+                .thenThrow(new ExtractionLlmException("Unavailable model"));
+        var config = new ExtractionConfig(List.of(), List.of(), 0.0,
+                Map.of("llmProvider", "custom-provider", "modelName", "missing-model"));
+        assertThrows(ExtractionLlmException.class,
+                () -> agent.extract(List.of(new RetrievedDoc("c1", "Text", Map.of())), config));
+        verify(llmService, never()).complete(anyString());
     }
 
     @Test
     void extractMetricsContainCorrectAgentId() {
         agent.setLlmServiceRegistry(registry);
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
         when(llmService.complete(anyString())).thenReturn(
                 "{\"entities\":[],\"relations\":[]}");
 
@@ -333,7 +348,7 @@ class LlmRelationExtractionAgentTest {
     void extractHandlesLlmChatProviderIdForLocalModel() {
         agent.setLlmServiceRegistry(registry);
         when(llmService.getId()).thenReturn("llm-chat");
-        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(registry.select(isNull(), isNull())).thenReturn(llmService);
 
         // Local model response (without leading '{') should be completed by prepending '{'
         String partialJson = "\"entities\":[{\"id\":\"e1\",\"name\":\"Alice\",\"type\":\"PERSON\",\"description\":\"x\"}],\"relations\":[]}";
@@ -350,8 +365,6 @@ class LlmRelationExtractionAgentTest {
     void setLlmServiceRegistryNull() {
         agent.setLlmServiceRegistry(null);
         RetrievedDoc doc = new RetrievedDoc("id1", "Alice is here.", Map.of());
-        ExtractionResult result = agent.extract(List.of(doc), ExtractionConfig.defaults());
-        assertNotNull(result);
-        assertTrue(result.graph().getEntities().isEmpty());
+        assertThrows(ExtractionLlmException.class, () -> agent.extract(List.of(doc), ExtractionConfig.defaults()));
     }
 }

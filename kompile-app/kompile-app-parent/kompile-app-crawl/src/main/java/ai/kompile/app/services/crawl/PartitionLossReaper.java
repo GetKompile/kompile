@@ -119,10 +119,11 @@ public class PartitionLossReaper {
                 if (w.getReassignmentCount() >= maxReassign) {
                     log.warn("Partition {} lost ({}) — max reassignments ({}) reached, failing",
                             w.getWorkerId(), reason, maxReassign);
-                    session.workerFailed(w.getWorkerId(), reason + " (max reassignments reached)");
+                    coordinator.handlePartitionLoss(
+                            session, w, reason + " (max reassignments reached)", false);
                 } else {
                     log.warn("Partition {} lost ({}) — reassigning", w.getWorkerId(), reason);
-                    coordinator.reassignWorkerPartition(session, w);
+                    coordinator.handlePartitionLoss(session, w, reason);
                 }
             }
             finalizeIfDone(session);
@@ -158,6 +159,7 @@ public class PartitionLossReaper {
     }
 
     private void finalizeIfDone(DistributedCrawlSession session) {
+        if (session.getGraphGeneration() != null) return;
         if (session.isAllWorkersFinished()
                 && session.getStatus() == DistributedCrawlSession.Status.RUNNING) {
             session.setStatus(session.getFailedWorkers().get() > 0

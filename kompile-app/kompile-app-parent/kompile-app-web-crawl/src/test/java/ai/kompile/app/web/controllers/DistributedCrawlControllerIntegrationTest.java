@@ -63,6 +63,8 @@ class DistributedCrawlControllerIntegrationTest {
     private final ObjectMapper om = new ObjectMapper().findAndRegisterModules();
     private DistributedCrawlCoordinator coordinator;
     private JobLogService jobLogService;
+    private ResourceSchedulerConfigService cfgService;
+    private ResourceSchedulerConfig cfg;
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -71,8 +73,9 @@ class DistributedCrawlControllerIntegrationTest {
         ReflectionTestUtils.setField(coordinator, "aggregator", new DistributedCrawlAggregator());
         ReflectionTestUtils.setField(coordinator, "eventPublisher", mock(ApplicationEventPublisher.class));
 
-        ResourceSchedulerConfigService cfgService = mock(ResourceSchedulerConfigService.class);
-        when(cfgService.getConfiguration()).thenReturn(new ResourceSchedulerConfig()); // blank token → open
+        cfgService = mock(ResourceSchedulerConfigService.class);
+        cfg = new ResourceSchedulerConfig();
+        when(cfgService.getConfiguration()).thenReturn(cfg); // blank token → open
 
         jobLogService = mock(JobLogService.class);
         when(jobLogService.isEnabled()).thenReturn(true);
@@ -145,6 +148,26 @@ class DistributedCrawlControllerIntegrationTest {
     }
 
     @Test
+    void completionCallbackRequiresConfiguredBearerAndCarriesAttempt() throws Exception {
+        String sid = startSession();
+        String wid = coordinator.getSession(sid).orElseThrow().getWorkers().keySet().iterator().next();
+        cfg.setExternalAuthToken("cluster-secret");
+        Map<String, Object> callback = Map.of(
+                "sessionId", sid, "workerId", wid, "attempt", 1,
+                "success", true, "message", "done", "resultData", Map.of());
+
+        mockMvc.perform(post("/api/distributed-crawl/callback")
+                        .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(callback)))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/distributed-crawl/callback")
+                        .header("Authorization", "Bearer cluster-secret")
+                        .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(callback)))
+                .andExpect(status().isOk());
+
+        assertEquals(1, coordinator.getSession(sid).orElseThrow().getCompletedWorkers().get());
+    }
+
+    @Test
     void missingDistributionConfigIsRejected() throws Exception {
         Map<String, Object> request = Map.of(
                 "name", "no dist",
@@ -152,6 +175,18 @@ class DistributedCrawlControllerIntegrationTest {
         mockMvc.perform(post("/api/distributed-crawl/start")
                         .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void clusterRoleWithBlankTokenFailsClosed() throws Exception {
+        cfg.setClusterRole("orchestrator");
+        Map<String, Object> request = Map.of(
+                "name", "secured dist",
+                "sources", List.of(Map.of("label", "A", "pathOrUrl", "a")),
+                "distribution", Map.of("partitionStrategy", "PER_SOURCE"));
+        mockMvc.perform(post("/api/distributed-crawl/start")
+                        .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(request)))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -185,10 +220,27 @@ class DistributedCrawlControllerIntegrationTest {
     }
 
     @Test
+    void staleAttemptTranscriptIsAcknowledgedButNotStored() throws Exception {
+        String sid = startSession();
+        String wid = coordinator.getSession(sid).orElseThrow().getWorkers().keySet().iterator().next();
+        coordinator.getSession(sid).orElseThrow().beginAttempt(wid, wid + "-r1", 2);
+        Map<String, Object> body = Map.of(
+                "sessionId", sid, "workerId", wid, "attempt", 1,
+                "entries", List.of(Map.of("level", "INFO", "message", "stale")));
+
+        mockMvc.perform(post("/api/distributed-crawl/transcripts")
+                        .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stored").value(0));
+        verify(jobLogService, times(0)).logEntry(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void backendHealthFoldsWorkerEventsIntoClusterBreaker() throws Exception {
         ResourceSchedulerConfig cfg = new ResourceSchedulerConfig();
         cfg.setClusterSharedBackendBreakerEnabled(true);
         cfg.setClusterRole("orchestrator");
+        cfg.setExternalAuthToken("cluster-secret");
         cfg.setClusterBackendFailureThreshold(2);
         ResourceSchedulerConfigService svc = mock(ResourceSchedulerConfigService.class);
         when(svc.getConfiguration()).thenReturn(cfg);
@@ -201,13 +253,17 @@ class DistributedCrawlControllerIntegrationTest {
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(om)).build();
 
         // First failure is under the threshold of 2 → empty open-set.
-        mvc.perform(post("/api/distributed-crawl/backend-health").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/distributed-crawl/backend-health")
+                        .header("Authorization", "Bearer cluster-secret")
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("backendId", "openai", "event", "FAILURE"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.openBackends.length()").value(0));
 
         // Second failure hits the threshold → the cluster breaker opens for "openai".
-        mvc.perform(post("/api/distributed-crawl/backend-health").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/distributed-crawl/backend-health")
+                        .header("Authorization", "Bearer cluster-secret")
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("backendId", "openai", "event", "RATE_LIMITED"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.openBackends[0]").value("openai"));

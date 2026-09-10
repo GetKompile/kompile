@@ -165,7 +165,7 @@ class GraphDataPatchServiceTest {
                         null,
                         Map.of("properties.entity_subtype", "formula_cell"),
                         List.of("properties.stale"),
-                        Map.of("properties.custom_category", "FPNA_FORMULA_CELL"),
+                        Map.of("properties.custom_category", "PLANNING_FORMULA_CELL"),
                         List.of("properties.stale")))));
 
         assertTrue(result.allowGlobal());
@@ -173,7 +173,7 @@ class GraphDataPatchServiceTest {
         assertEquals(1, result.updatedCount());
         @SuppressWarnings("unchecked")
         Map<String, Object> properties = (Map<String, Object>) captureUpdatedMetadata("n1").get("properties");
-        assertEquals("FPNA_FORMULA_CELL", properties.get("custom_category"));
+        assertEquals("PLANNING_FORMULA_CELL", properties.get("custom_category"));
         assertFalse(properties.containsKey("stale"));
     }
 

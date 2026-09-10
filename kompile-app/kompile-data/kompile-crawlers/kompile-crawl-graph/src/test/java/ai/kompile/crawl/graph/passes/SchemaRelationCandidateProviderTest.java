@@ -19,6 +19,7 @@ package ai.kompile.crawl.graph.passes;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.passes.ExtractionCandidates.RelationCandidate;
 import ai.kompile.core.graphrag.passes.PassContext;
@@ -111,6 +112,23 @@ class SchemaRelationCandidateProviderTest {
                 typesOf(provider.candidatesFor("ORGANIZATION", "ORGANIZATION", CONTEXT, 12)));
         assertEquals(List.of("WORKS_AT"),
                 typesOf(provider.candidatesFor("PERSON", "ORGANIZATION", CONTEXT, 12)));
+    }
+
+    @Test
+    void subtypeEndpointsReceiveRelationsDeclaredForTheirAncestors() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("EMPLOYEE", "An employee", null, "PERSON"),
+                        new NodeType("ORGANIZATION", "An organization", null),
+                        new NodeType("COMPANY", "A company", null, "ORGANIZATION")),
+                List.of(type("WORKS_AT", "employment")),
+                List.of("(PERSON)-[:WORKS_AT]->(ORGANIZATION)"));
+        SchemaRelationCandidateProvider provider =
+                new SchemaRelationCandidateProvider(schema, null, null);
+
+        assertEquals(List.of("WORKS_AT"), typesOf(provider.candidatesFor(
+                "EMPLOYEE", "COMPANY", CONTEXT, 12)));
     }
 
     @Test

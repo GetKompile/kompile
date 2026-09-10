@@ -41,6 +41,8 @@ public class HarnessConfig {
 
     @JsonProperty private boolean enabled = true;
     @JsonProperty private boolean judgeEnabled = true;
+    /** Persistent master switch for every judge/policy/direction intervention. */
+    @JsonProperty private boolean judgeGlobalEnabled = true;
     @JsonProperty private String judgeModel = null;
     @JsonProperty private String judgeProvider = null;   // null = same as chat provider
     @JsonProperty private String judgeApiKey = null;     // null = same as chat API key

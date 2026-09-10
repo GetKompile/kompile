@@ -442,4 +442,33 @@ class ProcessSuggestionStoreTest {
         assertEquals(1, remaining.size());
         assertEquals("Keep", remaining.get(0).getName());
     }
+
+    @Test
+    void saveAndAcceptanceReloadFromFreshStore() {
+        Path directory = tempDir.resolve("durable-suggestions");
+        ProcessSuggestionStore first = new ProcessSuggestionStore(directory);
+        ProcessSuggestion suggestion = buildSuggestion("Durable", 0.8);
+        first.save(suggestion);
+        first.markAccepted(suggestion.getId(), "process-1");
+
+        ProcessSuggestion restored = new ProcessSuggestionStore(directory)
+                .get(suggestion.getId()).orElseThrow();
+
+        assertEquals(Boolean.TRUE, restored.getAccepted());
+        assertEquals("process-1", restored.getAcceptedProcessDefinitionId());
+    }
+
+    @Test
+    void failedWriteDoesNotPublishSuggestionOrKeepGeneratedIdentity() throws Exception {
+        Path blocked = tempDir.resolve("not-a-directory");
+        java.nio.file.Files.writeString(blocked, "block");
+        ProcessSuggestionStore failing = new ProcessSuggestionStore(blocked);
+        ProcessSuggestion suggestion = buildSuggestion("Failure", 0.5);
+
+        assertThrows(IllegalStateException.class, () -> failing.save(suggestion));
+
+        assertNull(suggestion.getId());
+        assertNull(suggestion.getDiscoveredAt());
+        assertTrue(failing.listAll().isEmpty());
+    }
 }

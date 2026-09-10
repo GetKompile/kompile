@@ -110,6 +110,7 @@ public final class UnifiedGraph implements ReasoningGraph {
     @Override public Collection<GraphEntity> entities() { return graph.entities(); }
     @Override public Collection<GraphRelation> relations() { return graph.relations(); }
     @Override public Optional<GraphEntity> entity(String id) { return graph.entity(id); }
+    public Optional<GraphRelation> relation(String id) { return graph.relation(id); }
     @Override public List<GraphRelation> outgoing(String entityId) { return graph.outgoing(entityId); }
     @Override public List<GraphRelation> incoming(String entityId) { return graph.incoming(entityId); }
     @Override public List<GraphRelation> relationsOf(String entityId) { return graph.relationsOf(entityId); }
@@ -118,24 +119,52 @@ public final class UnifiedGraph implements ReasoningGraph {
 
     /** Add or replace an entity (keyed by id). */
     public UnifiedGraph addEntity(GraphEntity entity) {
+        if (graph.entity(entity.id()).isPresent()) {
+            clearEntityAnalysisRows(entity.id());
+        }
         graph.addEntity(entity);
         return this;
     }
 
     /** Convenience: add a simple entity by id/type/label. */
     public UnifiedGraph addEntity(String id, String type, String label) {
+        if (graph.entity(id).isPresent()) {
+            clearEntityAnalysisRows(id);
+        }
         graph.addEntity(id, type, label);
+        return this;
+    }
+
+    /**
+     * Remove an entity, its incident relations, and entity/relation-scoped analysis rows.
+     * Graph-level metadata, global vectors, weight maps, and bundled artifacts remain untouched.
+     */
+    public UnifiedGraph removeEntityById(String id) {
+        Objects.requireNonNull(id, "id");
+        List<String> incidentRelationIds = graph.relationsOf(id).stream()
+                .map(GraphRelation::id)
+                .distinct()
+                .toList();
+        graph.removeEntityById(id);
+        clearEntityAnalysisRows(id);
+        incidentRelationIds.forEach(this::removeRelationAnalysisRows);
         return this;
     }
 
     /** Add a relation. */
     public UnifiedGraph addRelation(GraphRelation relation) {
+        if (graph.relation(relation.id()).isPresent()) {
+            removeRelationAnalysisRows(relation.id());
+        }
         graph.addRelation(relation);
         return this;
     }
 
     /** Convenience: add a directed relation. */
     public UnifiedGraph addRelation(String id, String sourceId, String targetId, String type, double weight) {
+        if (graph.relation(id).isPresent()) {
+            removeRelationAnalysisRows(id);
+        }
         graph.addRelation(id, sourceId, targetId, type, weight);
         return this;
     }
@@ -153,7 +182,15 @@ public final class UnifiedGraph implements ReasoningGraph {
      * @return {@code this} for chaining
      */
     public UnifiedGraph removeRelation(String sourceId, String type, String targetId) {
+        List<String> removedIds = graph.relations().stream()
+                .filter(relation -> sourceId.equals(relation.sourceId())
+                        && type.equals(relation.type())
+                        && targetId.equals(relation.targetId()))
+                .map(GraphRelation::id)
+                .distinct()
+                .toList();
         graph.removeRelation(sourceId, type, targetId);
+        removedIds.forEach(this::removeRelationAnalysisRows);
         return this;
     }
 
@@ -165,6 +202,24 @@ public final class UnifiedGraph implements ReasoningGraph {
      */
     public UnifiedGraph removeRelationById(String id) {
         graph.removeRelationById(id);
+        removeRelationAnalysisRows(id);
+        return this;
+    }
+
+    private void removeRelationAnalysisRows(String id) {
+        relationOpinions.remove(id);
+        vectorLayers.values().stream()
+                .filter(layer -> layer.target() == VectorLayer.Target.RELATION)
+                .forEach(layer -> layer.remove(id));
+    }
+
+    /** Remove entity-scoped opinions and vector rows without changing topology. */
+    public UnifiedGraph clearEntityAnalysisRows(String id) {
+        Objects.requireNonNull(id, "id");
+        entityOpinions.remove(id);
+        vectorLayers.values().stream()
+                .filter(layer -> layer.target() == VectorLayer.Target.ENTITY)
+                .forEach(layer -> layer.remove(id));
         return this;
     }
 
@@ -563,27 +618,84 @@ public final class UnifiedGraph implements ReasoningGraph {
 
     /** Save this graph to a single file (primary embeddings written as {@link Dtype#F32}). */
     public void save(Path file) throws IOException {
-        UnifiedGraphWriter.write(this, file, Dtype.F32);
+        save(file, Dtype.F32, KGraphCompatibilityPolicy.portableDefault());
     }
 
     /** Save this graph to a single file with an explicit primary-embedding dtype. */
     public void save(Path file, Dtype primaryVectorDtype) throws IOException {
-        UnifiedGraphWriter.write(this, file, primaryVectorDtype);
+        save(file, primaryVectorDtype, KGraphCompatibilityPolicy.portableDefault());
+    }
+
+    /** Save with an explicit portable-v2 versus compact-v3 compatibility policy. */
+    public void save(Path file, KGraphCompatibilityPolicy policy) throws IOException {
+        save(file, Dtype.F32, policy);
+    }
+
+    /** Save with explicit vector dtype and compatibility policy. */
+    public void save(
+            Path file, Dtype primaryVectorDtype, KGraphCompatibilityPolicy policy) throws IOException {
+        Objects.requireNonNull(policy, "policy");
+        if (policy == KGraphCompatibilityPolicy.COMPACT_V3) {
+            UnifiedGraphWriter.writeCompact(this, file, primaryVectorDtype);
+        } else {
+            UnifiedGraphWriter.write(this, file, primaryVectorDtype);
+        }
+    }
+
+    /**
+     * Save using the reader-first v3 compact-link topology. Existing {@code save} methods continue
+     * to write v2 until every deployed/mobile reader understands v3.
+     */
+    public void saveCompact(Path file) throws IOException {
+        save(file, Dtype.F32, KGraphCompatibilityPolicy.canonicalLocal());
+    }
+
+    /** Save using v3 compact-link topology with an explicit primary-embedding dtype. */
+    public void saveCompact(Path file, Dtype primaryVectorDtype) throws IOException {
+        save(file, primaryVectorDtype, KGraphCompatibilityPolicy.canonicalLocal());
     }
 
     /** Save this graph to a stream (the stream is flushed but not closed). */
     public void save(OutputStream out) throws IOException {
-        UnifiedGraphWriter.write(this, out, Dtype.F32);
+        save(out, Dtype.F32, KGraphCompatibilityPolicy.portableDefault());
     }
 
     /** Save this graph to a stream with an explicit primary-embedding dtype. */
     public void save(OutputStream out, Dtype primaryVectorDtype) throws IOException {
-        UnifiedGraphWriter.write(this, out, primaryVectorDtype);
+        save(out, primaryVectorDtype, KGraphCompatibilityPolicy.portableDefault());
+    }
+
+    /** Save to a stream with an explicit compatibility policy. */
+    public void save(OutputStream out, KGraphCompatibilityPolicy policy) throws IOException {
+        save(out, Dtype.F32, policy);
+    }
+
+    /** Save to a stream with explicit vector dtype and compatibility policy. */
+    public void save(
+            OutputStream out, Dtype primaryVectorDtype, KGraphCompatibilityPolicy policy) throws IOException {
+        Objects.requireNonNull(policy, "policy");
+        if (policy == KGraphCompatibilityPolicy.COMPACT_V3) {
+            UnifiedGraphWriter.writeCompact(this, out, primaryVectorDtype);
+        } else {
+            UnifiedGraphWriter.write(this, out, primaryVectorDtype);
+        }
+    }
+
+    /** Save a v3 compact-link archive to a stream (flushed but not closed). */
+    public void saveCompact(OutputStream out) throws IOException {
+        save(out, Dtype.F32, KGraphCompatibilityPolicy.canonicalLocal());
+    }
+
+    /** Save a v3 compact-link archive to a stream with an explicit primary-embedding dtype. */
+    public void saveCompact(OutputStream out, Dtype primaryVectorDtype) throws IOException {
+        save(out, primaryVectorDtype, KGraphCompatibilityPolicy.canonicalLocal());
     }
 
     /** Load a unified graph from a file written by {@link #save(Path)}. */
     public static UnifiedGraph load(Path file) throws IOException {
-        return UnifiedGraphReader.read(file);
+        UnifiedGraph graph = UnifiedGraphReader.read(file);
+        UnifiedGraphMutationJournal.apply(file, graph);
+        return graph;
     }
 
     /** Load a unified graph from a stream written by {@link #save(OutputStream)}. */

@@ -36,16 +36,15 @@ import java.util.Objects;
  * Core tool handlers: {@code graph_load}, {@code graph_save}, {@code graph_reasoning_query},
  * and the {@code tools_catalog} self-discovery tool.
  *
- * <p>These are the only fully-implemented handlers in this initial module. The other three
- * handler groups ({@link GroundingHandlers}, {@link InferenceHandlers},
- * {@link AnalyticsHandlers}) are stubs that parallel agents will fill in.</p>
+ * <p>The remaining local graph capabilities are registered by {@link GroundingHandlers},
+ * {@link InferenceHandlers}, and {@link AnalyticsHandlers}; all share the same session graph
+ * and reflection-free JSON catalog.</p>
  *
  * <h3>JSON contract for {@code graph_reasoning_query}</h3>
- * <p>Input fields (all optional except {@code operation}):</p>
+ * <p>Input fields are optional. Without {@code operation}, a question executes SEARCH and an
+ * empty request returns CAPABILITIES:</p>
  * <ul>
- *   <li>{@code operation} — CAPABILITIES, OVERVIEW, SCHEMA, SEARCH, RELATIONS, DESCRIBE,
- *       NEIGHBORS, PATH, TIMELINE, FACTS, SIMILAR, VERIFY, WHY, WHY_NOT, RANK, ASSETS,
- *       ARTIFACT, MODELS, CALCULATE, SCENARIO, SOLVE_TARGET</li>
+ *   <li>{@code operation} — one of the read-only operations returned by CAPABILITIES</li>
  *   <li>{@code entityId}, {@code targetId} — entity ids or search phrases</li>
  *   <li>{@code direction} — OUTGOING / INCOMING / BOTH (forward/reverse aliases accepted)</li>
  *   <li>{@code relationTypes} — JSON array of relation type strings</li>
@@ -58,6 +57,17 @@ import java.util.Objects;
  * {@code path[]}, {@code capabilities[]}, {@code guidance[]}, {@code data}, {@code trace}.</p>
  */
 public final class CoreHandlers {
+
+    private static final List<GraphQueryEngine.Capability> QUERY_CAPABILITIES =
+            GraphQueryEngine.capabilityContract().stream()
+                    .filter(capability -> switch (GraphQueryEngine.Intent.valueOf(capability.intent())) {
+                        case MODELS, CALCULATE, SCENARIO, SOLVE_TARGET -> false;
+                        default -> true;
+                    })
+                    .toList();
+    private static final List<String> QUERY_OPERATIONS = QUERY_CAPABILITIES.stream()
+            .map(GraphQueryEngine.Capability::intent)
+            .toList();
 
     private final GraphQueryEngine engine;
 
@@ -96,10 +106,10 @@ public final class CoreHandlers {
         builder.handler("graph_reasoning_query",
                 schemaFor("graph_reasoning_query",
                         "Execute a reasoning query against the loaded graph. Use operation=CAPABILITIES " +
-                        "to discover supported operations and required fields. Supports: " +
-                        "CAPABILITIES, OVERVIEW, SCHEMA, SEARCH, RELATIONS, DESCRIBE, NEIGHBORS, " +
-                        "PATH, TIMELINE, FACTS, SIMILAR, VERIFY, WHY, WHY_NOT, RANK, ASSETS, ARTIFACT.",
-                        List.of("operation"),
+                        "to discover supported operations and required fields. When operation is omitted, " +
+                        "question/queryText executes SEARCH and an empty request returns CAPABILITIES. Supports: " +
+                        String.join(", ", QUERY_OPERATIONS) + ".",
+                        List.of(),
                         buildQuerySchema()),
                 (session, args) -> core.handleQuery(session, args));
 
@@ -154,13 +164,21 @@ public final class CoreHandlers {
     }
 
     private String handleQuery(LocalReasoningSession session, Map<String, Object> args) {
-        // Parse operation
+        String queryText = firstNonBlank(str(args, "queryText"), str(args, "question"));
         String opStr = str(args, "operation");
+        if (opStr == null || opStr.isBlank()) {
+            opStr = queryText == null ? "CAPABILITIES" : "SEARCH";
+        }
         GraphQueryEngine.Intent intent;
         try {
             intent = parseIntent(opStr);
         } catch (IllegalArgumentException e) {
             return error(e.getMessage());
+        }
+        if (!QUERY_OPERATIONS.contains(intent.name())) {
+            return error("operation " + intent
+                    + " is not supported by the local graph query transport. "
+                    + "Use operation=CAPABILITIES.");
         }
 
         // Parse direction
@@ -189,7 +207,6 @@ public final class CoreHandlers {
         // Text
         String entityId = blankToNull(str(args, "entityId"));
         String targetId = blankToNull(str(args, "targetId"));
-        String queryText = firstNonBlank(str(args, "queryText"), str(args, "question"));
 
         GraphQueryEngine.Query query = new GraphQueryEngine.Query(
                 intent,
@@ -204,6 +221,13 @@ public final class CoreHandlers {
                 queryText);
 
         GraphQueryEngine.Result result = engine.query(session.graph(), query);
+        if (intent == GraphQueryEngine.Intent.CAPABILITIES) {
+            result = new GraphQueryEngine.Result(
+                    result.status(), result.intent(),
+                    "Supports the local read-only graph query contract.",
+                    result.entities(), result.relations(), result.path(), QUERY_CAPABILITIES,
+                    result.guidance(), result.data(), result.resolutions(), result.trace());
+        }
         return serializeResult(result);
     }
 
@@ -459,10 +483,7 @@ public final class CoreHandlers {
         Map<String, Object> props = new LinkedHashMap<>();
         props.put("operation", enumProp(
                 "Reasoning operation to perform. Use CAPABILITIES to discover all options.",
-                List.of("CAPABILITIES","OVERVIEW","SCHEMA","SEARCH","RELATIONS","DESCRIBE",
-                        "NEIGHBORS","PATH","TIMELINE","FACTS","SIMILAR","VERIFY","WHY",
-                        "WHY_NOT","RANK","ASSETS","ARTIFACT","MODELS","CALCULATE",
-                        "SCENARIO","SOLVE_TARGET")));
+                QUERY_OPERATIONS));
         props.put("entityId", stringProp(
                 "Entity id or phrase to resolve. Required for: DESCRIBE, NEIGHBORS, PATH, SIMILAR, VERIFY, WHY, WHY_NOT."));
         props.put("targetId", stringProp(

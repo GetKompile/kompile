@@ -10,6 +10,7 @@ import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.RegistryService;
 import ai.kompile.staging.conversion.ConversionArtifact;
 import ai.kompile.staging.conversion.ConversionResult;
+import ai.kompile.staging.download.StagingCancellation;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.LocalDownloader;
 import ai.kompile.staging.download.TextModelAssetMap;
@@ -93,7 +94,7 @@ class StagingServiceChatTemplateTest {
         sourceDir = tempDir.resolve("source-models");
         Files.createDirectories(sourceDir);
 
-        when(conversionService.convert(any(), any(), eq("gguf"), any()))
+        when(conversionService.convert(any(), any(), eq("gguf"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     Files.write(outputPath, new byte[100]);

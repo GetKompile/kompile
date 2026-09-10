@@ -45,6 +45,11 @@ public class KnowledgeGraphBuilderController {
     private final GraphBuilderRegistry builderRegistry;
     private final ExtractionJobService jobService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ai.kompile.knowledgegraph.builder.service.GraphBuildingIntegrationService integrationService;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ai.kompile.knowledgegraph.service.KnowledgeGraphService knowledgeGraphService;
+
     // ==================== Builder Discovery ====================
 
     /**
@@ -106,6 +111,10 @@ public class KnowledgeGraphBuilderController {
      */
     @PostMapping("/jobs")
     public ResponseEntity<ExtractionJobResponse> startJob(@RequestBody StartJobRequest request) {
+        if (request.factSheetId() == null || request.factSheetId() <= 0) {
+            return ResponseEntity.badRequest().body(
+                    new ExtractionJobResponse(null, "A positive factSheetId is required for managed jobs"));
+        }
         // Validate builder exists
         if (!builderRegistry.hasBuilder(request.builderType()) &&
             builderRegistry.getBuilderByTypeString(request.builderType()).isEmpty()) {
@@ -119,14 +128,30 @@ public class KnowledgeGraphBuilderController {
                     new ExtractionJobResponse(null, "A job is already running for this fact sheet"));
         }
 
-        // Create job
+        if (integrationService == null) {
+            return ResponseEntity.status(503).body(new ExtractionJobResponse(null, "Extraction dispatcher is unavailable"));
+        }
+        List<ai.kompile.core.retrievers.RetrievedDoc> chunks;
+        try {
+            chunks = ai.kompile.knowledgegraph.builder.service.ManagedExtractionInputs.resolve(
+                    knowledgeGraphService, request.factSheetId(), request.chunkIds(), request.chunkTexts());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(new ExtractionJobResponse(null, e.getMessage()));
+        }
+        // Persist before dispatch so polling always addresses the actual running job.
         ExtractionJob job = jobService.createJob(
                 request.factSheetId(),
                 request.builderType(),
                 request.config()
         );
 
-        log.info("Created extraction job: {} for fact sheet: {}", job.getJobId(), request.factSheetId());
+        try {
+            integrationService.runExistingJobAsync(job, chunks, request.config(), null);
+        } catch (RuntimeException e) {
+            jobService.failJob(job.getJobId(), "Extraction dispatch failed");
+            return ResponseEntity.status(503).body(new ExtractionJobResponse(job.getJobId(), "Extraction dispatch failed"));
+        }
+        log.info("Dispatched extraction job: {} for fact sheet: {}", job.getJobId(), request.factSheetId());
 
         return ResponseEntity.ok(ExtractionJobResponse.from(job));
     }
@@ -161,6 +186,7 @@ public class KnowledgeGraphBuilderController {
     public ResponseEntity<Map<String, Object>> cancelJob(@PathVariable("jobId") String jobId) {
         try {
             ExtractionJob job = jobService.cancelJob(jobId);
+            if (integrationService != null) integrationService.requestCancellation(jobId);
             return ResponseEntity.ok(Map.of(
                     "cancelled", true,
                     "jobId", job.getJobId(),
@@ -379,8 +405,13 @@ public class KnowledgeGraphBuilderController {
             Long factSheetId,
             String builderType,
             BuilderConfig config,
-            List<String> chunkIds
-    ) {}
+            List<String> chunkIds,
+            List<ai.kompile.core.retrievers.RetrievedDoc> chunkTexts
+    ) {
+        public StartJobRequest(Long factSheetId, String builderType, BuilderConfig config, List<String> chunkIds) {
+            this(factSheetId, builderType, config, chunkIds, null);
+        }
+    }
 
     public record RejectRequest(
             String reason,

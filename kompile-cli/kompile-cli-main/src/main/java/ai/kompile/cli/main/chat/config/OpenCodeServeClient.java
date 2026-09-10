@@ -7,6 +7,8 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.cli.main.chat.PassthroughStreamParser;
+import ai.kompile.cli.main.chat.ChatSessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -23,8 +25,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -39,13 +44,22 @@ import java.util.function.Consumer;
  */
 final class OpenCodeServeClient implements AutoCloseable {
 
+    interface ActivityListener {
+        void onToolStart(String callId, String name, String input);
+        void onToolComplete(String callId, String name, String output,
+                            int exitCode, boolean error);
+        void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
+    }
+
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration TURN_TIMEOUT = Duration.ofMinutes(30);
 
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ObjectMapper objectMapper;
     private final Path workingDirectory;
     private final HttpClient httpClient;
+    private final ProviderConnectivityPolicy connectivityPolicy;
     private final StringBuilder serverOutput = new StringBuilder();
 
     private Process serverProcess;
@@ -57,8 +71,9 @@ final class OpenCodeServeClient implements AutoCloseable {
     OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory) {
         this.objectMapper = objectMapper;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
+        this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
+                .connectTimeout(connectivityPolicy.connectTimeout())
                 .build();
     }
 
@@ -66,6 +81,7 @@ final class OpenCodeServeClient implements AutoCloseable {
                         HttpClient httpClient, String baseUrl, String sessionId) {
         this.objectMapper = objectMapper;
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
+        this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
         this.sessionId = sessionId;
@@ -74,6 +90,12 @@ final class OpenCodeServeClient implements AutoCloseable {
     /** Send one turn through the native OpenCode session. */
     synchronized String send(String model, String variant, String systemPrompt,
                               String userMessage, Consumer<String> output) throws Exception {
+        return send(model, variant, systemPrompt, userMessage, output, null);
+    }
+
+    synchronized String send(String model, String variant, String systemPrompt,
+                              String userMessage, Consumer<String> output,
+                              ActivityListener activityListener) throws Exception {
         if (closed) {
             throw new IllegalStateException("OpenCode chat transport is closed");
         }
@@ -107,18 +129,35 @@ final class OpenCodeServeClient implements AutoCloseable {
         Process turn = builder.start();
         activeTurnProcess = turn;
         StringBuilder rawOutput = new StringBuilder();
+        StringBuilder assistantText = new StringBuilder();
         StringBuilder errorOutput = new StringBuilder();
-        Thread stderrReader = readLines(turn.getErrorStream(), errorOutput, null);
+        PassthroughStreamParser streamParser = new PassthroughStreamParser();
+        Set<String> startedCalls = new HashSet<>();
+        Set<String> completedCalls = new HashSet<>();
+        AtomicLong lastActivityNanos = new AtomicLong(System.nanoTime());
+        Thread stderrReader = readLines(turn.getErrorStream(), errorOutput,
+                ignored -> lastActivityNanos.set(System.nanoTime()));
         Thread stdoutReader = readLines(
                 turn.getInputStream(), rawOutput, line -> {
-                    String text = extractTextFromJsonLine(line);
-                    if (!text.isBlank() && output != null) output.accept(text);
+                    lastActivityNanos.set(System.nanoTime());
+                    processProviderLine(line, streamParser, assistantText, output,
+                            activityListener, startedCalls, completedCalls);
                 }, Integer.MAX_VALUE);
 
         try {
-            if (!turn.waitFor(TURN_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
-                turn.destroyForcibly();
-                throw new IllegalStateException("OpenCode turn timed out");
+            long turnDeadline = System.nanoTime() + TURN_TIMEOUT.toNanos();
+            while (!turn.waitFor(250, TimeUnit.MILLISECONDS)) {
+                long now = System.nanoTime();
+                if (now - lastActivityNanos.get()
+                        >= connectivityPolicy.subprocessIdleTimeout().toNanos()) {
+                    turn.destroyForcibly();
+                    throw new IllegalStateException("OpenCode provider connection was idle for "
+                            + connectivityPolicy.subprocessIdleTimeout().toMinutes() + " minutes");
+                }
+                if (now >= turnDeadline) {
+                    turn.destroyForcibly();
+                    throw new IllegalStateException("OpenCode turn timed out");
+                }
             }
             stdoutReader.join(TimeUnit.SECONDS.toMillis(2));
             stderrReader.join(TimeUnit.SECONDS.toMillis(2));
@@ -134,12 +173,66 @@ final class OpenCodeServeClient implements AutoCloseable {
             activeTurnProcess = null;
         }
 
-        String text = extractText(objectMapper, rawOutput.toString());
+        String text = assistantText.toString().trim();
         if (text.isBlank()) {
             throw new IllegalStateException("OpenCode returned no assistant text"
                     + (errorOutput.isEmpty() ? "" : ": " + trimForError(errorOutput.toString())));
         }
         return text;
+    }
+
+    void processProviderLine(
+            String line,
+            PassthroughStreamParser parser,
+            StringBuilder assistantText,
+            Consumer<String> output,
+            ActivityListener activity,
+            Set<String> startedCalls,
+            Set<String> completedCalls) {
+        List<PassthroughStreamParser.PassthroughEvent> events =
+                parser.parseOpenCodeLineMulti(line);
+        String callId = openCodeCallId(line);
+        for (PassthroughStreamParser.PassthroughEvent event : events) {
+            if (event instanceof PassthroughStreamParser.TextChunk text) {
+                assistantText.append(text.text());
+                if (output != null && !text.text().isEmpty()) output.accept(text.text());
+            } else if (event instanceof PassthroughStreamParser.ToolUse tool && activity != null) {
+                String effectiveCallId = callId.isBlank() ? tool.name() : callId;
+                if (startedCalls.add(effectiveCallId)) {
+                    activity.onToolStart(effectiveCallId, tool.name(), tool.input());
+                }
+            } else if (event instanceof PassthroughStreamParser.ToolComplete tool
+                    && activity != null) {
+                String effectiveCallId = callId.isBlank() ? tool.name() : callId;
+                if (completedCalls.add(effectiveCallId)) {
+                    activity.onToolComplete(effectiveCallId, tool.name(), tool.output(),
+                            tool.exitCode(), tool.error());
+                }
+            } else if (event instanceof PassthroughStreamParser.TokenUsage usage
+                    && activity != null) {
+                activity.onTokenUsage(usage.inputTokens(), usage.outputTokens(),
+                        usage.cacheReadTokens(), usage.cacheCreationTokens());
+            } else if (event instanceof PassthroughStreamParser.TurnComplete complete
+                    && activity != null
+                    && (complete.inputTokens() > 0 || complete.outputTokens() > 0
+                    || complete.cacheReadTokens() > 0 || complete.cacheCreationTokens() > 0)) {
+                activity.onTokenUsage(complete.inputTokens(), complete.outputTokens(),
+                        complete.cacheReadTokens(), complete.cacheCreationTokens());
+            }
+        }
+    }
+
+    private String openCodeCallId(String line) {
+        try {
+            JsonNode part = objectMapper.readTree(line).path("part");
+            for (String field : List.of("callID", "call_id", "id")) {
+                String id = part.path(field).asText("");
+                if (!id.isBlank()) return id;
+            }
+        } catch (Exception ignored) {
+            // Non-JSON output has no provider call id.
+        }
+        return "";
     }
 
     /** Ask the provider-owned OpenCode session to compact itself. */
@@ -270,19 +363,6 @@ final class OpenCodeServeClient implements AutoCloseable {
         }
     }
 
-    private String extractTextFromJsonLine(String line) {
-        if (line == null || line.isBlank()) {
-            return "";
-        }
-        try {
-            StringBuilder text = new StringBuilder();
-            collectText(objectMapper.readTree(line), text);
-            return text.toString();
-        } catch (Exception ignored) {
-            return "";
-        }
-    }
-
     private static void collectText(JsonNode node, StringBuilder text) {
         if (node == null) {
             return;
@@ -366,14 +446,14 @@ final class OpenCodeServeClient implements AutoCloseable {
                 + trimForError(serverOutput.toString()));
     }
 
-    private static Thread readLines(java.io.InputStream stream, StringBuilder sink,
+    private Thread readLines(java.io.InputStream stream, StringBuilder sink,
                                     Consumer<String> eachLine) {
         return readLines(stream, sink, eachLine, 8000);
     }
 
-    private static Thread readLines(java.io.InputStream stream, StringBuilder sink,
+    private Thread readLines(java.io.InputStream stream, StringBuilder sink,
                                     Consumer<String> eachLine, int maxChars) {
-        Thread thread = new Thread(() -> {
+        Thread thread = new Thread(sessionContext.wrap(() -> {
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8))) {
                 String line;
@@ -390,7 +470,7 @@ final class OpenCodeServeClient implements AutoCloseable {
             } catch (IOException ignored) {
                 // Process shutdown closes the stream.
             }
-        }, "kompile-opencode-output");
+        }), "kompile-opencode-output");
         thread.setDaemon(true);
         thread.start();
         return thread;

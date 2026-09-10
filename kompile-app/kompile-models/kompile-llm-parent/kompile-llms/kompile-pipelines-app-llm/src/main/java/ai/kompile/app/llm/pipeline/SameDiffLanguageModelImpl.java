@@ -240,10 +240,10 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 .messages(messages)
                 .tools(tools)
                 .addGenerationPrompt(request.addGenerationPrompt())
-                .toolDefinitionFormat(request.toolDefinitionFormat()
-                        == StructuredChatLanguageModel.ToolDefinitionFormat.FLAT
-                        ? ChatTemplate.ToolDefinitionFormat.FLAT
-                        : ChatTemplate.ToolDefinitionFormat.STANDARD)
+                // Model-owned format wins: the loaded pipeline's chat template decides which
+                // tool shape it can render; the wire value is only a fallback for legacy
+                // request paths that carry no resolved model configuration.
+                .toolDefinitionFormat(resolveToolDefinitionFormat(request))
                 .toolCallFormat(switch (request.toolCallFormat()) {
                     case MODEL -> null;
                     case NATIVE -> ChatTemplate.ToolCallFormat.NATIVE;
@@ -275,6 +275,26 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 outputBlocks,
                 calls,
                 result.getParseErrors());
+    }
+
+    /**
+     * The loaded pipeline's model-owned tool definition format wins over the per-request
+     * wire hint. The model's chat template is the only consumer of the rendered tool
+     * definitions, so it must decide the shape (see Gemma's wrapped-function declarations,
+     * which fail to render flat definitions with "undefined value").
+     */
+    private ChatTemplate.ToolDefinitionFormat resolveToolDefinitionFormat(
+            StructuredChatLanguageModel.Request request) {
+        LoadedModel current = this.loaded;
+        if (current != null
+                && current.backend instanceof GenerationPipelineBackend pipelineBackend
+                && pipelineBackend.modelToolDefinitionFormat != null) {
+            return pipelineBackend.modelToolDefinitionFormat;
+        }
+        return request.toolDefinitionFormat()
+                == StructuredChatLanguageModel.ToolDefinitionFormat.FLAT
+                ? ChatTemplate.ToolDefinitionFormat.FLAT
+                : ChatTemplate.ToolDefinitionFormat.STANDARD;
     }
 
     private ChatGenerationResult generateChat(LoadedModel current,
@@ -503,11 +523,34 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
 
     private <T> T executeModelOperation(Callable<T> operation) {
         try {
-            return executeOnModelLane(operation);
+            T result = executeOnModelLane(operation);
+            trimGpuMemoryPoolsAfterOperation();
+            return result;
         } catch (RuntimeException | Error failure) {
+            trimGpuMemoryPoolsAfterOperation();
             throw failure;
         } catch (Exception failure) {
+            trimGpuMemoryPoolsAfterOperation();
             throw new IllegalStateException("SameDiff model execution failed", failure);
+        }
+    }
+
+    /**
+     * Trim CUDA memory pools after each model operation. Plan-owned buffers from a finished
+     * generation stay reserved in the CUDA pool; without a trim the reserved footprint
+     * ratchets upward across requests on the same serving child until the card is exhausted
+     * (observed: 11.7 GB → 22.4 GB over six generations on one child). The trim releases
+     * reserved-but-unused pool blocks only — live plan buffers and weights are untouched.
+     */
+    private static void trimGpuMemoryPoolsAfterOperation() {
+        try {
+            var nativeOps = Nd4j.getNativeOps();
+            int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+            for (int device = 0; device < numDevices; device++) {
+                nativeOps.trimMemoryPool(device);
+            }
+        } catch (Exception ignore) {
+            // best-effort: trimming is an optimization, never fail the operation for it
         }
     }
 
@@ -607,6 +650,26 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     public int getDspFrozenCount() { return this.dspFrozenCount; }
     public String getDspPlanReport() { return this.dspPlanReport; }
     public Map<String, Object> getDspCompilationStats() { return this.dspCompilationStats; }
+
+    /**
+     * Cross-request KV prefix-cache observability snapshot for the loaded model.
+     *
+     * <p>Returns counters from the live {@code KvPrefixBlockPool} (blockSize,
+     * residentBlocks, currentBytes, totalLookups, totalHits, hitRate,
+     * totalHitTokens, totalStoredTokens) when the loaded backend owns a prefix
+     * pool, {@code {"enabled": false}} when the model loaded without prefix
+     * caching, and {@code null} when no model is loaded. Consumed by the serving
+     * {@code /api/llm/status} endpoint and {@link LlmObservabilityService} for
+     * cache hit-rate monitoring.</p>
+     */
+    public Map<String, Object> getPrefixCacheStats() {
+        LoadedModel current = this.loaded;
+        if (current == null) return null;
+        if (current.backend instanceof GenerationPipelineBackend pipelineBackend) {
+            return pipelineBackend.prefixCacheStats();
+        }
+        return Map.of("enabled", false);
+    }
 
     // ==================== DSP diagnostics polling ====================
 
@@ -997,7 +1060,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 int continuationChunkTokens = validateContinuationChunkTokens(
                         intOpt(opts, "continuationChunkTokens",
                                 CONTINUATION_CHUNK_TOKENS_DEFAULT));
-
+                KvCacheStrategy kvCacheStrategy = kvCacheStrategyOpt(opts);
+                PrefixCacheOptions prefixCache = prefixCacheOptions(opts, kvCacheStrategy);
                 GenerationPipelineConfig pipelineConfig = GenerationPipelineConfig.builder()
                         .decoderPath(modelFile.toString())
                         .tokenizer(tokenizer)
@@ -1006,7 +1070,10 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         .maxNewTokens(maxNewTokens)
                         .maxPrefillLength(maxPrefillLength)
                         .maxKvCacheLength(intOpt(opts, "maxKvCacheLength", 0))
-                        .kvCacheStrategy(kvCacheStrategyOpt(opts))
+                        .kvCacheStrategy(kvCacheStrategy)
+                        .prefixCacheEnabled(prefixCache.enabled())
+                        .prefixCacheMaxBytes(prefixCache.maxBytes())
+                        .prefixCacheBlockSize(prefixCache.blockSize())
                         .graphOptimizerEnabled(booleanOpt(opts, "graphOptimizerEnabled", true))
                         .dspEnabled(booleanOpt(opts, "dspEnabled", true))
                         .prefillLastPositionLogitsEnabled(prefillLastPositionLogitsEnabled(opts))
@@ -1023,7 +1090,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                                 + "doSample={}, temperature={}, topK={}, topP={}, "
                                 + "repetitionPenalty={}, seed={}, eosTokenId={}, "
                                 + "maxOutputBlockTokens={}, structuredOutputTokenReserve={}, "
-                                + "continuation={}, continuationChunkTokens={})",
+                                + "continuation={}, continuationChunkTokens={}, prefixCache={}, "
+                                + "prefixCacheMaxBytes={}, prefixCacheBlockSize={})",
                         modelId, pipelineConfig.getKvCacheStrategy(),
                         pipelineConfig.isDspEnabled(), maxNewTokens,
                         effectiveChatTemplate == null ? "none" : "configured",
@@ -1038,7 +1106,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         eosTokenId,
                         pipelineConfig.getSamplingConfig().getMaxOutputBlockTokens(),
                         pipelineConfig.getSamplingConfig().getStructuredOutputTokenReserve(),
-                        continuationEnabled, continuationChunkTokens);
+                        continuationEnabled, continuationChunkTokens,
+                        prefixCache.enabled(), prefixCache.maxBytes(), prefixCache.blockSize());
                 logger.info(
                         "Thinking-mode sampling for '{}': doSample={}, temperature={}, topK={}, topP={}, "
                                 + "presencePenalty={}, repetitionPenalty={}",
@@ -1047,7 +1116,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         thinkingSampling.getPresencePenalty(), thinkingSampling.getRepetitionPenalty());
                 return new GenerationPipelineBackend(
                         pipeline, tokenizer, effectiveChatTemplate, maxNewTokens,
-                        continuationEnabled, continuationChunkTokens, thinkingSampling);
+                        continuationEnabled, continuationChunkTokens, thinkingSampling,
+                        toolDefinitionFormatOpt(opts));
             } catch (Exception e) {
                 try {
                     tokenizer.close();
@@ -1421,6 +1491,28 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         }
     }
 
+    record PrefixCacheOptions(boolean enabled, long maxBytes, int blockSize) {
+    }
+
+    static PrefixCacheOptions prefixCacheOptions(
+            Map<String, Object> opts, KvCacheStrategy kvCacheStrategy) {
+        boolean enabled = booleanOpt(opts, "prefixCacheEnabled", false);
+        Long configuredMaxBytes = nullableLongOpt(opts, "prefixCacheMaxBytes");
+        long maxBytes = configuredMaxBytes == null ? 0L : configuredMaxBytes;
+        int blockSize = intOpt(opts, "prefixCacheBlockSize", 0);
+        if (maxBytes < 0L) {
+            throw new IllegalArgumentException("prefixCacheMaxBytes must be >= 0: " + maxBytes);
+        }
+        if (blockSize < 0) {
+            throw new IllegalArgumentException("prefixCacheBlockSize must be >= 0: " + blockSize);
+        }
+        if (enabled && kvCacheStrategy != KvCacheStrategy.STATIC) {
+            throw new IllegalArgumentException(
+                    "prefixCacheEnabled requires kvCacheType=STATIC, got " + kvCacheStrategy);
+        }
+        return new PrefixCacheOptions(enabled, maxBytes, blockSize);
+    }
+
     static boolean prefillLastPositionLogitsEnabled(Map<String, Object> opts) {
         return booleanOpt(opts, "prefillLastPositionLogitsEnabled", true);
     }
@@ -1524,8 +1616,24 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         private final String chatTemplate;
         private final int maxNewTokens;
         private final boolean continuationEnabled;
+        /**
+         * Snapshot of the cross-request prefix-cache pool counters ("enabled": false
+         * when the pipeline was created without prefix caching). Refreshed on each
+         * call so status polling always reports live values.
+         */
+        Map<String, Object> prefixCacheStats() {
+            var pool = pipeline != null ? pipeline.getPrefixBlockPool() : null;
+            return pool != null ? pool.toStatsMap() : Map.of("enabled", false);
+        }
         private final int continuationChunkTokens;
         private final SamplingConfig thinkingSampling;
+        /**
+         * Model-owned tool definition shape resolved at load time (model opts, default STANDARD).
+         * Takes precedence over any per-request wire hint: the loaded pipeline's chat template is
+         * the authority on which tool shape it can render (Gemma requires the wrapped STANDARD
+         * shape; flat templates tolerate both because they just dump the JSON).
+         */
+        private final ChatTemplate.ToolDefinitionFormat modelToolDefinitionFormat;
         private boolean closed;
 
         private GenerationPipelineBackend(
@@ -1535,7 +1643,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 int maxNewTokens,
                 boolean continuationEnabled,
                 int continuationChunkTokens,
-                SamplingConfig thinkingSampling) {
+                SamplingConfig thinkingSampling,
+                ChatTemplate.ToolDefinitionFormat modelToolDefinitionFormat) {
             this.pipeline = pipeline;
             this.tokenizer = tokenizer;
             this.chatTemplate = chatTemplate;
@@ -1545,6 +1654,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                     validateContinuationChunkTokens(continuationChunkTokens);
             this.thinkingSampling = Objects.requireNonNull(
                     thinkingSampling, "thinkingSampling");
+            this.modelToolDefinitionFormat = modelToolDefinitionFormat;
         }
 
         @Override

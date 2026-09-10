@@ -5,12 +5,19 @@
  */
 package ai.kompile.crawl.graph;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.utils.HashUtils;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +32,10 @@ import java.util.Objects;
  * or redefining definitions that earlier windows already used.</p>
  */
 public final class CrawlOntology {
+
+    private static final ObjectMapper FINGERPRINT_MAPPER = JsonUtils.newStandardMapper()
+            .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
 
     public record UpdateResult(
             boolean valid,
@@ -42,7 +53,8 @@ public final class CrawlOntology {
     private volatile long revision;
 
     public CrawlOntology(GraphSchema initialSchema) {
-        this.current = copySchema(initialSchema);
+        GraphSchema canonical = canonicalize(initialSchema);
+        this.current = canonical == null ? copySchema(null) : canonical;
         this.revision = hasDefinitions(this.current) ? 1L : 0L;
     }
 
@@ -53,6 +65,26 @@ public final class CrawlOntology {
 
     public long revision() {
         return revision;
+    }
+
+    /** Returns a stable content hash for the current frozen schema snapshot. */
+    public String contentFingerprint() {
+        return contentFingerprint(current);
+    }
+
+    /**
+     * Returns a stable SHA-256 hash of a schema's canonical JSON representation.
+     * List order is treated as non-semantic, while null and empty vocabulary fields remain distinct.
+     */
+    public static String contentFingerprint(GraphSchema schema) {
+        if (schema == null) {
+            return null;
+        }
+        try {
+            return HashUtils.sha256Hex(FINGERPRINT_MAPPER.writeValueAsBytes(canonicalize(schema)));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Could not fingerprint graph schema", exception);
+        }
     }
 
     /**
@@ -110,9 +142,24 @@ public final class CrawlOntology {
         addTextValues(patterns, additions == null ? null : additions.getPatterns());
 
         return new GraphSchema(
-                nodes.isEmpty() ? null : List.copyOf(nodes.values()),
-                relationships.isEmpty() ? null : List.copyOf(relationships.values()),
-                patterns.isEmpty() ? null : List.copyOf(patterns.values()));
+                declaredNodes(established, additions)
+                        ? sortedNodes(nodes.values()) : null,
+                declaredRelationships(established, additions)
+                        ? sortedRelationships(relationships.values()) : null,
+                declaredPatterns(established, additions)
+                        ? sortedStrings(patterns.values()) : null);
+    }
+
+    /** Returns a defensive, deterministically ordered schema without changing any source object. */
+    static GraphSchema canonicalize(GraphSchema schema) {
+        if (schema == null) {
+            return null;
+        }
+        GraphSchema copy = copySchema(schema);
+        return new GraphSchema(
+                copy.getNodeTypes() == null ? null : sortedNodes(copy.getNodeTypes()),
+                copy.getRelationshipTypes() == null ? null : sortedRelationships(copy.getRelationshipTypes()),
+                copy.getPatterns() == null ? null : sortedStrings(copy.getPatterns()));
     }
 
     private static void addNodes(
@@ -133,7 +180,9 @@ public final class CrawlOntology {
                         existing.getLabel(),
                         hasText(existing.getDescription())
                                 ? existing.getDescription() : candidate.getDescription(),
-                        mergeProperties(existing.getProperties(), candidate.getProperties())));
+                        mergeProperties(existing.getProperties(), candidate.getProperties()),
+                        hasText(existing.getParentType())
+                                ? existing.getParentType() : candidate.getParentType()));
             }
         }
     }
@@ -159,7 +208,9 @@ public final class CrawlOntology {
                         hasText(existing.getDescription())
                                 ? existing.getDescription() : candidate.getDescription(),
                         mergeProperties(existing.getProperties(), candidate.getProperties()),
-                        mergeTextValues(existing.getAliases(), candidate.getAliases())));
+                        mergeTextValues(existing.getAliases(), candidate.getAliases()),
+                        hasText(existing.getConnectionFamily())
+                                ? existing.getConnectionFamily() : candidate.getConnectionFamily()));
             }
         }
     }
@@ -169,7 +220,12 @@ public final class CrawlOntology {
         Map<String, PropertyType> merged = new LinkedHashMap<>();
         addProperties(merged, established);
         addProperties(merged, additions);
-        return merged.isEmpty() ? null : List.copyOf(merged.values());
+        if (merged.isEmpty()) {
+            return (established != null || additions != null) ? List.of() : null;
+        }
+        List<PropertyType> values = new ArrayList<>(merged.values());
+        values.sort(CrawlOntology::compareProperties);
+        return List.copyOf(values);
     }
 
     private static void addProperties(
@@ -190,7 +246,7 @@ public final class CrawlOntology {
         Map<String, String> merged = new LinkedHashMap<>();
         addTextValues(merged, first);
         addTextValues(merged, second);
-        return merged.isEmpty() ? List.of() : List.copyOf(merged.values());
+        return merged.isEmpty() ? List.of() : sortedStrings(merged.values());
     }
 
     private static void addTextValues(Map<String, String> target, List<String> values) {
@@ -234,7 +290,8 @@ public final class CrawlOntology {
         return new NodeType(
                 source.getLabel(),
                 source.getDescription(),
-                copyProperties(source.getProperties()));
+                copyProperties(source.getProperties()),
+                source.getParentType());
     }
 
     private static RelationshipType copyRelationship(RelationshipType source) {
@@ -242,7 +299,13 @@ public final class CrawlOntology {
                 source.getType(),
                 source.getDescription(),
                 copyProperties(source.getProperties()),
-                source.getAliases() == null ? List.of() : List.copyOf(source.getAliases()));
+                source.getAliases() == null
+                        ? List.of()
+                        : source.getAliases().stream()
+                                .filter(Objects::nonNull)
+                                .sorted()
+                                .toList(),
+                source.getConnectionFamily());
     }
 
     private static List<PropertyType> copyProperties(List<PropertyType> values) {
@@ -255,7 +318,100 @@ public final class CrawlOntology {
                 copy.add(new PropertyType(value.getName(), value.getType()));
             }
         }
-        return copy.isEmpty() ? null : List.copyOf(copy);
+        copy.sort(CrawlOntology::compareProperties);
+        return List.copyOf(copy);
+    }
+
+    private static boolean declaredNodes(GraphSchema established, GraphSchema additions) {
+        return (established != null && established.getNodeTypes() != null)
+                || (additions != null && additions.getNodeTypes() != null);
+    }
+
+    private static boolean declaredRelationships(GraphSchema established, GraphSchema additions) {
+        return (established != null && established.getRelationshipTypes() != null)
+                || (additions != null && additions.getRelationshipTypes() != null);
+    }
+
+    private static boolean declaredPatterns(GraphSchema established, GraphSchema additions) {
+        return (established != null && established.getPatterns() != null)
+                || (additions != null && additions.getPatterns() != null);
+    }
+
+    private static List<NodeType> sortedNodes(Iterable<NodeType> values) {
+        List<NodeType> sorted = new ArrayList<>();
+        values.forEach(value -> sorted.add(copyNode(value)));
+        sorted.sort(CrawlOntology::compareNodes);
+        return List.copyOf(sorted);
+    }
+
+    private static List<RelationshipType> sortedRelationships(Iterable<RelationshipType> values) {
+        List<RelationshipType> sorted = new ArrayList<>();
+        values.forEach(value -> sorted.add(copyRelationship(value)));
+        sorted.sort(CrawlOntology::compareRelationships);
+        return List.copyOf(sorted);
+    }
+
+    private static List<String> sortedStrings(Iterable<String> values) {
+        List<String> sorted = new ArrayList<>();
+        values.forEach(value -> sorted.add(value));
+        sorted.sort(Comparator.nullsFirst(String::compareTo));
+        return List.copyOf(sorted);
+    }
+
+    private static int compareNodes(NodeType left, NodeType right) {
+        int comparison = compareStrings(left.getLabel(), right.getLabel());
+        if (comparison != 0) return comparison;
+        comparison = compareStrings(left.getParentType(), right.getParentType());
+        if (comparison != 0) return comparison;
+        comparison = compareStrings(left.getDescription(), right.getDescription());
+        if (comparison != 0) return comparison;
+        return compareProperties(left.getProperties(), right.getProperties());
+    }
+
+    private static int compareRelationships(RelationshipType left, RelationshipType right) {
+        int comparison = compareStrings(left.getType(), right.getType());
+        if (comparison != 0) return comparison;
+        comparison = compareStrings(left.getConnectionFamily(), right.getConnectionFamily());
+        if (comparison != 0) return comparison;
+        comparison = compareStrings(left.getDescription(), right.getDescription());
+        if (comparison != 0) return comparison;
+        comparison = compareProperties(left.getProperties(), right.getProperties());
+        if (comparison != 0) return comparison;
+        return compareStrings(left.getAliases(), right.getAliases());
+    }
+
+    private static int compareProperties(List<PropertyType> left, List<PropertyType> right) {
+        if (left == right) return 0;
+        if (left == null) return -1;
+        if (right == null) return 1;
+        int comparison = Integer.compare(left.size(), right.size());
+        for (int i = 0; comparison == 0 && i < left.size(); i++) {
+            comparison = compareProperties(left.get(i), right.get(i));
+        }
+        return comparison;
+    }
+
+    private static int compareProperties(PropertyType left, PropertyType right) {
+        if (left == right) return 0;
+        if (left == null) return -1;
+        if (right == null) return 1;
+        int comparison = compareStrings(left.getName(), right.getName());
+        return comparison != 0 ? comparison : compareStrings(left.getType(), right.getType());
+    }
+
+    private static int compareStrings(List<String> left, List<String> right) {
+        if (left == right) return 0;
+        if (left == null) return -1;
+        if (right == null) return 1;
+        int comparison = Integer.compare(left.size(), right.size());
+        for (int i = 0; comparison == 0 && i < left.size(); i++) {
+            comparison = compareStrings(left.get(i), right.get(i));
+        }
+        return comparison;
+    }
+
+    private static int compareStrings(String left, String right) {
+        return Comparator.nullsFirst(String::compareTo).compare(left, right);
     }
 
     private static boolean hasDefinitions(GraphSchema schema) {

@@ -541,6 +541,14 @@ class UiValidationTest {
     }
 
     @Test
+    fun onlyUnloadMayWaitForAnActiveGenerationToDrain() {
+        assertTrue(ImportOperationKind.MODEL_UNLOAD.permitsGenerationDrain)
+        ImportOperationKind.entries
+            .filterNot { it == ImportOperationKind.MODEL_UNLOAD }
+            .forEach { operation -> assertFalse(operation.permitsGenerationDrain) }
+    }
+
+    @Test
     fun runningImportBlocksASecondImport() {
         val reason = importBlockedReason(importBusy = true, generating = false)
 

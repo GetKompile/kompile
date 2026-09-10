@@ -6,6 +6,7 @@ import io.anserini.encoder.samediff.CosDprDistilSameDiffEncoder;
 import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
 import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.encoder.samediff.VlmImageEncoder;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.modelmanager.ModelConstants;
 import ai.kompile.modelmanager.ModelDescriptor;
@@ -188,6 +189,66 @@ public class AnseriniEncoderFactory {
         // Should not reach here, but just in case
         throw RetryableErrorClassifier.wrapWithRetryInfo(
                 "Model not found: " + modelIdentifier, null, false);
+    }
+
+    /** Explicit local-artifact configuration for an in-process generic dense encoder. */
+    public record InProcessEncoderConfig(
+            boolean doLowerCaseAndStripAccents,
+            int maxSequenceLength,
+            boolean addSpecialTokens,
+            boolean normalizeOutput,
+            GenericDenseSameDiffEncoder.PoolingStrategy poolingStrategy,
+            String inputPrefix,
+            int dimensions) {
+
+        public InProcessEncoderConfig {
+            if (maxSequenceLength <= 0) throw new IllegalArgumentException(
+                    "maxSequenceLength must be positive");
+            if (dimensions <= 0) throw new IllegalArgumentException(
+                    "dimensions must be positive");
+            poolingStrategy = poolingStrategy == null
+                    ? GenericDenseSameDiffEncoder.PoolingStrategy.AUTO : poolingStrategy;
+            inputPrefix = inputPrefix == null ? "" : inputPrefix;
+        }
+
+        public static InProcessEncoderConfig multilingualE5Small() {
+            return new InProcessEncoderConfig(
+                    false, 512, true, true,
+                    GenericDenseSameDiffEncoder.PoolingStrategy.MEAN,
+                    "query: ", 384);
+        }
+    }
+
+    /**
+     * Creates an in-process embedding model from explicit project-local artifacts.
+     * No registry, staging service, HTTP transport, or child process participates.
+     */
+    public static EmbeddingModel createInProcessEmbeddingModel(
+            String modelIdentifier,
+            java.nio.file.Path modelPath,
+            java.nio.file.Path tokenizerPath,
+            InProcessEncoderConfig config) throws IOException {
+        java.nio.file.Path model = modelPath.toAbsolutePath().normalize();
+        java.nio.file.Path tokenizer = tokenizerPath.toAbsolutePath().normalize();
+        if (!java.nio.file.Files.isRegularFile(model)) {
+            throw new IOException("Local encoder artifact does not exist: " + model);
+        }
+        if (!java.nio.file.Files.isRegularFile(tokenizer)) {
+            throw new IOException("Local encoder tokenizer does not exist: " + tokenizer);
+        }
+        InProcessEncoderConfig effective = java.util.Objects.requireNonNull(config, "config");
+        SameDiffEncoder<float[]> encoder = new GenericDenseSameDiffEncoder(
+                modelIdentifier, model.toString(), tokenizer.toString(),
+                null, null,
+                effective.doLowerCaseAndStripAccents(),
+                effective.maxSequenceLength(),
+                effective.addSpecialTokens(),
+                effective.normalizeOutput(),
+                effective.poolingStrategy(),
+                effective.inputPrefix(),
+                effective.dimensions());
+        return new InProcessAnseriniEmbeddingModel(
+                modelIdentifier, effective.dimensions(), encoder);
     }
 
     /**

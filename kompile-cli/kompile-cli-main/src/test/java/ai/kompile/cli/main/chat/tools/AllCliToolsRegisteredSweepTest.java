@@ -17,11 +17,15 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 
 import java.lang.reflect.Modifier;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -84,7 +88,7 @@ class AllCliToolsRegisteredSweepTest {
             Map.entry("ProcessManagementTool",
                     "Requires live BackgroundProcessManager; registered conditionally in factory"),
             Map.entry("EditCoordinatorTool",
-                    "Requires live EditCoordinator; registered in McpStdioCommand"),
+                    "Requires live CoordinationStateManager; registered conditionally in factory and MCP transports"),
             Map.entry("SemanticMemoryTool",
                     "Requires live SemanticMemoryEngine; registered in McpStdioCommand"),
             Map.entry("FileActivityTool",
@@ -94,7 +98,7 @@ class AllCliToolsRegisteredSweepTest {
             Map.entry("SidePanelTool",
                     "Requires live SidePanelManager; registered in ToolRegistryFactory"),
             Map.entry("LspTool",
-                    "Requires live LspCoordinator in McpStdioCommand; zero-arg in ToolRegistryFactory"),
+                    "Uses CoordinationStateManager when a live session supplies one"),
             Map.entry("RoleManagerTool",
                     "Requires live RoleManager; registered conditionally in ToolRegistryFactory"),
             Map.entry("TaskTool",
@@ -134,10 +138,6 @@ class AllCliToolsRegisteredSweepTest {
             Map.entry("EnforcerCheckTool",
                     "Internal enforcer check; not a public MCP endpoint"),
 
-            // SessionListTool — internal session management, not in public registry.
-            Map.entry("SessionListTool",
-                    "Internal session list tool; not exposed as public MCP endpoint"),
-
             // UnifiedCodeSearchTool / UnifiedSearchTool — experimental unified search;
             // replaced by CodeSearchTool + GrepTool combo in the registry.
             Map.entry("UnifiedCodeSearchTool",
@@ -145,17 +145,9 @@ class AllCliToolsRegisteredSweepTest {
             Map.entry("UnifiedSearchTool",
                     "Experimental unified search; not in public registry"),
 
-            // SkillManagerTool — skill management has its own surface.
-            Map.entry("SkillManagerTool",
-                    "Skill management wired through dedicated skill surface"),
-
             // RegisterProjectTool — project init tool registered via dedicated init flow.
             Map.entry("RegisterProjectTool",
                     "Project init tool; registered via dedicated project-init flow"),
-
-            // ResumeTool — conversation resume; special lifecycle tool.
-            Map.entry("ResumeTool",
-                    "Conversation resume lifecycle tool; not in generic registry"),
 
             // FetchResultTool — result-fetch meta-tool registered in McpStdioCommand directly.
             Map.entry("FetchResultTool",
@@ -165,43 +157,10 @@ class AllCliToolsRegisteredSweepTest {
             Map.entry("DictationTool",
                     "Registered in McpStdioCommand but not ToolRegistryFactory (no renderer in factory)"),
 
-            // ActivateToolsTool — dynamic tool activation; registered in McpStdioCommand.
+            // ActivateToolsTool is registered by both factories but requires a live
+            // DynamicToolManager, so the reflective zero-arg sweep cannot instantiate it.
             Map.entry("ActivateToolsTool",
-                    "Registered in McpStdioCommand; dynamic tool activation pathway"),
-
-            // ToolCallCatalogTool / ProjectConfigTool — registered in McpStdioCommand directly.
-            Map.entry("ToolCallCatalogTool",
-                    "Registered in McpStdioCommand via dedicated catalog section"),
-            Map.entry("ProjectConfigTool",
-                    "Registered in McpStdioCommand via dedicated project config section"),
-
-            // EnforcerConfigTool — config management, registered in McpStdioCommand.
-            Map.entry("EnforcerConfigTool",
-                    "Registered in McpStdioCommand; enforcer config management"),
-
-            // LocalCodeIndexTool / CodeSearchTool / CodeGraphTool — registered in McpStdioCommand.
-            Map.entry("LocalCodeIndexTool",
-                    "Registered in McpStdioCommand code-search section"),
-            Map.entry("CodeSearchTool",
-                    "Registered in McpStdioCommand code-search section"),
-            Map.entry("CodeGraphTool",
-                    "Registered in McpStdioCommand code-search section"),
-
-            // ServerModeTool — registered in McpStdioCommand, not ToolRegistryFactory.
-            Map.entry("ServerModeTool",
-                    "Registered in McpStdioCommand, not ToolRegistryFactory"),
-
-            // ConfigArchiveTool — registered in McpStdioCommand, not ToolRegistryFactory.
-            Map.entry("ConfigArchiveTool",
-                    "Registered in McpStdioCommand via config-archive section"),
-
-            // ExploreTool — registered in McpStdioCommand.
-            Map.entry("ExploreTool",
-                    "Registered in McpStdioCommand, not ToolRegistryFactory"),
-
-            // TestMilestoneTool — internal milestone tracking registered in McpStdioCommand.
-            Map.entry("TestMilestoneTool",
-                    "Internal test-milestone tool registered in McpStdioCommand")
+                    "Factory/MCP meta-tool; excluded from reflective zero-arg construction")
     );
 
     /**
@@ -255,6 +214,35 @@ class AllCliToolsRegisteredSweepTest {
                 /* chatConfig */ null,
                 /* roleManager */ null);
         return registry.ids();
+    }
+
+    @Test
+    void liveFactoryRegistersCoordinatorAndStableBundledTools(@TempDir Path tempDir) {
+        CoordinationStateManager coordinator = new CoordinationStateManager(
+                tempDir, "factory-parity", OM);
+        BackgroundProcessManager processManager = new BackgroundProcessManager(
+                "factory-parity", tempDir);
+        try {
+            ToolRegistry registry = ToolRegistryFactory.create(
+                    OM, DUMMY_BASE_URL, new AgentRegistry(), null, null,
+                    processManager, null, new RoleManager(tempDir), null,
+                    tempDir, coordinator);
+            Set<String> expected = Set.of(
+                    "edit_coordinator", "sessions", "explore",
+                    "config_archive", "project_config", "enforcer_config",
+                    "test_milestone", "code_search", "code_graph",
+                    "local_code_index", "tool_call_catalog", "server_mode",
+                    "skill_manager", "resume", "role_manager");
+            assertTrue(registry.ids().containsAll(expected),
+                    "Live chat registry is missing bundled tools: "
+                            + expected.stream().filter(id -> !registry.ids().contains(id)).toList());
+            assertTrue(registry.getDynamicToolManager().activateGroup("process")
+                            .contains("edit_coordinator"),
+                    "process activation must expose edit_coordinator");
+        } finally {
+            processManager.close();
+            coordinator.shutdown();
+        }
     }
 
     @Test

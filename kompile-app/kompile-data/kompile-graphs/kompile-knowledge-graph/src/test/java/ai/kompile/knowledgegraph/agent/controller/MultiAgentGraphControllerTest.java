@@ -16,6 +16,14 @@
 package ai.kompile.knowledgegraph.agent.controller;
 
 import ai.kompile.app.core.chunking.HtmlChunker;
+import ai.kompile.core.graphbuilder.BuilderConfig;
+import ai.kompile.knowledgegraph.builder.domain.ExtractionJob;
+import ai.kompile.knowledgegraph.builder.service.ExtractionJobService;
+import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.agent.controller.MultiAgentGraphController.ChunkInput;
+import ai.kompile.knowledgegraph.agent.controller.MultiAgentGraphController.ExtractionRequest;
+import ai.kompile.knowledgegraph.agent.controller.MultiAgentGraphController.HostExtractionRequest;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.AgentContribution;
 import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.GraphMergeStrategy;
@@ -40,6 +48,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.*;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -308,6 +318,145 @@ class MultiAgentGraphControllerTest {
                         .content(body))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.error").exists());
+    }
+
+    // ─── Host-native extraction bridge ────────────────────────────────────────
+
+    @Test
+    void prepareHostResolvesFullTextAndRejectsCrossSheetOrPreviewOnlySources() throws Exception {
+        KnowledgeGraphService store = mock(KnowledgeGraphService.class);
+        setField(controller, "knowledgeGraphService", store);
+        // Matrix-backed graph nodes have no database row id; preserve the public graph id.
+        GraphNode source = GraphNode.builder().nodeId("c1").factSheetId(1L)
+                .contentPreview("Not the full source")
+                .metadataJson(objectMapper.writeValueAsString(Map.of("text", "Full authoritative source text")))
+                .build();
+        when(store.getNode("c1")).thenReturn(Optional.of(source));
+        String body = """
+                {"extraction":{"factSheetId":1,"mergeStrategy":"UNION"},"chunkIds":["c1"]}
+                """;
+        mockMvc.perform(post("/api/graph/multi-agent/prepare-host")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.chunkTexts[0].id").value("c1"))
+                .andExpect(jsonPath("$.chunkTexts[0].text").value("Full authoritative source text"))
+                .andExpect(jsonPath("$.credentials").value("host-only"));
+
+        source.setFactSheetId(2L);
+        mockMvc.perform(post("/api/graph/multi-agent/prepare-host")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        source.setFactSheetId(1L);
+        source.setMetadataJson("{}");
+        mockMvc.perform(post("/api/graph/multi-agent/prepare-host")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        verify(extractionService, never()).mergeHostGraph(any(), anyList(), any(), any(), any());
+    }
+
+    @Test
+    void completeHostPersistsValidatedGraphWithoutRerunningTheRemoteModel() throws Exception {
+        KnowledgeGraphService store = mock(KnowledgeGraphService.class);
+        setField(controller, "knowledgeGraphService", store);
+        Graph graph = hostGraph();
+        MergedGraphResult merged = new MergedGraphResult(graph, Map.of(), 2, 1, 10L, GraphMergeStrategy.UNION);
+        when(extractionService.mergeHostGraph(any(), anyList(), any(), any(), any())).thenReturn(merged);
+        when(extractionService.persistToGraph(merged, store, 1L))
+                .thenReturn(new PersistenceSummary(2, 0, 1, 0, List.of()));
+        HostExtractionRequest request = new HostExtractionRequest(hostExtraction(), List.of(), true, false, null, graph);
+        mockMvc.perform(post("/api/graph/multi-agent/complete-host")
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.execution").value("HOST_NATIVE_CHAT"))
+                .andExpect(jsonPath("$.persistence.entitiesCreated").value(2))
+                .andExpect(jsonPath("$.persistence.edgesCreated").value(1));
+        verify(extractionService).persistToGraph(merged, store, 1L);
+        verify(extractionService, never()).runExtraction(anyList(), any(), any(), any());
+    }
+
+    @Test
+    void completeHostRejectsDanglingGraphBeforeMergingOrWriting() {
+        Graph graph = hostGraph();
+        graph.getRelationships().get(0).setTarget("missing");
+        var response = controller.completeHost(new HostExtractionRequest(hostExtraction(), List.of(), false, false, null, graph));
+        assertEquals(400, response.getStatusCode().value());
+        verify(extractionService, never()).mergeHostGraph(any(), anyList(), any(), any(), any());
+        verify(extractionService, never()).persistToGraph(any(), any(), any());
+    }
+
+    @Test
+    void completeHostRecordsExactModelAndRealProposals() {
+        ExtractionJobService jobs = mock(ExtractionJobService.class);
+        ExtractionJob job = configureHostJob(jobs);
+        Graph graph = hostGraph();
+        when(extractionService.mergeHostGraph(any(), anyList(), any(), any(), any()))
+                .thenReturn(new MergedGraphResult(graph, Map.of(), 2, 1, 10L, GraphMergeStrategy.UNION));
+        when(jobs.createProposalsFromTriples(eq("host-job"), eq(1L), anyList())).thenReturn(1);
+        when(jobs.completeJob("host-job", 1)).thenAnswer(invocation -> { job.complete(); return job; });
+        BuilderConfig config = BuilderConfig.defaults().withModel("custom-provider", "exact-model-v3");
+        var response = controller.completeHost(new HostExtractionRequest(hostExtraction(), List.of(), false, true, config, graph));
+        assertEquals(200, response.getStatusCode().value(), String.valueOf(response.getBody()));
+        assertEquals(ExtractionJob.JobStatus.COMPLETED, job.getStatus());
+        verify(jobs).createJob(1L, "native-chat", config);
+        verify(jobs).startJob("host-job", 1);
+        verify(jobs).createProposalsFromTriples(eq("host-job"), eq(1L), argThat(triples ->
+                triples.size() == 1 && "FOUNDED".equals(triples.get(0).predicateName())
+                        && List.of("c1").equals(triples.get(0).metadata().get("sourceChunkIds"))));
+        verify(jobs).completeJob("host-job", 1);
+    }
+
+    @Test
+    void cancellationDuringMergePreventsLateProposalsAndCompletion() {
+        ExtractionJobService jobs = mock(ExtractionJobService.class);
+        ExtractionJob job = configureHostJob(jobs);
+        Graph graph = hostGraph();
+        when(extractionService.mergeHostGraph(any(), anyList(), any(), any(), any())).thenAnswer(invocation -> {
+            job.cancel();
+            return new MergedGraphResult(graph, Map.of(), 2, 1, 10L, GraphMergeStrategy.UNION);
+        });
+        var response = controller.completeHost(new HostExtractionRequest(hostExtraction(), List.of(), false, true,
+                BuilderConfig.defaults().withModel("custom-provider", "exact-model-v3"), graph));
+        assertEquals(409, response.getStatusCode().value());
+        assertEquals(ExtractionJob.JobStatus.CANCELLED, job.getStatus());
+        verify(jobs, never()).createProposalsFromTriples(any(), any(), anyList());
+        verify(jobs, never()).completeJob(anyString(), anyInt());
+        verify(jobs, never()).failJob(anyString(), anyString());
+    }
+
+    @Test
+    void hostCompletionDoesNotExposeProviderResponseBodies() {
+        when(extractionService.mergeHostGraph(any(), anyList(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("private provider body with credential"));
+        var response = controller.completeHost(new HostExtractionRequest(hostExtraction(), List.of(), false, false, null, hostGraph()));
+        assertEquals(400, response.getStatusCode().value());
+        assertEquals(Map.of("error", "Host graph completion failed"), response.getBody());
+    }
+
+    private ExtractionJob configureHostJob(ExtractionJobService jobs) {
+        setField(controller, "knowledgeGraphService", mock(KnowledgeGraphService.class));
+        setField(controller, "jobService", jobs);
+        ExtractionJob job = ExtractionJob.builder().jobId("host-job").factSheetId(1L)
+                .builderType("native-chat").status(ExtractionJob.JobStatus.RUNNING).build();
+        when(jobs.createJob(any(), any(), any())).thenReturn(job);
+        when(jobs.getJob("host-job")).thenReturn(Optional.of(job));
+        return job;
+    }
+
+    private static ExtractionRequest hostExtraction() {
+        return new ExtractionRequest(1L, List.of(new ChunkInput("c1", "Alice founded Acme.", Map.of())),
+                List.of(), "UNION", null, null);
+    }
+
+    private static Graph hostGraph() {
+        Graph graph = new Graph();
+        graph.setEntities(List.of(entity("alice", "PERSON", 0.9), entity("acme", "ORGANIZATION", 0.9)));
+        Relationship relation = new Relationship();
+        relation.setSource("alice");
+        relation.setTarget("acme");
+        relation.setType("FOUNDED");
+        relation.setConfidence(0.9);
+        graph.setRelationships(List.of(relation));
+        return graph;
     }
 
     // ─── POST /extract-from-html ──────────────────────────────────────────────

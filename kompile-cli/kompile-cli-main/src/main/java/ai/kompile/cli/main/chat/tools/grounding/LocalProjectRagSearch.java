@@ -6,6 +6,8 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -132,35 +134,93 @@ final class LocalProjectRagSearch {
         List<Chunk> chunks = new ArrayList<>();
         for (Path directoryValue : knowledgeBases) {
             Path directory = directoryValue.toRealPath();
+            int chunksBeforeDirectory = chunks.size();
             Path documentsPath = containedRegularFile(directory, "documents.jsonl");
             Map<String, String> sources = documentsPath == null
                     ? Map.of() : documentSources(documentsPath);
             String knowledgeBase = directory.getFileName().toString();
             Path chunksPath = containedRegularFile(directory, "chunks.jsonl");
-            if (chunksPath == null) {
-                continue;
-            }
-            try (Stream<String> lines = Files.lines(chunksPath, StandardCharsets.UTF_8)) {
-                lines.filter(line -> !line.isBlank()).forEach(line -> {
-                    try {
-                        JsonNode chunk = mapper.readTree(line);
-                        String content = chunk.path("text").asText("");
-                        if (content.isBlank()) {
-                            return;
+            if (chunksPath != null) {
+                try (Stream<String> lines = Files.lines(chunksPath, StandardCharsets.UTF_8)) {
+                    lines.filter(line -> !line.isBlank()).forEach(line -> {
+                        try {
+                            JsonNode chunk = mapper.readTree(line);
+                            String content = chunk.path("text").asText("");
+                            if (content.isBlank()) {
+                                return;
+                            }
+                            String documentId = chunk.path("documentId").asText("");
+                            String chunkId = chunk.path("chunkId").asText("");
+                            chunks.add(new Chunk(directory, knowledgeBase,
+                                    sources.getOrDefault(documentId, documentId), documentId,
+                                    chunkId, documentId + "\u0000" + chunkId,
+                                    content, sha256(content)));
+                        } catch (Exception ignored) {
+                            // Keep healthy chunks searchable when one JSONL row is malformed.
                         }
-                        String documentId = chunk.path("documentId").asText("");
-                        String chunkId = chunk.path("chunkId").asText("");
-                        chunks.add(new Chunk(directory, knowledgeBase,
-                                sources.getOrDefault(documentId, documentId), documentId,
-                                chunkId, documentId + "\u0000" + chunkId,
-                                content, sha256(content)));
-                    } catch (Exception ignored) {
-                        // Keep healthy chunks searchable when one JSONL row is malformed.
-                    }
-                });
+                    });
+                }
+            }
+            if (chunks.size() == chunksBeforeDirectory) {
+                try {
+                    loadGraphChunks(directory, knowledgeBase, chunks);
+                } catch (IOException e) {
+                    if (isContainmentViolation(e)) throw e;
+                    // A portable graph is an optional fallback. Keep other knowledge bases
+                    // searchable when one archive is malformed or from an unsupported version.
+                } catch (RuntimeException ignored) {
+                    // Unsupported optional graph artifacts do not discard healthy KB results.
+                }
             }
         }
-        return chunks;
+        LinkedHashMap<String, Chunk> unique = new LinkedHashMap<>();
+        for (Chunk chunk : chunks) {
+            unique.putIfAbsent(chunk.directory() + "\u0000" + chunk.key(), chunk);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    /**
+     * Recover searchable chunks directly from a portable graph when a graph import does not have
+     * the original crawl JSONL companions. Local crawls store full chunk text and document
+     * provenance on CHUNK/DOCUMENT entities, so this keeps an imported .kgraph useful for RAG
+     * without synthesizing a second persistent corpus.
+     */
+    private void loadGraphChunks(Path directory, String knowledgeBase, List<Chunk> chunks)
+            throws IOException {
+        Path graphPath = containedRegularFile(directory, "graph.kgraph");
+        if (graphPath == null) return;
+
+        UnifiedGraph graph = UnifiedGraph.load(graphPath);
+        Map<String, GraphEntity> documents = new HashMap<>();
+        for (GraphEntity entity : graph.entities()) {
+            if ("DOCUMENT".equalsIgnoreCase(entity.type())) {
+                documents.put(entity.id(), entity);
+            }
+        }
+        Map<String, String> documentByChunk = new HashMap<>();
+        graph.relations().stream()
+                .filter(relation -> "HAS_CHUNK".equalsIgnoreCase(relation.type()))
+                .forEach(relation -> documentByChunk.put(relation.targetId(), relation.sourceId()));
+
+        for (GraphEntity entity : graph.entities()) {
+            if (!"CHUNK".equalsIgnoreCase(entity.type())
+                    && !"SNIPPET".equalsIgnoreCase(entity.type())) continue;
+            String content = attribute(entity, "content", "text", "contentPreview", "description");
+            if (content == null || content.isBlank()) continue;
+
+            String parentId = firstNonBlank(documentByChunk.get(entity.id()), attribute(entity, "parentId"));
+            GraphEntity document = documents.get(parentId);
+            String documentId = firstNonBlank(attribute(entity, "documentId", "sourceDocumentId"),
+                    attribute(document, "documentId"), document != null ? document.id() : null,
+                    "graph-document");
+            String chunkId = firstNonBlank(attribute(entity, "chunkId", "externalId", "nodeId"), entity.id());
+            String source = firstNonBlank(attribute(document, "relativePath", "source", "path", "pathOrUrl"),
+                    attribute(entity, "relativePath", "source", "path", "pathOrUrl"),
+                    document != null ? document.label() : null, documentId, "Unknown");
+            chunks.add(new Chunk(directory, knowledgeBase, source, documentId, chunkId,
+                    documentId + "\u0000" + chunkId, content, sha256(content)));
+        }
     }
 
     private Map<String, VectorEntry> ensureVectors(List<Chunk> chunks, List<Path> knowledgeBases,
@@ -476,6 +536,36 @@ final class LocalProjectRagSearch {
             if (value != null && !value.isBlank()) return value;
         }
         return null;
+    }
+
+    private static String attribute(GraphEntity entity, String... keys) {
+        if (entity == null || entity.attributes() == null) return null;
+        String direct = attribute(entity.attributes(), keys);
+        if (direct != null) return direct;
+        Object storeValue = entity.attributes().get("kompile.store");
+        if (storeValue instanceof Map<?, ?> store) {
+            String stored = attribute(store, keys);
+            if (stored != null) return stored;
+            Object metadataValue = store.get("metadata");
+            if (metadataValue instanceof Map<?, ?> metadata) {
+                return attribute(metadata, keys);
+            }
+        }
+        return null;
+    }
+
+    private static String attribute(Map<?, ?> attributes, String... keys) {
+        for (String key : keys) {
+            Object value = attributes.get(key);
+            if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value);
+        }
+        return null;
+    }
+
+    private static boolean isContainmentViolation(IOException error) {
+        String message = error.getMessage();
+        return message != null && (message.contains("symbolic-link crawl artifact")
+                || message.contains("Crawl artifact escapes its knowledge base"));
     }
 
     private static String conciseMessage(Throwable error) {

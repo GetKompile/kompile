@@ -33,6 +33,9 @@ public class AgentTask {
     /** Lifecycle of a task. */
     public enum Status { PENDING, RUNNING, SUCCEEDED, FAILED }
 
+    /** Delivery is tracked separately from successful agent execution. */
+    public enum DeliveryStatus { NOT_REQUESTED, PENDING, ACCEPTED, FAILED }
+
     /** Unique task id (UUID). */
     private String id;
 
@@ -68,6 +71,12 @@ public class AgentTask {
 
     /** Target id on {@link #channel} (e.g. a Discord/Slack channel id). */
     private String channelTarget;
+
+    @Builder.Default
+    private DeliveryStatus deliveryStatus = DeliveryStatus.NOT_REQUESTED;
+
+    /** Sanitized delivery failure when {@link #deliveryStatus} is {@link DeliveryStatus#FAILED}. */
+    private String deliveryError;
 
     /** Chat-history session id when the output was persisted to the DB store. */
     private String dbSessionId;

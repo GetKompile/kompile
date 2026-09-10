@@ -80,16 +80,66 @@ class StreamingMarkdownRendererTest {
     }
 
     @Test
-    void codeBlockBufferedAndRendered() {
+    void codeBlockRenderedWithStreamingFrame() {
         String output = capture(() -> {
             renderer.accept("```java\n");
             renderer.accept("int x = 1;\n");
             renderer.accept("int y = 2;\n");
             renderer.accept("```\n");
         });
-        // Code block should be rendered as a bordered box
-        assertTrue(output.contains("int x = 1"), "Should contain code content: " + output);
+        // Code block should be rendered with a visible streaming frame
+        assertTrue(AsciiRenderer.stripAnsi(output).contains("int x = 1"), "Should contain code content: " + output);
         assertTrue(output.contains("╭") || output.contains("+"), "Should contain box border: " + output);
+    }
+
+    @Test
+    void codeBlockLineIsVisibleBeforeClosingFence() {
+        TerminalRenderer term = new TerminalRenderer(false);
+        AsciiRenderer ascii = new AsciiRenderer(term, 80);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        StreamingMarkdownRenderer streaming = new StreamingMarkdownRenderer(ascii, lines::add);
+
+        streaming.accept("```java\n");
+        streaming.accept("int x = 1;\n");
+
+        assertTrue(String.join("\n", lines).contains("int x = 1"),
+                "a complete code line must not wait for the closing fence");
+        assertFalse(lines.stream().anyMatch(line -> line.contains("╰")),
+                "the frame should remain open while code is still streaming");
+
+        streaming.accept("```\n");
+        assertTrue(lines.stream().anyMatch(line -> line.contains("╰")),
+                "the closing fence should finish the streaming frame");
+    }
+
+    @Test
+    void closingFenceWithoutTrailingNewlineIsNotRenderedAsCode() {
+        TerminalRenderer term = new TerminalRenderer(false);
+        AsciiRenderer ascii = new AsciiRenderer(term, 80);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        StreamingMarkdownRenderer streaming = new StreamingMarkdownRenderer(ascii, lines::add);
+
+        streaming.accept("```java\nint x = 1;\n```");
+        streaming.flush();
+
+        assertFalse(lines.stream().anyMatch(line -> line.contains("```")),
+                "an unterminated SSE line containing the closing fence is structural, not code");
+        assertTrue(lines.get(lines.size() - 1).contains("╰"),
+                "flush should leave the streaming frame balanced");
+    }
+
+    @Test
+    void flushEmitsPartialCodeLineBeforeClosingFrame() {
+        TerminalRenderer term = new TerminalRenderer(false);
+        AsciiRenderer ascii = new AsciiRenderer(term, 80);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        StreamingMarkdownRenderer streaming = new StreamingMarkdownRenderer(ascii, lines::add);
+
+        streaming.accept("```java\nint x = 1;");
+        streaming.flush();
+
+        assertTrue(String.join("\n", lines).contains("int x = 1;"));
+        assertTrue(lines.get(lines.size() - 1).contains("╰"));
     }
 
     @Test
@@ -128,6 +178,7 @@ class StreamingMarkdownRendererTest {
             renderer.accept("x = 1\n");
         });
         renderer.reset();
+        captured.reset();
 
         // After reset, should not be in code block mode
         String output = capture(() -> {

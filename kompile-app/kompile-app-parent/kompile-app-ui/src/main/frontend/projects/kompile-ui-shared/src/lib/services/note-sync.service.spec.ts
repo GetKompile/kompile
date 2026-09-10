@@ -8,6 +8,7 @@ describe('NoteSyncService source maintenance', () => {
   let httpMock: HttpTestingController;
 
   beforeEach(() => {
+    sessionStorage.setItem('kompile.channel.csrf', 'source-csrf');
     TestBed.configureTestingModule({
       imports: [HttpClientTestingModule],
       providers: [NoteSyncService]
@@ -16,7 +17,25 @@ describe('NoteSyncService source maintenance', () => {
     httpMock = TestBed.inject(HttpTestingController);
   });
 
-  afterEach(() => httpMock.verify());
+  afterEach(() => {
+    httpMock.verify();
+    sessionStorage.removeItem('kompile.channel.csrf');
+  });
+
+  it('exchanges the CLI login code on the current persona and retains only CSRF in session storage', () => {
+    sessionStorage.removeItem('kompile.channel.csrf');
+    service.exchangeIntegrationBrowserSession('one-time-code').subscribe(session => {
+      expect(session.csrfToken).toBe('new-source-csrf');
+      expect(sessionStorage.getItem('kompile.channel.csrf')).toBe('new-source-csrf');
+    });
+
+    const req = httpMock.expectOne(request =>
+      request.url.endsWith('/channel-integrations/browser-sessions/exchange'));
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ code: 'one-time-code' });
+    expect(req.request.withCredentials).toBeTrue();
+    req.flush({ csrfToken: 'new-source-csrf', expiresAt: '2026-07-19T12:00:00Z' });
+  });
 
   it('starts a pull-only source update', () => {
     service.pullUpdates(42).subscribe(result => expect(result.mode).toBe('PULL'));
@@ -24,6 +43,8 @@ describe('NoteSyncService source maintenance', () => {
     const req = httpMock.expectOne(request => request.url.endsWith('/sync/connections/42/pull'));
     expect(req.request.method).toBe('POST');
     expect(req.request.body).toEqual({});
+    expect(req.request.headers.get('X-Kompile-Channel-CSRF')).toBe('source-csrf');
+    expect(req.request.withCredentials).toBeTrue();
     req.flush({
       sessionId: 'pull-42',
       connectionId: 42,
@@ -82,7 +103,7 @@ describe('NoteSyncService source maintenance', () => {
     req.flush({
       notionEnabled: true,
       notionWebhookSecretConfigured: true,
-      notionCallbackBaseUrl: 'http://localhost:8080',
+      notionCallbackBaseUrl: 'http://localhost:8082',
       obsidianEnabled: false,
       obsidianFileWatchEnabled: false,
       schedulerEnabled: false,

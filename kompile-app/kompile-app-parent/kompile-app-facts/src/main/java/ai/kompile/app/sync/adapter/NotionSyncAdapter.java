@@ -20,6 +20,7 @@ import ai.kompile.app.facts.domain.Note;
 import ai.kompile.app.sync.config.NoteSyncConfigService;
 import ai.kompile.app.sync.convert.NotionBlockConverter;
 import ai.kompile.app.sync.domain.NoteSyncConnection;
+import ai.kompile.app.sync.dto.SyncConnectionTestResponse;
 import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -73,6 +74,24 @@ public class NotionSyncAdapter implements SyncAdapter {
     @Override
     public String adapterId() {
         return "notion";
+    }
+
+    @Override
+    public SyncConnectionTestResponse testConnection(NoteSyncConnection conn) {
+        try {
+            checkEnabled();
+            Map<String, Object> user = notionGet("/users/me");
+            if (user == null || user.get("id") == null) {
+                return SyncConnectionTestResponse.failure(
+                        conn.getId(), conn.getAuthMode(), "Notion did not return the integration identity");
+            }
+            return SyncConnectionTestResponse.success(
+                    conn.getId(), conn.getAuthMode(), "Notion OAuth and API access are valid");
+        } catch (RuntimeException error) {
+            return SyncConnectionTestResponse.failure(
+                    conn.getId(), conn.getAuthMode(),
+                    error.getMessage() == null ? "Notion authentication failed" : error.getMessage());
+        }
     }
 
     @Override

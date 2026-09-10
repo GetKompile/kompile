@@ -55,6 +55,7 @@ import { ModelRegistryService } from '../../services/model-registry.service';
 import { UnifiedCrawlService, JobSummary as CrawlJobSummary } from '../../services/unified-crawl.service';
 import { CrossIndexService } from '../../services/cross-index.service';
 import { ServiceEndpointRouter } from '../../services/service-endpoint-routing';
+import { NoteSyncService } from '../../services/note-sync.service';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
@@ -184,6 +185,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   // only an explicit managed health failure disables a dependency.
   adminServiceAvailable = true;
   crawlServiceAvailable = true;
+  integrationAuthRequired = false;
+  integrationLoginCode = '';
 
   // Sheet state
   sheets: FactSheet[] = [];
@@ -409,6 +412,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private unifiedCrawlService: UnifiedCrawlService,
     private crossIndexService: CrossIndexService,
     private serviceEndpointRouter: ServiceEndpointRouter,
+    private noteSyncService: NoteSyncService,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
@@ -438,6 +442,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.adminServiceAvailable = this.serviceEndpointRouter.isReachable('admin');
     this.crawlServiceAvailable = this.serviceEndpointRouter.isReachable('crawl');
+    this.integrationAuthRequired = !this.noteSyncService.hasIntegrationBrowserSession();
 
     // Set up subscriptions FIRST to ensure we don't miss any emissions
     // Subscribe to sheets
@@ -1844,6 +1849,22 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     });
   }
 
+  authenticateIntegrationBrowser(): void {
+    const code = this.integrationLoginCode.trim();
+    if (!code) return;
+    this.noteSyncService.exchangeIntegrationBrowserSession(code).subscribe({
+      next: () => {
+        this.integrationAuthRequired = false;
+        this.integrationLoginCode = '';
+        this.snackBar.open('Source integrations authorized for this browser.', 'OK', {
+          duration: 3000
+        });
+      },
+      error: err => this.showError(
+        err.error?.message || err.error?.error || 'Invalid or expired integration login code')
+    });
+  }
+
   /**
    * Open the full CrawlLauncherDialog pre-seeded with the active fact sheet so the user
    * can start a crawl directly from the Fact Sheets surface without navigating to /data.
@@ -1950,6 +1971,14 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     // Handle Confluence source
     else if (result.sourceType === 'confluence') {
       this.addConfluenceSource(result);
+    }
+    // Handle Jira source
+    else if (result.sourceType === 'jira') {
+      this.addJiraSource(result);
+    }
+    // Handle Reddit source
+    else if (result.sourceType === 'reddit') {
+      this.addRedditSource(result);
     }
     // Handle Slack source
     else if (result.sourceType === 'slack' || result.sourceType === 'slack_history') {
@@ -2140,7 +2169,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   private addConfluenceSource(result: AddSourceDialogResult): void {
-    if (!result.confluenceBaseUrl || !result.confluenceEmail || !result.confluenceApiToken || !result.confluenceSpaceKey) {
+    if (!result.confluenceBaseUrl || !result.confluenceSpaceKey) {
       return;
     }
 
@@ -2165,6 +2194,64 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       error: (err) => {
         this.showError(`Failed to add Confluence source: ${err.message || 'Unknown error'}`);
       }
+    });
+  }
+
+  private addJiraSource(result: AddSourceDialogResult): void {
+    if (!result.jiraBaseUrl || !this.activeSheet?.id) {
+      this.showError('Select a Fact Sheet before adding a Jira source.');
+      return;
+    }
+
+    this.documentService.addJiraSource({
+      factSheetId: this.activeSheet.id,
+      baseUrl: result.jiraBaseUrl,
+      email: result.jiraEmail,
+      apiToken: result.jiraApiToken,
+      projectKey: result.jiraProjectKey,
+      jql: result.jiraJql,
+      maxIssues: result.jiraMaxIssues,
+      includeComments: result.jiraIncludeComments,
+      includeAttachments: result.jiraIncludeAttachments,
+      chunkerName: result.chunkerName
+    }).subscribe({
+      next: (response) => {
+        if (this.handleAddSourceCrawlResponse(response, 'Jira source')) return;
+        this.showSuccess(`Jira source added to "${this.activeSheet?.name}"`);
+        this.loadFacts();
+        this.factSheetService.loadSheets().subscribe();
+      },
+      error: (err) => this.showError(`Failed to add Jira source: ${err.message || 'Unknown error'}`)
+    });
+  }
+
+  private addRedditSource(result: AddSourceDialogResult): void {
+    if (!result.redditSubreddit || !this.activeSheet?.id) {
+      this.showError('Select a Fact Sheet before adding a Reddit source.');
+      return;
+    }
+
+    this.documentService.addRedditSource({
+      factSheetId: this.activeSheet.id,
+      subreddit: result.redditSubreddit,
+      sortType: result.redditSortType,
+      timePeriod: result.redditTimePeriod,
+      postLimit: result.redditPostLimit,
+      includeComments: result.redditIncludeComments,
+      commentDepth: result.redditCommentDepth,
+      commentLimit: result.redditCommentLimit,
+      minScore: result.redditMinScore,
+      includeNsfw: result.redditIncludeNsfw,
+      searchQuery: result.redditSearchQuery,
+      chunkerName: result.chunkerName
+    }).subscribe({
+      next: (response) => {
+        if (this.handleAddSourceCrawlResponse(response, 'Reddit source')) return;
+        this.showSuccess(`Reddit source added to "${this.activeSheet?.name}"`);
+        this.loadFacts();
+        this.factSheetService.loadSheets().subscribe();
+      },
+      error: (err) => this.showError(`Failed to add Reddit source: ${err.message || 'Unknown error'}`)
     });
   }
 

@@ -16,6 +16,10 @@
 
 package ai.kompile.cli.main.chat.harness;
 
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.enforcer.EnforcerDiagnostics;
+import ai.kompile.cli.main.chat.config.JudgeDefaults;
 import ai.kompile.cli.main.chat.agent.PersistentAgentProcess;
 import ai.kompile.cli.main.chat.agent.PersistentJudgeProcessPool;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
@@ -23,6 +27,7 @@ import ai.kompile.core.agent.CliAgentRegistry;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -45,6 +50,8 @@ public class CliJudgeBackend implements JudgeBackend {
     private static final int JUDGE_TIMEOUT_SECONDS = 120;
     private static final int TURN_TIMEOUT_SECONDS = 60;
 
+    private final Path workingDirectory;
+    private volatile JudgeDefaults.Selection selection;
     private volatile String agentName;
     private volatile String agentBinary;
     private volatile boolean failed;
@@ -56,6 +63,11 @@ public class CliJudgeBackend implements JudgeBackend {
     private volatile String sessionId;
 
     public CliJudgeBackend(String agentName) {
+        this(agentName, ChatConfig.defaultProjectRoot());
+    }
+
+    public CliJudgeBackend(String agentName, Path workingDirectory) {
+        this.workingDirectory = workingDirectory == null ? ChatConfig.defaultProjectRoot() : workingDirectory;
         if (agentName != null && !agentName.isBlank()) {
             this.agentName = agentName;
             this.agentBinary = SubprocessAgentRunner.resolveAgentBinary(agentName);
@@ -73,6 +85,19 @@ public class CliJudgeBackend implements JudgeBackend {
             this.agentName = foundName;
             this.agentBinary = foundBinary;
         }
+        reloadSelection();
+    }
+
+    private void reloadSelection() {
+        selection = JudgeDefaults.resolve(agentName, workingDirectory, null,
+                supportsPersistentMode() ? "haiku" : null);
+    }
+
+    List<String> persistentArguments() {
+        List<String> args = new ArrayList<>(List.of("--tools", "", "--strict-mcp-config"));
+        args.addAll(AgentLaunchDefaults.commandArguments(agentName, null, selection.thinking(),
+                AgentLaunchDefaults.LaunchMode.MANAGED));
+        return List.copyOf(args);
     }
 
     @Override
@@ -86,7 +111,7 @@ public class CliJudgeBackend implements JudgeBackend {
                 ensurePersistentProcess(systemPrompt);
             } catch (IOException | InterruptedException e) {
                 markFailure(e.getMessage());
-                System.err.println("[enforcer] judge unavailable: " + failureReason);
+                EnforcerDiagnostics.alert("[enforcer] judge unavailable: " + failureReason);
             }
             return;
         }
@@ -104,7 +129,7 @@ public class CliJudgeBackend implements JudgeBackend {
             }
         } catch (Exception failure) {
             markFailure("Judge preflight failed: " + failure.getMessage());
-            System.err.println("[enforcer] judge unavailable: " + failureReason);
+            EnforcerDiagnostics.alert("[enforcer] judge unavailable: " + failureReason);
         }
     }
 
@@ -150,7 +175,7 @@ public class CliJudgeBackend implements JudgeBackend {
             markFailure(failure.getMessage());
             String message = "Judge agent '" + agentName + "' failed"
                     + (failureReason == null || failureReason.isBlank() ? "" : ": " + failureReason);
-            System.err.println("[enforcer] " + message);
+            EnforcerDiagnostics.alert("[enforcer] " + message);
             if (failure instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
@@ -174,13 +199,13 @@ public class CliJudgeBackend implements JudgeBackend {
         // window, so bursty per-call consumers stop paying a boot per invocation.
         judgeLease = PersistentJudgeProcessPool.acquire(new PersistentJudgeProcessPool.Spec(
                 agentBinary,
-                "haiku",
+                selection.model(),
                 true,
                 // --tools "" : judge returns text only. --strict-mcp-config with no
                 // --mcp-config: never load project/user MCP servers — a judge that reads
                 // the project's .mcp.json spawns kompile mcp-stdio, which (with the
                 // enforcer env inherited) builds another judge, recursively.
-                List.of("--tools", "", "--strict-mcp-config"),
+                persistentArguments(),
                 // Belt-and-braces against the same recursion: the judge process must not
                 // look like an enforced session to anything it spawns.
                 List.of("KOMPILE_ENFORCER_"),
@@ -211,7 +236,7 @@ public class CliJudgeBackend implements JudgeBackend {
         List<String> cmd = buildSingleShotCommand(agentBinary, userPrompt, systemPrompt);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.directory(new File(System.getProperty("user.dir")));
+        pb.directory(workingDirectory.toFile());
         pb.redirectErrorStream(false);
         inheritEnv(pb.environment());
 
@@ -272,40 +297,44 @@ public class CliJudgeBackend implements JudgeBackend {
         return response;
     }
 
-    private List<String> buildSingleShotCommand(String binary, String userPrompt, String systemPrompt) {
+    List<String> buildSingleShotCommand(String binary, String userPrompt, String systemPrompt) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
         String name = agentName.toLowerCase();
+        List<String> modelArgs = AgentLaunchDefaults.commandArguments(agentName,
+                selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.MANAGED);
 
         if (name.contains("codex")) {
-            if (sessionId != null) {
-                cmd.add("exec"); cmd.add("resume"); cmd.add(sessionId);
-                cmd.add("--json"); cmd.add("--full-auto");
-                cmd.add(fallbackPrompt(userPrompt, systemPrompt));
-            } else {
-                cmd.add("exec"); cmd.add("--json"); cmd.add("--full-auto");
-                cmd.add(fallbackPrompt(userPrompt, systemPrompt));
-            }
+            cmd.add("exec");
+            if (sessionId != null) { cmd.add("resume"); cmd.add(sessionId); }
+            cmd.add("--json"); cmd.add("--full-auto");
+            cmd.addAll(modelArgs);
+            cmd.add(fallbackPrompt(userPrompt, systemPrompt));
         } else if (name.contains("gemini")) {
+            cmd.addAll(modelArgs);
             cmd.add("-p"); cmd.add(fallbackPrompt(userPrompt, systemPrompt));
             cmd.add("-o"); cmd.add("stream-json"); cmd.add("--sandbox=false");
             if (sessionId != null) { cmd.add("--resume"); cmd.add(sessionId); }
         } else if (name.contains("qwen")) {
+            cmd.addAll(modelArgs);
             cmd.add("-o"); cmd.add("stream-json"); cmd.add("--yolo");
             if (sessionId != null) cmd.add("--continue");
             cmd.add(fallbackPrompt(userPrompt, systemPrompt));
         } else if (name.contains("opencode")) {
             cmd.add("run"); cmd.add("--format"); cmd.add("json");
+            cmd.addAll(modelArgs);
             cmd.add("--dangerously-skip-permissions");
             if (sessionId != null) { cmd.add("--session"); cmd.add(sessionId); }
             cmd.add(fallbackPrompt(userPrompt, systemPrompt));
         } else if (name.contains("pi")) {
+            cmd.addAll(modelArgs);
             if (systemPrompt != null && !systemPrompt.isBlank()) {
                 cmd.add("--system-prompt"); cmd.add(systemPrompt);
             }
             cmd.add("--mode"); cmd.add("json"); cmd.add("-p"); cmd.add(userPrompt);
             if (sessionId != null) cmd.add("--continue");
         } else {
+            cmd.addAll(modelArgs);
             if (systemPrompt != null && !systemPrompt.isBlank()) {
                 cmd.add("--system-prompt"); cmd.add(systemPrompt);
             }
@@ -333,9 +362,10 @@ public class CliJudgeBackend implements JudgeBackend {
         failed = false;
         failureReason = null;
         agentBinary = agentName == null ? null : SubprocessAgentRunner.resolveAgentBinary(agentName);
+        reloadSelection();
         if (agentBinary == null) {
             markFailure("Agent '" + agentName + "' is not available on PATH");
-            System.err.println("[enforcer] judge restart failed: " + failureReason);
+            EnforcerDiagnostics.alert("[enforcer] judge restart failed: " + failureReason);
         }
     }
 
@@ -346,12 +376,13 @@ public class CliJudgeBackend implements JudgeBackend {
         invalidatePersistentProcess();
         sessionId = null;
         agentName = next;
+        reloadSelection();
         agentBinary = SubprocessAgentRunner.resolveAgentBinary(next);
         failed = false;
         failureReason = null;
         if (agentBinary == null) {
             markFailure("Agent '" + next + "' is not available on PATH");
-            System.err.println("[enforcer] judge agent unavailable: " + failureReason);
+            EnforcerDiagnostics.alert("[enforcer] judge agent unavailable: " + failureReason);
             return false;
         }
         return true;
@@ -378,6 +409,8 @@ public class CliJudgeBackend implements JudgeBackend {
     @Override
     public String describe() {
         return "cli(" + (agentName != null ? agentName : "none")
+                + (selection.model() == null ? "" : ",model=" + selection.model())
+                + (selection.thinking() == null ? "" : ",thinking=" + selection.thinking())
                 + (supportsPersistentMode() ? ",persistent-stream-json" : "") + ")";
     }
 

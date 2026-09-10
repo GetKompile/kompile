@@ -7,13 +7,19 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.ChatModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalCrawlCapabilities;
+import ai.kompile.cli.main.project.NativeChatModels;
 import ai.kompile.cli.main.project.LocalCrawlRunner;
+import ai.kompile.cli.main.project.LocalExternalSourceLoaderRegistry;
 import ai.kompile.cli.main.project.LocalModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.cli.main.project.ProjectAutoDetection;
 import ai.kompile.cli.main.project.ProjectCrawlCommand;
+import ai.kompile.crawl.graph.CrawlPipelineStepRegistry;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectCrawlProfile;
@@ -35,10 +41,12 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -188,10 +196,23 @@ public final class LocalProjectCrawlBackend {
     }
 
     public ToolResult crawlDocuments(JsonNode params, ToolContext context) {
+        if (params.path("config").isObject()) {
+            ObjectNode merged = flattenConfig(params);
+            merged.remove("sources"); // explicit documents replace config.sources
+            return crawlDocuments(merged, context);
+        }
+        // Fail before queued-job snapshots, project registration, source downloads, or index writes.
+        try {
+            graphBackend.preflightNativeChat(project(context.getWorkingDirectory()).root(), params);
+        } catch (Exception invalid) {
+            return ToolResult.error("Native graph chat preflight failed: " + message(invalid));
+        }
         if (asyncRequested(params)) {
             return submitAsync(params, context);
         }
         List<Path> temporarySources = new ArrayList<>();
+        ReentrantLock crawlLock = null;
+        String crawlLockKey = null;
         try {
             reportStage(params, "VALIDATING", "Validating project, sources, and pipeline bindings", 10);
             ProjectState project = dryRun(params)
@@ -201,6 +222,9 @@ public final class LocalProjectCrawlBackend {
             if (knowledgeBase.error() != null) {
                 return ToolResult.error(knowledgeBase.error());
             }
+            crawlLockKey = project.root() + "\n" + knowledgeBase.id();
+            crawlLock = CRAWL_LOCKS.computeIfAbsent(crawlLockKey, ignored -> new ReentrantLock());
+            crawlLock.lockInterruptibly();
 
             LinkedHashSet<String> sources = new LinkedHashSet<>();
             LinkedHashSet<String> includePatterns = new LinkedHashSet<>();
@@ -231,12 +255,86 @@ public final class LocalProjectCrawlBackend {
                     }
                     String path = text(document, "path");
                     String url = text(document, "url");
-                    if ((path == null) == (url == null)) {
+                    String requestedSourceType = firstNonBlank(text(document, "sourceType"), "FILE");
+                    if ((path == null) == (url == null)
+                            && !DocumentSourceDescriptor.locatorOptional(requestedSourceType)
+                            && !hasIdentityMetadata(document.path("properties"))) {
                         return ToolResult.error(
                                 "documents[" + i + "] must provide exactly one of path or url.");
                     }
+                    if (LocalExternalSourceLoaderRegistry.downloadsOriginalFiles(requestedSourceType)) {
+                        // File-backed providers: download originals, then process each file
+                        // through its content-type pipeline exactly like local files
+                        // (PDF → pdf/VLM OCR, xlsx → excel, ...).
+                        Path directory = materializeExternalSourceDirectory(
+                                document, requestedSourceType, firstNonBlank(path, url),
+                                project, knowledgeBase, dryRun(params));
+                        if (dryRun(params)) {
+                            temporarySources.add(directory);
+                            sources.add(directory.toString());
+                            explicitDocuments++;
+                            unrestrictedSource = true;
+                            continue;
+                        }
+                        List<Path> downloaded;
+                        try {
+                            Map<String, Object> properties = document.path("properties").isObject()
+                                    ? mapper.convertValue(document.path("properties"),
+                                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                                    : Map.of();
+                            downloaded = LocalExternalSourceLoaderRegistry.materializeFiles(
+                                    requestedSourceType, firstNonBlank(path, url), properties, directory);
+                        } catch (Exception error) {
+                            return ToolResult.error("Source download failed for "
+                                    + requestedSourceType + ": "
+                                    + firstNonBlank(error.getMessage(), error.getClass().getSimpleName()));
+                        }
+                        if (downloaded.isEmpty()) {
+                            return ToolResult.error("Source " + requestedSourceType
+                                    + " produced no downloadable files");
+                        }
+                        String label = firstNonBlank(text(document, "label"), requestedSourceType);
+                        for (Path file : downloaded) {
+                            sources.add(file.toString());
+                            ObjectNode sourceConfig = mapper.createObjectNode()
+                                    .put("path", file.toString())
+                                    .put("sourceType", "FILE")
+                                    .put("label", label + ": " + file.getFileName());
+                            copyMaterializedPipelineOptions(document, sourceConfig);
+                            sourceConfig.putObject("properties")
+                                    .put("externalSourceType", requestedSourceType.toUpperCase(Locale.ROOT));
+                            sourceConfigs.put(file.toString(), sourceConfig);
+                        }
+                        explicitDocuments += downloaded.size();
+                        unrestrictedSource = true;
+                        continue;
+                    }
+                    if (LocalExternalSourceLoaderRegistry.supports(requestedSourceType)) {
+                        String locator = firstNonBlank(path, url);
+                        Path resolved = materializeExternalSource(document, requestedSourceType, locator,
+                                project, knowledgeBase, dryRun(params));
+                        if (dryRun(params)) temporarySources.add(resolved);
+                        sources.add(resolved.toString());
+                        ObjectNode sourceConfig = mapper.createObjectNode()
+                                .put("path", resolved.toString())
+                                .put("sourceType", "FILE")
+                                .put("loaderName", "external-materialized")
+                                .put("label", firstNonBlank(text(document, "label"), requestedSourceType));
+                        copyMaterializedPipelineOptions(document, sourceConfig);
+                        sourceConfig.putObject("properties")
+                                .put("externalSourceType", requestedSourceType.toUpperCase(Locale.ROOT))
+                                .put("externalLoader", text(document, "loaderName") == null
+                                        ? "automatic" : text(document, "loaderName"));
+                        sourceConfigs.put(resolved.toString(), sourceConfig);
+                        explicitDocuments++;
+                        unrestrictedSource = true;
+                        continue;
+                    }
                     Path resolved;
-                    if (url != null) {
+                    if ("OBSIDIAN".equalsIgnoreCase(requestedSourceType)) {
+                        if (path == null) return ToolResult.error("Obsidian local crawl requires a vault path.");
+                        resolved = context.resolvePath(path).toAbsolutePath().normalize();
+                    } else if (url != null) {
                         String label = firstNonBlank(text(document, "label"), url);
                         resolved = materializeRemoteSource(
                                 url, label, project, knowledgeBase, dryRun(params));
@@ -252,6 +350,10 @@ public final class LocalProjectCrawlBackend {
                     sources.add(resolved.toString());
                     ObjectNode sourceConfig = mapper.createObjectNode().put("path", resolved.toString());
                     copyDocumentOptions(document, sourceConfig);
+                    if ("OBSIDIAN".equalsIgnoreCase(requestedSourceType)) {
+                        sourceConfig.put("sourceType", "FILE");
+                        sourceConfig.putObject("properties").put("externalSourceType", "OBSIDIAN");
+                    }
                     if (url != null) {
                         JsonNode configuredProperties = sourceConfig.get("properties");
                         ObjectNode properties = configuredProperties != null && configuredProperties.isObject()
@@ -340,6 +442,27 @@ public final class LocalProjectCrawlBackend {
                     CrawlDocumentsTool.pipelineConfigurationWarnings(executionRequest);
             warnings.addAll(configurationWarnings);
 
+            if (!dryRun(params)) {
+                LocalSubprocessWatchdog.CapacityAdmission admission =
+                        LocalSubprocessWatchdog.get().awaitCrawlCapacity(reason ->
+                                reportStage(params, "WAITING_FOR_CAPACITY",
+                                        "Waiting for local hardware capacity: " + reason, 20));
+                if (!admission.admitted()) {
+                    String disposition = "TIMED_OUT".equals(admission.outcome())
+                            ? "timed out after " + admission.waitedMs() + " ms"
+                            : "was rejected immediately";
+                    return ToolResult.error("Project-local crawl hardware-capacity admission "
+                            + disposition + ": " + admission.reason()
+                            + ". Configure admissionMode=wait|fail|off and RAM/GPU thresholds "
+                            + "through subprocess_watchdog config_update.");
+                }
+                if (admission.waited()) {
+                    reportStage(params, "CAPACITY_ADMITTED",
+                            "Local hardware capacity became available after "
+                                    + admission.waitedMs() + " ms", 25);
+                }
+            }
+
             KompileProjectCrawlProfile profile = new KompileProjectCrawlProfile();
             profile.setId(knowledgeBase.id());
             profile.setName(knowledgeBase.name());
@@ -361,10 +484,6 @@ public final class LocalProjectCrawlBackend {
                     "graphFile", LocalProjectGraphBackend.GRAPH_FILE)));
 
             boolean dryRun = params.path("dryRun").asBoolean(false);
-            String lockKey = project.root() + "\n" + knowledgeBase.id();
-            ReentrantLock lock = CRAWL_LOCKS.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
-            lock.lockInterruptibly();
-            try {
                 List<LocalProjectGraphBackend.CodeProjectSource> graphCodeProjects =
                         selectedProjects.projects().stream()
                                 .map(selected -> new LocalProjectGraphBackend.CodeProjectSource(
@@ -398,7 +517,7 @@ public final class LocalProjectCrawlBackend {
                 LocalCrawlRunner.ExecutionResult lifecycle =
                         LocalCrawlRunner.execute(
                                 profile, project.root(), dryRun, executionRequest,
-                                graphContext, mapper, reportingModelExecutor);
+                                graphContext, mapper, reportingModelExecutor, graphBackend);
                 if (Thread.currentThread().isInterrupted()) {
                     throw new InterruptedException("Project-local crawl cancelled before persistence");
                 }
@@ -487,8 +606,8 @@ public final class LocalProjectCrawlBackend {
                 }
                 metadata.put("warnings", warnings);
                 metadata.put("configurationWarnings", configurationWarnings);
-                metadata.put("requestedConfiguration", params.deepCopy());
-                metadata.put("effectiveConfiguration", executionRequest.deepCopy());
+                metadata.put("requestedConfiguration", LocalCrawlJobStore.redact(params));
+                metadata.put("effectiveConfiguration", LocalCrawlJobStore.redact(executionRequest));
                 if (dryRun) {
                     metadata.put("preview", mapper.convertValue(summary,
                             new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { }));
@@ -550,26 +669,36 @@ public final class LocalProjectCrawlBackend {
                 output.append("\n").append(summary.toPrettyString());
                 return new ToolResult("crawl_documents", output.toString(), metadata,
                         "FAILED".equals(effectiveStatus));
-            } finally {
-                lock.unlock();
-                if (!lock.hasQueuedThreads()) {
-                    CRAWL_LOCKS.remove(lockKey, lock);
-                }
-            }
         } catch (Exception e) {
             return ToolResult.error("Project-local crawl failed: " + message(e));
         } finally {
             for (Path temporarySource : temporarySources) {
                 try {
-                    Files.deleteIfExists(temporarySource);
+                    deleteRecursively(temporarySource);
                 } catch (IOException ignored) {
                     // Best-effort cleanup of a dry-run download.
+                }
+            }
+            if (crawlLock != null && crawlLock.isHeldByCurrentThread()) {
+                crawlLock.unlock();
+                if (!crawlLock.hasQueuedThreads() && crawlLockKey != null) {
+                    CRAWL_LOCKS.remove(crawlLockKey, crawlLock);
                 }
             }
         }
     }
 
+    private ObjectNode flattenConfig(JsonNode params) {
+        ObjectNode merged = params.path("config").deepCopy();
+        params.fields().forEachRemaining(field -> {
+            if (!"config".equals(field.getKey())) merged.set(field.getKey(), field.getValue());
+        });
+        merged.remove("config");
+        return merged;
+    }
+
     public ToolResult crawlSource(JsonNode params, ToolContext context) {
+        if (params.path("config").isObject()) return crawlSource(flattenConfig(params), context);
         String path = text(params, "path");
         String url = text(params, "url");
         String inline = text(params, "text");
@@ -583,6 +712,20 @@ public final class LocalProjectCrawlBackend {
             request.remove("title");
             request.remove("factSheetId");
             request.put("dryRun", dryRun);
+            String provider = firstNonBlank(text(params, "provider"), text(params, "llmProvider"));
+            String model = text(params, "model");
+            String thinking = text(params, "thinking");
+            if (provider != null || model != null || thinking != null) {
+                ObjectNode extraction = request.path("graphExtraction").isObject()
+                        ? request.path("graphExtraction").deepCopy() : mapper.createObjectNode();
+                if (provider != null) extraction.put("llmProvider", provider);
+                if (model != null) extraction.put("modelName", model);
+                if (thinking != null) extraction.put("thinking", thinking);
+                request.set("graphExtraction", extraction);
+            }
+            request.remove(List.of("provider", "llmProvider", "model", "thinking"));
+            List<Map<String, Object>> nativeSelections = graphBackend.preflightNativeChat(
+                    project(context.getWorkingDirectory()).root(), request);
             String title = firstNonBlank(text(params, "title"), path, url, "inline knowledge");
             if (params.hasNonNull("factSheetId")) {
                 request.putObject("knowledgeBase").put("id", params.path("factSheetId").asInt());
@@ -600,8 +743,10 @@ public final class LocalProjectCrawlBackend {
             }
             if (dryRun) {
                 return ToolResult.success("crawl_source",
-                        "Project-local inline crawl preview complete; no source or index artifacts were written.",
-                        Map.of("backend", "project-local", "status", "DRY_RUN", "persisted", false));
+                        "Project-local inline configuration preview complete; no model call, source or index artifacts were written.",
+                        Map.of("backend", "project-local", "status", "DRY_RUN", "persisted", false,
+                                "graphExtractionResolution", nativeSelections,
+                                "effectiveRequest", LocalCrawlJobStore.redact(request)));
             }
 
             ProjectState project = ensureDirectoryProject(context.getWorkingDirectory());
@@ -656,6 +801,17 @@ public final class LocalProjectCrawlBackend {
                 sourceType(types, "URL", true,
                         "Fetched directly by the in-process MCP worker over HTTP or HTTPS.");
                 sourceType(types, "INLINE_TEXT", true, "Use crawl_source text=... .");
+                for (String external : LocalExternalSourceLoaderRegistry.sourceTypes().stream().sorted().toList()) {
+                    String description = LocalExternalSourceLoaderRegistry.downloadsOriginalFiles(external)
+                            ? "Managed connector: downloads ORIGINAL FILES, then processes each "
+                              + "through its content-type pipeline (pdf, pipelineId=vlm-ocr-pdf for "
+                              + "scanned PDFs, excel, ...). Identify via properties.fileIds/itemIds, "
+                              + "properties.folderId, or path."
+                            : "Loaded in-process with explicit request credentials; no app server required.";
+                    sourceType(types, external, true, description);
+                }
+                sourceType(types, "OBSIDIAN", true,
+                        "A local Obsidian vault crawled as a typed Markdown directory source.");
             }
             if (matches(section, "pipelines")) {
                 ObjectNode capabilities = LocalCrawlCapabilities.catalog(
@@ -687,7 +843,7 @@ public final class LocalProjectCrawlBackend {
                         .put("backend", "project-local")
                         .put("engine", "GraphExtractionOrchestrator")
                         .put("configuration", "graphExtraction + processingRoute")
-                        .put("modelExecution", "request-scoped CLI_AGENT or API_AGENT")
+                        .put("modelExecution", "CHAT_MODEL native text chat, CLI_AGENT, API_AGENT, or LOCAL_MODEL/serving")
                         .put("artifact", "data/crawls/<knowledge-base>/graph.kgraph");
                 for (String id : List.of("VECTOR_INDEXING", "ENTITY_RESOLUTION", "LEARNING")) {
                     steps.addObject().put("id", id).put("available", true)
@@ -711,6 +867,11 @@ public final class LocalProjectCrawlBackend {
                 catalog.set("pipelineTypeGuide", capabilities.remove("pipelineTypeGuide"));
                 catalog.put("executionMode", LocalCrawlRunner.executionMode());
                 catalog.set("requestShape", localRequestShape());
+                catalog.set("nativeChat", mapper.valueToTree(Map.of(
+                        "backendType", "CHAT_MODEL", "execution", "native-chat",
+                        "selector", "graphExtraction.llmProvider=chat[:provider]",
+                        "capabilities", List.of("text", "llm"), "providers", NativeChatModels.providers(),
+                        "note", "Metadata only; no authentication/inference proof. Tools, VLM and embeddings are not graph-route capabilities.")));
             }
             if (matches(section, "runtime")) {
                 catalog.putObject("processingCapacity")
@@ -720,6 +881,7 @@ public final class LocalProjectCrawlBackend {
                         .put("distributed", false)
                         .put("runtimePool", "bounded reusable stdio sessions")
                         .put("runtimeProcesses", "started on demand and owned until the crawl job reaches terminal state")
+                        .put("hardwareAdmission", "subprocess_watchdog gates non-dry-run crawls with configurable wait/fail/off behavior")
                         .put("jobLifecycle", "crawl_documents/crawl_source return jobId; crawl_control status polls; crawl_result retrieves terminal output")
                         .put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS)
                         .put("registeredProjectPipelines", projectPipelineDefaults(project).size())
@@ -729,9 +891,12 @@ public final class LocalProjectCrawlBackend {
                         .put("incrementalGraph", true)
                         .put("storage", "data/crawls/<knowledge-base>")
                         .put("graphStorage", "data/crawls/<knowledge-base>/graph.kgraph")
-                        .put("reasoning", "in-process UnifiedGraph query engine")
-                        .put("embeddingTraining", "in-process TRANSE or ROTATE with portable model artifacts")
+                        .put("reasoning", "in-process queries over subprocess-trained portable graph models")
+                        .put("embeddingTraining", "bounded learning subprocess: TRANSE/ROTATE + PSL/MEBN with portable write-back")
                         .put("memory", ".kompile/memory via memory and semantic_memory MCP tools");
+                catalog.set("subprocessWatchdog",
+                        mapper.valueToTree(LocalSubprocessWatchdog.get().statusMap()));
+                catalog.put("subprocessWatchdogTool", "subprocess_watchdog");
             }
             if (matches(section, "models")) {
                 List<Map<String, Object>> modelInventory =
@@ -788,6 +953,9 @@ public final class LocalProjectCrawlBackend {
                     ? null : project(context.getWorkingDirectory());
             switch (operation) {
                 case "preflight":
+                    if (params.path("body").isObject() || params.path("request").isObject()) {
+                        return startControlRequest(params, context);
+                    }
                     return discover("all", context.getWorkingDirectory());
                 case "start":
                     return startControlRequest(params, context);
@@ -1010,52 +1178,67 @@ public final class LocalProjectCrawlBackend {
     }
 
     private ToolResult startControlRequest(JsonNode params, ToolContext context) {
+        try {
+            return crawlDocuments(controlRequest(params), context);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error(e.getMessage());
+        }
+    }
+
+    /** Adapt legacy source locators without dropping native routes, model bindings or future request fields. */
+    ObjectNode controlRequest(JsonNode params) {
         JsonNode body = params.path("body");
+        if (!body.isObject()) body = params.path("request");
         if (!body.isObject()) {
-            body = params.path("request");
+            throw new IllegalArgumentException("start/preflight requires body containing a UnifiedCrawlRequest.");
         }
-        if (!body.isObject()) {
-            return ToolResult.error("start requires body containing a UnifiedCrawlRequest.");
+        if (body.hasNonNull("config") && !body.path("config").isObject()) {
+            throw new IllegalArgumentException("config must be an object.");
         }
-        ObjectNode request = mapper.createObjectNode();
-        if (body.hasNonNull("name")) {
-            request.set("name", body.get("name"));
-        }
-        if (body.hasNonNull("factSheetName")) {
-            request.putObject("knowledgeBase").put("name", body.path("factSheetName").asText());
-        } else if (body.hasNonNull("factSheetId")) {
-            request.putObject("knowledgeBase").put("id", body.path("factSheetId").asInt());
-        }
-        ArrayNode documents = request.putArray("documents");
-        JsonNode sources = body.path("sources");
-        if (sources.isArray()) {
-            for (JsonNode source : sources) {
-                String value = firstNonBlank(text(source, "pathOrUrl"), text(source, "path"));
-                if (value == null) {
-                    continue;
-                }
-                if (value.startsWith("http://") || value.startsWith("https://")) {
-                    return ToolResult.error("The local start backend cannot load URL source: " + value);
-                }
-                ObjectNode document = documents.addObject().put("path", value);
-                copy(source, document, "label");
-                copy(source, document, "includePatterns");
-                copy(source, document, "excludePatterns");
-                copy(source, document, "pipelineId");
-                copy(source, document, "loaderName");
-                copy(source, document, "chunkerName");
-                copy(source, document, "chunkSize");
-                copy(source, document, "chunkOverlap");
-                copy(source, document, "chunkerOptions");
-                copy(source, document, "allowedContentTypes");
+        ObjectNode request = body.path("config").isObject() ? flattenConfig(body) : body.deepCopy();
+        if (!request.hasNonNull("knowledgeBase")) {
+            if (request.hasNonNull("factSheetName")) {
+                request.putObject("knowledgeBase").put("name", request.path("factSheetName").asText());
+            } else if (request.hasNonNull("factSheetId")) {
+                request.putObject("knowledgeBase").set("id", request.get("factSheetId"));
+            } else if (params.hasNonNull("factSheetId")) {
+                request.putObject("knowledgeBase").set("id", params.get("factSheetId"));
             }
         }
-        for (String field : List.of("steps", "pipelines", "routeRules", "runtimeConfig",
-                "graphExtraction", "vectorIndex", "distribution", "deriveOntology",
-                "defaultPipelineId", "strictSteps")) {
-            copy(body, request, field);
+        request.remove(List.of("factSheetName", "factSheetId"));
+        if (!request.has("documents") && request.has("sources")) {
+            JsonNode sources = request.get("sources");
+            if (!sources.isArray()) throw new IllegalArgumentException("sources must be an array.");
+            ArrayNode documents = request.putArray("documents");
+            for (JsonNode source : sources) {
+                if (!source.isObject()) throw new IllegalArgumentException("Each source must be an object.");
+                ObjectNode document = source.deepCopy();
+                String value = text(source, "pathOrUrl");
+                String sourceType = text(source, "sourceType");
+                if (sourceType != null) {
+                    sourceType = sourceType.toUpperCase(Locale.ROOT).replace('-', '_');
+                    document.put("sourceType", sourceType);
+                }
+                if (value != null && !document.hasNonNull("path") && !document.hasNonNull("url")) {
+                    boolean logicalExternal = sourceType != null
+                            && (LocalExternalSourceLoaderRegistry.supports(sourceType) || "OBSIDIAN".equals(sourceType));
+                    document.put(!logicalExternal && (value.startsWith("http://") || value.startsWith("https://"))
+                            ? "url" : "path", value);
+                }
+                document.remove("pathOrUrl");
+                documents.add(document);
+            }
         }
-        return crawlDocuments(request, context);
+        request.remove("sources"); // explicit documents replace legacy/config sources
+        if (request.hasNonNull("documents") && !request.path("documents").isArray()) {
+            throw new IllegalArgumentException("documents must be an array.");
+        }
+        if (!request.has("async") && params.has("async")) request.set("async", params.get("async"));
+        if ("preflight".equalsIgnoreCase(params.path("operation").asText().trim())) {
+            // Preflight is never a start, even if the submitted body explicitly requests persistence.
+            request.put("dryRun", true).put("async", false).put("waitForCompletion", false);
+        }
+        return request;
     }
 
     private ToolResult localJobResult(String operation, Path root, String jobId) throws IOException {
@@ -1238,14 +1421,22 @@ public final class LocalProjectCrawlBackend {
         for (String source : previousSources) {
             ObjectNode fallback = result.computeIfAbsent(source,
                     ignored -> mapper.createObjectNode().put("path", source));
-            if (!fallback.hasNonNull("loaderName") && previousSummary.hasNonNull("loader")) {
+            if (!fallback.hasNonNull("loaderName")
+                    && isSpecificPipelineComponent(previousSummary.get("loader"))) {
                 fallback.set("loaderName", previousSummary.get("loader").deepCopy());
             }
-            if (!fallback.hasNonNull("chunkerName") && previousSummary.hasNonNull("chunker")) {
+            if (!fallback.hasNonNull("chunkerName")
+                    && isSpecificPipelineComponent(previousSummary.get("chunker"))) {
                 fallback.set("chunkerName", previousSummary.get("chunker").deepCopy());
             }
         }
         return result;
+    }
+
+    /** Aggregate crawl summaries use {@code mixed} as reporting metadata, not a runnable component. */
+    private static boolean isSpecificPipelineComponent(JsonNode value) {
+        return value != null && !value.isNull() && !value.asText().isBlank()
+                && !"mixed".equalsIgnoreCase(value.asText().trim());
     }
 
     private void copyDocumentOptions(JsonNode source, ObjectNode target) {
@@ -1253,6 +1444,14 @@ public final class LocalProjectCrawlBackend {
                 "chunkerName", "chunkSize", "chunkOverlap", "chunkerOptions",
                 "executorId", "processor", "pipelineDefinitionId", "pipelineDefinitionPath",
                 "allowedContentTypes", "properties", "includePatterns", "excludePatterns")) {
+            copy(source, target, field);
+        }
+    }
+
+    private void copyMaterializedPipelineOptions(JsonNode source, ObjectNode target) {
+        for (String field : List.of("label", "pipelineId", "chunkerName", "chunkSize",
+                "chunkOverlap", "chunkerOptions", "executorId", "processor",
+                "pipelineDefinitionId", "pipelineDefinitionPath")) {
             copy(source, target, field);
         }
     }
@@ -1283,7 +1482,7 @@ public final class LocalProjectCrawlBackend {
     private void addUnsupportedWarnings(JsonNode params, List<String> warnings) {
         List<String> configured = new ArrayList<>();
         for (String field : List.of("distribution",
-                "preprocessing", "archivedSteps")) {
+                "preprocessing")) {
             if (params.hasNonNull(field)) {
                 configured.add(field);
             }
@@ -1303,6 +1502,23 @@ public final class LocalProjectCrawlBackend {
             }
             if (!unsupported.isEmpty()) {
                 warnings.add("Distributed-only steps were not run locally: " + unsupported + ".");
+            }
+        }
+        JsonNode archivedSteps = params.get("archivedSteps");
+        if (archivedSteps != null && archivedSteps.isArray()) {
+            List<String> nonArchivable = new ArrayList<>();
+            for (JsonNode step : archivedSteps) {
+                String rawId = step == null || step.isNull() ? null : step.asText("");
+                String id = LocalProjectGraphBackend.sharedLifecycleStepId(rawId);
+                CrawlPipelineStepRegistry.StepDescriptor descriptor =
+                        CrawlPipelineStepRegistry.get(id);
+                if (descriptor != null && !descriptor.archivable()) {
+                    nonArchivable.add(id);
+                }
+            }
+            if (!nonArchivable.isEmpty()) {
+                warnings.add("Archived steps are not archivable locally and will still run: "
+                        + nonArchivable + ".");
             }
         }
     }
@@ -1573,9 +1789,69 @@ public final class LocalProjectCrawlBackend {
         if (knowledgeBase.factSheetId() != null) {
             request.put("factSheetId", knowledgeBase.factSheetId());
         }
-        request.set("request", params.deepCopy());
+        request.set("request", LocalCrawlJobStore.redact(params));
         mapper.writerWithDefaultPrettyPrinter()
                 .writeValue(outputDirectory.resolve("mcp-request.json").toFile(), request);
+    }
+
+    /** Deterministic per-source materialization directory (no content written here). */
+    private Path materializeExternalSourceDirectory(
+            JsonNode document,
+            String sourceType,
+            String locator,
+            ProjectState project,
+            KnowledgeBaseRef knowledgeBase,
+            boolean temporary) throws Exception {
+        if (temporary) {
+            return Files.createTempDirectory("kompile-local-source-");
+        }
+        String identity = LocalExternalSourceLoaderRegistry.identityKey(sourceType, locator);
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(identity.getBytes(StandardCharsets.UTF_8))).substring(0, 24);
+        return project.root().resolve("data/knowledge-sources")
+                .resolve(knowledgeBase.id()).resolve("external")
+                .resolve(sourceType.toLowerCase(Locale.ROOT) + "-" + digest).normalize();
+    }
+
+    private Path materializeExternalSource(
+            JsonNode document,
+            String sourceType,
+            String locator,
+            ProjectState project,
+            KnowledgeBaseRef knowledgeBase,
+            boolean temporary) throws Exception {
+        Path directory;
+        if (temporary) {
+            directory = Files.createTempDirectory("kompile-local-source-");
+        } else {
+            String identity = LocalExternalSourceLoaderRegistry.identityKey(sourceType, locator);
+            String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8))).substring(0, 24);
+            directory = project.root().resolve("data/knowledge-sources")
+                    .resolve(knowledgeBase.id()).resolve("external")
+                    .resolve(sourceType.toLowerCase(Locale.ROOT) + "-" + digest).normalize();
+        }
+        Map<String, Object> properties = document.path("properties").isObject()
+                ? mapper.convertValue(document.path("properties"),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                : Map.of();
+        int maxDocuments = document.path("maxDocuments").asInt(0);
+        LocalExternalSourceLoaderRegistry.materialize(
+                sourceType, locator, properties, directory, maxDocuments, mapper);
+        return directory;
+    }
+
+    private static void deleteRecursively(Path path) throws IOException {
+        if (path == null || !Files.exists(path)) return;
+        if (Files.isDirectory(path)) {
+            try (Stream<Path> walk = Files.walk(path)) {
+                for (Path candidate : walk.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(candidate);
+                }
+            }
+        } else {
+            Files.deleteIfExists(path);
+        }
     }
 
     private ObjectNode dryRunSummary(Path projectRoot,
@@ -1584,7 +1860,7 @@ public final class LocalProjectCrawlBackend {
                                      ObjectNode executionRequest,
                                      List<String> warnings,
                                      int explicitDocuments,
-                                     boolean isolatedExplicitPreview) {
+                                     boolean isolatedExplicitPreview) throws IOException {
         ObjectNode result = mapper.createObjectNode();
         result.put("profileId", profile.getId());
         result.put("name", profile.getName());
@@ -1593,7 +1869,7 @@ public final class LocalProjectCrawlBackend {
         result.put("isolatedExplicitPreview", isolatedExplicitPreview);
         result.put("requestedDocumentCount", explicitDocuments);
         result.set("sources", mapper.valueToTree(profile.getSources()));
-        result.set("effectiveDocuments", executionRequest.path("documents").deepCopy());
+        result.set("effectiveDocuments", LocalCrawlJobStore.redact(executionRequest.path("documents")));
         result.set("resolvedDocuments",
                 resolvedDryRunDocuments(projectRoot, profile, executionRequest));
         result.put("collection", profile.getCollection());
@@ -1609,6 +1885,9 @@ public final class LocalProjectCrawlBackend {
         copyIfPresent(executionRequest, pipelineResolution, "modelRuntime");
         copyIfPresent(executionRequest, pipelineResolution, "modelId");
         copyIfPresent(executionRequest, pipelineResolution, "vlmModel");
+        result.set("pipelineResolution", LocalCrawlJobStore.redact(pipelineResolution));
+        result.set("graphExtractionResolution", mapper.valueToTree(
+                graphBackend.preflightNativeChat(projectRoot, executionRequest)));
 
         ObjectNode wouldWrite = result.putObject("wouldWrite");
         wouldWrite.put("crawlArtifacts", false);
@@ -1616,7 +1895,7 @@ public final class LocalProjectCrawlBackend {
         wouldWrite.put("modelManifest", false);
         wouldWrite.put("targetOutputPath", execution.outputDirectory().toString());
         wouldWrite.put("targetMarkdownPath", execution.markdownDirectory().toString());
-        result.set("effectiveRequest", executionRequest.deepCopy());
+        result.set("effectiveRequest", LocalCrawlJobStore.redact(executionRequest));
         return result;
     }
 
@@ -1627,7 +1906,7 @@ public final class LocalProjectCrawlBackend {
         if (!documents.isArray()) return result;
         for (JsonNode document : documents) {
             ObjectNode preview = result.addObject();
-            preview.set("document", document.deepCopy());
+            preview.set("document", LocalCrawlJobStore.redact(document));
             String configuredPath = text(document, "path");
             if (configuredPath == null) {
                 preview.put("resolutionStatus", "UNAVAILABLE");
@@ -1645,21 +1924,28 @@ public final class LocalProjectCrawlBackend {
                 LocalCrawlCapabilities.ResolvedPipeline pipeline =
                         LocalCrawlCapabilities.resolve(request, profile, sourceRoot, file);
                 preview.put("resolutionStatus", "RESOLVED");
-                preview.set("resolvedPipeline", mapper.valueToTree(pipeline));
+                preview.set("resolvedPipeline", LocalCrawlJobStore.redact(mapper.valueToTree(pipeline)));
                 preview.put("routeDecision", pipeline.pipelineId());
                 preview.put("loader", pipeline.loaderName());
-                preview.put("chunker", pipeline.chunkerName());
+                    preview.put("chunker", pipeline.chunkerName());
 
-                Object inline = pipeline.processor().get("pipelineDefinition");
-                UnifiedPipelineDefinition definition = inline == null ? null
-                        : mapper.convertValue(inline, UnifiedPipelineDefinition.class);
-                LocalModelPipelineRunner.ResolvedModelContext models =
-                        LocalModelPipelineRunner.resolveBoundModels(
-                                projectRoot, pipeline, definition, false);
-                ObjectNode modelResolution = preview.putObject("modelResolution");
-                modelResolution.put("status", "RESOLVED");
-                modelResolution.set("bindings", mapper.valueToTree(models.bindings()));
-                modelResolution.set("resolvedModels", mapper.valueToTree(models.resolvedModels()));
+                String processorType = String.valueOf(
+                        pipeline.processor().getOrDefault("type", ""));
+                if (ChatModelPipelineRunner.PROCESSOR_TYPE.equalsIgnoreCase(processorType)) {
+                    preview.set("modelResolution", mapper.valueToTree(
+                            ChatModelPipelineRunner.previewSelection(projectRoot, pipeline, file)));
+                } else {
+                    Object inline = pipeline.processor().get("pipelineDefinition");
+                    UnifiedPipelineDefinition definition = inline == null ? null
+                            : mapper.convertValue(inline, UnifiedPipelineDefinition.class);
+                    LocalModelPipelineRunner.ResolvedModelContext models =
+                            LocalModelPipelineRunner.resolveBoundModels(
+                                    projectRoot, pipeline, definition, false);
+                    ObjectNode modelResolution = preview.putObject("modelResolution");
+                    modelResolution.put("status", "RESOLVED");
+                    modelResolution.set("bindings", mapper.valueToTree(models.bindings()));
+                    modelResolution.set("resolvedModels", mapper.valueToTree(models.resolvedModels()));
+                }
             } catch (Exception failure) {
                 String error = firstNonBlank(failure.getMessage(), failure.getClass().getName());
                 if (!preview.has("resolutionStatus")) {
@@ -1672,7 +1958,7 @@ public final class LocalProjectCrawlBackend {
                 }
             }
         }
-        return result;
+        return (ArrayNode) LocalCrawlJobStore.redact(result);
     }
 
     private static void copyIfPresent(ObjectNode source, ObjectNode target, String field) {
@@ -1757,7 +2043,8 @@ public final class LocalProjectCrawlBackend {
             registered.put("pipelineType", pipelineType);
             boolean modelDocumentPipeline = "VLM".equalsIgnoreCase(pipelineType)
                     || "OCR".equalsIgnoreCase(pipelineType);
-            registered.put("executionModel", "unified-pipeline-runtime");
+            registered.put("executionModel", "CHAT_MODEL".equalsIgnoreCase(pipelineType)
+                    ? "mcp-host-chat-provider" : "unified-pipeline-runtime");
             registered.put("configurationSource", "kompile.project.json");
             registered.put("inheritanceContract",
                     "Use pipelines[].registeredPipelineId to inherit this definition; override model and "
@@ -1786,7 +2073,14 @@ public final class LocalProjectCrawlBackend {
                 copyMetadataField(pipeline, registered, "chunkerName");
             }
             ObjectNode processor;
-            if (modelDocumentPipeline) {
+            if ("CHAT_MODEL".equalsIgnoreCase(pipelineType)) {
+                processor = registered.putObject("processor").put("type", "CHAT_MODEL");
+                for (String field : List.of("provider", "modelId", "prompt", "systemPrompt", "outputFormat", "timeoutMinutes")) {
+                    if (options.hasNonNull(field)) processor.set(field, options.get(field));
+                }
+                if (pipeline.getModelRefs() != null && pipeline.getModelRefs().size() == 1)
+                    processor.putObject("modelBindings").put("default", pipeline.getModelRefs().get(0));
+            } else if (modelDocumentPipeline) {
                 processor = mapper.valueToTree(
                         LocalCrawlCapabilities.builtinModelProcessor(pipelineType));
                 registered.set("processor", processor);
@@ -1832,6 +2126,13 @@ public final class LocalProjectCrawlBackend {
             }
             item.put("pipelineType", firstNonBlank(pipelineType, "CUSTOM"));
             item.put("executionModel", "unified-pipeline-runtime");
+            if ("CHAT_MODEL".equalsIgnoreCase(pipelineType)) {
+                item.put("executionModel", "mcp-host-chat-provider");
+                item.put("status", "NOT_PROBED");
+                item.put("ready", false);
+                item.put("note", "Native chat needs no local artifact. Use pipeline capabilities with provider/model and explicit probe to check readiness.");
+                continue;
+            }
             if ("VLM".equalsIgnoreCase(pipelineType) || "OCR".equalsIgnoreCase(pipelineType)) {
                 item.put("supportedInputTypes", "application/pdf");
             }
@@ -1883,15 +2184,26 @@ public final class LocalProjectCrawlBackend {
         shape.put("documents", "documents=[{path|url, pipelineId?, loaderName?, chunkerName?, chunkSize?, chunkOverlap?, chunkerOptions?, includePatterns?, excludePatterns?}]");
         shape.put("pipelines", "pipelines=[{pipelineId(required),pipelineType,registeredPipelineId?,executorId?,loaderName?,chunkerName?,modelId?,vlmModel?,modelSetId?,modelBindings?,modelRefs?,options?,processor?,pipelineDefinition|pipelineDefinitionPath|pipelineDefinitionId?}]");
         shape.put("pipelineRegistry", "pipelineRegistry={models:[{id,modelId?,role?,source?,repository?,revision?,runtime?}], defaults:[ingest pipeline defaults with modelBindings?], definitions:[{pipelineId,pipelineSpec:{@class,...}}], executors:[{executorId,type:UNIFIED_PIPELINE,...}]} ; active project pipelines and modelRefs are registered automatically");
-        shape.put("pipelineExecution", "Every model-backed pipeline resolves to UnifiedPipelineDefinition and executes through the MCP-owned pooled stdio runtime");
+        shape.put("pipelineExecution", "Artifact-backed pipelines execute through pooled stdio runtimes; CHAT_MODEL text/document stages execute through isolated native chat calls in the MCP host");
         shape.put("runtimeConfig", "generic crawl/runtime tuning only; callers never configure executables or processes; use dryRun=true for validation without persistence");
-        shape.put("modelRuntime", "modelRuntime={autoBootstrap?,localPath?,source?,repository?,revision?,format?,type?,stagingExecutable?,stagingJar?,servingExecutable?,servingJar?,javaExecutable?,heapSize?,timeoutMinutes?,environment?}; native parents require native staging/serving children; executable JARs are JVM-development-only");
+        shape.put("modelRuntime", "modelRuntime={localPath?,servingExecutable?,servingJar?,javaExecutable?,heapSize?,timeoutMinutes?,environment?}; read-only execution over artifacts provisioned by model_runtime, with MCP-owned pooled encoder/serving children and no staging fallback");
         shape.put("routing", "document.pipelineId > routeRules > defaultPipelineId > automatic file routing");
         shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");
         shape.put("knowledgeBase", "knowledgeBase={name:<string>} or {id:<number>}; repeated calls add sources");
-        shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
+        shape.put("externalSources",
+                "documents=[{sourceType:GDRIVE|ONEDRIVE|GMAIL|SLACK|...}] run managed connectors in-process. "
+                        + "File-backed types GDRIVE and ONEDRIVE DOWNLOAD ORIGINAL FILES into "
+                        + "data/knowledge-sources/<kb>/external/ and then process each file through its "
+                        + "content-type pipeline (pdf text or pipelineId=vlm-ocr-pdf for scanned PDFs, "
+                        + "excel for xlsx, ...). Identify them with properties.fileIds/itemIds, a single "
+                        + "properties.folderId, or pathOrUrl; cap with properties.maxFiles. Credentials: "
+                        + "properties.accessToken, or the connected OAuth account. Text connectors "
+                        + "(GMAIL, SLACK, NOTION, REDDIT, ...) materialize text directly and accept "
+                        + "provider-native query properties (e.g. GMAIL gmailQuery).");
+        shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; the worker may report WAITING_FOR_CAPACITY according to subprocess_watchdog admission config; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
         shape.put("progress", "crawl_control status reports stage, stageDetail, progressPercent, stageUpdatedAt, and request-scoped pipelineProgress including currentPage/totalPages when available");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
+        shape.put("graphExtraction", "graphExtraction={llmProvider:chat[:provider],modelName?} selects host-native text chat; bare codex/claude aliases remain CLI_AGENT. Alternatively processingRoute={fallbackEnabled:false,backends:[{id,type:CHAT_MODEL,provider?,modelName?,capabilities:[llm]}]}; no request credentials/endpoints, embeddings, VLM or tool-choice claims.");
         shape.put("embeddingTraining", "embeddingTraining={enabled?,algorithm:TRANSE|ROTATE,embeddingDim?,epochs?}");
         shape.put("reasoningLearning", "reasoningLearning={enabled?,pslSteps?,mebnEpochs?,consensusRounds?,consensusWeight?,maxRelationTypes?}; FOL/PSL/MEBN artifacts are stored in graph.kgraph");
         shape.put("retrieval", "knowledge_search query=... knowledgeBase=<name-or-id>");
@@ -2085,6 +2397,23 @@ public final class LocalProjectCrawlBackend {
         }
         String value = node.path(field).asText("").trim();
         return value.isBlank() ? null : value;
+    }
+
+    /**
+     * Locator-free identity for external source types: the item identifiers live in the
+     * document properties instead of path/url. Must stay aligned with
+     * LocalExternalSourceLoaderRegistry.identityWithoutLocator.
+     */
+    private static boolean hasIdentityMetadata(JsonNode properties) {
+        for (String key : List.of("fileIds", "itemIds", "folderId", "pageIds", "databaseIds",
+                "guildId", "loadAllChannels")) {
+            JsonNode value = properties == null ? null : properties.get(key);
+            if (value == null || value.isNull()) continue;
+            if (value.isValueNode() ? !value.asText().isBlank() : value.size() > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String stringValue(Object value) {

@@ -17,26 +17,34 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.EOFException;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -47,30 +55,118 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class DirectLlmClient implements AutoCloseable {
 
+    static final int OPENAI_INSTRUCTIONS_MAX_CHARS = 1_048_576;
+    static final int OPENAI_PROMPT_CACHE_KEY_MAX_CHARS = 64;
+    private static final String OPENAI_INSTRUCTIONS_OMISSION =
+            "\n\n[OpenAI instructions limit reached. Middle content was omitted; "
+                    + "project instructions and saved tool results remain available through "
+                    + "the read and glob tools.]\n\n";
+
+    public interface ProviderActivityListener {
+        void onToolStart(String callId, String name, String input);
+        void onToolComplete(String callId, String name, String output,
+                            int exitCode, boolean error);
+        default void onTokenUsage(long input, long output,
+                                  long cacheRead, long cacheCreation) { }
+    }
+
+    /** Provider-neutral terminal failure categories used by the chat coordinator. */
+    public enum FailureKind {
+        NONE,
+        CONTEXT_OVERFLOW,
+        AUTHENTICATION,
+        CREDENTIAL_UNAVAILABLE,
+        RATE_LIMITED,
+        TEMPORARY,
+        PERMISSION_DENIED,
+        QUOTA_EXHAUSTED,
+        REFUSAL,
+        TRUNCATED,
+        PROVIDER_ERROR
+    }
+
     private final ChatConfig config;
     private final HttpClient httpClient;
+    private final ProviderConnectivityPolicy connectivityPolicy;
     private final ObjectMapper objectMapper;
+    private final Path workingDirectory;
     private final List<ObjectNode> conversationHistory;
     private final Object historyLock = new Object();
     private volatile AtomicBoolean cancelSignal;
     private volatile java.util.function.BooleanSupplier cancellationCheck;
     private volatile java.util.function.Consumer<String> outputConsumer;
+    private volatile java.util.function.Consumer<ConnectivityEvent> connectivityEventConsumer;
+    private volatile ProviderActivityListener providerActivityListener;
     private volatile RadiusGatewayConfig radiusGatewayConfig;
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
     private volatile int nativeCompactionTriggerTokens;
+    private volatile String promptCacheSessionId;
+    private volatile JsonOutputSpec requestedJsonOutput;
     private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
             new LinkedHashSet<>();
     private final Set<String> unavailableNativeCompactionRoutes = new LinkedHashSet<>();
     private volatile boolean openCodeNeedsSeed = true;
 
+    private record JsonOutputSpec(String name, JsonNode schema, boolean strict) { }
+
+    // The native Codex structured-output contract rejects these validation-only keywords.
+    // Keep the full schema (including defaults and object-valued enum/const payloads) for local
+    // validation; only the transport copy for this selected route is reduced.
+    private static final Set<String> NATIVE_CODEX_STRICT_UNSUPPORTED_KEYWORDS = Set.of(
+            "format", "maxItems", "maxLength", "minItems", "minLength", "maximum",
+            "minimum", "multipleOf", "pattern", "uniqueItems");
+    private static final Set<String> SCHEMA_MAP_KEYWORDS = Set.of(
+            "properties", "patternProperties", "$defs", "definitions", "dependentSchemas",
+            "dependencies");
+    private static final Set<String> SCHEMA_ARRAY_KEYWORDS = Set.of(
+            "allOf", "anyOf", "oneOf", "prefixItems");
+    private static final Set<String> SCHEMA_VALUE_KEYWORDS = Set.of(
+            "items", "additionalItems", "contains", "additionalProperties", "propertyNames",
+            "unevaluatedItems", "unevaluatedProperties", "contentSchema", "if", "then", "else",
+            "not");
+
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
+        this(config, objectMapper, config.connectivityPolicy(),
+                Path.of(System.getProperty("user.dir")));
+    }
+
+    /** Create a direct client scoped to the same project as the owning chat. */
+    public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper,
+                           Path workingDirectory) {
+        this(config, objectMapper, config.connectivityPolicy(), workingDirectory);
+    }
+
+    DirectLlmClient(ChatConfig config, ObjectMapper objectMapper,
+                    ProviderConnectivityPolicy connectivityPolicy) {
+        this(config, objectMapper, connectivityPolicy,
+                Path.of(System.getProperty("user.dir")));
+    }
+
+    DirectLlmClient(ChatConfig config, ObjectMapper objectMapper,
+                    ProviderConnectivityPolicy connectivityPolicy,
+                    Path workingDirectory) {
         this.config = config;
         this.objectMapper = objectMapper;
+        this.connectivityPolicy = connectivityPolicy;
+        this.workingDirectory = (workingDirectory == null
+                ? Path.of(System.getProperty("user.dir")) : workingDirectory)
+                .toAbsolutePath().normalize();
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
+                .connectTimeout(connectivityPolicy.connectTimeout())
                 .build();
         this.conversationHistory = new ArrayList<>();
+    }
+
+    /**
+     * Create a client with a caller-owned retry/deadline policy. The normal constructors retain
+     * provider defaults; bounded utility lanes use this factory to avoid nesting retries beneath
+     * their own hard deadline.
+     */
+    public static DirectLlmClient withConnectivityPolicy(
+            ChatConfig config, ObjectMapper objectMapper,
+            ProviderConnectivityPolicy connectivityPolicy, Path workingDirectory) {
+        return new DirectLlmClient(config, objectMapper, connectivityPolicy, workingDirectory);
     }
 
     /**
@@ -109,6 +205,44 @@ public class DirectLlmClient implements AutoCloseable {
         return outputConsumer;
     }
 
+    /** Receives retry/reconnect lifecycle events without mixing them into model text. */
+    public void setConnectivityEventConsumer(
+            java.util.function.Consumer<ConnectivityEvent> consumer) {
+        this.connectivityEventConsumer = consumer;
+    }
+
+    public java.util.function.Consumer<ConnectivityEvent> getConnectivityEventConsumer() {
+        return connectivityEventConsumer;
+    }
+
+    public void setProviderActivityListener(ProviderActivityListener listener) {
+        this.providerActivityListener = listener;
+    }
+
+    public ProviderActivityListener getProviderActivityListener() {
+        return providerActivityListener;
+    }
+
+    /** Project scope inherited by isolated clients such as judges. */
+    public Path getWorkingDirectory() {
+        return workingDirectory;
+    }
+
+    /** Stable conversation affinity used by provider prompt-cache routing. */
+    public void setPromptCacheSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            promptCacheSessionId = null;
+            return;
+        }
+        String normalized = sessionId.strip();
+        promptCacheSessionId = normalized.length() <= OPENAI_PROMPT_CACHE_KEY_MAX_CHARS
+                ? normalized : normalized.substring(0, OPENAI_PROMPT_CACHE_KEY_MAX_CHARS);
+    }
+
+    public String getPromptCacheSessionId() {
+        return promptCacheSessionId;
+    }
+
     /**
      * Print a streaming text chunk to the terminal.
      * Subclasses may override to intercept/redirect streaming output.
@@ -136,13 +270,84 @@ public class DirectLlmClient implements AutoCloseable {
 
     /**
      * Stream a chat completion turn with optional model override and attachments.
-     * Attachments are ignored in the base implementation; subclasses may override.
+     * Images and text attachments are encoded using the selected provider's native content-block
+     * format. Protocols without a verified media contract fail explicitly instead of silently
+     * dropping attachment bytes.
      */
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                     String modelOverride, List<AttachmentInput> attachments) {
-        // Base implementation ignores attachments
-        return streamChat(userMessage, systemPrompt, toolDefs, toolResults, modelOverride);
+        synchronized (historyLock) {
+            List<AttachmentInput> requestAttachments = attachments == null
+                    ? List.of() : new ArrayList<>(attachments);
+            String attachmentError = validateAttachments(requestAttachments);
+            if (attachmentError != null) {
+                return attachmentFailure(attachmentError);
+            }
+            requestAttachments = List.copyOf(requestAttachments);
+
+            String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
+                    ? modelOverride : config.getModel();
+            ResolvedRoute route = resolveRoute(effectiveModel);
+            if (!requestAttachments.isEmpty() && !supportsAttachments(route.protocol())) {
+                return attachmentFailure("Provider protocol " + route.protocol()
+                        + " does not support structured attachments in Kompile chat. "
+                        + "Use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages.");
+            }
+            int connectivityAttempt = 1;
+            boolean authenticationRefreshAttempted = false;
+            OAuthProviderFlow.RequestAuth retryAuth = null;
+            while (true) {
+                StreamResult result = streamAttempt(
+                        route, userMessage, systemPrompt, toolDefs, toolResults,
+                        effectiveModel, requestAttachments, retryAuth);
+                finishGenerationOutcome(result);
+                if (result.authenticationFailure) {
+                    if (isCancelled() || Thread.currentThread().isInterrupted()) {
+                        result.cancelled = true;
+                        result.authenticationFailure = false;
+                        result.rejectedAuth = null;
+                        return result;
+                    }
+                    OAuthProviderFlow.RequestAuth rejectedAuth = result.rejectedAuth;
+                    result.rejectedAuth = null;
+                    try {
+                        if (!authenticationRefreshAttempted && result.isReplaySafe() && rejectedAuth != null) {
+                            authenticationRefreshAttempted = true;
+                            retryAuth = config.refreshRequestAuthAfterUnauthorized(rejectedAuth);
+                            if (retryAuth != null) continue;
+                        }
+                    } catch (ChatConfig.AuthenticationException e) {
+                        return finishCredentialFailure(result, e);
+                    }
+                    return finishAuthenticationFailure(result);
+                }
+                if (!result.retryableConnectivityFailure) {
+                    return result;
+                }
+
+                boolean replaySafe = result.isReplaySafe();
+                if (!replaySafe || connectivityAttempt == connectivityPolicy.maxAttempts()) {
+                    return finishConnectivityFailure(result, replaySafe);
+                }
+
+                Duration delay = connectivityPolicy.retryDelay(
+                        connectivityAttempt, result.connectivityHeaders);
+                emitConnectivityEvent(new ConnectivityEvent(
+                        config.getProvider(), connectivityAttempt + 1,
+                        connectivityPolicy.maxAttempts(),
+                        delay, result.connectivityFailure));
+                if (!waitForRetry(delay)) {
+                    result.cancelled = true;
+                    result.retryableConnectivityFailure = false;
+                    return result;
+                }
+                if (route.protocol() == WireProtocol.OPENCODE) {
+                    resetOpenCodeClient();
+                }
+                connectivityAttempt++;
+            }
+        }
     }
 
     /**
@@ -153,26 +358,29 @@ public class DirectLlmClient implements AutoCloseable {
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                     String modelOverride) {
-        synchronized (historyLock) {
-            String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
-                    ? modelOverride : config.getModel();
-            ResolvedRoute route = resolveRoute(effectiveModel);
-            return switch (route.protocol()) {
-                case KOMPILE_LOCAL -> streamKompileServing(
-                        userMessage, systemPrompt, toolDefs, toolResults);
-                case OPENCODE -> streamOpenCode(
-                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-                case OPENAI_RESPONSES -> streamOpenAiResponses(
-                        userMessage, systemPrompt, toolDefs, toolResults,
-                        effectiveModel, route.codexBackend());
-                case PI_MESSAGES -> streamPiMessages(
-                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-                case ANTHROPIC_MESSAGES -> streamAnthropic(
-                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-                case OPENAI_CHAT -> streamOpenAi(
-                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-            };
-        }
+        return streamChat(
+                userMessage, systemPrompt, toolDefs, toolResults, modelOverride, List.of());
+    }
+
+    private StreamResult streamAttempt(
+            ResolvedRoute route, String userMessage, String systemPrompt,
+            ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+            String effectiveModel, List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
+        return switch (route.protocol()) {
+            case KOMPILE_LOCAL -> streamKompileServing(
+                    userMessage, systemPrompt, toolDefs, toolResults);
+            case OPENCODE -> streamOpenCode(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+            case OPENAI_RESPONSES -> streamOpenAiResponses(
+                    userMessage, systemPrompt, toolDefs, toolResults,
+                    effectiveModel, route.codexBackend(), attachments, retryAuth);
+            case PI_MESSAGES -> streamPiMessages(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, retryAuth);
+            case ANTHROPIC_MESSAGES -> streamAnthropic(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments, retryAuth);
+            case OPENAI_CHAT -> streamOpenAi(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, attachments, retryAuth);
+        };
     }
 
     public ResolvedRoute resolveRoute(String modelOverride) {
@@ -215,6 +423,11 @@ public class DirectLlmClient implements AutoCloseable {
 
     public ProviderCompactionCapabilities compactionCapabilities(String modelOverride) {
         return resolveRoute(modelOverride).capabilities();
+    }
+
+    /** Whether the selected wire protocol can carry structured file/image attachments. */
+    public boolean supportsAttachments(String modelOverride) {
+        return supportsAttachments(resolveRoute(modelOverride).protocol());
     }
 
     public void setNativeCompactionTriggerTokens(int tokens) {
@@ -261,10 +474,7 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("content-type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
-        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-        }
-        applyHeaders(builder, auth);
+        applyBearerAuthentication(builder, auth);
         HttpResponse<String> response = httpClient.send(
                 builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() == 404 || response.statusCode() == 405
@@ -359,11 +569,7 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("anthropic-version", "2023-06-01")
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
-        if (auth == null || (!hasHeader(auth.headers(), "Authorization")
-                && !hasHeader(auth.headers(), "x-api-key"))) {
-            builder.header("x-api-key", auth == null ? "" : auth.token());
-        }
-        applyHeaders(builder, auth);
+        applyAnthropicAuthentication(builder, auth, false);
         if (nativeCompaction) {
             builder.setHeader("anthropic-beta",
                     mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
@@ -388,8 +594,8 @@ public class DirectLlmClient implements AutoCloseable {
         ObjectNode request = objectMapper.createObjectNode();
         request.put("model", model);
         request.set("input", buildResponsesInput(userMessage, systemPrompt, staged, codex));
-        if (codex && systemPrompt != null && !systemPrompt.isBlank()) {
-            request.put("instructions", systemPrompt);
+        if (codex) {
+            request.put("instructions", boundedOpenAiInstructions(systemPrompt));
         }
         if (toolDefs != null && !toolDefs.isEmpty()) {
             request.set("tools", convertToolDefsToResponses(toolDefs, codex));
@@ -405,10 +611,7 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("content-type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
-        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-        }
-        applyHeaders(builder, auth);
+        applyBearerAuthentication(builder, auth);
         HttpResponse<String> response = httpClient.send(
                 builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() / 100 != 2) {
@@ -431,13 +634,23 @@ public class DirectLlmClient implements AutoCloseable {
         ArrayNode openAiMessages = buildOpenAiMessages(userMessage, systemPrompt, toolResults);
         ObjectNode request = objectMapper.createObjectNode();
         ArrayNode contents = request.putArray("contents");
-        for (JsonNode message : openAiMessages) {
-            String role = message.path("role").asText("user");
-            if ("system".equals(role)) continue;
+        // Only skip the system message injected by buildOpenAiMessages; it is
+        // represented below. This adapter is text-only, so never label a count
+        // that discarded tool envelopes or multimodal parts as exact.
+        int firstMessage = systemPrompt != null && !systemPrompt.isEmpty() ? 1 : 0;
+        for (int i = firstMessage; i < openAiMessages.size(); i++) {
+            JsonNode message = openAiMessages.get(i);
+            String role = message.path("role").asText();
+            JsonNode text = message.path("content");
+            if (!("user".equals(role) || "assistant".equals(role))
+                    || !text.isTextual() || message.hasNonNull("tool_calls")
+                    || message.hasNonNull("function_call")) {
+                return new TokenCountResult(false, false, 0L, "gemini",
+                        "Structured history requires a lossless Gemini count adapter");
+            }
             ObjectNode content = contents.addObject();
             content.put("role", "assistant".equals(role) ? "model" : "user");
-            content.putArray("parts").addObject().put("text",
-                    message.path("content").asText(""));
+            content.putArray("parts").addObject().put("text", text.asText());
         }
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             request.putObject("systemInstruction").putArray("parts")
@@ -458,9 +671,9 @@ public class DirectLlmClient implements AutoCloseable {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30))
                 .header("content-type", "application/json")
-                .header("x-goog-api-key", auth == null ? "" : auth.token())
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        applyTokenAuthentication(builder, auth, "x-goog-api-key");
         applyHeaders(builder, auth);
         HttpResponse<String> response = httpClient.send(
                 builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -537,11 +750,49 @@ public class DirectLlmClient implements AutoCloseable {
                         + "[Portable conversation context restored by Kompile]\n"
                         + portableHistoryText();
             }
+            // OpenCode owns a durable native session. Even a rejected turn may have
+            // mutated that provider-side history, so Kompile must not replay it as if
+            // this were a stateless HTTP request.
+            result.providerSideEffectsObserved = true;
             String text = client.send(effectiveModel, config.getThinking(),
                     effectiveSystemPrompt, userMessage,
                     chunk -> {
                         streamed.append(chunk);
                         printStreamingChunk(chunk);
+                    }, new OpenCodeServeClient.ActivityListener() {
+                        @Override
+                        public void onToolStart(String callId, String name, String input) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onToolStart(callId, name, input);
+                            }
+                        }
+
+                        @Override
+                        public void onToolComplete(String callId, String name, String output,
+                                                   int exitCode, boolean error) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onToolComplete(
+                                        callId, name, output, exitCode, error);
+                            }
+                        }
+
+                        @Override
+                        public void onTokenUsage(long input, long output,
+                                                 long cacheRead, long cacheCreation) {
+                            result.inputTokens += Math.max(0, input);
+                            result.outputTokens += Math.max(0, output);
+                            result.cacheReadTokens += Math.max(0, cacheRead);
+                            result.cacheCreationTokens += Math.max(0, cacheCreation);
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onTokenUsage(
+                                        input, output, cacheRead, cacheCreation);
+                            }
+                        }
                     });
             result.text = text;
             if (streamed.length() == 0) {
@@ -550,9 +801,8 @@ public class DirectLlmClient implements AutoCloseable {
             appendOpenCodeHistory(userMessage, text);
             openCodeNeedsSeed = false;
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Error: " + formatExceptionMessage(e) + "]";
-            }
+            if (streamed.length() > 0) result.text = streamed.toString();
+            recordStreamFailure(result, e, "[Error: ");
         }
         return result;
     }
@@ -563,8 +813,7 @@ public class DirectLlmClient implements AutoCloseable {
             synchronized (this) {
                 client = openCodeServeClient;
                 if (client == null) {
-                    client = new OpenCodeServeClient(objectMapper,
-                            java.nio.file.Path.of(System.getProperty("user.dir")));
+                    client = new OpenCodeServeClient(objectMapper, workingDirectory);
                     openCodeServeClient = client;
                 }
             }
@@ -589,11 +838,7 @@ public class DirectLlmClient implements AutoCloseable {
 
     @Override
     public void close() {
-        OpenCodeServeClient client = openCodeServeClient;
-        if (client != null) {
-            client.close();
-            openCodeServeClient = null;
-        }
+        resetOpenCodeClient();
     }
 
     /**
@@ -602,12 +847,7 @@ public class DirectLlmClient implements AutoCloseable {
     public void clearHistory() {
         synchronized (historyLock) {
             conversationHistory.clear();
-            OpenCodeServeClient nativeClient = openCodeServeClient;
-            if (nativeClient != null) {
-                nativeClient.close();
-                openCodeServeClient = null;
-            }
-            openCodeNeedsSeed = true;
+            resetOpenCodeClient();
         }
     }
 
@@ -624,6 +864,168 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
+     * Replay one executed tool call into wire history as a protocol-correct
+     * assistant envelope instead of prose. Models imitate the message shapes
+     * they see: replaying tool calls as plain "[Tool call ...]" text teaches
+     * them to emit tool calls as text, which the loop cannot execute.
+     * Formats that cannot carry tool-call envelopes (the flattened serving and
+     * legacy routes) deliberately fall back to the portable text form.
+     */
+    public void addReplayedToolCall(String toolName, String callId, String argumentsJson) {
+        addReplayedToolCalls(
+                List.of(new ReplayedToolCallInput(toolName, callId, argumentsJson)), null);
+    }
+
+    /** Replay one provider assistant turn containing one or more parallel tool calls. */
+    public void addReplayedToolCalls(
+            List<ReplayedToolCallInput> calls, String modelOverride) {
+        if (calls == null || calls.isEmpty()) return;
+        synchronized (historyLock) {
+            switch (routeHistoryFormat(modelOverride)) {
+                case OPENAI_CHAT_ENVELOPE -> {
+                    ObjectNode msg = objectMapper.createObjectNode();
+                    msg.put("role", "assistant");
+                    msg.put("content", "");
+                    ArrayNode toolCalls = msg.putArray("tool_calls");
+                    for (ReplayedToolCallInput replayed : calls) {
+                        ObjectNode call = toolCalls.addObject();
+                        call.put("id", replayed.callId());
+                        call.put("type", "function");
+                        ObjectNode fn = call.putObject("function");
+                        fn.put("name", replayed.toolName());
+                        fn.put("arguments", replayed.argumentsJson() == null
+                                ? "{}" : replayed.argumentsJson());
+                    }
+                    conversationHistory.add(msg);
+                }
+                case RESPONSES_ENVELOPE -> {
+                    // Responses-native item; the sanitizer retains it, and staged
+                    // live outputs dedupe against history outputs by call id.
+                    for (ReplayedToolCallInput replayed : calls) {
+                        ObjectNode item = objectMapper.createObjectNode();
+                        item.put("type", "function_call");
+                        item.put("id", "fc_" + UUID.randomUUID().toString().replace("-", ""));
+                        item.put("call_id", replayed.callId());
+                        item.put("name", replayed.toolName());
+                        item.put("arguments", replayed.argumentsJson() == null
+                                ? "{}" : replayed.argumentsJson());
+                        item.put("status", "completed");
+                        conversationHistory.add(item);
+                    }
+                }
+                case ANTHROPIC_ENVELOPE -> {
+                    ObjectNode msg = objectMapper.createObjectNode();
+                    msg.put("role", "assistant");
+                    ArrayNode content = msg.putArray("content");
+                    for (ReplayedToolCallInput replayed : calls) {
+                        ObjectNode block = content.addObject();
+                        block.put("type", "tool_use");
+                        block.put("id", replayed.callId());
+                        block.put("name", replayed.toolName());
+                        block.set("input", parseArgumentsOrEmpty(replayed.argumentsJson()));
+                    }
+                    conversationHistory.add(msg);
+                }
+                case TEXT -> {
+                    for (ReplayedToolCallInput replayed : calls) {
+                        addToHistory("assistant", "[Tool call " + replayed.toolName() + " "
+                                + replayed.callId() + "]\n"
+                                + (replayed.argumentsJson() == null
+                                ? "{}" : replayed.argumentsJson()));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Replay one tool result into wire history, pairing it with its call
+     * envelope when the active route supports them.
+     */
+    public void addReplayedToolResult(String toolName, String callId, String output) {
+        addReplayedToolResults(
+                List.of(new ToolCallResultInput(callId, toolName, output, false)), null);
+    }
+
+    /** Replay one provider result turn for one or more parallel tool calls. */
+    public void addReplayedToolResults(
+            List<ToolCallResultInput> results, String modelOverride) {
+        if (results == null || results.isEmpty()) return;
+        synchronized (historyLock) {
+            switch (routeHistoryFormat(modelOverride)) {
+                case OPENAI_CHAT_ENVELOPE -> {
+                    for (ToolCallResultInput replayed : results) {
+                        ObjectNode msg = objectMapper.createObjectNode();
+                        msg.put("role", "tool");
+                        msg.put("tool_call_id", replayed.callId);
+                        msg.put("content", replayed.output == null ? "" : replayed.output);
+                        if (replayed.name != null) msg.put("name", replayed.name);
+                        conversationHistory.add(msg);
+                    }
+                }
+                case RESPONSES_ENVELOPE -> {
+                    // Pair with the replayed function_call item so the sanitizer
+                    // retains both; a live re-submission of the same output is
+                    // deduped by prepareResponsesToolResultItems.
+                    for (ToolCallResultInput replayed : results) {
+                        ObjectNode item = objectMapper.createObjectNode();
+                        item.put("type", "function_call_output");
+                        item.put("call_id", replayed.callId);
+                        item.put("output", replayed.output == null ? "" : replayed.output);
+                        conversationHistory.add(item);
+                    }
+                }
+                case ANTHROPIC_ENVELOPE -> {
+                    ObjectNode msg = objectMapper.createObjectNode();
+                    msg.put("role", "user");
+                    ArrayNode content = msg.putArray("content");
+                    for (ToolCallResultInput replayed : results) {
+                        ObjectNode block = content.addObject();
+                        block.put("type", "tool_result");
+                        block.put("tool_use_id", replayed.callId);
+                        block.put("content", replayed.output == null ? "" : replayed.output);
+                        if (replayed.isError) block.put("is_error", true);
+                    }
+                    conversationHistory.add(msg);
+                }
+                case TEXT -> {
+                    for (ToolCallResultInput replayed : results) {
+                        addToHistory("user", "[Tool result " + replayed.name + " "
+                                + replayed.callId + "]\n"
+                                + (replayed.output == null ? "" : replayed.output));
+                    }
+                }
+            }
+        }
+    }
+
+    enum RouteHistoryFormat { OPENAI_CHAT_ENVELOPE, RESPONSES_ENVELOPE, ANTHROPIC_ENVELOPE, TEXT }
+
+    private RouteHistoryFormat routeHistoryFormat(String modelOverride) {
+        try {
+            return switch (resolveRoute(modelOverride).protocol()) {
+                case OPENAI_CHAT -> RouteHistoryFormat.OPENAI_CHAT_ENVELOPE;
+                case OPENAI_RESPONSES -> RouteHistoryFormat.RESPONSES_ENVELOPE;
+                case ANTHROPIC_MESSAGES -> RouteHistoryFormat.ANTHROPIC_ENVELOPE;
+                default -> RouteHistoryFormat.TEXT;
+            };
+        } catch (Exception ignored) {
+            return RouteHistoryFormat.TEXT;
+        }
+    }
+
+    private JsonNode parseArgumentsOrEmpty(String argumentsJson) {
+        if (argumentsJson != null && !argumentsJson.isBlank()) {
+            try {
+                return objectMapper.readTree(argumentsJson);
+            } catch (Exception ignored) {
+                // Fall through to the empty object below.
+            }
+        }
+        return objectMapper.createObjectNode();
+    }
+
+    /**
      * One-shot streaming completion that does NOT mutate conversation history.
      * Used for utility calls like summarization where we want the model's
      * output but must not pollute the ongoing chat with the request/response.
@@ -636,12 +1038,20 @@ public class DirectLlmClient implements AutoCloseable {
             // Utility calls must not clear or lock the live chat history while a
             // judge/summary network request is in flight. A fresh client also gives
             // provider-owned OpenCode a genuinely isolated native session.
-            try (DirectLlmClient isolated = new DirectLlmClient(config, objectMapper)) {
+            try (DirectLlmClient isolated = new DirectLlmClient(
+                    config, objectMapper, connectivityPolicy, workingDirectory)) {
                 isolated.setCancelSignal(cancelSignal);
+                String cacheSessionId = activePromptCacheSessionId();
+                if (cacheSessionId != null) {
+                    // Keep utility calls on a distinct affinity shard even when the
+                    // original key already occupies the provider's 64-char limit.
+                    isolated.setPromptCacheSessionId("utility:" + cacheSessionId);
+                }
                 if (cancellationCheck != null) {
                     isolated.setCancellationCheck(cancellationCheck);
                 }
                 isolated.setOutputConsumer(outputConsumer);
+                isolated.setConnectivityEventConsumer(connectivityEventConsumer);
                 return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride);
             }
         }
@@ -656,6 +1066,38 @@ public class DirectLlmClient implements AutoCloseable {
                 conversationHistory.clear();
                 conversationHistory.addAll(saved);
             }
+        }
+    }
+
+    /**
+     * One-shot completion with provider-enforced JSON Schema on known OpenAI protocol paths.
+     * Unsupported providers fall back to the ordinary one-shot request; caller-side validation
+     * and bounded repair remain authoritative.
+     */
+    public StreamResult streamOneShotJson(
+            String prompt, String systemPrompt, String modelOverride,
+            String schemaName, JsonNode schema, boolean strict) {
+        if (schema == null || !schema.isObject()) {
+            throw new IllegalArgumentException("Structured output schema must be a JSON object");
+        }
+        if (getClass() != DirectLlmClient.class) {
+            return streamOneShot(prompt, systemPrompt, modelOverride);
+        }
+        try (DirectLlmClient isolated = new DirectLlmClient(
+                config, objectMapper, connectivityPolicy, workingDirectory)) {
+            isolated.setCancelSignal(cancelSignal);
+            String cacheSessionId = activePromptCacheSessionId();
+            if (cacheSessionId != null) {
+                isolated.setPromptCacheSessionId("utility:" + cacheSessionId);
+            }
+            if (cancellationCheck != null) {
+                isolated.setCancellationCheck(cancellationCheck);
+            }
+            isolated.setOutputConsumer(outputConsumer);
+            isolated.setConnectivityEventConsumer(connectivityEventConsumer);
+            isolated.requestedJsonOutput = new JsonOutputSpec(
+                    normalizeJsonSchemaName(schemaName), schema.deepCopy(), strict);
+            return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride);
         }
     }
 
@@ -714,6 +1156,11 @@ public class DirectLlmClient implements AutoCloseable {
         synchronized (historyLock) {
             return conversationHistory.size();
         }
+    }
+
+    /** Read-only diagnostic view of the effective connection/retry policy. */
+    public ProviderConnectivityPolicy getConnectivityPolicy() {
+        return connectivityPolicy;
     }
 
     /** Live chat configuration shared with the standard-chat REPL. */
@@ -787,7 +1234,8 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void applyReasoningEffort(ObjectNode request, boolean responsesFormat) {
-        String effort = config.getThinking();
+        String effort = ProviderThinkingConfig.wireValue(
+                config.getProvider(), config.getThinking());
         if (effort == null || effort.isBlank()) {
             return;
         }
@@ -797,6 +1245,242 @@ public class DirectLlmClient implements AutoCloseable {
             request.set("reasoning", reasoning);
         } else {
             request.put("reasoning_effort", effort);
+        }
+    }
+
+    private void applyOpenAiFastMode(ObjectNode request, String model) {
+        if (("openai".equals(config.getProvider()) || config.isOpenAiCodexFormat())
+                && config.fastModeCapabilities().supports(model)) {
+            // Codex's service_tier="fast" maps to "priority" on the wire.
+            // Explicit default also overrides an OpenAI project's paid default.
+            request.put("service_tier", config.useFastMode(model) ? "priority" : "default");
+        }
+    }
+
+    private void applyResponsesJsonOutput(ObjectNode request, boolean codex) {
+        JsonOutputSpec output = requestedJsonOutput;
+        if (output == null) {
+            return;
+        }
+        JsonNode existingText = request.get("text");
+        ObjectNode text = existingText instanceof ObjectNode object
+                ? object : objectMapper.createObjectNode();
+        ObjectNode format = objectMapper.createObjectNode();
+        format.put("type", "json_schema");
+        format.put("name", output.name());
+        format.put("strict", output.strict());
+        format.set("schema", output.strict() && codex
+                ? normalizeNativeCodexStrictSchema(output.schema()) : output.schema().deepCopy());
+        text.set("format", format);
+        request.set("text", text);
+    }
+
+    private void applyChatCompletionsJsonOutput(ObjectNode request) {
+        JsonOutputSpec output = requestedJsonOutput;
+        if (output == null || !"openai".equalsIgnoreCase(config.getProvider())) {
+            return;
+        }
+        ObjectNode responseFormat = objectMapper.createObjectNode();
+        responseFormat.put("type", "json_schema");
+        ObjectNode jsonSchema = responseFormat.putObject("json_schema");
+        jsonSchema.put("name", output.name());
+        jsonSchema.put("strict", output.strict());
+        // Do not apply the native Codex compatibility reduction to generic OpenAI models.
+        jsonSchema.set("schema", output.schema().deepCopy());
+        request.set("response_format", responseFormat);
+    }
+
+    private static JsonNode normalizeNativeCodexStrictSchema(JsonNode schema) {
+        if (schema == null || !schema.isObject()) {
+            return schema == null ? null : schema.deepCopy();
+        }
+        return normalizeSchemaObject((ObjectNode) schema);
+    }
+
+    private static ObjectNode normalizeSchemaObject(ObjectNode schema) {
+        ObjectNode result = JsonNodeFactory.instance.objectNode();
+        schema.fields().forEachRemaining(entry -> {
+            String keyword = entry.getKey();
+            if (NATIVE_CODEX_STRICT_UNSUPPORTED_KEYWORDS.contains(keyword)) return;
+            JsonNode value = entry.getValue();
+            if (SCHEMA_MAP_KEYWORDS.contains(keyword)) {
+                result.set(keyword, normalizeSchemaMap(value));
+            } else if (SCHEMA_ARRAY_KEYWORDS.contains(keyword)) {
+                result.set(keyword, normalizeSchemaArray(value));
+            } else if (SCHEMA_VALUE_KEYWORDS.contains(keyword)) {
+                result.set(keyword, normalizeSchemaValue(value));
+            } else {
+                // required/type/const/enum/default/examples and extension payloads are data,
+                // not schema objects. In particular, preserve property names and literal maps.
+                result.set(keyword, value.deepCopy());
+            }
+        });
+        return result;
+    }
+
+    private static JsonNode normalizeSchemaMap(JsonNode value) {
+        if (!value.isObject()) return value.deepCopy();
+        ObjectNode result = JsonNodeFactory.instance.objectNode();
+        value.fields().forEachRemaining(entry -> {
+            JsonNode child = entry.getValue();
+            result.set(entry.getKey(), child.isObject()
+                    ? normalizeSchemaObject((ObjectNode) child) : child.deepCopy());
+        });
+        return result;
+    }
+
+    private static JsonNode normalizeSchemaArray(JsonNode value) {
+        if (!value.isArray()) return value.isObject()
+                ? normalizeSchemaObject((ObjectNode) value) : value.deepCopy();
+        ArrayNode result = JsonNodeFactory.instance.arrayNode();
+        for (JsonNode child : value) {
+            result.add(child.isObject()
+                    ? normalizeSchemaObject((ObjectNode) child) : child.deepCopy());
+        }
+        return result;
+    }
+
+    private static JsonNode normalizeSchemaValue(JsonNode value) {
+        if (value.isObject()) return normalizeSchemaObject((ObjectNode) value);
+        return value.isArray() ? normalizeSchemaArray(value) : value.deepCopy();
+    }
+
+    private static String normalizeJsonSchemaName(String value) {
+        String source = value == null || value.isBlank() ? "kompile_judge_verdict" : value.strip();
+        String normalized = source.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (normalized.length() > 64) {
+            normalized = normalized.substring(0, 64);
+        }
+        return normalized.isBlank() ? "kompile_judge_verdict" : normalized;
+    }
+
+    private String activePromptCacheSessionId() {
+        return config.promptCacheRetention()
+                == ProviderPromptCacheCapabilities.Retention.NONE
+                ? null : promptCacheSessionId;
+    }
+
+    private void applyAnthropicPromptCacheControl(ObjectNode request) {
+        ProviderPromptCacheCapabilities capabilities = config.promptCacheCapabilities();
+        ProviderPromptCacheCapabilities.Retention retention = config.promptCacheRetention();
+        if (capabilities.activation()
+                != ProviderPromptCacheCapabilities.Activation.EXPLICIT
+                || retention == ProviderPromptCacheCapabilities.Retention.NONE) {
+            return;
+        }
+        ObjectNode cacheControl = request.putObject("cache_control");
+        cacheControl.put("type", "ephemeral");
+        if (retention == ProviderPromptCacheCapabilities.Retention.LONG) {
+            cacheControl.put("ttl", "1h");
+        }
+    }
+
+    private void applyOpenAiPromptCacheControls(ObjectNode request, String model) {
+        ProviderPromptCacheCapabilities capabilities = config.promptCacheCapabilities();
+        if (capabilities.sessionAffinity()
+                == ProviderPromptCacheCapabilities.SessionAffinity.OPENAI_PROMPT_CACHE_KEY) {
+            String cacheSessionId = activePromptCacheSessionId();
+            if (cacheSessionId != null) request.put("prompt_cache_key", cacheSessionId);
+        }
+        if (capabilities.retentionControl()
+                == ProviderPromptCacheCapabilities.RetentionControl.OPENAI) {
+            applyOpenAiRetentionControls(request, model, config.promptCacheRetention());
+        }
+    }
+
+    private void applyOpenAiCompatiblePromptCacheControls(
+            ObjectNode request, String model) {
+        ProviderPromptCacheCapabilities capabilities = config.promptCacheCapabilities();
+        ProviderPromptCacheCapabilities.Retention retention = config.promptCacheRetention();
+        if (capabilities.sessionAffinity()
+                == ProviderPromptCacheCapabilities.SessionAffinity.OPENAI_PROMPT_CACHE_KEY) {
+            String cacheSessionId = activePromptCacheSessionId();
+            if (cacheSessionId != null) request.put("prompt_cache_key", cacheSessionId);
+        }
+        if (capabilities.retentionControl()
+                == ProviderPromptCacheCapabilities.RetentionControl.OPENAI) {
+            applyOpenAiRetentionControls(request, model, retention);
+        } else if (capabilities.retentionControl()
+                == ProviderPromptCacheCapabilities.RetentionControl.OPENROUTER
+                && retention != ProviderPromptCacheCapabilities.Retention.NONE
+                && isOpenRouterAnthropicModel(model)) {
+            ObjectNode cacheControl = request.putObject("cache_control");
+            cacheControl.put("type", "ephemeral");
+            if (retention == ProviderPromptCacheCapabilities.Retention.LONG) {
+                cacheControl.put("ttl", "1h");
+            }
+        }
+    }
+
+    private static boolean isOpenRouterAnthropicModel(String model) {
+        if (model == null) return false;
+        String normalized = model.strip().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("anthropic/")
+                || normalized.startsWith("~anthropic/");
+    }
+
+    private static void applyOpenAiRetentionControls(
+            ObjectNode request,
+            String model,
+            ProviderPromptCacheCapabilities.Retention retention) {
+        boolean promptCacheOptions = usesOpenAiPromptCacheOptions(model);
+        if (retention == ProviderPromptCacheCapabilities.Retention.NONE) {
+            if (promptCacheOptions) {
+                request.putObject("prompt_cache_options").put("mode", "explicit");
+            }
+            return;
+        }
+        if (promptCacheOptions) {
+            ObjectNode options = request.putObject("prompt_cache_options");
+            options.put("mode", "implicit");
+            if (retention == ProviderPromptCacheCapabilities.Retention.LONG) {
+                options.put("ttl", "30m");
+            }
+        } else {
+            boolean useExtendedRetention = usesOpenAi24hOnlyRetention(model)
+                    || (retention == ProviderPromptCacheCapabilities.Retention.LONG
+                    && supportsOpenAi24hRetention(model));
+            request.put("prompt_cache_retention",
+                    useExtendedRetention ? "24h" : "in_memory");
+        }
+    }
+
+    /** GPT-5.5 currently exposes only the extended retention value. */
+    private static boolean usesOpenAi24hOnlyRetention(String model) {
+        if (model == null) return false;
+        return model.strip().toLowerCase(Locale.ROOT).startsWith("gpt-5.5");
+    }
+
+    /** Families documented by OpenAI as accepting prompt_cache_retention=24h. */
+    private static boolean supportsOpenAi24hRetention(String model) {
+        if (model == null) return false;
+        String normalized = model.strip().toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("gpt-5.5")
+                || normalized.startsWith("gpt-5.4")
+                || normalized.startsWith("gpt-5.2")
+                || normalized.startsWith("gpt-5.1")) {
+            return true;
+        }
+        if (normalized.equals("gpt-5") || normalized.startsWith("gpt-5-")) {
+            return true;
+        }
+        return normalized.equals("gpt-4.1") || normalized.startsWith("gpt-4.1-20");
+    }
+
+    /** GPT 5.6+ moved retention and disable controls under prompt_cache_options. */
+    private static boolean usesOpenAiPromptCacheOptions(String model) {
+        if (model == null) return false;
+        String normalized = model.strip().toLowerCase(Locale.ROOT);
+        if (!normalized.startsWith("gpt-")) return false;
+        int end = normalized.indexOf('-', 4);
+        String version = end < 0 ? normalized.substring(4) : normalized.substring(4, end);
+        String[] parts = version.split("\\.", 3);
+        try {
+            int major = Integer.parseInt(parts[0]);
+            int minor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+            return major > 5 || (major == 5 && minor >= 6);
+        } catch (NumberFormatException ignored) {
+            return false;
         }
     }
 
@@ -810,7 +1494,8 @@ public class DirectLlmClient implements AutoCloseable {
             ArrayNode toolDefs,
             List<ToolCallResultInput> toolResults,
             String effectiveModel,
-            boolean codex) {
+            boolean codex,
+            List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
         StreamResult result = new StreamResult();
         ResponsesStreamState state = new ResponsesStreamState();
 
@@ -819,13 +1504,15 @@ public class DirectLlmClient implements AutoCloseable {
             List<ObjectNode> stagedToolResultItems =
                     prepareResponsesToolResultItems(toolResults, historyLinks);
             ArrayNode input = buildResponsesInput(
-                    userMessage, systemPrompt, stagedToolResultItems, codex);
+                    userMessage, systemPrompt, stagedToolResultItems, codex, attachments);
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
             request.set("input", input);
             request.put("stream", true);
             request.put("store", false);
             applyReasoningEffort(request, true);
+            applyOpenAiFastMode(request, effectiveModel);
+            applyOpenAiPromptCacheControls(request, effectiveModel);
             String nativeRouteKey = "responses:" + effectiveModel;
             boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
                     == ProviderCompactionCapabilities.NativeCompaction.OPENAI_RESPONSES
@@ -838,10 +1525,7 @@ public class DirectLlmClient implements AutoCloseable {
             }
 
             if (codex) {
-                request.put("instructions",
-                        systemPrompt == null || systemPrompt.isBlank()
-                                ? "You are a helpful assistant."
-                                : systemPrompt);
+                request.put("instructions", boundedOpenAiInstructions(systemPrompt));
                 ObjectNode text = objectMapper.createObjectNode();
                 text.put("verbosity", "low");
                 request.set("text", text);
@@ -851,12 +1535,13 @@ public class DirectLlmClient implements AutoCloseable {
                 request.put("tool_choice", "auto");
                 request.put("parallel_tool_calls", true);
             }
+            applyResponsesJsonOutput(request, codex);
 
             if (toolDefs != null && !toolDefs.isEmpty()) {
                 request.set("tools", convertToolDefsToResponses(toolDefs, codex));
             }
 
-            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             String baseUrl = config.resolveBaseUrl(auth);
             String url = resolveResponsesUrl(baseUrl, codex);
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
@@ -867,45 +1552,106 @@ public class DirectLlmClient implements AutoCloseable {
                     .POST(HttpRequest.BodyPublishers.ofString(
                             objectMapper.writeValueAsString(request),
                             StandardCharsets.UTF_8))
-                    .timeout(Duration.ofMinutes(10));
-            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-            }
-            applyHeaders(requestBuilder, auth);
+                    .timeout(connectivityPolicy.requestTimeout());
+            applyBearerAuthentication(requestBuilder, auth);
             applyProviderRequestHeaders(requestBuilder, userMessage);
 
             HttpResponse<java.io.InputStream> response = httpClient.send(
                     requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                if (response.statusCode() == 401) {
+                    recordUnauthorizedResponse(result, response.body(), auth);
+                    return result;
+                }
+                String body = readResponseBody(response.body());
+                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
                 if (nativeCompaction && (response.statusCode() == 400
-                        || response.statusCode() == 404 || response.statusCode() == 422)) {
+                        || response.statusCode() == 404 || response.statusCode() == 422)
+                        && !isContextOverflowFailure(response.statusCode(), body)) {
                     unavailableNativeCompactionRoutes.add(nativeRouteKey);
                     return streamOpenAiResponses(
                             userMessage, systemPrompt, toolDefs, toolResults,
-                            effectiveModel, codex);
+                            effectiveModel, codex, attachments, auth);
                 }
                 String label = codex ? "OpenAI Codex" : "OpenAI Responses";
-                result.text = "[" + label + " API error " + response.statusCode()
-                        + ": " + extractErrorMessage(body) + "]";
-                result.failed = true;
-                printStreamingChunk(result.text);
+                String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
+                String finalMessage = "[" + label + " API error " + response.statusCode()
+                        + ": " + error + "]";
+                if (isContextOverflowFailure(response.statusCode(), body)) {
+                    appendProviderFailure(
+                            result, response.statusCode(), body, finalMessage, true);
+                    return result;
+                }
+                if (recordHttpConnectivityFailure(
+                        result, response.statusCode(), response.headers(),
+                        label + " HTTP " + response.statusCode() + ": " + error,
+                        finalMessage)) {
+                    return result;
+                }
+                appendProviderFailure(
+                        result, response.statusCode(), body, finalMessage, true);
                 return result;
             }
 
-            parseResponsesStream(response.body(), result, state);
+            parseResponsesStream(guardResponseStream(response.body()), result, state);
+            if (!result.cancelled && isGenerationStopped(result)) {
+                // The input was accepted even though output generation was refused/truncated.
+                conversationHistory.addAll(stagedToolResultItems);
+            }
             if (!state.failed && !result.cancelled) {
                 // Commit submitted tool results only after the provider accepts the
                 // request. A rejected request must not poison every later turn.
                 conversationHistory.addAll(stagedToolResultItems);
-                appendResponsesHistory(userMessage, result, state);
+                appendResponsesHistory(userMessage, attachments, result, state);
             }
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Error: " + formatExceptionMessage(e) + "]";
-            }
+            recordStreamFailure(result, e, "[Error: ");
         }
         return result;
+    }
+
+    /**
+     * OpenAI validates the Responses {@code instructions} field independently of
+     * model context compaction. Preserve the stable agent prefix and the most
+     * specific project/tool tail while keeping every request within that hard API
+     * boundary. The Java UTF-16 length is conservative for non-BMP code points.
+     */
+    static String boundedOpenAiInstructions(String systemPrompt) {
+        String instructions = systemPrompt == null || systemPrompt.isBlank()
+                ? "You are a helpful assistant."
+                : systemPrompt;
+        if (instructions.length() <= OPENAI_INSTRUCTIONS_MAX_CHARS) {
+            return instructions;
+        }
+
+        int contentBudget = OPENAI_INSTRUCTIONS_MAX_CHARS
+                - OPENAI_INSTRUCTIONS_OMISSION.length();
+        int prefixEnd = safePrefixEnd(instructions, contentBudget * 3 / 5);
+        int suffixStart = safeSuffixStart(
+                instructions, instructions.length() - (contentBudget - prefixEnd));
+        return instructions.substring(0, prefixEnd)
+                + OPENAI_INSTRUCTIONS_OMISSION
+                + instructions.substring(suffixStart);
+    }
+
+    private static int safePrefixEnd(String value, int end) {
+        int bounded = Math.max(0, Math.min(end, value.length()));
+        if (bounded > 0 && bounded < value.length()
+                && Character.isHighSurrogate(value.charAt(bounded - 1))
+                && Character.isLowSurrogate(value.charAt(bounded))) {
+            bounded--;
+        }
+        return bounded;
+    }
+
+    private static int safeSuffixStart(String value, int start) {
+        int bounded = Math.max(0, Math.min(start, value.length()));
+        if (bounded > 0 && bounded < value.length()
+                && Character.isHighSurrogate(value.charAt(bounded - 1))
+                && Character.isLowSurrogate(value.charAt(bounded))) {
+            bounded++;
+        }
+        return bounded;
     }
 
     private ArrayNode buildResponsesInput(
@@ -913,6 +1659,16 @@ public class DirectLlmClient implements AutoCloseable {
             String systemPrompt,
             List<ObjectNode> stagedToolResultItems,
             boolean codex) {
+        return buildResponsesInput(
+                userMessage, systemPrompt, stagedToolResultItems, codex, List.of());
+    }
+
+    private ArrayNode buildResponsesInput(
+            String userMessage,
+            String systemPrompt,
+            List<ObjectNode> stagedToolResultItems,
+            boolean codex,
+            List<AttachmentInput> attachments) {
         ArrayNode input = objectMapper.createArrayNode();
         if (!codex && systemPrompt != null && !systemPrompt.isBlank()) {
             ObjectNode system = objectMapper.createObjectNode();
@@ -924,8 +1680,8 @@ public class DirectLlmClient implements AutoCloseable {
         if (stagedToolResultItems != null) {
             stagedToolResultItems.forEach(input::add);
         }
-        if (userMessage != null) {
-            input.add(createResponsesUserMessage(userMessage));
+        if (userMessage != null || !attachments.isEmpty()) {
+            input.add(createResponsesUserMessage(userMessage, attachments));
         }
         return input;
     }
@@ -1035,14 +1791,14 @@ public class DirectLlmClient implements AutoCloseable {
     private record ResponsesHistoryLinks(Set<String> calls, Set<String> outputs) {}
 
     private ObjectNode createResponsesUserMessage(String text) {
+        return createResponsesUserMessage(text, List.of());
+    }
+
+    private ObjectNode createResponsesUserMessage(
+            String text, List<AttachmentInput> attachments) {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("role", "user");
-        ArrayNode content = objectMapper.createArrayNode();
-        ObjectNode block = objectMapper.createObjectNode();
-        block.put("type", "input_text");
-        block.put("text", text);
-        content.add(block);
-        message.set("content", content);
+        message.set("content", buildResponsesContentArray(text, attachments));
         return message;
     }
 
@@ -1101,11 +1857,13 @@ public class DirectLlmClient implements AutoCloseable {
                 switch (type) {
                     case "response.output_item.added" -> {
                         JsonNode item = event.path("item");
+                        result.refusalDetected |= responsesContainRefusal(item.path("content"));
                         captureResponsesCompaction(result, item);
                         updateResponsesReasoningItem(state, outputIndex, item);
                         updateResponsesToolAccumulator(state, outputIndex, item, false);
                     }
                     case "response.output_text.delta", "response.refusal.delta" -> {
+                        if ("response.refusal.delta".equals(type)) result.refusalDetected = true;
                         String delta = event.path("delta").asText("");
                         if (!delta.isEmpty()) {
                             printStreamingChunk(delta);
@@ -1130,6 +1888,7 @@ public class DirectLlmClient implements AutoCloseable {
                     }
                     case "response.output_item.done" -> {
                         JsonNode item = event.path("item");
+                        result.refusalDetected |= responsesContainRefusal(item.path("content"));
                         captureResponsesCompaction(result, item);
                         updateResponsesReasoningItem(state, outputIndex, item);
                         updateResponsesToolAccumulator(state, outputIndex, item, true);
@@ -1144,6 +1903,14 @@ public class DirectLlmClient implements AutoCloseable {
                     case "response.completed", "response.incomplete" -> {
                         state.terminal = true;
                         JsonNode response = event.path("response");
+                        for (JsonNode item : response.path("output")) {
+                            result.refusalDetected |= responsesContainRefusal(item.path("content"));
+                        }
+                        if ("response.incomplete".equals(type)) {
+                            String reason = response.path("incomplete_details").path("reason").asText("");
+                            result.refusalDetected |= "content_filter".equals(reason);
+                            result.truncatedDetected = !result.refusalDetected;
+                        }
                         captureResponsesCompactionFromOutput(result, response.path("output"));
                         backfillResponsesReasoning(state, response.path("output"));
                         readResponsesUsage(response.path("usage"), result);
@@ -1151,21 +1918,35 @@ public class DirectLlmClient implements AutoCloseable {
                     case "response.failed" -> {
                         state.terminal = true;
                         state.failed = true;
-                        String message = event.path("response").path("error").path("message")
-                                .asText("Response failed");
-                        appendProtocolError(result, message);
+                        JsonNode error = event.path("response").path("error");
+                        String message = error.path("message").asText("Response failed");
+                        appendProtocolError(result, message, error.toString());
                     }
                     case "error" -> {
                         state.failed = true;
-                        appendProtocolError(result, event.path("message").asText("Unknown response error"));
+                        JsonNode error = event.path("error");
+                        appendProtocolError(
+                                result,
+                                event.path("message").asText(
+                                        error.path("message").asText("Unknown response error")),
+                                event.toString());
                     }
                     default -> {
                         // Other Responses events carry reasoning/status metadata.
                     }
                 }
+                // A terminal Responses event completes the request; the server need not
+                // close its transport before we deliver usage and accumulated tool calls.
+                if (state.terminal) {
+                    break;
+                }
             }
         }
 
+        if (finishGenerationOutcome(result)) {
+            state.failed = true;
+            return;
+        }
         for (ResponsesToolCallAccumulator accumulator : state.toolCalls.values()) {
             if (accumulator.name == null || accumulator.name.isBlank()) {
                 continue;
@@ -1271,15 +2052,51 @@ public class DirectLlmClient implements AutoCloseable {
         result.cacheCreationTokens = cacheWrite;
     }
 
+    static void readOpenAiCompatibleUsage(JsonNode usage, StreamResult result) {
+        if (usage == null || usage.isMissingNode()) return;
+        JsonNode details = usage.path("prompt_tokens_details");
+        long cacheRead = firstPresentLong(
+                details, "cached_tokens",
+                usage, "prompt_cache_hit_tokens",
+                usage, "cached_tokens");
+        long cacheWrite = details.path("cache_write_tokens").asLong(0L);
+        long ordinaryInput;
+        if (usage.has("prompt_cache_miss_tokens")) {
+            ordinaryInput = usage.path("prompt_cache_miss_tokens").asLong(0L);
+        } else {
+            long totalInput = usage.has("prompt_tokens")
+                    ? usage.path("prompt_tokens").asLong(0L)
+                    : usage.path("input_tokens").asLong(0L);
+            ordinaryInput = Math.max(0L, totalInput - cacheRead - cacheWrite);
+        }
+        result.inputTokens = ordinaryInput;
+        result.outputTokens = usage.has("completion_tokens")
+                ? usage.path("completion_tokens").asLong(0L)
+                : usage.path("output_tokens").asLong(0L);
+        result.cacheReadTokens = cacheRead;
+        result.cacheCreationTokens = cacheWrite;
+    }
+
+    private static long firstPresentLong(
+            JsonNode first, String firstField,
+            JsonNode second, String secondField,
+            JsonNode third, String thirdField) {
+        if (first != null && first.has(firstField)) return first.path(firstField).asLong(0L);
+        if (second != null && second.has(secondField)) return second.path(secondField).asLong(0L);
+        return third != null && third.has(thirdField)
+                ? third.path(thirdField).asLong(0L) : 0L;
+    }
+
     private void appendResponsesHistory(
             String userMessage,
+            List<AttachmentInput> attachments,
             StreamResult result,
             ResponsesStreamState state) {
         if (result.nativeCompactionPayload != null) {
             // The native item replaces every request item that preceded it.
             conversationHistory.clear();
-        } else if (userMessage != null) {
-            conversationHistory.add(createResponsesUserMessage(userMessage));
+        } else if (userMessage != null || !attachments.isEmpty()) {
+            conversationHistory.add(createResponsesUserMessage(userMessage, attachments));
         }
         if (result.nativeCompactionPayload != null && result.nativeCompactionPayload.isObject()) {
             conversationHistory.add(((ObjectNode) result.nativeCompactionPayload).deepCopy());
@@ -1335,10 +2152,10 @@ public class DirectLlmClient implements AutoCloseable {
             String systemPrompt,
             ArrayNode toolDefs,
             List<ToolCallResultInput> toolResults,
-            String effectiveModel) {
+            String effectiveModel, OAuthProviderFlow.RequestAuth retryAuth) {
         StreamResult result = new StreamResult();
         try {
-            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             String gateway = config.resolveBaseUrl(auth);
             RadiusGatewayConfig gatewayConfig = loadRadiusGatewayConfig(gateway, auth);
             if (!gatewayConfig.modelIds().isEmpty()
@@ -1362,6 +2179,11 @@ public class DirectLlmClient implements AutoCloseable {
             request.set("context", context);
             ObjectNode options = objectMapper.createObjectNode();
             options.put("maxTokens", 8192);
+            options.put("cacheRetention", config.promptCacheRetention().wireValue());
+            String cacheSessionId = activePromptCacheSessionId();
+            if (cacheSessionId != null) {
+                options.put("sessionId", cacheSessionId);
+            }
             request.set("options", options);
 
             String url = appendPath(gatewayConfig.baseUrl(), "/messages");
@@ -1372,32 +2194,45 @@ public class DirectLlmClient implements AutoCloseable {
                     .POST(HttpRequest.BodyPublishers.ofString(
                             objectMapper.writeValueAsString(request),
                             StandardCharsets.UTF_8))
-                    .timeout(Duration.ofMinutes(10));
-            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-            }
-            applyHeaders(requestBuilder, auth);
+                    .timeout(connectivityPolicy.requestTimeout());
+            applyBearerAuthentication(requestBuilder, auth);
 
             HttpResponse<java.io.InputStream> response = httpClient.send(
                     requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
-                result.text = "[Radius API error " + response.statusCode()
-                        + ": " + extractErrorMessage(body) + "]";
-                result.failed = true;
-                printStreamingChunk(result.text);
+                if (response.statusCode() == 401) {
+                    recordUnauthorizedResponse(result, response.body(), auth);
+                    return result;
+                }
+                String body = readResponseBody(response.body());
+                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
+                String finalMessage = "[Radius API error " + response.statusCode()
+                        + ": " + error + "]";
+                if (isContextOverflowFailure(response.statusCode(), body)) {
+                    appendProviderFailure(
+                            result, response.statusCode(), body, finalMessage, true);
+                    return result;
+                }
+                if (recordHttpConnectivityFailure(
+                        result, response.statusCode(), response.headers(),
+                        "Radius HTTP " + response.statusCode() + ": " + error,
+                        finalMessage)) {
+                    return result;
+                }
+                appendProviderFailure(
+                        result, response.statusCode(), body, finalMessage, true);
                 return result;
             }
 
             PiMessagesStreamState state = new PiMessagesStreamState();
-            parsePiMessagesStream(response.body(), result, state);
+            parsePiMessagesStream(guardResponseStream(response.body()), result, state);
             if (!state.failed && !result.cancelled) {
+                appendPiToolResultHistory(toolResults);
                 appendPiMessagesHistory(userMessage, effectiveModel, result, state);
             }
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Error: " + formatExceptionMessage(e) + "]";
-            }
+            recordStreamFailure(result, e, "[Error: ");
         }
         return result;
     }
@@ -1416,17 +2251,19 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("Accept", "application/json")
                 .GET()
                 .timeout(Duration.ofSeconds(30));
-        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+        applyBearerAuthentication(builder, auth);
+        HttpResponse<java.io.InputStream> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        if (response.statusCode() == 401) {
+            throw new UnauthorizedRequestException(auth,
+                    ProviderResponseFailure.classify(401, ProviderResponseFailure.authenticationBody(response.body())));
         }
-        applyHeaders(builder, auth);
-        HttpResponse<String> response = httpClient.send(
-                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        String body = readResponseBody(response.body());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("Could not load Radius config (HTTP "
-                    + response.statusCode() + "): " + extractErrorMessage(response.body()));
+                    + response.statusCode() + "): " + extractErrorMessage(body));
         }
-        JsonNode root = objectMapper.readTree(response.body());
+        JsonNode root = objectMapper.readTree(body);
         String messagesBaseUrl = root.path("baseUrl").asText(null);
         if (messagesBaseUrl == null || messagesBaseUrl.isBlank()) {
             throw new IllegalStateException("Invalid Radius config: missing baseUrl");
@@ -1469,13 +2306,28 @@ public class DirectLlmClient implements AutoCloseable {
                 message.put("isError", toolResult.isError);
                 message.put("timestamp", System.currentTimeMillis());
                 messages.add(message);
-                conversationHistory.add(message);
             }
         }
         if (userMessage != null) {
             messages.add(createPiUserMessage(userMessage));
         }
         return messages;
+    }
+
+    private void appendPiToolResultHistory(List<ToolCallResultInput> toolResults) {
+        if (toolResults == null) return;
+        for (ToolCallResultInput toolResult : toolResults) {
+            ObjectNode message = objectMapper.createObjectNode();
+            message.put("role", "toolResult");
+            message.put("toolCallId", toolResult.callId);
+            message.put("toolName", toolResult.name == null ? "" : toolResult.name);
+            ArrayNode content = message.putArray("content");
+            content.addObject().put("type", "text")
+                    .put("text", toolResult.output == null ? "" : toolResult.output);
+            message.put("isError", toolResult.isError);
+            message.put("timestamp", System.currentTimeMillis());
+            conversationHistory.add(message);
+        }
     }
 
     private ObjectNode createPiUserMessage(String userMessage) {
@@ -1723,13 +2575,29 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void appendProtocolError(StreamResult result, String message) {
+        appendProtocolError(result, message, message);
+    }
+
+    private void appendProtocolError(
+            StreamResult result, String message, String classificationDetail) {
+        if (recordKnownProviderFailure(result, 0, classificationDetail)) return;
         result.failed = true;
         String formatted = "[Error: " + message + "]";
-        if (!result.text.isEmpty()) {
-            result.text += "\n";
+        if (isContextOverflowFailure(0, classificationDetail)) {
+            appendProviderFailure(result, 0, classificationDetail, formatted, true);
+            return;
         }
-        result.text += formatted;
-        printStreamingChunk(formatted);
+        // Typed error envelopes can carry the real signal in their type/code rather
+        // than the human message, so classify against both.
+        String classificationText = classificationDetail == null || classificationDetail.isBlank()
+                ? message : message + " " + classificationDetail;
+        if (connectivityPolicy.isRetryableFailure(new IOException(classificationText))) {
+            result.retryableConnectivityFailure = true;
+            result.connectivityFailure = message;
+            result.connectivityFinalMessage = formatted;
+            return;
+        }
+        appendProviderFailure(result, 0, classificationDetail, formatted, true);
     }
 
     private JsonNode parseToolArguments(String raw) {
@@ -1775,11 +2643,6 @@ public class DirectLlmClient implements AutoCloseable {
                 result.cancelled = true;
                 return result;
             }
-            if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()) {
-                throw new IllegalStateException(
-                        "Kompile serving subprocess endpoint was not prepared");
-            }
-
             ObjectNode request = objectMapper.createObjectNode();
             ObjectNode structured = request.putObject("request");
             structured.set("messages", buildKompileServingMessages(
@@ -1787,26 +2650,30 @@ public class DirectLlmClient implements AutoCloseable {
             ArrayNode tools = buildKompileServingTools(toolDefs);
             structured.set("tools", tools);
             structured.put("addGenerationPrompt", true);
-            structured.put("toolDefinitionFormat", "FLAT");
+            structured.put("toolDefinitionFormat", "STANDARD");
             structured.put("toolCallFormat", "NATIVE");
             structured.put("toolChoice", tools.isEmpty() ? "NONE" : "AUTO");
             request.put("maxTokens", 1024);
 
-            String url = appendPath(config.getBaseUrl(), "/api/llm/chat");
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(
-                            objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofMinutes(10))
-                    .build();
-            HttpResponse<String> response = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = sendKompileServing(request);
 
             if (response.statusCode() != 200) {
-                appendProtocolError(result,
-                        "Kompile serving HTTP " + response.statusCode() + ": "
-                                + extractErrorMessage(response.body()));
+                String responseBody = response.body();
+                String error = extractErrorMessage(responseBody)
+                        + ProviderResponseFailure.diagnostics(responseBody, response.headers());
+                String detail = "Kompile serving HTTP " + response.statusCode() + ": " + error;
+                if (isContextOverflowFailure(response.statusCode(), responseBody)) {
+                    appendProviderFailure(
+                            result, response.statusCode(), responseBody,
+                            "[Error: " + detail + "]", true);
+                    return result;
+                }
+                if (recordHttpConnectivityFailure(
+                        result, response.statusCode(), response.headers(), detail,
+                        "[Error: " + detail + "]")) {
+                    return result;
+                }
+                appendProtocolError(result, detail);
                 return result;
             }
 
@@ -1840,40 +2707,80 @@ public class DirectLlmClient implements AutoCloseable {
             if (result.text.isBlank() && result.toolCalls.isEmpty() && !rawText.isBlank()) {
                 result.text = rawText;
             }
+            // Rescue last: only fires when the serving child returned no native
+            // tool calls and the text echoed the replayed "[Tool call ...]" shape.
+            result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
             if (!result.text.isEmpty() && !isCancelled()) {
                 printStreamingChunk(result.text);
             } else if (isCancelled()) {
                 result.cancelled = true;
             }
 
-            if (userMessage != null) {
-                ObjectNode user = objectMapper.createObjectNode();
-                user.put("role", "user");
-                user.put("content", userMessage);
-                conversationHistory.add(user);
-            }
-            if (!rawText.isBlank() || !result.text.isBlank() || !result.toolCalls.isEmpty()) {
-                ObjectNode assistant = objectMapper.createObjectNode();
-                assistant.put("role", "assistant");
-                assistant.put("content", !rawText.isBlank() ? rawText : result.text);
-                if (!result.toolCalls.isEmpty()) {
-                    ArrayNode calls = assistant.putArray("tool_calls");
-                    for (ToolCallOutput call : result.toolCalls) {
-                        ObjectNode encoded = calls.addObject();
-                        encoded.put("id", call.id);
-                        encoded.put("name", call.name);
-                        encoded.set("arguments", call.arguments);
-                    }
+            if (!result.cancelled && !result.failed) {
+                appendKompileToolResultHistory(toolResults);
+                if (userMessage != null) {
+                    ObjectNode user = objectMapper.createObjectNode();
+                    user.put("role", "user");
+                    user.put("content", userMessage);
+                    conversationHistory.add(user);
                 }
-                conversationHistory.add(assistant);
+                boolean rescued = !result.toolCalls.isEmpty()
+                        && !payload.path("content").asText("").equals(result.text);
+                if (!rawText.isBlank() || !result.text.isBlank() || !result.toolCalls.isEmpty()) {
+                    ObjectNode assistant = objectMapper.createObjectNode();
+                    assistant.put("role", "assistant");
+                    // After a rescue, record the stripped text so the echoed
+                    // "[Tool call ...]" shape is not replayed back to the model.
+                    assistant.put("content", rescued || rawText.isBlank()
+                            ? result.text : rawText);
+                    if (!result.toolCalls.isEmpty()) {
+                        ArrayNode calls = assistant.putArray("tool_calls");
+                        for (ToolCallOutput call : result.toolCalls) {
+                            ObjectNode encoded = calls.addObject();
+                            encoded.put("id", call.id);
+                            encoded.put("name", call.name);
+                            encoded.set("arguments", call.arguments);
+                        }
+                    }
+                    conversationHistory.add(assistant);
+                }
             }
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Kompile serving error: " + formatExceptionMessage(e) + "]";
+            recordStreamFailure(result, e, "[Kompile serving error: ");
+            if (!result.retryableConnectivityFailure && !result.cancelled) {
                 printStreamingChunk(result.text);
             }
         }
         return result;
+    }
+
+    private HttpResponse<String> sendKompileServing(ObjectNode request) throws Exception {
+        LocalServingRuntimePool.Binding binding = config.getLocalServingBinding();
+        if (binding == null) {
+            // Explicit, caller-owned endpoints retain their existing lifecycle.
+            return sendKompileServing(config.getBaseUrl(), request);
+        }
+        try (LocalServingRuntimePool.Lease runtime = binding.acquire()) {
+            synchronized (runtime.coordinationLock()) {
+                return sendKompileServing(runtime.baseUrl().toString(), request);
+            }
+        }
+    }
+
+    private HttpResponse<String> sendKompileServing(String baseUrl, ObjectNode request)
+            throws IOException, InterruptedException {
+        // Startup or another request may have occupied the runtime since the initial check.
+        if (isCancelled()) throw new InterruptedException("Local serving request cancelled");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            throw new IllegalStateException("Kompile serving subprocess endpoint was not prepared");
+        }
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(URI.create(appendPath(baseUrl, "/api/llm/chat")))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
+                .timeout(connectivityPolicy.requestTimeout())
+                .build();
+        return httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
     }
 
     private ArrayNode buildKompileServingMessages(
@@ -1896,14 +2803,6 @@ public class DirectLlmClient implements AutoCloseable {
                 ObjectNode message = messages.addObject();
                 message.put("role", "tool");
                 message.put("content", toolResult.output);
-                ObjectNode history = objectMapper.createObjectNode();
-                history.put("role", "tool");
-                history.put("content", toolResult.output);
-                if (toolResult.callId != null) {
-                    history.put("tool_call_id", toolResult.callId);
-                }
-                if (toolResult.name != null) history.put("name", toolResult.name);
-                conversationHistory.add(history);
             }
         }
         if (userMessage != null) {
@@ -1912,6 +2811,18 @@ public class DirectLlmClient implements AutoCloseable {
             user.put("content", userMessage);
         }
         return messages;
+    }
+
+    private void appendKompileToolResultHistory(List<ToolCallResultInput> toolResults) {
+        if (toolResults == null) return;
+        for (ToolCallResultInput toolResult : toolResults) {
+            ObjectNode history = objectMapper.createObjectNode();
+            history.put("role", "tool");
+            history.put("content", toolResult.output == null ? "" : toolResult.output);
+            if (toolResult.callId != null) history.put("tool_call_id", toolResult.callId);
+            if (toolResult.name != null) history.put("name", toolResult.name);
+            conversationHistory.add(history);
+        }
     }
 
     private ArrayNode buildKompileServingTools(ArrayNode toolDefs) {
@@ -1938,17 +2849,22 @@ public class DirectLlmClient implements AutoCloseable {
 
     private StreamResult streamOpenAi(String userMessage, String systemPrompt,
                                        ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
-                                       String effectiveModel) {
+                                       String effectiveModel,
+                                       List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
         StreamResult result = new StreamResult();
 
         try {
-            ArrayNode messages = buildOpenAiMessages(userMessage, systemPrompt, toolResults);
+            ArrayNode messages = buildOpenAiMessages(
+                    userMessage, systemPrompt, toolResults, attachments);
 
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
             request.set("messages", messages);
             request.put("stream", true);
             applyReasoningEffort(request, false);
+            applyOpenAiFastMode(request, effectiveModel);
+            applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
+            applyChatCompletionsJsonOutput(request);
 
             // Request token usage in streamed response
             ObjectNode streamOptions = objectMapper.createObjectNode();
@@ -1962,19 +2878,16 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
 
-            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             String baseUrl = config.resolveBaseUrl(auth);
-            String url = baseUrl + "/chat/completions";
+            String url = appendPath(baseUrl, "/chat/completions");
 
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofMinutes(10));
-            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
-                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-            }
-            applyHeaders(requestBuilder, auth);
+                    .timeout(connectivityPolicy.requestTimeout());
+            applyBearerAuthentication(requestBuilder, auth);
             applyProviderRequestHeaders(requestBuilder, userMessage);
             HttpRequest httpRequest = requestBuilder.build();
 
@@ -1982,26 +2895,53 @@ public class DirectLlmClient implements AutoCloseable {
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
-                String body = new String(response.body().readAllBytes());
-                result.text = "[LLM API error " + response.statusCode() + ": " + extractErrorMessage(body) + "]";
-                result.failed = true;
-                printStreamingChunk(result.text);
+                if (response.statusCode() == 401) {
+                    recordUnauthorizedResponse(result, response.body(), auth);
+                    return result;
+                }
+                String body = readResponseBody(response.body());
+                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
+                String finalMessage = "[LLM API error " + response.statusCode()
+                        + ": " + error + "]";
+                if (isContextOverflowFailure(response.statusCode(), body)) {
+                    appendProviderFailure(
+                            result, response.statusCode(), body, finalMessage, true);
+                    return result;
+                }
+                if (recordHttpConnectivityFailure(
+                        result, response.statusCode(), response.headers(),
+                        ChatProviderRegistry.label(config.getProvider()) + " HTTP "
+                                + response.statusCode() + ": " + error,
+                        finalMessage)) {
+                    return result;
+                }
+                appendProviderFailure(
+                        result, response.statusCode(), body, finalMessage, true);
                 return result;
             }
 
-            parseOpenAiStream(response.body(), result);
+            parseOpenAiStream(guardResponseStream(response.body()), result);
+            result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
 
-            if (!result.cancelled) {
+            if (!result.cancelled && (!result.failed || isGenerationStopped(result))) {
                 appendOpenAiToolResultHistory(toolResults);
-                if (userMessage != null) {
+            }
+            if (!result.cancelled && !result.failed) {
+                if (userMessage != null || !attachments.isEmpty()) {
                     ObjectNode userMsg = objectMapper.createObjectNode();
                     userMsg.put("role", "user");
-                    userMsg.put("content", userMessage);
+                    if (attachments.isEmpty()) {
+                        userMsg.put("content", userMessage);
+                    } else {
+                        userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
+                    }
                     conversationHistory.add(userMsg);
                 }
             }
 
-            if (!result.cancelled && (!result.text.isEmpty() || !result.toolCalls.isEmpty())) {
+            if (!result.cancelled && !result.failed
+                    && (!result.text.isEmpty() || !result.toolCalls.isEmpty())) {
                 ObjectNode assistantMsg = objectMapper.createObjectNode();
                 assistantMsg.put("role", "assistant");
                 assistantMsg.put("content", result.text);
@@ -2023,9 +2963,7 @@ public class DirectLlmClient implements AutoCloseable {
             }
 
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Error: " + formatExceptionMessage(e) + "]";
-            }
+            recordStreamFailure(result, e, "[Error: ");
         }
 
         return result;
@@ -2033,6 +2971,12 @@ public class DirectLlmClient implements AutoCloseable {
 
     private ArrayNode buildOpenAiMessages(String userMessage, String systemPrompt,
                                            List<ToolCallResultInput> toolResults) {
+        return buildOpenAiMessages(userMessage, systemPrompt, toolResults, List.of());
+    }
+
+    private ArrayNode buildOpenAiMessages(String userMessage, String systemPrompt,
+                                           List<ToolCallResultInput> toolResults,
+                                           List<AttachmentInput> attachments) {
         ArrayNode messages = objectMapper.createArrayNode();
 
         // System prompt
@@ -2060,10 +3004,14 @@ public class DirectLlmClient implements AutoCloseable {
         }
 
         // Current user message
-        if (userMessage != null) {
+        if (userMessage != null || !attachments.isEmpty()) {
             ObjectNode userMsg = objectMapper.createObjectNode();
             userMsg.put("role", "user");
-            userMsg.put("content", userMessage);
+            if (attachments.isEmpty()) {
+                userMsg.put("content", userMessage);
+            } else {
+                userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
+            }
             messages.add(userMsg);
         }
 
@@ -2108,9 +3056,99 @@ public class DirectLlmClient implements AutoCloseable {
         return openAiTools;
     }
 
+    /**
+     * Recover structured tool calls that a model emitted as plain text in the
+     * replayed "[Tool call <name> <id>] {json}" shape. Text-form imitation
+     * leaves result.toolCalls empty, so the agentic loop ends the turn silently
+     * with no visible work done. The rescue only fires when the text parses,
+     * the tool name is actually offered in the current tool list, and no real
+     * structured calls arrived — and it strips the echoed text from the
+     * response so it is not re-recorded as assistant prose (which would teach
+     * the model to keep imitating the shape).
+     *
+     * @return rescued calls, or an empty list when nothing qualifies
+     */
+    List<ToolCallOutput> rescueTextEncodedToolCalls(StreamResult result, ArrayNode toolDefs) {
+        List<ToolCallOutput> rescued = new ArrayList<>();
+        if (result == null || result.failed || result.cancelled || !result.toolCalls.isEmpty()
+                || result.text == null || result.text.isBlank()
+                || toolDefs == null || toolDefs.isEmpty()) {
+            return rescued;
+        }
+        Set<String> offeredTools = new LinkedHashSet<>();
+        for (JsonNode toolDef : toolDefs) {
+            String name = toolDef.path("name").asText("");
+            if (!name.isBlank()) offeredTools.add(name);
+        }
+        if (offeredTools.isEmpty()) return rescued;
+
+        String text = result.text;
+        int searchFrom = 0;
+        int firstRescueStart = -1;
+        while (true) {
+            int lineStart = text.indexOf("[Tool call ", searchFrom);
+            if (lineStart < 0) break;
+            int idStart = lineStart + "[Tool call ".length();
+            int space = text.indexOf(' ', idStart);
+            int bracketEnd = text.indexOf(']', idStart);
+            if (space < 0 || bracketEnd < 0 || space >= bracketEnd) break;
+            String toolName = text.substring(idStart, space).trim();
+            String callId = text.substring(space + 1, bracketEnd).trim();
+            if (toolName.isEmpty() || !offeredTools.contains(toolName)) {
+                searchFrom = idStart;
+                continue;
+            }
+            int braceStart = text.indexOf('{', bracketEnd);
+            if (braceStart < 0) break;
+            int braceEnd = matchingJsonEnd(text, braceStart);
+            if (braceEnd < 0) break;
+            try {
+                JsonNode arguments = objectMapper.readTree(text.substring(braceStart, braceEnd));
+                ToolCallOutput call = new ToolCallOutput();
+                call.id = callId.isEmpty() ? "call_" + rescued.size() : callId;
+                call.name = toolName;
+                call.arguments = arguments;
+                rescued.add(call);
+                if (firstRescueStart < 0) firstRescueStart = lineStart;
+            } catch (Exception ignored) {
+                // Not a parseable tool call — leave the text alone.
+            }
+            searchFrom = braceEnd;
+        }
+        if (!rescued.isEmpty() && firstRescueStart >= 0) {
+            // Keep any genuine prose before the first echoed call; drop the echo.
+            result.text = text.substring(0, firstRescueStart).stripTrailing();
+        }
+        return rescued;
+    }
+
+    /** Index just past the JSON object starting at {@code openBrace}, or -1. */
+    private static int matchingJsonEnd(String text, int openBrace) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = openBrace; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inString = false;
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) return i + 1;
+            }
+        }
+        return -1;
+    }
+
     private void parseOpenAiStream(java.io.InputStream inputStream, StreamResult result) throws Exception {
         // Track tool calls being assembled from deltas
         List<ToolCallAccumulator> toolAccumulators = new ArrayList<>();
+        boolean terminal = false;
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
@@ -2121,11 +3159,29 @@ public class DirectLlmClient implements AutoCloseable {
                 }
                 if (!line.startsWith("data: ")) continue;
                 String data = line.substring(6).trim();
-                if ("[DONE]".equals(data)) break;
+                if ("[DONE]".equals(data)) {
+                    terminal = true;
+                    break;
+                }
 
                 try {
                     JsonNode chunk = objectMapper.readTree(data);
+                    JsonNode errorNode = chunk.get("error");
+                    if (errorNode != null && !errorNode.isNull()) {
+                        appendProtocolError(
+                                result,
+                                errorNode.path("message").asText("Unknown provider error"),
+                                errorNode.toString());
+                        terminal = true;
+                        break;
+                    }
                     JsonNode delta = chunk.path("choices").path(0).path("delta");
+                    String refusal = delta.path("refusal").asText("");
+                    if (!refusal.isEmpty()) {
+                        result.refusalDetected = true;
+                        printStreamingChunk(refusal);
+                        result.text += refusal;
+                    }
 
                     // Text content
                     String content = delta.path("content").asText(null);
@@ -2158,12 +3214,15 @@ public class DirectLlmClient implements AutoCloseable {
                     // Extract token usage if present (final chunk in OpenAI streaming)
                     JsonNode usageNode = chunk.path("usage");
                     if (!usageNode.isMissingNode()) {
-                        result.inputTokens = usageNode.path("prompt_tokens").asLong(0);
-                        result.outputTokens = usageNode.path("completion_tokens").asLong(0);
+                        readOpenAiCompatibleUsage(usageNode, result);
                     }
 
                     // Check for finish_reason
                     String finishReason = chunk.path("choices").path(0).path("finish_reason").asText(null);
+                    if (finishReason != null && !finishReason.isBlank()) terminal = true;
+                    result.refusalDetected |= "content_filter".equals(finishReason);
+                    result.truncatedDetected |= "length".equals(finishReason);
+                    if (terminal && finishGenerationOutcome(result)) return;
                     if ("tool_calls".equals(finishReason) || "stop".equals(finishReason)) {
                         // Finalize any accumulated tool calls
                         for (ToolCallAccumulator acc : toolAccumulators) {
@@ -2185,6 +3244,12 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
         }
+
+        if (!result.cancelled && !result.failed && !terminal) {
+            throw new EOFException("OpenAI stream ended before a terminal event");
+        }
+
+        if (finishGenerationOutcome(result)) return;
 
         // If tool calls were accumulated but finish_reason wasn't caught
         if (result.toolCalls.isEmpty() && !toolAccumulators.isEmpty()) {
@@ -2210,15 +3275,18 @@ public class DirectLlmClient implements AutoCloseable {
 
     private StreamResult streamAnthropic(String userMessage, String systemPrompt,
                                           ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
-                                          String effectiveModel) {
+                                          String effectiveModel,
+                                          List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
         StreamResult result = new StreamResult();
 
         try {
-            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
             request.put("max_tokens", 8192);
             request.put("stream", true);
+            boolean fastMode = config.useFastMode(effectiveModel);
+            if (fastMode) request.put("speed", "fast");
 
             String nativeRouteKey = "anthropic:" + effectiveModel;
             boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
@@ -2241,7 +3309,7 @@ public class DirectLlmClient implements AutoCloseable {
             String effectiveSystem = effectiveAnthropicSystemPrompt(auth, systemPrompt);
             if (!effectiveSystem.isBlank()) request.put("system", effectiveSystem);
 
-            ArrayNode messages = buildAnthropicMessages(userMessage, toolResults);
+            ArrayNode messages = buildAnthropicMessages(userMessage, toolResults, attachments);
             request.set("messages", messages);
 
             if (toolDefs != null && toolDefs.size() > 0) {
@@ -2250,6 +3318,7 @@ public class DirectLlmClient implements AutoCloseable {
                     request.set("tools", anthropicTools);
                 }
             }
+            applyAnthropicPromptCacheControl(request);
 
             String baseUrl = config.resolveBaseUrl(auth);
 
@@ -2258,20 +3327,14 @@ public class DirectLlmClient implements AutoCloseable {
                     .header("Content-Type", "application/json")
                     .header("anthropic-version", "2023-06-01")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofMinutes(10));
-            if (auth == null || (!hasHeader(auth.headers(), "Authorization")
-                    && !hasHeader(auth.headers(), "x-api-key"))) {
-                if ("github-copilot".equals(config.getProvider())) {
-                    requestBuilder.header(
-                            "Authorization", "Bearer " + (auth == null ? "" : auth.token()));
-                } else {
-                    requestBuilder.header("x-api-key", auth == null ? "" : auth.token());
-                }
-            }
-            applyHeaders(requestBuilder, auth);
-            if (nativeCompaction) {
+                    .timeout(connectivityPolicy.requestTimeout());
+            applyAnthropicAuthentication(
+                    requestBuilder, auth, "github-copilot".equals(config.getProvider()));
+            if (nativeCompaction || fastMode) {
+                String beta = nativeCompaction ? "compact-2026-01-12" : "";
+                if (fastMode) beta += (beta.isEmpty() ? "" : ",") + "fast-mode-2026-02-01";
                 requestBuilder.setHeader("anthropic-beta",
-                        mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
+                        mergeHeaderValue(auth, "anthropic-beta", beta));
             }
             applyProviderRequestHeaders(requestBuilder, userMessage);
             HttpRequest httpRequest = requestBuilder.build();
@@ -2280,45 +3343,63 @@ public class DirectLlmClient implements AutoCloseable {
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
-                String body = new String(response.body().readAllBytes());
+                if (response.statusCode() == 401) {
+                    recordUnauthorizedResponse(result, response.body(), auth);
+                    return result;
+                }
+                String body = readResponseBody(response.body());
+                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
                 if (nativeCompaction && (response.statusCode() == 400
-                        || response.statusCode() == 404 || response.statusCode() == 422)) {
+                        || response.statusCode() == 404 || response.statusCode() == 422)
+                        && !isContextOverflowFailure(response.statusCode(), body)) {
                     unavailableNativeCompactionRoutes.add(nativeRouteKey);
                     return streamAnthropic(
-                            userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                            userMessage, systemPrompt, toolDefs, toolResults,
+                            effectiveModel, attachments, auth);
                 }
-                result.text = "[Anthropic API error " + response.statusCode() + ": " + extractErrorMessage(body) + "]";
-                result.failed = true;
+                String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
+                String finalMessage = "[Anthropic API error " + response.statusCode()
+                        + ": " + error + "]";
+                if (isContextOverflowFailure(response.statusCode(), body)) {
+                    appendProviderFailure(
+                            result, response.statusCode(), body, finalMessage, false);
+                    return result;
+                }
+                if (recordHttpConnectivityFailure(
+                        result, response.statusCode(), response.headers(),
+                        "Anthropic HTTP " + response.statusCode() + ": " + error,
+                        finalMessage)) {
+                    return result;
+                }
+                appendProviderFailure(
+                        result, response.statusCode(), body, finalMessage, false);
                 return result;
             }
 
-            parseAnthropicStream(response.body(), result);
+            parseAnthropicStream(guardResponseStream(response.body()), result);
+            result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
 
-            if (!result.cancelled && result.nativeCompactionSummary != null
+            if (!result.cancelled && !result.failed && result.nativeCompactionSummary != null
                     && !result.nativeCompactionSummary.isBlank()) {
                 // Anthropic ignores all messages before the latest compaction
                 // block; remove them locally so the next HTTP request is small too.
                 conversationHistory.clear();
-            } else if (!result.cancelled) {
+            } else if (!result.cancelled && (!result.failed || isGenerationStopped(result))) {
                 ObjectNode toolResultMessage = createAnthropicToolResultMessage(toolResults);
                 if (toolResultMessage != null) conversationHistory.add(toolResultMessage);
             }
 
             // Track in conversation history only after a completed stream.
-            if (!result.cancelled && result.nativeCompactionSummary == null
-                    && userMessage != null) {
+            if (!result.cancelled && !result.failed && result.nativeCompactionSummary == null
+                    && (userMessage != null || !attachments.isEmpty())) {
                 ObjectNode userMsg = objectMapper.createObjectNode();
                 userMsg.put("role", "user");
-                ArrayNode content = objectMapper.createArrayNode();
-                ObjectNode textBlock = objectMapper.createObjectNode();
-                textBlock.put("type", "text");
-                textBlock.put("text", userMessage);
-                content.add(textBlock);
-                userMsg.set("content", content);
+                userMsg.set("content", buildAnthropicContentArray(userMessage, attachments));
                 conversationHistory.add(userMsg);
             }
 
-            if (!result.cancelled && (!result.text.isEmpty() || !result.toolCalls.isEmpty()
+            if (!result.cancelled && !result.failed
+                    && (!result.text.isEmpty() || !result.toolCalls.isEmpty()
                     || (result.nativeCompactionSummary != null
                     && !result.nativeCompactionSummary.isBlank()))) {
                 ObjectNode assistantMsg = objectMapper.createObjectNode();
@@ -2350,9 +3431,7 @@ public class DirectLlmClient implements AutoCloseable {
             }
 
         } catch (Exception e) {
-            if (!markCancelled(result, e)) {
-                result.text = "[Error: " + formatExceptionMessage(e) + "]";
-            }
+            recordStreamFailure(result, e, "[Error: ");
         }
 
         return result;
@@ -2376,6 +3455,46 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
+    private static void applyBearerAuthentication(
+            HttpRequest.Builder builder,
+            OAuthProviderFlow.RequestAuth auth) {
+        applyTokenAuthentication(builder, auth, "Authorization", "Bearer ");
+        applyHeaders(builder, auth);
+    }
+
+    private static void applyAnthropicAuthentication(
+            HttpRequest.Builder builder,
+            OAuthProviderFlow.RequestAuth auth,
+            boolean bearerFallback) {
+        if (auth != null
+                && !hasHeader(auth.headers(), "Authorization")
+                && !hasHeader(auth.headers(), "x-api-key")) {
+            applyTokenAuthentication(builder, auth,
+                    bearerFallback ? "Authorization" : "x-api-key",
+                    bearerFallback ? "Bearer " : "");
+        }
+        applyHeaders(builder, auth);
+    }
+
+    private static void applyTokenAuthentication(
+            HttpRequest.Builder builder,
+            OAuthProviderFlow.RequestAuth auth,
+            String headerName) {
+        applyTokenAuthentication(builder, auth, headerName, "");
+    }
+
+    private static void applyTokenAuthentication(
+            HttpRequest.Builder builder,
+            OAuthProviderFlow.RequestAuth auth,
+            String headerName,
+            String prefix) {
+        if (auth == null || auth.token() == null || auth.token().isBlank()
+                || hasHeader(auth.headers(), headerName)) {
+            return;
+        }
+        builder.header(headerName, prefix + auth.token());
+    }
+
     private static String mergeHeaderValue(
             OAuthProviderFlow.RequestAuth auth, String headerName, String value) {
         String existing = auth == null ? null : auth.headers().entrySet().stream()
@@ -2396,6 +3515,18 @@ public class DirectLlmClient implements AutoCloseable {
     private void applyProviderRequestHeaders(
             HttpRequest.Builder builder,
             String userMessage) {
+        String cacheSessionId = activePromptCacheSessionId();
+        if (cacheSessionId != null) {
+            switch (config.promptCacheCapabilities().sessionAffinity()) {
+                case XAI_CONVERSATION_HEADER ->
+                        builder.setHeader("x-grok-conv-id", cacheSessionId);
+                case OPENROUTER_SESSION_HEADER ->
+                        builder.setHeader("x-session-id", cacheSessionId);
+                default -> {
+                    // Body-based affinity and provider-owned sessions are handled elsewhere.
+                }
+            }
+        }
         if ("github-copilot".equals(config.getProvider())) {
             builder.setHeader("User-Agent", "GitHubCopilotChat/0.35.0");
             builder.setHeader("Editor-Version", "vscode/1.107.0");
@@ -2406,7 +3537,14 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
-    private ArrayNode buildAnthropicMessages(String userMessage, List<ToolCallResultInput> toolResults) {
+    private ArrayNode buildAnthropicMessages(
+            String userMessage, List<ToolCallResultInput> toolResults) {
+        return buildAnthropicMessages(userMessage, toolResults, List.of());
+    }
+
+    private ArrayNode buildAnthropicMessages(
+            String userMessage, List<ToolCallResultInput> toolResults,
+            List<AttachmentInput> attachments) {
         ArrayNode messages = objectMapper.createArrayNode();
 
         // Previous history
@@ -2419,15 +3557,10 @@ public class DirectLlmClient implements AutoCloseable {
         if (toolResultMessage != null) messages.add(toolResultMessage);
 
         // Current user message
-        if (userMessage != null) {
+        if (userMessage != null || !attachments.isEmpty()) {
             ObjectNode userMsg = objectMapper.createObjectNode();
             userMsg.put("role", "user");
-            ArrayNode content = objectMapper.createArrayNode();
-            ObjectNode textBlock = objectMapper.createObjectNode();
-            textBlock.put("type", "text");
-            textBlock.put("text", userMessage);
-            content.add(textBlock);
-            userMsg.set("content", content);
+            userMsg.set("content", buildAnthropicContentArray(userMessage, attachments));
             messages.add(userMsg);
         }
 
@@ -2479,6 +3612,7 @@ public class DirectLlmClient implements AutoCloseable {
         String currentToolName = null;
         StringBuilder currentToolArgs = new StringBuilder();
         boolean currentCompaction = false;
+        boolean terminal = false;
         StringBuilder compactionSummary = new StringBuilder();
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
@@ -2565,9 +3699,14 @@ public class DirectLlmClient implements AutoCloseable {
                         }
 
                         case "message_stop":
+                            terminal = true;
                             break;
 
                         case "message_delta": {
+                            String stopReason = event.path("delta").path("stop_reason").asText("");
+                            result.refusalDetected |= "refusal".equals(stopReason);
+                            result.truncatedDetected |= "max_tokens".equals(stopReason)
+                                    || "model_context_window_exceeded".equals(stopReason);
                             // Anthropic sends output token count in message_delta
                             JsonNode deltaUsage = event.path("usage");
                             if (!deltaUsage.isMissingNode()) {
@@ -2584,12 +3723,18 @@ public class DirectLlmClient implements AutoCloseable {
                                     }
                                 }
                             }
+                            if (result.refusalDetected || result.truncatedDetected) {
+                                finishGenerationOutcome(result);
+                                return;
+                            }
                             break;
                         }
 
                         case "error": {
-                            String msg = event.path("error").path("message").asText(data);
-                            result.text += "\n[Error: " + msg + "]";
+                            JsonNode error = event.path("error");
+                            String msg = error.path("message").asText(data);
+                            appendProtocolError(result, msg, error.toString());
+                            terminal = true;
                             break;
                         }
                     }
@@ -2598,6 +3743,10 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
         }
+        if (!result.cancelled && !result.failed && !terminal) {
+            throw new EOFException("Anthropic stream ended before a terminal event");
+        }
+        finishGenerationOutcome(result);
     }
 
     // ========================================================================
@@ -2628,10 +3777,35 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
         }
-        ObjectNode textBlock = objectMapper.createObjectNode();
-        textBlock.put("type", "text");
-        textBlock.put("text", text);
-        content.add(textBlock);
+        if (text != null) {
+            ObjectNode textBlock = objectMapper.createObjectNode();
+            textBlock.put("type", "text");
+            textBlock.put("text", text);
+            content.add(textBlock);
+        }
+        return content;
+    }
+
+    /** OpenAI Responses uses input_text/input_image rather than Chat Completions blocks. */
+    private ArrayNode buildResponsesContentArray(
+            String text, List<AttachmentInput> attachments) {
+        ArrayNode content = objectMapper.createArrayNode();
+        if (attachments != null) {
+            for (AttachmentInput attachment : attachments) {
+                if (attachment.isImage()) {
+                    ObjectNode image = content.addObject();
+                    image.put("type", "input_image");
+                    image.put("image_url", dataUrl(attachment));
+                } else {
+                    ObjectNode file = content.addObject();
+                    file.put("type", "input_text");
+                    file.put("text", attachmentText(attachment));
+                }
+            }
+        }
+        if (text != null) {
+            content.addObject().put("type", "input_text").put("text", text);
+        }
         return content;
     }
 
@@ -2661,11 +3835,356 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
         }
-        ObjectNode textBlock = objectMapper.createObjectNode();
-        textBlock.put("type", "text");
-        textBlock.put("text", text);
-        content.add(textBlock);
+        if (text != null) {
+            ObjectNode textBlock = objectMapper.createObjectNode();
+            textBlock.put("type", "text");
+            textBlock.put("text", text);
+            content.add(textBlock);
+        }
         return content;
+    }
+
+    private static String validateAttachments(List<AttachmentInput> attachments) {
+        for (int i = 0; i < attachments.size(); i++) {
+            AttachmentInput attachment = attachments.get(i);
+            if (attachment == null) {
+                return "Attachment " + i + " is null";
+            }
+            if (attachment.isImage()) {
+                if (attachment.mimeType() == null
+                        || !attachment.mimeType().toLowerCase(Locale.ROOT).startsWith("image/")) {
+                    return "Image attachment '" + attachment.path()
+                            + "' must declare an image MIME type";
+                }
+                if (isBlank(attachment.base64Data())) {
+                    return "Image attachment '" + attachment.path()
+                            + "' has no base64 payload";
+                }
+            } else if (attachment.textContent() == null) {
+                return "Attachment '" + attachment.path()
+                        + "' is neither an encoded image nor readable text";
+            }
+        }
+        return null;
+    }
+
+    private static boolean supportsAttachments(WireProtocol protocol) {
+        return protocol == WireProtocol.OPENAI_CHAT
+                || protocol == WireProtocol.OPENAI_RESPONSES
+                || protocol == WireProtocol.ANTHROPIC_MESSAGES;
+    }
+
+    private StreamResult attachmentFailure(String detail) {
+        StreamResult result = new StreamResult();
+        String message = "[Attachment error: " + detail + "]";
+        appendProviderFailure(result, 0, detail, message, true);
+        return result;
+    }
+
+    private static String dataUrl(AttachmentInput attachment) {
+        return "data:" + attachment.mimeType() + ";base64," + attachment.base64Data();
+    }
+
+    private static String attachmentText(AttachmentInput attachment) {
+        return "[File: " + attachment.path() + "]\n" + attachment.textContent();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private java.io.InputStream guardResponseStream(java.io.InputStream stream) {
+        return new IdleTimeoutInputStream(stream, connectivityPolicy.streamIdleTimeout(), this::isCancelled);
+    }
+
+    private String readResponseBody(java.io.InputStream stream) throws Exception {
+        try (java.io.InputStream guarded = guardResponseStream(stream)) {
+            return new String(guarded.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static final class UnauthorizedRequestException extends java.io.IOException {
+        private final OAuthProviderFlow.RequestAuth auth;
+        private final FailureKind kind;
+
+        private UnauthorizedRequestException(OAuthProviderFlow.RequestAuth auth, FailureKind kind) {
+            super("Unauthorized");
+            this.auth = auth;
+            this.kind = kind;
+        }
+    }
+
+    private void recordStreamFailure(StreamResult result, Exception failure, String prefix) {
+        if (markCancelled(result, failure)) return;
+        if (failure instanceof UnauthorizedRequestException rejected) {
+            if (rejected.kind != FailureKind.NONE) recordTerminalOutcome(result, rejected.kind, 401);
+            else recordAuthenticationFailure(result, 401, "[Radius config error 401: Unauthorized]", rejected.auth);
+            return;
+        }
+        if (failure instanceof ChatConfig.AuthenticationException credentialFailure) {
+            finishCredentialFailure(result, credentialFailure);
+            return;
+        }
+        if (connectivityPolicy.isRetryableFailure(failure)) {
+            result.retryableConnectivityFailure = true;
+            result.connectivityFailure = formatExceptionMessage(failure);
+            result.connectivityFinalMessage = prefix + result.connectivityFailure + "]";
+            return;
+        }
+        String detail = formatExceptionMessage(failure);
+        appendProviderFailure(result, 0, detail, prefix + detail + "]", false);
+    }
+
+    private StreamResult finishCredentialFailure(StreamResult result, ChatConfig.AuthenticationException error) {
+        result.failed = true;
+        result.authenticationFailure = false;
+        result.rejectedAuth = null;
+        result.failureStatusCode = error.failure().statusCode();
+        result.failureKind = switch (error.failure().kind()) {
+            case REAUTH_REQUIRED -> FailureKind.AUTHENTICATION;
+            case PERMISSION_DENIED -> FailureKind.PERMISSION_DENIED;
+            case RATE_LIMITED -> FailureKind.RATE_LIMITED;
+            case TEMPORARY -> FailureKind.TEMPORARY;
+            case LOCAL_OR_PROTOCOL, INTERRUPTED -> FailureKind.CREDENTIAL_UNAVAILABLE;
+        };
+        result.failureMessage = error.getMessage();
+        String rendered = (result.text.isEmpty() ? "" : "\n") + error.getMessage();
+        result.text += rendered;
+        printStreamingChunk(rendered);
+        return result;
+    }
+
+    private void recordUnauthorizedResponse(StreamResult result, java.io.InputStream body,
+                                             OAuthProviderFlow.RequestAuth auth) {
+        String diagnostic = ProviderResponseFailure.authenticationBody(body);
+        if (!recordKnownProviderFailure(result, 401, diagnostic)) {
+            recordAuthenticationFailure(result, 401, "[Provider API error 401: Unauthorized]", auth);
+        }
+    }
+
+    private boolean recordKnownProviderFailure(StreamResult result, int status, String body) {
+        FailureKind kind = ProviderResponseFailure.classify(status, body);
+        if (kind == FailureKind.NONE) return false;
+        recordTerminalOutcome(result, kind, status);
+        return true;
+    }
+
+    private static boolean responsesContainRefusal(JsonNode content) {
+        for (JsonNode block : content) {
+            if ("refusal".equals(block.path("type").asText())) return true;
+        }
+        return false;
+    }
+
+    private static boolean isGenerationStopped(StreamResult result) {
+        return result.failureKind == FailureKind.REFUSAL || result.failureKind == FailureKind.TRUNCATED;
+    }
+
+    private boolean finishGenerationOutcome(StreamResult result) {
+        if (result.cancelled) return false;
+        if (result.refusalDetected || result.truncatedDetected) {
+            recordTerminalOutcome(result, result.refusalDetected ? FailureKind.REFUSAL : FailureKind.TRUNCATED, 200);
+            return true;
+        }
+        return false;
+    }
+
+    private void recordTerminalOutcome(StreamResult result, FailureKind kind, int status) {
+        result.retryableConnectivityFailure = false;
+        result.authenticationFailure = false;
+        result.rejectedAuth = null;
+        result.responseStarted |= !result.text.isEmpty() || !result.toolCalls.isEmpty();
+        result.toolCalls.clear();
+        if (result.failed && result.failureKind == kind) return;
+        result.failed = true;
+        result.failureKind = kind;
+        result.failureStatusCode = status;
+        result.failureMessage = ProviderResponseFailure.message(kind);
+        result.toolCalls.clear();
+        String rendered = (result.text.isEmpty() ? "" : "\n") + result.failureMessage;
+        result.text += rendered;
+        printStreamingChunk(rendered);
+    }
+
+    private void recordAuthenticationFailure(
+            StreamResult result,
+            int statusCode,
+            String finalMessage,
+            OAuthProviderFlow.RequestAuth rejectedAuth) {
+        result.failed = true;
+        result.failureKind = FailureKind.AUTHENTICATION;
+        result.failureStatusCode = statusCode;
+        result.failureMessage = finalMessage;
+        result.authenticationFailure = true;
+        result.rejectedAuth = rejectedAuth != null && rejectedAuth.oauth()
+                ? rejectedAuth : null;
+    }
+
+    private void appendProviderFailure(
+            StreamResult result, int statusCode, String classificationDetail,
+            String finalMessage, boolean render) {
+        boolean hadResponse = !result.text.isEmpty() || !result.toolCalls.isEmpty();
+        result.responseStarted |= hadResponse;
+        result.failed = true;
+        result.failureStatusCode = statusCode;
+        result.failureMessage = finalMessage;
+        result.failureKind = isContextOverflowFailure(statusCode, classificationDetail)
+                ? FailureKind.CONTEXT_OVERFLOW : FailureKind.PROVIDER_ERROR;
+        if (!result.text.isEmpty()) result.text += "\n";
+        result.text += finalMessage;
+        // Keep a replay-safe context rejection off the terminal. AgenticChatLoop
+        // either compacts and retries transparently or reports it exactly once.
+        if (render && (result.failureKind != FailureKind.CONTEXT_OVERFLOW
+                || result.responseStarted)) {
+            printStreamingChunk(finalMessage);
+        }
+    }
+
+    static boolean isContextOverflowFailure(int statusCode, String detail) {
+        if (detail == null || detail.isBlank()) return false;
+        String normalized = detail.toLowerCase(Locale.ROOT).replace('-', '_');
+        if (normalized.contains("context_length_exceeded")) return true;
+        if (statusCode == 429 || normalized.contains("rate_limit")
+                || normalized.contains("per minute")
+                || normalized.contains("per second")) {
+            return false;
+        }
+        if (normalized.contains("context window exceeded")
+                || normalized.contains("maximum context length")
+                || normalized.contains("prompt is too long")
+                || normalized.contains("input is too long")
+                || (normalized.contains("too many tokens")
+                && (normalized.contains("context") || normalized.contains("prompt")
+                || normalized.contains("input") || normalized.contains("message")))) {
+            return true;
+        }
+        boolean exceeds = normalized.contains("exceed")
+                || normalized.contains("too long")
+                || normalized.contains("maximum");
+        if (exceeds && (normalized.contains("context limit")
+                || normalized.contains("token limit")
+                || normalized.contains("input token")
+                || normalized.contains("input length")
+                || ((normalized.contains("max length")
+                || normalized.contains("maximum length"))
+                && (normalized.contains("prompt") || normalized.contains("input")
+                || normalized.contains("message") || normalized.contains("context")))
+                || (normalized.contains("max_tokens")
+                && normalized.contains("context")))) {
+            return true;
+        }
+        if (normalized.contains("reduce the length")
+                && (normalized.contains("message") || normalized.contains("prompt"))) {
+            return true;
+        }
+        if (normalized.contains("input length")
+                && (normalized.contains("allowed range")
+                || normalized.contains("range of input")
+                || normalized.contains("should be"))) {
+            return true;
+        }
+        return statusCode == 413
+                && (normalized.contains("context")
+                || normalized.contains("token")
+                || normalized.contains("prompt"));
+    }
+
+    private boolean recordHttpConnectivityFailure(
+            StreamResult result, int statusCode, HttpHeaders headers,
+            String reason, String finalMessage) {
+        if (!connectivityPolicy.isRetryableStatus(statusCode)) return false;
+        result.failed = true;
+        result.retryableConnectivityFailure = true;
+        result.failureStatusCode = statusCode;
+        result.failureKind = FailureKind.PROVIDER_ERROR;
+        result.failureMessage = finalMessage;
+        result.connectivityFailure = reason;
+        result.connectivityFinalMessage = finalMessage;
+        result.connectivityHeaders = headers;
+        return true;
+    }
+
+    private StreamResult finishConnectivityFailure(StreamResult result, boolean replaySafe) {
+        String message = result.connectivityFinalMessage;
+        if (message == null || message.isBlank()) {
+            message = "[" + ChatProviderRegistry.label(config.getProvider())
+                    + " connection error: " + result.connectivityFailure + "]";
+        }
+        if (!replaySafe) {
+            message += "\n[Response was not replayed because the provider had already streamed output.]";
+        }
+        result.failureMessage = message;
+        String rendered = result.text.isEmpty() ? message : "\n" + message;
+        result.text += rendered;
+        result.failed = true;
+        result.retryableConnectivityFailure = false;
+        if (!ai.kompile.cli.main.chat.ChatCompleter.showAlert(message)) printStreamingChunk(rendered);
+        return result;
+    }
+
+    private StreamResult finishAuthenticationFailure(StreamResult result) {
+        String provider = config.getProvider() == null || config.getProvider().isBlank()
+                ? "provider" : config.getProvider().strip();
+        String detail = result.failureMessage;
+        if (detail == null || detail.isBlank()) {
+            detail = "[" + ChatProviderRegistry.label(provider)
+                    + " authentication failed (HTTP " + result.failureStatusCode + ")]";
+        }
+        String guidance = "[Provider authentication was rejected. Check the selected credential and account access. "
+                + "If the credential is expired or revoked, use `kompile auth login " + provider
+                + "`. Signing in will not fix permission or IP restrictions.]";
+        String message = detail + "\n" + guidance;
+        result.failureMessage = message;
+        result.authenticationFailure = false;
+        result.rejectedAuth = null;
+        result.text = result.text.isEmpty() ? message : result.text + "\n" + message;
+        if (!ai.kompile.cli.main.chat.ChatCompleter.showAlert(message)) printStreamingChunk(result.text);
+        return result;
+    }
+
+    private boolean waitForRetry(Duration delay) {
+        long remainingNanos = Math.max(0L, delay.toNanos());
+        long deadline = System.nanoTime() + remainingNanos;
+        while (remainingNanos > 0L) {
+            if (isCancelled()) return false;
+            try {
+                TimeUnit.NANOSECONDS.sleep(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                // The stream watchdog interrupts the reader as part of unblocking a
+                // stalled read; that interrupt can land here after the retry loop
+                // has already recovered. Only a real cancel signal may abort the
+                // backoff — an interrupt without one is spurious, so clear it and
+                // keep waiting instead of silently dropping the reconnect.
+                if (!isCancelled()) {
+                    Thread.interrupted();
+                    continue;
+                }
+                return false;
+            }
+            remainingNanos = deadline - System.nanoTime();
+        }
+        return !isCancelled();
+    }
+
+    private void emitConnectivityEvent(ConnectivityEvent event) {
+        java.util.function.Consumer<ConnectivityEvent> consumer = connectivityEventConsumer;
+        if (consumer != null) {
+            consumer.accept(event);
+            return;
+        }
+        String warning = "[" + ChatProviderRegistry.label(event.provider())
+                + " connection lost: " + event.reason() + "; reconnecting attempt "
+                + event.attempt() + "/" + event.maxAttempts() + " in "
+                + event.delay().toMillis() + " ms]";
+        if (!ai.kompile.cli.main.chat.ChatCompleter.showAlert(warning)) System.err.println(warning);
+    }
+
+    private void resetOpenCodeClient() {
+        OpenCodeServeClient client = openCodeServeClient;
+        if (client != null) client.close();
+        openCodeServeClient = null;
+        openCodeNeedsSeed = true;
     }
 
     private boolean markCancelled(StreamResult result, Exception error) {
@@ -2710,6 +4229,19 @@ public class DirectLlmClient implements AutoCloseable {
         public List<ToolCallOutput> toolCalls = new ArrayList<>();
         public boolean cancelled = false;
         public boolean failed = false;
+        public FailureKind failureKind = FailureKind.NONE;
+        private boolean refusalDetected;
+        private boolean truncatedDetected;
+        public int failureStatusCode;
+        public String failureMessage;
+        public boolean responseStarted;
+        public boolean providerSideEffectsObserved;
+        private boolean authenticationFailure;
+        private OAuthProviderFlow.RequestAuth rejectedAuth;
+        private boolean retryableConnectivityFailure;
+        private String connectivityFailure;
+        private String connectivityFinalMessage;
+        private HttpHeaders connectivityHeaders;
         public String nativeCompactionSummary;
         public String nativeCompactionStrategy;
         public JsonNode nativeCompactionPayload;
@@ -2731,6 +4263,19 @@ public class DirectLlmClient implements AutoCloseable {
             return saturatingAdd(total, Math.max(0L, cacheCreationTokens));
         }
 
+        public boolean isContextOverflow() {
+            return failed && failureKind == FailureKind.CONTEXT_OVERFLOW;
+        }
+
+        public boolean isReplaySafe() {
+            return !responseStarted && !providerSideEffectsObserved
+                    && toolCalls.isEmpty() && (text.isEmpty() || isContextOverflow());
+        }
+
+        public boolean canRetryAfterContextOverflow() {
+            return isContextOverflow() && isReplaySafe();
+        }
+
         private static long saturatingAdd(long left, long right) {
             return Long.MAX_VALUE - left < right ? Long.MAX_VALUE : left + right;
         }
@@ -2740,10 +4285,18 @@ public class DirectLlmClient implements AutoCloseable {
         public String correctionPrompt = null;
     }
 
+    public record ConnectivityEvent(
+            String provider, int attempt, int maxAttempts, Duration delay, String reason) {
+    }
+
     public static class ToolCallOutput {
         public String id;
         public String name;
         public JsonNode arguments;
+    }
+
+    public record ReplayedToolCallInput(
+            String toolName, String callId, String argumentsJson) {
     }
 
     public static class ToolCallResultInput {

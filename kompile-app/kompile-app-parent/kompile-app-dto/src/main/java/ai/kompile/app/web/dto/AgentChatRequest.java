@@ -29,11 +29,28 @@ import java.util.List;
 public class AgentChatRequest {
 
     private String message;
+    /** Stable browser conversation identifier; the server hashes it before CLI persistence. */
+    private String sessionId;
+    /** Harness persona (for example coder/crawler) or role selector prefixed with role:. */
     private String agentName;
     private boolean skipPermissions = true;
+    /** Enable the same project/session memory layer used by CLI chat. */
+    private boolean enableMemory = true;
     private String workingDirectory;
     /** Supplemental system instructions supplied by the Kompile CLI. */
     private String systemPromptOverride;
+
+    /**
+     * Canonical UUID of an app-main-provisioned agent. This selects no owner or storage path;
+     * app-main always binds the server-owned local identity.
+     */
+    private String provisionedAgentId;
+
+    /** Opaque channel/window conversation key for the canonical provisioned-agent event journal. */
+    private String externalConversationKey;
+
+    /** Stable canonical UUID for one provisioned conversation turn and all of its retries. */
+    private String turnId;
 
     // RAG configuration (vector-based retrieval)
     private boolean enableRag = false;
@@ -68,7 +85,7 @@ public class AgentChatRequest {
     // Extra CLI arguments to pass through to the underlying agent command
     private List<String> agentArgs;
 
-    // Timeout configuration (in seconds, 0 = no timeout)
+    // Timeout configuration (seconds; 0 selects the harness's five-minute safety default)
     private int timeoutSeconds = 300; // Default 5 minutes
 
     /**

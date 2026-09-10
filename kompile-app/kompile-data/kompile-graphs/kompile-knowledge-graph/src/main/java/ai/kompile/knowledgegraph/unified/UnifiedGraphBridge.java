@@ -18,6 +18,7 @@ package ai.kompile.knowledgegraph.unified;
 import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -27,6 +28,7 @@ import ai.kompile.knowledgegraph.domain.NodeLevel;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,13 +41,19 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Bridges the live fact-sheet graph (matrix/vector store) to the infrastructure-free
@@ -66,8 +74,21 @@ public class UnifiedGraphBridge {
 
     private static final Logger log = LoggerFactory.getLogger(UnifiedGraphBridge.class);
     private static final ObjectMapper ARCHIVE_MAPPER = new ObjectMapper();
+    private static final List<String> RESERVED_MANAGED_ARTIFACT_PREFIXES = List.of(
+            "embeddings/graph-embedding-sidecar.kge2",
+            "reasoning/mebn-theory.v1.json",
+            "reasoning/mebn-theory.bin",
+            "reasoning/mebn-strengths.json",
+            "reasoning/fol-psl-program.bin",
+            "reasoning/psl-weights.json",
+            "reasoning/consensus-targets.bin",
+            "reasoning/traces.json",
+            "schema/bound-ontology.json",
+            "process/",
+            "trace:process:");
 
     private final KnowledgeGraphService knowledgeGraphService;
+    private final ConcurrentHashMap<Long, ReentrantLock> importLocks = new ConcurrentHashMap<>();
 
     @Autowired(required = false)
     private UnifiedGraphAnalysisAssetStore analysisAssets;
@@ -83,6 +104,12 @@ public class UnifiedGraphBridge {
 
     @Autowired(required = false)
     private List<UnifiedGraphArtifactImporter> artifactImporters = List.of();
+
+    @Autowired(required = false)
+    private List<UnifiedGraphImportTargetValidator> importTargetValidators = List.of();
+
+    @Autowired(required = false)
+    private UnifiedGraphImportJournal importJournal;
 
     @Autowired
     public UnifiedGraphBridge(KnowledgeGraphService knowledgeGraphService) {
@@ -103,6 +130,70 @@ public class UnifiedGraphBridge {
         }
     }
 
+    /** One source archive already mapped to its runtime destination. */
+    public record ImportScope(UnifiedGraph graph, Long factSheetId) { }
+
+    /** Aggregate result for an all-scope compensating import. */
+    public record BatchImportSummary(String transactionId, List<ImportSummary> summaries) {
+        public BatchImportSummary {
+            summaries = summaries == null ? List.of() : List.copyOf(summaries);
+        }
+    }
+
+    private record PreparedRelation(
+            String sourceEntityId,
+            String targetEntityId,
+            EdgeType edgeType,
+            String relationType,
+            double weight,
+            String description,
+            String restoreMetadata,
+            EdgeProvenance provenance) { }
+
+    private record ImportPlan(
+            List<GraphEntity> entities,
+            List<KnowledgeGraphService.NodeSpec> nodeSpecs,
+            List<PreparedRelation> relations) { }
+
+    private static final class PreparedArtifact {
+        private final UnifiedGraphArtifactImporter importer;
+        private final UnifiedGraphArtifactImporter.PreparedImport transaction;
+        private boolean attempted;
+
+        private PreparedArtifact(UnifiedGraphArtifactImporter importer,
+                                 UnifiedGraphArtifactImporter.PreparedImport transaction) {
+            this.importer = importer;
+            this.transaction = transaction;
+        }
+    }
+
+    private static final class PreparedScope {
+        private final UnifiedGraph graph;
+        private final Long factSheetId;
+        private final ImportPlan incoming;
+        private final UnifiedGraph backup;
+        private final ImportPlan backupPlan;
+        private final List<PreparedArtifact> artifacts;
+        private final UnifiedGraphAnalysisAssetStore.AssetState analysisState;
+        private boolean attempted;
+
+        private PreparedScope(UnifiedGraph graph,
+                              Long factSheetId,
+                              ImportPlan incoming,
+                              UnifiedGraph backup,
+                              ImportPlan backupPlan,
+                              List<PreparedArtifact> artifacts,
+                              UnifiedGraphAnalysisAssetStore.AssetState analysisState) {
+            this.graph = graph;
+            this.factSheetId = factSheetId;
+            this.incoming = incoming;
+            this.backup = backup;
+            this.backupPlan = backupPlan;
+            this.artifacts = artifacts;
+            this.analysisState = analysisState;
+        }
+    }
+
     /**
      * Export a fact-sheet graph, or the complete graph when {@code factSheetId} is null.
      * This nullable signature is the shared contract used by graph export and snapshots; primitive
@@ -114,16 +205,245 @@ public class UnifiedGraphBridge {
 
     /** Export a fact-sheet graph restricted to one named graph when requested. */
     public UnifiedGraph export(Long factSheetId, String namedGraphId) {
+        return projectGraph(factSheetId, namedGraphId, true, true, true);
+    }
+
+    /**
+     * Materialize only a bounded neighborhood for exact-id query operations. This path delegates
+     * adjacency reads to the live store and never enumerates the complete fact-sheet graph.
+     * Analysis/model assets are intentionally excluded; global/vector/model operations continue to
+     * use the full export path.
+     */
+    public UnifiedGraph exportNeighborhood(
+            Long factSheetId, Collection<String> seedIds, int maxDepth, int maxNodes) {
+        int edgeLimit = Math.max(1, Math.min(500_000, Math.multiplyExact(
+                Math.min(100_000, Math.max(1, maxNodes)), 10)));
+        return exportNeighborhood(factSheetId, seedIds, maxDepth, maxNodes,
+                GraphQueryEngine.Direction.BOTH, edgeLimit);
+    }
+
+    /**
+     * Direction-aware bounded materialization used by the query facade. Both node and edge budgets
+     * are hard heap bounds; a truncated graph is marked in metadata so absence is never presented as
+     * complete evidence.
+     */
+    public UnifiedGraph exportNeighborhood(
+            Long factSheetId,
+            Collection<String> seedIds,
+            int maxDepth,
+            int maxNodes,
+            GraphQueryEngine.Direction direction,
+            int maxEdges) {
+        return exportNeighborhood(factSheetId, seedIds, seedIds, maxDepth, maxNodes, direction, maxEdges);
+    }
+
+    /**
+     * Bounded materialization with separate point-loaded seeds and traversal roots. Claim/path
+     * targets can therefore be resolved without spending the source traversal budget on unrelated
+     * target adjacency.
+     */
+    public UnifiedGraph exportNeighborhood(
+            Long factSheetId,
+            Collection<String> seedIds,
+            Collection<String> expansionSeedIds,
+            int maxDepth,
+            int maxNodes,
+            GraphQueryEngine.Direction direction,
+            int maxEdges) {
+        int depth = Math.max(0, Math.min(12, maxDepth));
+        int nodeLimit = Math.max(1, Math.min(100_000, maxNodes));
+        int edgeLimit = Math.max(1, Math.min(500_000, maxEdges));
+        GraphQueryEngine.Direction traversalDirection = direction == null
+                ? GraphQueryEngine.Direction.BOTH : direction;
+        UnifiedGraph graph = new UnifiedGraph()
+                .graphId(factSheetId == null ? "global:bounded" : "factsheet_" + factSheetId + ":bounded")
+                .factSheetId(factSheetId)
+                .meta("boundedNeighborhood", true)
+                .meta("maxDepth", depth)
+                .meta("maxNodes", nodeLimit)
+                .meta("maxEdges", edgeLimit)
+                .meta("direction", traversalDirection.name());
+        if (knowledgeGraphService == null || seedIds == null || seedIds.isEmpty()) return graph;
+
+        ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
+        Set<String> visited = new java.util.LinkedHashSet<>();
+        Map<String, GraphEdge> edges = new LinkedHashMap<>();
+        boolean truncated = false;
+        for (String seed : seedIds) {
+            if (seed != null && !seed.isBlank() && visited.size() < nodeLimit && visited.add(seed)) {
+                nodeInScope(seed, factSheetId).ifPresent(node -> addBoundedNode(graph, node));
+            } else if (seed != null && !seed.isBlank() && !visited.contains(seed)) {
+                truncated = true;
+            }
+        }
+        Collection<String> roots = expansionSeedIds == null ? List.of() : expansionSeedIds;
+        for (String root : roots) {
+            if (root == null || root.isBlank()) continue;
+            if (!visited.contains(root)) {
+                if (visited.size() >= nodeLimit) {
+                    truncated = true;
+                    continue;
+                }
+                visited.add(root);
+                nodeInScope(root, factSheetId).ifPresent(node -> addBoundedNode(graph, node));
+            }
+            if (graph.entity(root).isPresent()) queue.addLast(new NodeDepth(root, 0));
+        }
+
+        while (!queue.isEmpty()) {
+            NodeDepth current = queue.removeFirst();
+            Optional<GraphNode> node = nodeInScope(current.nodeId(), factSheetId);
+            if (node.isEmpty()) continue;
+            addBoundedNode(graph, node.get());
+            if (current.depth() >= depth) continue;
+
+            int remainingEdges = edgeLimit - edges.size();
+            if (remainingEdges <= 0) {
+                truncated = true;
+                break;
+            }
+            IncidentBatch incident = incidentEdges(
+                    current.nodeId(), factSheetId, traversalDirection, remainingEdges);
+            truncated |= incident.truncated();
+            for (GraphEdge edge : incident.edges()) {
+                if (edge == null) continue;
+                String source = sourceId(edge);
+                String target = targetId(edge);
+                if (source == null || target == null) continue;
+                String neighbor = current.nodeId().equals(source) ? target
+                        : current.nodeId().equals(target) ? source : null;
+                if (neighbor == null) continue;
+                if (!visited.contains(neighbor) && visited.size() < nodeLimit && visited.add(neighbor)) {
+                    queue.addLast(new NodeDepth(neighbor, current.depth() + 1));
+                } else if (!visited.contains(neighbor)) {
+                    truncated = true;
+                    continue;
+                }
+                String key = edge.getEdgeId() != null ? edge.getEdgeId()
+                        : source + "\n" + target + "\n" + String.valueOf(edge.getRelationType());
+                edges.putIfAbsent(key, edge);
+            }
+        }
+
+        for (GraphEdge edge : edges.values()) addBoundedEdge(graph, edge);
+        graph.meta("truncated", truncated);
+        graph.meta("materializedNodes", graph.entityCount());
+        graph.meta("materializedEdges", graph.relationCount());
+        return graph;
+    }
+
+    private Optional<GraphNode> nodeInScope(String nodeId, Long factSheetId) {
+        if (knowledgeGraphService instanceof BoundedKnowledgeGraphReader bounded) {
+            return bounded.getNodeInScope(nodeId, factSheetId);
+        }
+        return knowledgeGraphService.getNode(nodeId)
+                .filter(node -> factSheetId == null || factSheetId.equals(node.getFactSheetId()));
+    }
+
+    private IncidentBatch incidentEdges(
+            String nodeId,
+            Long factSheetId,
+            GraphQueryEngine.Direction direction,
+            int limit) {
+        if (knowledgeGraphService instanceof BoundedKnowledgeGraphReader bounded) {
+            BoundedKnowledgeGraphReader.IncidentEdges result = bounded.getIncidentEdges(
+                    nodeId, factSheetId, boundedDirection(direction), limit);
+            return new IncidentBatch(result.edges(), result.truncated());
+        }
+        // Whole-collection compatibility methods offer no memory bound. Returning an explicitly
+        // truncated empty batch is safer than materializing the complete graph behind a bounded API.
+        return new IncidentBatch(List.of(), true);
+    }
+
+    private static BoundedKnowledgeGraphReader.Direction boundedDirection(
+            GraphQueryEngine.Direction direction) {
+        return switch (direction) {
+            case OUTGOING -> BoundedKnowledgeGraphReader.Direction.OUTGOING;
+            case INCOMING -> BoundedKnowledgeGraphReader.Direction.INCOMING;
+            case BOTH -> BoundedKnowledgeGraphReader.Direction.BOTH;
+        };
+    }
+
+    private static String sourceId(GraphEdge edge) {
+        return edge.getSourceNodeId() != null ? edge.getSourceNodeId()
+                : edge.getSourceNode() == null ? null : edge.getSourceNode().getNodeId();
+    }
+
+    private static String targetId(GraphEdge edge) {
+        return edge.getTargetNodeId() != null ? edge.getTargetNodeId()
+                : edge.getTargetNode() == null ? null : edge.getTargetNode().getNodeId();
+    }
+
+    private void addBoundedNode(UnifiedGraph graph, GraphNode node) {
+        if (node == null || node.getNodeId() == null || graph.entity(node.getNodeId()).isPresent()) return;
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("kompile.store", nodeStoreState(node));
+        String type = firstString(node.getMetadata(), "entity_type", "entityType", "type");
+        if (type == null || type.isBlank()) {
+            type = node.getNodeType() != null ? node.getNodeType().name() : "ENTITY";
+        }
+        var builder = GraphEntity.builder(node.getNodeId())
+                .type(type)
+                .label(node.getTitle() != null ? node.getTitle() : node.getNodeId())
+                .confidence(node.getConfidence() != null ? node.getConfidence() : 1.0)
+                .attributes(attributes);
+        if (node.getOccurredAt() != null) builder.timestamp(node.getOccurredAt().toInstant(ZoneOffset.UTC));
+        if (node.getKgEmbedding() != null && node.getKgEmbedding().length() > 0) {
+            builder.embedding(node.getKgEmbedding().ravel().toDoubleVector());
+        }
+        graph.addEntity(builder.build());
+    }
+
+    private void addBoundedEdge(UnifiedGraph graph, GraphEdge edge) {
+        String source = edge.getSourceNodeId();
+        String target = edge.getTargetNodeId();
+        if (source == null && edge.getSourceNode() != null) source = edge.getSourceNode().getNodeId();
+        if (target == null && edge.getTargetNode() != null) target = edge.getTargetNode().getNodeId();
+        if (source == null || target == null
+                || graph.entity(source).isEmpty() || graph.entity(target).isEmpty()) return;
+        String type = edge.getRelationType() != null && !edge.getRelationType().isBlank()
+                ? edge.getRelationType()
+                : edge.getEdgeType() != null ? edge.getEdgeType().name() : "";
+        double weight = edge.getWeight() != null ? edge.getWeight()
+                : edge.getConfidence() != null ? edge.getConfidence() : 1.0;
+        var builder = GraphRelation.builder(
+                        edge.getEdgeId() != null ? edge.getEdgeId() : stableEdgeId(source, target, type),
+                        source, target)
+                .type(type)
+                .weight(weight)
+                .confidence(edge.getConfidence() != null ? edge.getConfidence() : weight)
+                .directed(!Boolean.TRUE.equals(edge.getBidirectional()))
+                .attributes(Map.of("kompile.store", edgeStoreState(edge)));
+        if (edge.getOccurredAt() != null) builder.timestamp(edge.getOccurredAt().toInstant(ZoneOffset.UTC));
+        if (edge.getKgRelationEmbedding() != null && edge.getKgRelationEmbedding().length() > 0) {
+            builder.embedding(edge.getKgRelationEmbedding().ravel().toDoubleVector());
+        }
+        graph.addRelation(builder.build());
+    }
+
+    private record NodeDepth(String nodeId, int depth) { }
+
+    private record IncidentBatch(List<GraphEdge> edges, boolean truncated) { }
+
+    private UnifiedGraph projectGraph(Long factSheetId,
+                                      String namedGraphId,
+                                      boolean includeAnalysisAssets,
+                                      boolean includeContributedArtifacts,
+                                      boolean populateAnalysisCache) {
         UnifiedGraph graph = new UnifiedGraph()
                 .graphId(factSheetId == null ? "global" : "factsheet_" + factSheetId)
                 .factSheetId(factSheetId);
+        if (namedGraphId != null) graph.meta("namedGraphSubset", true);
         if (knowledgeGraphService == null) {
             return graph;
         }
 
-        Optional<UnifiedGraph> previous = factSheetId != null && analysisAssets != null
-                ? analysisAssets.get(factSheetId)
-                : Optional.empty();
+        Optional<UnifiedGraph> previous = Optional.empty();
+        if (includeAnalysisAssets && factSheetId != null && analysisAssets != null) {
+            previous = populateAnalysisCache
+                    ? analysisAssets.get(factSheetId)
+                    : analysisAssets.snapshot(factSheetId);
+        }
 
         List<GraphNode> nodes = nodesForScope(factSheetId);
         if (namedGraphId != null) {
@@ -139,6 +459,9 @@ public class UnifiedGraphBridge {
             String type = firstString(node.getMetadata(), "entity_type", "entityType", "type");
             if (type == null || type.isBlank()) {
                 type = node.getNodeType() != null ? node.getNodeType().name() : "ENTITY";
+            }
+            if (node.getNodeType() != null && !node.getNodeType().name().equalsIgnoreCase(type)) {
+                attributes.put("additionalTypes", List.of(node.getNodeType().name()));
             }
             var builder = GraphEntity.builder(node.getNodeId())
                     .type(type)
@@ -213,8 +536,10 @@ public class UnifiedGraphBridge {
             edges++;
         }
 
-        previous.ifPresent(asset -> mergeAnalysisAssets(asset, graph));
-        if (artifactContributors != null) {
+        if (includeAnalysisAssets) {
+            previous.ifPresent(asset -> mergeAnalysisAssets(asset, graph));
+        }
+        if (includeContributedArtifacts && artifactContributors != null) {
             for (UnifiedGraphArtifactContributor contributor : artifactContributors) {
                 try {
                     contributor.contribute(factSheetId, graph);
@@ -264,93 +589,215 @@ public class UnifiedGraphBridge {
      * extension points so this module does not depend on process or agent implementations.
      */
     public ImportSummary importGraph(UnifiedGraph graph, Long requestedFactSheetId) {
-        if (graph == null) {
-            throw new IllegalArgumentException("graph is required");
-        }
-        Long factSheetId = requestedFactSheetId != null ? requestedFactSheetId : graph.factSheetId();
+        BatchImportSummary batch = importGraphs(List.of(new ImportScope(graph, requestedFactSheetId)));
+        return batch.summaries().get(0);
+    }
+
+    public boolean hasDurableImportJournal() {
+        return importJournal != null && importJournal.isEnabled();
+    }
+
+    /**
+     * Prepare every scope before mutation, apply them as one compensation unit, then publish events.
+     * This is an explicit saga across heterogeneous stores, not a distributed ACID transaction.
+     */
+    public BatchImportSummary importGraphs(List<ImportScope> requestedScopes) {
         if (knowledgeGraphService == null) {
             throw new IllegalStateException("KnowledgeGraphService is not available");
         }
+        if (requestedScopes == null || requestedScopes.isEmpty()) {
+            throw new IllegalArgumentException("At least one unified graph scope is required");
+        }
 
-        validateImportGraph(graph);
-        UnifiedGraph backup = factSheetId == null ? null : export(factSheetId);
+        List<ImportScope> scopes = new ArrayList<>(requestedScopes.size());
+        Set<Long> destinationIds = new HashSet<>();
+        for (ImportScope requested : requestedScopes) {
+            if (requested == null || requested.graph() == null) {
+                throw new IllegalArgumentException("graph is required");
+            }
+            Long factSheetId = requested.factSheetId() != null
+                    ? requested.factSheetId() : requested.graph().factSheetId();
+            if (factSheetId == null) {
+                throw new IllegalArgumentException(
+                        "Global unified graph replacement is not supported until atomic global rollback is available");
+            }
+            if (!destinationIds.add(factSheetId)) {
+                throw new IllegalArgumentException("Duplicate unified graph destination: " + factSheetId);
+            }
+            scopes.add(new ImportScope(requested.graph(), factSheetId));
+        }
+
+        List<ReentrantLock> locks = acquireImportLocks(destinationIds);
+        String transactionId = "unified-import-" + UUID.randomUUID();
+        List<PreparedScope> prepared = new ArrayList<>(scopes.size());
+        List<ImportSummary> applied = new ArrayList<>(scopes.size());
+        boolean journalStarted = false;
         try {
-            return applyGraph(graph, factSheetId, true);
+            if (importJournal != null) importJournal.assertAvailable(destinationIds);
+            for (ImportScope scope : scopes) prepared.add(prepareScope(scope));
+            if (importJournal != null) {
+                importJournal.start(transactionId, prepared.stream()
+                        .map(scope -> new UnifiedGraphImportJournal.ScopeArchive(
+                                scope.factSheetId, scope.graph, scope.backup))
+                        .toList());
+                journalStarted = true;
+                importJournal.markApplying(transactionId);
+            }
+            for (PreparedScope scope : prepared) {
+                scope.attempted = true;
+                applied.add(applyGraph(scope.graph, scope.incoming, scope.factSheetId,
+                        false, true, scope.artifacts));
+            }
+
+            if (journalStarted) {
+                importJournal.complete(transactionId, UnifiedGraphImportJournal.Phase.COMMITTED);
+            }
+
+            List<ImportSummary> committed = new ArrayList<>(applied.size());
+            for (int i = 0; i < applied.size(); i++) {
+                ImportSummary summary = applied.get(i);
+                boolean published = publishImportEvent(transactionId, prepared.get(i), summary);
+                committed.add(new ImportSummary(summary.nodes(), summary.edges(), summary.embeddings(),
+                        summary.atoms(), published));
+            }
+            return new BatchImportSummary(transactionId, committed);
         } catch (RuntimeException failure) {
-            if (backup != null) {
+            int suppressedBeforeRollback = failure.getSuppressed().length;
+            for (int i = prepared.size() - 1; i >= 0; i--) {
+                PreparedScope scope = prepared.get(i);
+                if (scope.attempted) rollbackScope(scope, failure);
+            }
+            if (journalStarted) {
+                boolean recoveryRequired = failure.getSuppressed().length > suppressedBeforeRollback;
                 try {
-                    applyGraph(backup, factSheetId, false);
-                } catch (RuntimeException rollbackFailure) {
-                    failure.addSuppressed(rollbackFailure);
+                    if (recoveryRequired) {
+                        importJournal.markRecoveryRequired(transactionId, failure);
+                    } else {
+                        importJournal.complete(transactionId, UnifiedGraphImportJournal.Phase.ROLLED_BACK);
+                    }
+                } catch (RuntimeException journalFailure) {
+                    failure.addSuppressed(journalFailure);
+                    try {
+                        importJournal.markRecoveryRequired(transactionId, journalFailure);
+                    } catch (RuntimeException recoveryFailure) {
+                        failure.addSuppressed(recoveryFailure);
+                    }
                 }
+            }
+            throw failure;
+        } finally {
+            releaseImportLocks(locks);
+        }
+    }
+
+    /** Replay durable compensating backups for an interrupted import. */
+    public BatchImportSummary recoverImport(String transactionId) {
+        if (importJournal == null || !importJournal.isEnabled()) {
+            throw new IllegalStateException("Graph import recovery journal is not available");
+        }
+        List<UnifiedGraphImportJournal.ScopeArchive> recovery =
+                importJournal.beginRecovery(transactionId);
+        try {
+            BatchImportSummary restored = importGraphs(recovery.stream()
+                    .map(scope -> new ImportScope(scope.backup(), scope.factSheetId()))
+                    .toList());
+            importJournal.complete(transactionId, UnifiedGraphImportJournal.Phase.ROLLED_BACK);
+            return restored;
+        } catch (RuntimeException failure) {
+            try {
+                importJournal.recoveryFailed(transactionId);
+            } catch (RuntimeException journalFailure) {
+                failure.addSuppressed(journalFailure);
             }
             throw failure;
         }
     }
 
-    private ImportSummary applyGraph(UnifiedGraph graph, Long factSheetId, boolean publishEvent) {
+    private PreparedScope prepareScope(ImportScope scope) {
+        ImportPlan incoming = prepareImportPlan(scope.graph());
+        validateImportTarget(scope.factSheetId(), scope.graph());
+        validateImportArtifacts(scope.factSheetId(), scope.graph());
+        UnifiedGraphAnalysisAssetStore.AssetState analysisState =
+                UnifiedGraphAnalysisAssetStore.AssetState.absent();
+        if (analysisAssets != null) {
+            try {
+                analysisState = analysisAssets.captureStrict(scope.factSheetId());
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Could not capture existing unified analysis assets", e);
+            }
+        }
+        UnifiedGraph backup = projectGraph(scope.factSheetId(), null, true, true, false);
+        ImportPlan backupPlan = prepareImportPlan(backup);
+        List<PreparedArtifact> artifacts =
+                prepareArtifactImports(scope.factSheetId(), scope.graph(), backup);
+        return new PreparedScope(scope.graph(), scope.factSheetId(), incoming, backup,
+                backupPlan, artifacts, analysisState);
+    }
+
+    private void rollbackScope(PreparedScope scope, RuntimeException failure) {
+        try {
+            applyGraph(scope.backup, scope.backupPlan, scope.factSheetId, false, false, List.of());
+        } catch (RuntimeException rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
+        rollbackArtifacts(scope.artifacts, failure);
+        if (analysisAssets != null) {
+            try {
+                analysisAssets.restoreStrict(scope.factSheetId, scope.analysisState);
+            } catch (IOException | RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+        }
+    }
+
+    private boolean publishImportEvent(String transactionId, PreparedScope scope, ImportSummary summary) {
+        if (eventPublisher == null) return false;
+        try {
+            eventPublisher.publishEvent(new GraphBuildCompletedEvent(
+                    this, transactionId + "-factsheet-" + scope.factSheetId,
+                    summary.nodes(), summary.edges(), scope.factSheetId, null));
+            return true;
+        } catch (RuntimeException eventFailure) {
+            log.warn("Unified graph import committed but event publication failed for factSheet={}: {}",
+                    scope.factSheetId, eventFailure.getMessage(), eventFailure);
+            return false;
+        }
+    }
+
+    private ImportSummary applyGraph(UnifiedGraph graph,
+                                     ImportPlan plan,
+                                     Long factSheetId,
+                                     boolean publishEvent,
+                                     boolean restorePortableAssets,
+                                     List<PreparedArtifact> preparedArtifacts) {
 
         if (factSheetId != null) {
             knowledgeGraphService.deleteByFactSheetId(factSheetId);
         }
 
-        List<GraphEntity> entities = new ArrayList<>(graph.entities());
-        List<KnowledgeGraphService.NodeSpec> nodeSpecs = new ArrayList<>(entities.size());
-        for (GraphEntity entity : entities) {
-            Map<String, Object> store = storeMap(entity.attributes().get("kompile.store"));
-            Map<String, Object> metadata = storeMap(store.get("metadata"));
-            if (metadata.isEmpty()) {
-                metadata = new LinkedHashMap<>();
-            } else {
-                metadata = new LinkedHashMap<>(metadata);
-            }
-            metadata.remove(KnowledgeGraphService.NODE_RESTORE_STATE_KEY);
-            metadata.put(KnowledgeGraphService.NODE_RESTORE_STATE_KEY, new LinkedHashMap<>(store));
-            metadata.put("entity_type", entity.type());
-            metadata.put("unifiedGraphEntityId", entity.id());
-            if (!entity.tags().isEmpty()) metadata.put("tags", List.copyOf(entity.tags()));
-            metadata.put("weight", entity.weight());
-            metadata.put("confidence", entity.confidence());
-            if (entity.timestamp() != null) metadata.put("occurredAt", entity.timestamp().toString());
-            String nodeType = stringValue(store.get("nodeType"), null);
-            NodeLevel level = parseNodeLevel(nodeType);
-            String externalId = stringValue(store.get("externalId"), entity.id());
-            String description = stringValue(store.get("description"), null);
-            nodeSpecs.add(new KnowledgeGraphService.NodeSpec(
-                    level, externalId,
-                    entity.label() == null || entity.label().isBlank() ? entity.id() : entity.label(),
-                    description, metadata));
-        }
-
-        List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(nodeSpecs, factSheetId);
-        if (createdNodes.size() != entities.size()) {
+        List<GraphNode> createdNodes = knowledgeGraphService.createNodesBatch(plan.nodeSpecs(), factSheetId);
+        if (createdNodes == null || createdNodes.size() != plan.entities().size()) {
             throw new IllegalStateException("Unified graph node restore was incomplete: expected "
-                    + entities.size() + ", created " + createdNodes.size());
+                    + plan.entities().size() + ", created "
+                    + (createdNodes == null ? 0 : createdNodes.size()));
         }
         Map<String, GraphNode> nodeByEntityId = new LinkedHashMap<>();
-        for (int i = 0; i < entities.size() && i < createdNodes.size(); i++) {
+        for (int i = 0; i < plan.entities().size(); i++) {
             GraphNode created = createdNodes.get(i);
-            if (created != null) nodeByEntityId.put(entities.get(i).id(), created);
+            if (created == null || created.getNodeId() == null || created.getNodeId().isBlank()) {
+                throw new IllegalStateException("Unified graph node restore returned an unusable node at index " + i);
+            }
+            nodeByEntityId.put(plan.entities().get(i).id(), created);
         }
 
-        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>();
-        for (GraphRelation relation : graph.relations()) {
-            GraphNode source = nodeByEntityId.get(relation.sourceId());
-            GraphNode target = nodeByEntityId.get(relation.targetId());
-            if (source == null || target == null || source.getNodeId() == null || target.getNodeId() == null) {
-                continue;
-            }
-            Map<String, Object> store = storeMap(relation.attributes().get("kompile.store"));
-            EdgeType edgeType = parseEdgeType(stringValue(store.get("edgeType"), relation.type()));
-            String relationType = stringValue(store.get("relationType"), relation.type());
-            String description = stringValue(store.get("description"),
-                    relation.stringAttribute("description"));
-            String label = stringValue(store.get("label"), relationType);
+        List<KnowledgeGraphService.EdgeSpec> edgeSpecs = new ArrayList<>(plan.relations().size());
+        for (PreparedRelation relation : plan.relations()) {
+            GraphNode source = nodeByEntityId.get(relation.sourceEntityId());
+            GraphNode target = nodeByEntityId.get(relation.targetEntityId());
             edgeSpecs.add(new KnowledgeGraphService.EdgeSpec(
-                    source.getNodeId(), target.getNodeId(), edgeType,
-                    relation.weight(), description, label,
-                    edgeRestoreMetadata(store),
-                    parseEdgeProvenance(store.get("provenanceType")), factSheetId));
+                    source.getNodeId(), target.getNodeId(), relation.edgeType(),
+                    relation.weight(), relation.description(), relation.relationType(),
+                    relation.restoreMetadata(), relation.provenance(), factSheetId));
         }
         int edges = knowledgeGraphService.createEdgesBatch(edgeSpecs);
         if (edges != edgeSpecs.size()) {
@@ -359,23 +806,28 @@ public class UnifiedGraphBridge {
         }
         knowledgeGraphService.flushPendingNodes();
 
-        if (factSheetId != null && analysisAssets != null) {
-            graph.factSheetId(factSheetId).graphId("factsheet_" + factSheetId);
-            analysisAssets.put(factSheetId, graph);
-        }
-
         int appliedEmbeddings = 0;
-        if (artifactImporters != null) {
-            for (UnifiedGraphArtifactImporter importer : artifactImporters) {
+        if (restorePortableAssets) {
+            for (PreparedArtifact prepared : preparedArtifacts) {
                 try {
-                    int applied = importer.importArtifacts(factSheetId, graph);
-                    if (importer.reportsAppliedEmbeddings()) {
+                    prepared.attempted = true;
+                    int applied = prepared.transaction.commit();
+                    if (prepared.importer.reportsAppliedEmbeddings()) {
                         appliedEmbeddings += applied;
                     }
                 } catch (RuntimeException e) {
                     throw new IllegalStateException("Unified graph artifact restore failed for "
-                            + importer.getClass().getName(), e);
+                            + prepared.importer.getClass().getName(), e);
                 }
+            }
+        }
+
+        if (restorePortableAssets && factSheetId != null && analysisAssets != null) {
+            graph.factSheetId(factSheetId).graphId("factsheet_" + factSheetId);
+            try {
+                analysisAssets.replaceStrict(factSheetId, graph);
+            } catch (IOException e) {
+                throw new IllegalStateException("Could not persist unified analysis assets", e);
             }
         }
 
@@ -391,15 +843,156 @@ public class UnifiedGraphBridge {
         return new ImportSummary(createdNodes.size(), edges, appliedEmbeddings, atoms, published);
     }
 
-    private static void validateImportGraph(UnifiedGraph graph) {
+    private ImportPlan prepareImportPlan(UnifiedGraph graph) {
         java.util.Set<String> entityIds = graph.entities().stream()
                 .map(GraphEntity::id).collect(java.util.stream.Collectors.toSet());
+        List<GraphEntity> entities = new ArrayList<>(graph.entities());
+        if (entityIds.size() != entities.size()) {
+            throw new IllegalArgumentException("Unified graph contains duplicate entity IDs");
+        }
+
+        List<KnowledgeGraphService.NodeSpec> nodeSpecs = new ArrayList<>(entities.size());
+        for (GraphEntity entity : entities) {
+            Map<String, Object> store = storeMap(entity.attributes().get("kompile.store"));
+            Map<String, Object> metadata = storeMap(store.get("metadata"));
+            metadata = metadata.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(metadata);
+            metadata.remove(KnowledgeGraphService.NODE_RESTORE_STATE_KEY);
+            metadata.put(KnowledgeGraphService.NODE_RESTORE_STATE_KEY, new LinkedHashMap<>(store));
+            metadata.put("entity_type", entity.type());
+            metadata.put("unifiedGraphEntityId", entity.id());
+            if (!entity.tags().isEmpty()) metadata.put("tags", List.copyOf(entity.tags()));
+            metadata.put("weight", entity.weight());
+            metadata.put("confidence", entity.confidence());
+            if (entity.timestamp() != null) metadata.put("occurredAt", entity.timestamp().toString());
+            NodeLevel level = parseNodeLevel(stringValue(store.get("nodeType"), null));
+            String externalId = stringValue(store.get("externalId"), entity.id());
+            String description = stringValue(store.get("description"), null);
+            nodeSpecs.add(new KnowledgeGraphService.NodeSpec(
+                    level, externalId,
+                    entity.label() == null || entity.label().isBlank() ? entity.id() : entity.label(),
+                    description, metadata));
+        }
+
+        List<PreparedRelation> relations = new ArrayList<>();
         for (GraphRelation relation : graph.relations()) {
             if (!entityIds.contains(relation.sourceId()) || !entityIds.contains(relation.targetId())) {
                 throw new IllegalArgumentException("Unified graph relation " + relation.id()
                         + " references a missing endpoint");
             }
+            Map<String, Object> store = storeMap(relation.attributes().get("kompile.store"));
+            EdgeType edgeType = parseEdgeType(stringValue(store.get("edgeType"), relation.type()));
+            String relationType = stringValue(store.get("relationType"), relation.type());
+            String description = stringValue(store.get("description"),
+                    relation.stringAttribute("description"));
+            relations.add(new PreparedRelation(
+                    relation.sourceId(), relation.targetId(), edgeType, relationType,
+                    relation.weight(), description, edgeRestoreMetadata(store),
+                    parseEdgeProvenance(store.get("provenanceType"))));
         }
+        return new ImportPlan(List.copyOf(entities), List.copyOf(nodeSpecs), List.copyOf(relations));
+    }
+
+    private void validateImportTarget(Long factSheetId, UnifiedGraph graph) {
+        if (importTargetValidators == null) return;
+        for (UnifiedGraphImportTargetValidator validator : importTargetValidators) {
+            validator.validateTarget(factSheetId, graph);
+        }
+    }
+
+    private void validateImportArtifacts(Long factSheetId, UnifiedGraph graph) {
+        List<UnifiedGraphArtifactImporter> importers = orderedArtifactImporters();
+        validateManagedArtifactOwnership(graph, importers);
+        for (UnifiedGraphArtifactImporter importer : importers) {
+            try {
+                importer.validateArtifacts(factSheetId, graph);
+            } catch (RuntimeException e) {
+                throw new IllegalArgumentException("Unified graph artifact preflight failed for "
+                        + importer.getClass().getName(), e);
+            }
+        }
+    }
+
+    private static void validateManagedArtifactOwnership(
+            UnifiedGraph graph, List<UnifiedGraphArtifactImporter> importers) {
+        if (graph == null || graph.artifacts().isEmpty()) return;
+        List<String> claimedPrefixes = importers.stream()
+                .flatMap(importer -> Optional.ofNullable(importer.managedArtifactPrefixes())
+                        .orElse(Set.of()).stream())
+                .filter(prefix -> prefix != null && !prefix.isBlank())
+                .toList();
+        for (String artifact : graph.artifacts().keySet()) {
+            boolean reserved = RESERVED_MANAGED_ARTIFACT_PREFIXES.stream()
+                    .anyMatch(artifact::startsWith);
+            boolean claimed = claimedPrefixes.stream().anyMatch(artifact::startsWith);
+            if (reserved && !claimed) {
+                throw new IllegalArgumentException(
+                        "No managed importer claims reserved .kgraph artifact: " + artifact);
+            }
+        }
+    }
+
+    private List<PreparedArtifact> prepareArtifactImports(
+            Long factSheetId, UnifiedGraph incoming, UnifiedGraph previous) {
+        List<UnifiedGraphArtifactImporter> importers = orderedArtifactImporters();
+        if (importers.isEmpty()) return List.of();
+        List<PreparedArtifact> prepared = new ArrayList<>(importers.size());
+        for (UnifiedGraphArtifactImporter importer : importers) {
+            try {
+                if (!importer.supportsExactRollback()) {
+                    throw new IllegalStateException("Artifact importer does not support exact rollback");
+                }
+                UnifiedGraphArtifactImporter.PreparedImport transaction =
+                        importer.prepareArtifacts(factSheetId, incoming, previous);
+                if (transaction == null) {
+                    throw new IllegalStateException("Artifact importer returned a null prepared transaction");
+                }
+                prepared.add(new PreparedArtifact(importer, transaction));
+            } catch (RuntimeException e) {
+                throw new IllegalArgumentException("Unified graph artifact preparation failed for "
+                        + importer.getClass().getName(), e);
+            }
+        }
+        return prepared;
+    }
+
+    private static void rollbackArtifacts(List<PreparedArtifact> prepared, RuntimeException failure) {
+        for (int i = prepared.size() - 1; i >= 0; i--) {
+            PreparedArtifact artifact = prepared.get(i);
+            if (!artifact.attempted) continue;
+            try {
+                artifact.transaction.rollback();
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+        }
+    }
+
+    private List<UnifiedGraphArtifactImporter> orderedArtifactImporters() {
+        if (artifactImporters == null || artifactImporters.isEmpty()) return List.of();
+        List<UnifiedGraphArtifactImporter> ordered = artifactImporters.stream()
+                .sorted(Comparator.comparingInt(UnifiedGraphArtifactImporter::order)
+                        .thenComparing(UnifiedGraphArtifactImporter::participantId))
+                .toList();
+        Set<String> ids = new HashSet<>();
+        for (UnifiedGraphArtifactImporter importer : ordered) {
+            String id = importer.participantId();
+            if (id == null || id.isBlank() || !ids.add(id)) {
+                throw new IllegalArgumentException("Duplicate or blank unified graph import participant: " + id);
+            }
+        }
+        return ordered;
+    }
+
+    private List<ReentrantLock> acquireImportLocks(Set<Long> factSheetIds) {
+        List<ReentrantLock> locks = factSheetIds.stream().sorted()
+                .map(id -> importLocks.computeIfAbsent(id, ignored -> new ReentrantLock()))
+                .toList();
+        for (ReentrantLock lock : locks) lock.lock();
+        return locks;
+    }
+
+    private static void releaseImportLocks(List<ReentrantLock> locks) {
+        for (int i = locks.size() - 1; i >= 0; i--) locks.get(i).unlock();
     }
 
     /** Summary used by hybrid graph tools without exposing the asset-store implementation. */

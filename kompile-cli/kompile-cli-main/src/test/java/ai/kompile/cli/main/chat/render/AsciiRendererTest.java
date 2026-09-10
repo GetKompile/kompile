@@ -353,7 +353,8 @@ class AsciiRendererTest {
         @Test
         void codeBlock() {
             String result = renderer.renderMarkdown("```java\nint x = 1;\n```");
-            assertTrue(result.contains("int x = 1"));
+            // Content may carry inline syntax styling — compare visible text
+            assertTrue(AsciiRenderer.stripAnsi(result).contains("int x = 1"));
             assertTrue(result.contains("java"), "Should show language label");
             assertTrue(result.contains("╭") || result.contains("+"),
                     "Code block should have border");
@@ -443,8 +444,9 @@ class AsciiRendererTest {
         @Test
         void codeBlockWithLanguage() {
             String result = renderer.renderCodeBlock("int x = 1;\nint y = 2;", "java");
-            assertTrue(result.contains("int x = 1"));
-            assertTrue(result.contains("int y = 2"));
+            // Keywords are syntax-styled under ANSI — compare visible text
+            assertTrue(AsciiRenderer.stripAnsi(result).contains("int x = 1"));
+            assertTrue(AsciiRenderer.stripAnsi(result).contains("int y = 2"));
             assertTrue(result.contains("java"), "Should show language");
             assertTrue(result.contains("1"), "Should have line numbers");
             assertTrue(result.contains("2"), "Should have line numbers");
@@ -476,6 +478,46 @@ class AsciiRendererTest {
             String longLine = "x".repeat(200);
             String result = renderer.renderCodeBlock(longLine, null);
             assertTrue(result.contains("…"), "Long line should be truncated with ellipsis");
+        }
+
+        @Test
+        void codeBlockHighlightsKeywordsWhenAnsi() {
+            String code = "public class Foo {\n    int x = 1;\n}";
+            String result = renderer.renderCodeBlock(code, "java");
+            // ANSI-enabled renderer: keywords should carry a bold-blue SGR span
+            assertTrue(result.contains("\033[1;34m"), "Java keyword should be styled when ANSI on");
+            assertTrue(result.contains("Foo"), "Content must survive highlighting");
+            // Box borders stay aligned: every content row has identical visible length
+        }
+
+        @Test
+        void codeBlockUnknownLanguageNotStyled() {
+            String result = renderer.renderCodeBlock("plain text here", "brainfuck");
+            assertFalse(result.contains("\033[1;34m"),
+                    "Unrecognized fence language must not be styled");
+        }
+
+        @Test
+        void codeBlockHighlightingPreservesVisibleWidth() {
+            String code = "int value = 42;";
+            String ansiResult = renderer.renderCodeBlock(code, "c");
+            String plainResult = plainRenderer.renderCodeBlock(code, "c");
+            String[] ansiLines = ansiResult.split("\n", -1);
+            String[] plainLines = plainResult.split("\n", -1);
+            assertEquals(plainLines.length, ansiLines.length, "Same line count");
+            for (int i = 0; i < ansiLines.length; i++) {
+                assertEquals(AsciiRenderer.stripAnsi(plainLines[i]).length(),
+                        AsciiRenderer.stripAnsi(ansiLines[i]).length(),
+                        "Row " + i + " visible width must match unhighlighted output");
+            }
+        }
+
+        @Test
+        void codeBlockNoAnsiLeavesTextUntouched() {
+            String code = "int value = 42;";
+            String result = plainRenderer.renderCodeBlock(code, "java");
+            assertFalse(result.contains("\033[1;34m"), "Plain terminal must get no keyword styles");
+            assertTrue(result.contains("int value = 42;"));
         }
     }
 
@@ -592,7 +634,8 @@ class AsciiRendererTest {
             String result = renderer.renderFileContent("int x = 1;\nint y = 2;",
                     "Foo.java", 1, null);
             assertTrue(result.contains("Foo.java"), "Should show filename");
-            assertTrue(result.contains("int x = 1"), "Should show content");
+            // .java files are syntax-highlighted — compare visible text
+            assertTrue(AsciiRenderer.stripAnsi(result).contains("int x = 1"), "Should show content");
             assertTrue(result.contains("1"), "Should show line numbers");
         }
 

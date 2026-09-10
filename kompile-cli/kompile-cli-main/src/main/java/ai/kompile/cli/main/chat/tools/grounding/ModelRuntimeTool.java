@@ -30,11 +30,11 @@ import java.util.Set;
 public final class ModelRuntimeTool implements CliTool {
     private static final Set<String> ACTIONS = Set.of("status", "bootstrap", "import", "convert", "optimize");
     private static final String[] OPTION_FIELDS = {
-            "autoBootstrap", "forceBootstrap", "localPath", "source", "repository",
-            "revision", "format", "type", "stagingExecutable", "stagingJar",
+            "forceBootstrap", "localPath", "source", "repository",
+            "revision", "format", "type",
             "onnxImporterExecutable", "onnxImporterJar",
             "modelExecutable", "modelJar", "outputPath", "profile", "maxIterations",
-            "quantizationType", "force", "createBackup", "dryRun", "selectedPasses",
+            "quantizationType", "weightDtype", "force", "createBackup", "dryRun", "selectedPasses",
             "servingExecutable", "servingJar", "javaExecutable", "heapSize",
             "timeoutMinutes"
     };
@@ -85,7 +85,6 @@ public final class ModelRuntimeTool implements CliTool {
 
         properties.putObject("modelId").put("type", "string")
                 .put("description", "Manifest, catalog, or registry model id; omitted selects the project's LLM default.");
-        properties.putObject("autoBootstrap").put("type", "boolean").put("default", true);
         properties.putObject("forceBootstrap").put("type", "boolean").put("default", false);
         properties.putObject("localPath").put("type", "string")
                 .put("description", "Existing local model file or directory. With import, this is consumed as the "
@@ -106,16 +105,16 @@ public final class ModelRuntimeTool implements CliTool {
         selectedPasses.put("description", "Explicit GraphOptimizer pass ids; overrides profile when supplied.");
         properties.putObject("maxIterations").put("type", "integer").put("default", 3);
         properties.putObject("quantizationType").put("type", "string");
+        properties.putObject("weightDtype").put("type", "string")
+                .put("description", "GGUF conversion weight storage dtype for action=convert on gguf/ggml inputs: "
+                        + "fp32, fp16, bf16, fp8, fp8_e5m2, int8, int4. Default fp16 dense; "
+                        + "int4/int8 keep GGUF-packed weights for runtime-quantized matmul.");
         properties.putObject("force").put("type", "boolean").put("default", false);
         properties.putObject("createBackup").put("type", "boolean").put("default", true);
         properties.putObject("dryRun").put("type", "boolean").put("default", false);
         properties.putObject("type").put("type", "string")
                 .put("description", "Registry model type such as llm_ggml, encoder, or vlm_pipeline.");
 
-        properties.putObject("stagingExecutable").put("type", "string")
-                .put("description", "Deprecated for model_runtime; scale-out staging is a separate lifecycle.");
-        properties.putObject("stagingJar").put("type", "string")
-                .put("description", "Deprecated for model_runtime; scale-out staging is a separate lifecycle.");
         properties.putObject("onnxImporterExecutable").put("type", "string")
                 .put("description", "Standalone native ONNX-to-SameDiff importer override.");
         properties.putObject("onnxImporterJar").put("type", "string")

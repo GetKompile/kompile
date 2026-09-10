@@ -25,6 +25,10 @@ class EnforcerConfigTest {
         config.setBannedCommands(List.of("rm -rf", "git push --force"));
         config.setDiffPatternRules(List.of("System.exit(", "BAN_DIFF_REGEX: eval\\("));
         config.setPrimaryLanguage("typescript");
+        config.setWorkflowMode("enforced");
+        config.setWorkflowRequiredSkills(List.of("kompile-orchestrator", "test"));
+        config.setWorkflowRequirePlanBeforeMutation(true);
+        config.setWorkflowMaxCorrections(4);
 
         config.save(tempDir);
         assertTrue(EnforcerConfig.exists(tempDir));
@@ -38,6 +42,11 @@ class EnforcerConfigTest {
         assertEquals(List.of("rm -rf", "git push --force"), loaded.getBannedCommands());
         assertEquals(2, loaded.getDiffPatternRules().size());
         assertEquals("typescript", loaded.getPrimaryLanguage());
+        assertEquals("enforced", loaded.getWorkflowMode());
+        assertEquals(List.of("kompile-orchestrator", "test"),
+                loaded.getWorkflowRequiredSkills());
+        assertTrue(loaded.isWorkflowRequirePlanBeforeMutation());
+        assertEquals(4, loaded.getWorkflowMaxCorrections());
     }
 
     @Test
@@ -112,6 +121,11 @@ class EnforcerConfigTest {
         assertTrue(config.isAutoRollbackOnViolation());
         assertEquals(168, config.getArchiveRetentionHours());
         assertEquals("java", config.getPrimaryLanguage());
+        assertEquals("off", config.getWorkflowMode());
+        assertTrue(config.getWorkflowRequiredSkills().isEmpty());
+        assertTrue(config.isWorkflowRequirePlanBeforeMutation());
+        assertEquals(2, config.getWorkflowMaxCorrections());
+        assertFalse(config.isWorkflowEnabled());
     }
 
     @Test

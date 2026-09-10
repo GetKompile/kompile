@@ -68,6 +68,18 @@ public interface ProcessEngineService {
      */
     OntologySchema updateOntology(String id, OntologySchema schema);
 
+    /** Restore an exact portable ontology snapshot, preserving ID and version. */
+    OntologySchema restoreOntologySchema(OntologySchema schema);
+
+    /** Internal portability rollback seam: remove one exact ontology snapshot. */
+    default void removeOntologySchemaSnapshot(String id, int version) {
+        throw new UnsupportedOperationException("Ontology snapshot removal is not supported");
+    }
+
+    default boolean supportsOntologySnapshotRemoval() {
+        return false;
+    }
+
     /**
      * Validates a data map against the rules defined for a specific entity type
      * in the given ontology version.
@@ -122,6 +134,16 @@ public interface ProcessEngineService {
      * <p>This is for portable artifact import, not the normal user-facing create/revise flow.</p>
      */
     ProcessDefinition restoreProcessDefinition(ProcessDefinition definition);
+
+    /** Internal portability rollback seam: remove one exact process-definition snapshot. */
+    default void removeProcessDefinitionSnapshot(String id, int version) {
+        throw new UnsupportedOperationException("Process definition snapshot removal is not supported");
+    }
+
+    /** Whether exact snapshot removal is available for prepared artifact rollback. */
+    default boolean supportsProcessDefinitionSnapshotRemoval() {
+        return false;
+    }
 
     /**
      * Transitions a process definition from IN_REVIEW to APPROVED.

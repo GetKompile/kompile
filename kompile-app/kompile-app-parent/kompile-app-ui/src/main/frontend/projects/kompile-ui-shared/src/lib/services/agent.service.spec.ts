@@ -135,6 +135,54 @@ describe('AgentService', () => {
     });
   });
 
+  describe('getChatHarnessAgents()', () => {
+    it('maps CLI harness personas and forwards project/refresh selectors', () => {
+      service.getChatHarnessAgents(true, '/workspace/project').subscribe(agents => {
+        expect(agents.length).toBe(2);
+        expect(agents[0].name).toBe('coder');
+        expect(agents[0].agentType).toBe('HARNESS');
+        expect(agents[0].modelName).toBe('gpt-test');
+        expect(agents[0].supportsVision).toBeTrue();
+        expect(agents[0].skipPermissions).toBeFalse();
+        expect(agents[1].name).toBe('role:reviewer');
+        expect(service.getSelectedAgent()?.name).toBe('coder');
+      });
+
+      const req = httpMock.expectOne(r => r.url.endsWith('/agents/chat/capabilities'));
+      expect(req.request.method).toBe('GET');
+      expect(req.request.params.get('refresh')).toBe('true');
+      expect(req.request.params.get('workingDirectory')).toBe('/workspace/project');
+      req.flush({
+        engine: 'kompile-cli-main',
+        available: true,
+        status: 'ready',
+        provider: 'custom',
+        model: 'gpt-test',
+        chatMode: 'standard',
+        contextWindow: 8192,
+        maxOutputTokens: 1024,
+        inputBudgetTokens: 6144,
+        compactTriggerRatio: 0.85,
+        memoryEnabled: true,
+        ragEnabled: false,
+        workflowEnabled: true,
+        attachmentsSupported: true,
+        personas: [
+          {
+            name: 'coder', displayName: 'Coder', description: 'Codes',
+            selectorType: 'agent', selectorValue: 'coder', defaultPersona: true,
+            custom: false, available: true
+          },
+          {
+            name: 'role:reviewer', displayName: 'Reviewer', description: 'Reviews',
+            selectorType: 'role', selectorValue: 'reviewer', defaultPersona: false,
+            custom: false, available: true
+          }
+        ]
+      });
+    });
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // 2. getAvailableAgents()
   // ─────────────────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
+import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
 import org.eclipse.deeplearning4j.llm.generation.sampling.ModelSamplingDefaults.GenerationMode;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
@@ -68,6 +69,29 @@ class SameDiffLanguageModelImplTest {
                 SameDiffLanguageModelImpl.modelLoadPeakBytes(7_527_300_352L, false));
         assertThrows(ArithmeticException.class,
                 () -> SameDiffLanguageModelImpl.modelLoadPeakBytes(Long.MAX_VALUE, true));
+    }
+
+    @Test
+    void prefixCacheOptionsAreBoundedAndRequireStaticKv() {
+        SameDiffLanguageModelImpl.PrefixCacheOptions options =
+                SameDiffLanguageModelImpl.prefixCacheOptions(
+                        Map.of("prefixCacheEnabled", true,
+                                "prefixCacheMaxBytes", 268_435_456L,
+                                "prefixCacheBlockSize", 32),
+                        KvCacheStrategy.STATIC);
+        assertTrue(options.enabled());
+        assertEquals(268_435_456L, options.maxBytes());
+        assertEquals(32, options.blockSize());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.prefixCacheOptions(
+                        Map.of("prefixCacheEnabled", true), KvCacheStrategy.PAGED));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.prefixCacheOptions(
+                        Map.of("prefixCacheMaxBytes", -1), KvCacheStrategy.STATIC));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.prefixCacheOptions(
+                        Map.of("prefixCacheBlockSize", -1), KvCacheStrategy.STATIC));
     }
 
     // -- LanguageModel contract --

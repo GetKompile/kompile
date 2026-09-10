@@ -40,11 +40,22 @@ source "${_KOMPILE_COMMON_DIR}/path-normalization.sh"
 
 # PowerShell/Python may provide a native Windows root. Normalize it before any
 # source, cd, git, or filesystem operation.
+_KOMPILE_ROOT_EXPLICIT=0
 if [ -n "${KOMPILE_ROOT:-}" ]; then
   KOMPILE_ROOT="$(kompile_path_to_posix "${KOMPILE_ROOT}")"
+  _KOMPILE_ROOT_EXPLICIT=1
 else
   KOMPILE_ROOT="$(cd "${_KOMPILE_COMMON_DIR}/.." && pwd)"
 fi
+# Distributions ship these scripts under <home>/build-scripts, where the parent
+# directory is not a source checkout. Fall back to the canonical checkout
+# location so the dev lanes and platform rebuilds resolve the same sources.
+# An explicit KOMPILE_ROOT from the caller always wins.
+if [ "${_KOMPILE_ROOT_EXPLICIT}" -ne 1 ] && [ ! -f "${KOMPILE_ROOT}/pom.xml" ] \
+    && [ -f "${HOME}/Documents/GitHub/kompile/pom.xml" ]; then
+  KOMPILE_ROOT="${HOME}/Documents/GitHub/kompile"
+fi
+unset _KOMPILE_ROOT_EXPLICIT
 
 # Clone branch defaults (existing source checkouts are never switched)
 DL4J_BRANCH="${DL4J_BRANCH:-master}"
@@ -333,6 +344,9 @@ KOMPILE_PLATFORMS=(
   "windows-x86_64-cuda-12.9-compile"
   "linux-x86_64-cuda-12.9-zluda"
   "windows-x86_64-cuda-12.9-zluda"
+  "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4"
+  "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4"
+  "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0"
   "linux-x86_64-vulkan"
   "linux-x86_64-vulkan-compile"
   "linux-x86_64-hexagon"
@@ -409,6 +423,7 @@ kompile_native_image_version() {
 _resolve_backend_from_platform() {
   local platform="$1" backend_type cuda_version backend_profile
   case "$platform" in
+    *cuda-12.9-zluda-rocm-*) backend_type="cuda"; cuda_version="12.9"; backend_profile="${platform##*cuda-12.9-}" ;;
     *cuda-12.9-zluda)  backend_type="cuda"; cuda_version="12.9"; backend_profile="zluda" ;;
     *cuda-12.9-cudnn)  backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-cudnn" ;;
     *cuda-12.9-compile) backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-compile" ;;
@@ -455,11 +470,15 @@ _resolve_javacpp_platform() {
 # lanes retain their full release identity; accelerator helpers are represented
 # as suffixes on their base JavaCPP platform.
 _resolve_sdk_classifier() {
-  local platform="$1" base
+  local platform="$1" base rocm_version
   base="$(_resolve_javacpp_platform "${platform}")" || return 1
   case "${platform}" in
     *cuda*-cudnn) echo "${base}-cudnn" ;;
     *cuda*-compile) echo "${base}-compile" ;;
+    *cuda*-zluda-rocm-*)
+      rocm_version="${platform##*-zluda-rocm-}"
+      echo "${base}-zluda-rocm-${rocm_version}"
+      ;;
     *cuda*-zluda) echo "${base}-zluda" ;;
     *cuda*) echo "${base}" ;;
     *) echo "${platform}" ;;
@@ -584,6 +603,9 @@ kompile_collect_sdx_bindings() {
   mkdir -p "${dest}/jars"
   local -a sdk_artifact_ids
   case "${platform}" in
+    *zluda-rocm-*)
+      sdk_artifact_ids=(nd4j-zluda-12.9 nd4j-zluda-12.9-platform nd4j-cuda-12.9-preset nd4j-cuda-backend-common nd4j-presets-common)
+      ;;
     *zluda*)
       if [[ "${platform}" == windows-* ]]; then
         sdk_artifact_ids=(nd4j-cuda-12.9 nd4j-cuda-12.9-preset)
@@ -610,7 +632,13 @@ kompile_collect_sdx_bindings() {
     *) log "ERROR: no release-plan artifact set for ${platform}"; return 1 ;;
   esac
   local namespace artifact_id artifact_dir f
-  for namespace in org/eclipse/deeplearning4j org/nd4j; do
+  local -a sdk_namespaces=(org/eclipse/deeplearning4j org/nd4j)
+  # Version-qualified ZLUDA coordinates exist only in the current DL4J group.
+  # Never let a stale legacy org/nd4j jar overwrite the hydrated current jar.
+  case "${platform}" in
+    *zluda-rocm-*) sdk_namespaces=(org/eclipse/deeplearning4j) ;;
+  esac
+  for namespace in "${sdk_namespaces[@]}"; do
     for artifact_id in "${sdk_artifact_ids[@]}"; do
       artifact_dir="${maven_repository}/${namespace}/${artifact_id}/${ND4J_VERSION}"
       [ -d "${artifact_dir}" ] || continue
@@ -641,6 +669,7 @@ kompile_collect_sdx_bindings() {
     cuda-12.6*) backend_artifact=nd4j-cuda-12.6 ;;
     cuda-12.9*) backend_artifact=nd4j-cuda-12.9 ;;
     zluda) backend_artifact=nd4j-zluda ;;
+    zluda-rocm-*) backend_artifact=nd4j-zluda-12.9 ;;
     vulkan*) backend_artifact=nd4j-vulkan ;;
     hexagon) backend_artifact=nd4j-hexagon ;;
     tpu) backend_artifact=nd4j-tpu ;;
@@ -1103,7 +1132,143 @@ kompile_native_remote_publish() {
   log "Published native image ${target} to durable cache ${remote_image}"
 }
 
+# Local retention counts verified generations, including the current key. Unknown
+# state is preserved even when that means exceeding this bound. Remote storage is
+# deliberately outside the pruning contract.
+kompile_native_cache_safe_path() {
+  local path="$1"
+  [[ -n "$path" && "/$path/" != */../* ]] || return 1
+  while [[ "$path" != / && "$path" != . ]]; do
+    [[ ! -L "$path" ]] || return 1
+    path="$(dirname -- "$path")"
+  done
+}
+
+kompile_native_cache_owned_file() {
+  local links
+  [[ -f "$1" && ! -L "$1" && -O "$1" ]] || return 1
+  links="$(stat -c %h -- "$1" 2>/dev/null || stat -f %l "$1" 2>/dev/null)" || return 1
+  [[ "$links" == 1 ]]
+}
+
+# Only these three regular, owned files belong to an entry. Validate the receipt
+# against its directory key and the actual bytes, not the caller's current key.
+kompile_native_cache_validate_entry() (
+  local entry="$1" name="$2" child
+  [[ -d "$entry" && ! -L "$entry" && -O "$entry" ]] || return 1
+  shopt -s nullglob dotglob
+  for child in "$entry"/*; do
+    case "${child##*/}" in
+      "$name"|"$name.native-cache"|.last-used) ;;
+      *) return 1 ;;
+    esac
+    kompile_native_cache_owned_file "$child" || return 1
+  done
+  [[ -x "$entry/$name" ]] || return 1
+  kompile_native_validate_cache_receipt "$entry/$name.native-cache" "${entry##*/}" || return 1
+  [[ "$(kompile_sha256_file "$entry/$name")" == "$KOMPILE_NATIVE_RECEIPT_CHECKSUM" ]]
+)
+
+# Called only with the target lock held. Plan all victims before deleting any;
+# never recurse, follow symlinks, or remove a file we do not recognize and own.
+kompile_native_cache_prune_unlocked() (
+  local bucket="$1" protected="$2" name="$3" entry marker oldest oldest_marker i excess
+  local retention="${KOMPILE_NATIVE_CACHE_RETENTION:-2}"
+  local -a entries=() victims=()
+  [[ "$retention" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+  shopt -s nullglob dotglob
+  for entry in "$bucket"/*; do
+    [[ "${entry##*/}" =~ ^[0-9a-f]{64}$ ]] || continue
+    kompile_native_cache_validate_entry "$entry" "$name" || return 1
+    entries+=("$entry")
+  done
+  excess=$((${#entries[@]} - retention))
+  while (( excess > 0 )); do
+    oldest=-1
+    for i in "${!entries[@]}"; do
+      entry="${entries[i]}"
+      [[ "${entry##*/}" != "$protected" ]] || continue
+      marker="$entry/.last-used"
+      [[ -e "$marker" ]] || marker="$entry/$name"
+      if (( oldest < 0 )) || [[ "$marker" -ot "$oldest_marker" ]]; then
+        oldest="$i"
+        oldest_marker="$marker"
+      fi
+    done
+    (( oldest >= 0 )) || return 1
+    victims+=("${entries[oldest]}")
+    unset 'entries[oldest]'
+    excess=$((excess - 1))
+  done
+  for entry in "${victims[@]}"; do
+    rm -f -- "$entry/$name" "$entry/$name.native-cache" "$entry/.last-used" || return 1
+    rmdir -- "$entry" || return 1
+  done
+)
+
 kompile_restore_cached_native_image() {
+  kompile_native_cache_locked restore "$@"
+}
+
+kompile_publish_cached_native_image() {
+  kompile_native_cache_locked publish "$@"
+}
+
+# Subshell owns the descriptor; publish, restore, touch and prune share one lock.
+kompile_native_cache_locked() (
+  local operation="$1"; shift
+  local target="$1" image="$2" key="$3" name bucket entry lock_fd
+  local KOMPILE_NATIVE_CACHE_TARGET_ONLY=0
+  name="$(basename -- "$image")"
+  [[ "$target" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ &&
+     "$name" =~ ^[A-Za-z0-9_-][A-Za-z0-9._+-]*$ &&
+     "$key" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${KOMPILE_NATIVE_CACHE_RETENTION:-2}" =~ ^[1-9][0-9]{0,8}$ ]] || {
+    log 'WARNING: KOMPILE_NATIVE_CACHE_RETENTION must be a positive integer (at most 9 digits)'
+    return 1
+  }
+  # No unlocked shared-cache access, but keep the normal target tier usable.
+  if ! command -v flock >/dev/null 2>&1; then
+    [[ "$operation" == restore ]] || return 1
+    KOMPILE_NATIVE_CACHE_TARGET_ONLY=1
+    kompile_native_restore_unlocked "$@"
+    return $?
+  fi
+  bucket="${KOMPILE_NATIVE_CACHE_DIR}/$target"
+  entry="$bucket/$key"
+  kompile_native_cache_safe_path "$entry" || return 1
+  mkdir -p -- "$bucket" || return 1
+  [[ -O "$bucket" ]] || return 1
+  if [[ -e "$bucket/.lock" || -L "$bucket/.lock" ]]; then
+    kompile_native_cache_owned_file "$bucket/.lock" || return 1
+  fi
+  exec {lock_fd}>>"$bucket/.lock" || return 1
+  flock -w 10 "$lock_fd" || return 1
+  kompile_native_cache_safe_path "$entry" || return 1
+  # Do not overwrite incomplete, foreign, corrupt or linked current entries.
+  if [[ -e "$entry" ]]; then
+    # A failed remote lookup can leave an empty directory. It is safe to fill,
+    # unlike an incomplete or corrupt entry containing unverified files.
+    local -a members=()
+    shopt -s nullglob dotglob
+    members=("$entry"/*)
+    if (( ${#members[@]} > 0 )) && ! kompile_native_cache_validate_entry "$entry" "$name"; then
+      [[ "$operation" == restore ]] || return 1
+      KOMPILE_NATIVE_CACHE_TARGET_ONLY=1
+      kompile_native_restore_unlocked "$@"
+      return $?
+    fi
+  fi
+  kompile_native_${operation}_unlocked "$@" || return $?
+  if [[ -e "$entry" ]]; then
+    kompile_native_cache_validate_entry "$entry" "$name" || return 1
+    touch -- "$entry/.last-used" || return 1
+    kompile_native_cache_prune_unlocked "$bucket" "$key" "$name" ||
+      log "WARNING: native cache retention skipped for unsafe/incomplete bucket $bucket"
+  fi
+)
+
+kompile_native_restore_unlocked() {
   local target="$1"
   local image_path="$2"
   local aot_fingerprint="$3"
@@ -1122,6 +1287,7 @@ kompile_restore_cached_native_image() {
     fi
   fi
 
+  [[ "${KOMPILE_NATIVE_CACHE_TARGET_ONLY:-0}" != 1 ]] || return 1
   local cache_dir="${KOMPILE_NATIVE_CACHE_DIR}/${target}/${aot_fingerprint}"
   local cached_image="${cache_dir}/$(basename "${image_path}")"
   local cached_metadata="${cached_image}.native-cache"
@@ -1149,7 +1315,7 @@ kompile_restore_cached_native_image() {
   log "CACHE HIT: restored native image ${target} from ${cache_dir} (runtime ${runtime_fingerprint})"
 }
 
-kompile_publish_cached_native_image() {
+kompile_native_publish_unlocked() {
   local target="$1"
   local image_path="$2"
   local aot_fingerprint="$3"

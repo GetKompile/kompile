@@ -185,7 +185,7 @@ export class ToolGatewaySettingsComponent implements OnInit, OnDestroy {
       });
   }
 
-  // ── Rule management ─────────────────────────────��────────────
+  // ── Rule management ───────────────────────────────────────────────────────
 
   addToolPattern(): void {
     const pattern = this.newToolPattern.trim();

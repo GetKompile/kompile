@@ -18,9 +18,13 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.KompileServerConstants;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * Arguments passed to the LLM serving subprocess via JSON file.
@@ -67,10 +71,55 @@ public record ServingSubprocessArgs(
         // DSP / optimizer flags
         Boolean dspEnabled,
         Boolean optimizerEnabled,
-        Boolean optimizerFp16
+        Boolean optimizerFp16,
+
+        // Model/runtime knobs — null/0 = model-owned defaults. These mirror the opts
+        // SameDiffLanguageModelImpl reads (chatTemplate, KV/prefill/continuation) so the
+        // local serving path exposes the same controls the staging execution path has.
+        String chatTemplate,
+        String kvCacheType,
+        Integer maxKvCacheLength,
+        Integer maxPrefillLength,
+        Boolean continuationEnabled,
+        Integer continuationChunkTokens,
+        Boolean prefixCacheEnabled,
+        Long prefixCacheMaxBytes,
+        Integer prefixCacheBlockSize,
+
+        // Optional positive byte ceilings in logical visible-device order; null preserves limits.
+        List<Long> deviceMemoryLimitsBytes
 ) {
+    public ServingSubprocessArgs {
+        if (deviceMemoryLimitsBytes != null) {
+            if (deviceMemoryLimitsBytes.isEmpty()
+                    || deviceMemoryLimitsBytes.stream().anyMatch(limit -> limit == null || limit <= 0)) {
+                throw new IllegalArgumentException("deviceMemoryLimitsBytes must contain positive byte limits");
+            }
+            deviceMemoryLimitsBytes = List.copyOf(deviceMemoryLimitsBytes);
+        }
+    }
+
     public static ServingSubprocessArgs fromFile(Path path) throws IOException {
-        return SubprocessArgsIo.fromFile(path, ServingSubprocessArgs.class);
+        JsonNode root = SubprocessArgsIo.mapper().readerFor(JsonNode.class)
+                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .readValue(Files.readString(path));
+        if (root == null || !root.isObject()) {
+            throw new IOException("Serving args must be a JSON object");
+        }
+        // Validate the original JSON tokens before Jackson can coerce strings or
+        // truncate floating-point values while binding List<Long>.
+        JsonNode limits = root.get("deviceMemoryLimitsBytes");
+        if (limits != null && !limits.isNull()) {
+            if (!limits.isArray() || limits.isEmpty()) {
+                throw new IOException("deviceMemoryLimitsBytes must be a nonempty array");
+            }
+            for (JsonNode limit : limits) {
+                if (!limit.isIntegralNumber() || !limit.canConvertToLong() || limit.longValue() <= 0) {
+                    throw new IOException("deviceMemoryLimitsBytes must contain positive 64-bit integers");
+                }
+            }
+        }
+        return SubprocessArgsIo.mapper().treeToValue(root, ServingSubprocessArgs.class);
     }
 
     public Path writeToTempFile() throws IOException {
@@ -91,7 +140,9 @@ public record ServingSubprocessArgs(
                 80,
                 85, 90, 95,
                 256, null, null,
-                null, null, null
+                null, null, null,
+                null, null, null, null, null, null,
+                null, null, null, null
         );
     }
 }

@@ -17,7 +17,9 @@
 package ai.kompile.app.facts.repository;
 
 import ai.kompile.app.facts.domain.FactSheet;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -37,6 +39,14 @@ public interface FactSheetRepository extends JpaRepository<FactSheet, Long> {
      * Find a fact sheet by name.
      */
     Optional<FactSheet> findByName(String name);
+
+    /** Find a fact sheet by its stable portable identity. */
+    Optional<FactSheet> findByPortableId(String portableId);
+
+    /** Serialize lazy portable-identity backfill for legacy rows. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT f FROM FactSheet f WHERE f.id = :id")
+    Optional<FactSheet> findByIdForPortableIdentity(@Param("id") Long id);
 
     /**
      * Check if a fact sheet with the given name exists.

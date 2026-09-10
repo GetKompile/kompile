@@ -34,6 +34,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,11 +55,14 @@ import java.util.Map;
  *   <li>{@code type} = {@link DocumentSourceDescriptor.SourceType#GDRIVE}</li>
  *   <li>{@code pathOrUrl} = a single file id, OR a comma-separated list of file ids</li>
  *   <li>{@code metadata.fileIds} = alternative {@code List<String>} or comma-separated string of ids</li>
+ *   <li>{@code metadata.folderId} = when no explicit ids are given, load the file children of
+ *       this Drive folder instead (immediate children only, files only; recursive traversal is
+ *       the crawler's job). Optional {@code metadata.maxFiles} caps the listing (default 500).</li>
  *   <li>{@code metadata.accessToken} = optional OAuth access token override</li>
  * </ul>
  */
 @Component
-public class GoogleDriveLoaderImpl implements DocumentLoader {
+public class GoogleDriveLoaderImpl implements DocumentLoader, ai.kompile.core.loaders.FileDownloadingLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(GoogleDriveLoaderImpl.class);
 
@@ -66,6 +71,15 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
     private static final String GOOGLE_DOC_MIME_PREFIX = "application/vnd.google-apps.";
     private static final String OAUTH_PROVIDER_ID = "google";
     private static final long MAX_DOWNLOAD_BYTES = 64L * 1024L * 1024L; // 64 MiB hard cap per file
+
+    private static final String FOLDER_MIME = "application/vnd.google-apps.folder";
+    private static final String LIST_FIELDS = "nextPageToken,files(id,mimeType)";
+    private static final int DEFAULT_MAX_FOLDER_FILES = 500;
+
+    /** Drive API base; overridable for tests. */
+    protected String apiBase() {
+        return DRIVE_API_BASE;
+    }
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
@@ -89,6 +103,107 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
                 && sourceDescriptor.getType() == DocumentSourceDescriptor.SourceType.GDRIVE;
     }
 
+    /** Whether this provider delivers original files suitable for pipeline processing. */
+    public boolean downloadsOriginalFiles() {
+        return true;
+    }
+
+    /**
+     * Downloads the source's files as original bytes into {@code destination}, returning the
+     * list of written paths. Google Workspace documents are exported as PDF so downstream
+     * content-type pipelines (text extraction, VLM OCR, table-aware, ...) process them like
+     * any local file. This is the download step; processing is a pipeline decision.
+     */
+    public List<Path> downloadTo(DocumentSourceDescriptor sourceDescriptor, Path destination)
+            throws Exception {
+        String accessToken = resolveAccessToken(sourceDescriptor);
+        if (accessToken == null || accessToken.isEmpty()) {
+            throw new IllegalStateException(
+                    "No Google OAuth access token available. Connect the 'google' provider via the OAuth connections UI "
+                            + "or pass metadata.accessToken.");
+        }
+        List<String> fileIds = resolveFileIds(sourceDescriptor);
+        if (fileIds.isEmpty()) {
+            String folderId = metadataString(sourceDescriptor, "folderId");
+            if (folderId != null) {
+                fileIds = listFolderFileIds(folderId, accessToken, sourceDescriptor);
+            }
+        }
+        if (fileIds.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "No Google Drive file ids provided. Set pathOrUrl or metadata.fileIds to a "
+                            + "comma-separated list, or metadata.folderId to load a folder's files.");
+        }
+        Files.createDirectories(destination);
+        List<Path> written = new ArrayList<>();
+        for (String fileId : fileIds) {
+            try {
+                Path file = downloadOriginal(fileId, accessToken, destination);
+                if (file != null) {
+                    written.add(file);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to download Google Drive file {}: {}", fileId, e.getMessage());
+            }
+        }
+        return written;
+    }
+
+    /** Downloads one file as original bytes; Workspace docs export to PDF. */
+    private Path downloadOriginal(String fileId, String accessToken, Path destination)
+            throws Exception {
+        JsonNode meta = fetchFileMetadata(fileId, accessToken);
+        if (meta == null) {
+            return null;
+        }
+        String name = meta.path("name").asText(fileId);
+        String mimeType = meta.path("mimeType").asText("application/octet-stream");
+
+        URI uri;
+        String extension;
+        if (mimeType.startsWith(GOOGLE_DOC_MIME_PREFIX)) {
+            uri = URI.create(apiBase() + "/files/"
+                    + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
+                    + "/export?mimeType="
+                    + URLEncoder.encode("application/pdf", StandardCharsets.UTF_8));
+            extension = ".pdf";
+        } else {
+            uri = URI.create(apiBase() + "/files/"
+                    + URLEncoder.encode(fileId, StandardCharsets.UTF_8) + "?alt=media");
+            extension = extensionForName(name);
+        }
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofMinutes(2))
+                .header("Authorization", "Bearer " + accessToken)
+                .GET()
+                .build();
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() / 100 != 2) {
+            logger.warn("Google Drive download failed for {}: HTTP {}", fileId, response.statusCode());
+            return null;
+        }
+        Path target = uniqueDestination(destination, name, extension);
+        Files.write(target, response.body() == null ? new byte[0] : response.body());
+        return target;
+    }
+
+    private static String extensionForName(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 && dot < name.length() - 1 ? name.substring(dot) : "";
+    }
+
+    private static Path uniqueDestination(Path directory, String name, String extension) {
+        String base = extension.isEmpty() ? name : name.substring(0, name.length() - extension.length());
+        String sanitized = base.replaceAll("[^A-Za-z0-9._-]+", "_");
+        if (sanitized.isBlank()) sanitized = "file";
+        Path candidate = directory.resolve(sanitized + extension);
+        int suffix = 1;
+        while (Files.exists(candidate)) {
+            candidate = directory.resolve(sanitized + "-" + suffix++ + extension);
+        }
+        return candidate;
+    }
+
     @Override
     public List<Document> load(DocumentSourceDescriptor sourceDescriptor) throws Exception {
         if (!supports(sourceDescriptor)) {
@@ -104,8 +219,15 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
 
         List<String> fileIds = resolveFileIds(sourceDescriptor);
         if (fileIds.isEmpty()) {
+            String folderId = metadataString(sourceDescriptor, "folderId");
+            if (folderId != null) {
+                fileIds = listFolderFileIds(folderId, accessToken, sourceDescriptor);
+            }
+        }
+        if (fileIds.isEmpty()) {
             throw new IllegalArgumentException(
-                    "No Google Drive file ids provided. Set pathOrUrl to a comma-separated list or metadata.fileIds.");
+                    "No Google Drive file ids provided. Set pathOrUrl or metadata.fileIds to a "
+                            + "comma-separated list, or metadata.folderId to load a folder's files.");
         }
 
         List<Document> documents = new ArrayList<>();
@@ -170,7 +292,7 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
     }
 
     private JsonNode fetchFileMetadata(String fileId, String accessToken) throws Exception {
-        String url = DRIVE_API_BASE + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
+        String url = apiBase() + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
                 + "?fields=" + URLEncoder.encode(FILE_FIELDS, StandardCharsets.UTF_8);
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30))
@@ -187,7 +309,7 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
     }
 
     private String exportGoogleDoc(String fileId, String exportMime, String accessToken) throws Exception {
-        String url = DRIVE_API_BASE + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
+        String url = apiBase() + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
                 + "/export?mimeType=" + URLEncoder.encode(exportMime, StandardCharsets.UTF_8);
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofMinutes(2))
@@ -202,7 +324,7 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
     }
 
     private String downloadBinaryAsText(String fileId, String accessToken) throws Exception {
-        String url = DRIVE_API_BASE + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
+        String url = apiBase() + "/files/" + URLEncoder.encode(fileId, StandardCharsets.UTF_8)
                 + "?alt=media";
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofMinutes(2))
@@ -279,6 +401,75 @@ public class GoogleDriveLoaderImpl implements DocumentLoader {
             return splitIds(path);
         }
         return List.of();
+    }
+
+    private String metadataString(DocumentSourceDescriptor sourceDescriptor, String key) {
+        Map<String, Object> metadata = sourceDescriptor.getMetadata();
+        if (metadata == null) {
+            return null;
+        }
+        Object raw = metadata.get(key);
+        if (raw instanceof String s && !s.isBlank()) {
+            return s.trim();
+        }
+        return null;
+    }
+
+    /**
+     * Lists the immediate file children of a Drive folder (sub-folders are skipped; recursive
+     * traversal belongs to the crawler). Paginates until exhausted, capped at {@code maxFiles}.
+     */
+    private List<String> listFolderFileIds(
+            String folderId, String accessToken, DocumentSourceDescriptor sourceDescriptor)
+            throws Exception {
+        int maxFiles = DEFAULT_MAX_FOLDER_FILES;
+        Map<String, Object> metadata = sourceDescriptor.getMetadata();
+        if (metadata != null && metadata.get("maxFiles") instanceof Number number
+                && number.intValue() > 0) {
+            maxFiles = number.intValue();
+        }
+        List<String> ids = new ArrayList<>();
+        String pageToken = null;
+        do {
+            StringBuilder url = new StringBuilder(apiBase())
+                    .append("/files?q=")
+                    .append(URLEncoder.encode(
+                            "'" + folderId.replace("'", "\\'") + "' in parents and trashed=false",
+                            StandardCharsets.UTF_8))
+                    .append("&fields=").append(URLEncoder.encode(LIST_FIELDS, StandardCharsets.UTF_8))
+                    .append("&pageSize=200");
+            if (pageToken != null) {
+                url.append("&pageToken=")
+                        .append(URLEncoder.encode(pageToken, StandardCharsets.UTF_8));
+            }
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url.toString()))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Authorization", "Bearer " + accessToken)
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(
+                    request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() / 100 != 2) {
+                throw new IllegalStateException("Google Drive folder listing failed for "
+                        + folderId + ": HTTP " + response.statusCode());
+            }
+            JsonNode page = objectMapper.readTree(response.body());
+            for (JsonNode file : page.path("files")) {
+                if (FOLDER_MIME.equals(file.path("mimeType").asText(""))) {
+                    continue;
+                }
+                String id = file.path("id").asText(null);
+                if (id != null && !id.isBlank()) {
+                    ids.add(id);
+                    if (ids.size() >= maxFiles) {
+                        return ids;
+                    }
+                }
+            }
+            pageToken = page.path("nextPageToken").asText(null);
+        } while (pageToken != null && !pageToken.isBlank());
+        return ids;
     }
 
     private List<String> splitIds(String commaSeparated) {

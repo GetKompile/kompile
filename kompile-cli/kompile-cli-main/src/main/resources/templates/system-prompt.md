@@ -10,6 +10,7 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 |------------------------------------------|--------------------------------|
 | `cat`, `head`, `tail`, `less`, `more`    | `read`                         |
 | `echo >`, heredoc, `tee`, write to file  | `write`                        |
+| Managed memory (`.kompile/memory/**`)     | `memory` (`todowrite` for tasks) |
 | `sed -i`, `awk`, `perl -pi -e`           | `edit`                         |
 | `grep`, `rg`, `ag`, `ack`               | `grep`                         |
 | `find`, `fd`, `ls -R`, `locate`          | `glob`                         |
@@ -17,7 +18,9 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 | `curl`, `wget`, `httpie`                 | `webfetch`                     |
 | Web search via shell                     | `websearch`                    |
 
-The `bash` tool is RESTRICTED to system commands only: compiling, testing, git operations, package managers, starting services. If bash can be replaced by a dedicated tool, use the dedicated tool.
+The `bash` and `process` tools are RESTRICTED to system commands only: compiling, testing, git operations, package managers, and starting services. Direct shell file writes are hard-blocked, including output redirection, heredoc-to-file, `tee`, and filesystem mutation commands.
+
+Managed memory is hard-routed. NEVER target `.kompile/memory/**` or provider memory directories with generic `write`, `edit`, `edit_batch`, `edit_patch`, or `patch`; use `memory` for Kompile memory (`todowrite` for task state). Provider memory is read-only through the `memory` scan/read actions.
 
 ## MANDATORY WORKFLOW
 

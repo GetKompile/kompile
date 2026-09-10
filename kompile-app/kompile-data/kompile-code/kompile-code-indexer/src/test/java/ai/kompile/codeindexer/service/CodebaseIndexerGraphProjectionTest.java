@@ -16,6 +16,7 @@ import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.util.List;
@@ -44,6 +45,7 @@ class CodebaseIndexerGraphProjectionTest {
                 .build();
         when(relations.findByProjectIdAndTargetFqnIn(
                 "app", Set.of("sample.Target.run"))).thenReturn(List.of(incoming));
+        when(graph.createEdgesBatch(org.mockito.ArgumentMatchers.anyList())).thenReturn(1);
         CodebaseIndexer indexer = indexer(relations, graph);
 
         int created = indexer.reconnectIncomingRelations(
@@ -52,11 +54,18 @@ class CodebaseIndexerGraphProjectionTest {
                 Set.of("Target.java"),
                 Map.of(
                         "sample.Caller.call", "source-node",
-                        "sample.Target.run", "target-node"));
+                        "sample.Target.run", "target-node"),
+                42L);
 
         assertEquals(1, created);
-        verify(graph).createEdge(
-                "source-node", "target-node", EdgeType.SHARED_ENTITY, 1.0, "calls");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<KnowledgeGraphService.EdgeSpec>> specs = ArgumentCaptor.forClass(List.class);
+        verify(graph).createEdgesBatch(specs.capture());
+        assertEquals(1, specs.getValue().size());
+        assertEquals("source-node", specs.getValue().get(0).sourceNodeId());
+        assertEquals("target-node", specs.getValue().get(0).targetNodeId());
+        assertEquals(EdgeType.SHARED_ENTITY, specs.getValue().get(0).edgeType());
+        assertEquals(42L, specs.getValue().get(0).factSheetId());
     }
 
     @Test
@@ -81,7 +90,8 @@ class CodebaseIndexerGraphProjectionTest {
                 Set.of("Target.java"),
                 Map.of(
                         "sample.Target.start", "source-node",
-                        "sample.Target.run", "target-node"));
+                        "sample.Target.run", "target-node"),
+                42L);
 
         assertEquals(0, created);
         verifyNoInteractions(graph);

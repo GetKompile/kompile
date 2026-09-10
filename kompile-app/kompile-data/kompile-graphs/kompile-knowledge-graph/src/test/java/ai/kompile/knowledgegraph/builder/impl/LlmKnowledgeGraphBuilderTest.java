@@ -16,6 +16,8 @@
 package ai.kompile.knowledgegraph.builder.impl;
 
 import ai.kompile.core.graphbuilder.*;
+import ai.kompile.core.graphrag.agent.ExtractionLlmService;
+import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -168,15 +170,62 @@ class LlmKnowledgeGraphBuilderTest {
     }
 
     @Test
-    void buildFromChunksWithNoLlmReturnsEmpty() {
+    void buildFromChunksWithNoLlmFails() {
         List<RetrievedDoc> chunks = List.of(
                 new RetrievedDoc("c1", "Alice works at Acme Corp.", Map.of()));
-        List<ProposedTriple> result = builder.buildFromChunks(chunks,
-                new GraphBuildContext("job-1", 1L, "jpa"), null);
-        assertTrue(result.isEmpty());
+        assertThrows(IllegalStateException.class, () -> builder.buildFromChunks(chunks,
+                new GraphBuildContext("job-1", 1L, "jpa"), null));
     }
 
     // ─── buildFromChunks – with LLM ──────────────────────────────────────────
+
+    @Test
+    void selectedProviderAndModelAreUsedAndConfigIsRestored() {
+        var registry = mock(ExtractionLlmServiceRegistry.class);
+        var selected = mock(ExtractionLlmService.class);
+        builder.setLlmChat(llmChat);
+        builder.setExtractionLlmServices(registry);
+        when(registry.select("custom-provider", "exact-model")).thenReturn(selected);
+        when(selected.getId()).thenReturn("custom-provider");
+        when(selected.getEffectiveModel()).thenReturn("exact-model");
+        when(selected.complete(anyString())).thenReturn(VALID_JSON_RESPONSE);
+        BuilderConfig original = builder.getConfig();
+        var request = new BuilderConfig("custom-provider", "exact-model", null, null,
+                List.of(), List.of(), 0.0, false, 0.9, null, Map.of());
+        var chunks = List.of(new RetrievedDoc("c1", "Alice works at Acme Corp.", Map.of()));
+        var context = new GraphBuildContext("job-exact", 1L, "jpa");
+        assertFalse(builder.buildFromChunks(chunks, context, request, null).isEmpty());
+        assertSame(original, builder.getConfig());
+        verify(registry).select("custom-provider", "exact-model");
+        verifyNoInteractions(llmChat);
+
+        when(selected.complete(anyString())).thenThrow(new IllegalStateException("provider failed"));
+        assertThrows(IllegalStateException.class, () -> builder.buildFromChunks(chunks, context, request, null));
+        assertSame(original, builder.getConfig(), "Failed requests must not change the shared builder model");
+    }
+
+    @Test
+    void explicitProviderWithoutRegistryFailsRatherThanUsingDefaultChat() {
+        builder.setLlmChat(llmChat);
+        var request = new BuilderConfig("custom-provider", "exact-model", null, null,
+                List.of(), List.of(), 0.0, false, 0.9, null, Map.of());
+        assertThrows(IllegalStateException.class, () -> builder.buildFromChunks(
+                List.of(new RetrievedDoc("c1", "Text", Map.of())),
+                new GraphBuildContext("job-exact", 1L, "jpa"), request, null));
+        verifyNoInteractions(llmChat);
+    }
+
+    @Test
+    void registryDefaultWorksWithoutInjectedChat() {
+        var registry = mock(ExtractionLlmServiceRegistry.class);
+        var selected = mock(ExtractionLlmService.class);
+        builder.setExtractionLlmServices(registry);
+        when(registry.select(null, null)).thenReturn(selected);
+        when(selected.complete(anyString())).thenReturn(VALID_JSON_RESPONSE);
+        assertFalse(builder.buildFromChunks(List.of(new RetrievedDoc("c1", "Text", Map.of())),
+                new GraphBuildContext("job-default", 1L, "jpa"), null).isEmpty());
+        verify(registry).select(null, null);
+    }
 
     @Test
     void buildFromChunksCallsLlmAndReturnsProposals() {
@@ -194,7 +243,7 @@ class LlmKnowledgeGraphBuilderTest {
     }
 
     @Test
-    void buildFromChunksReturnsEmptyOnInvalidJson() {
+    void buildFromChunksRejectsInvalidJson() {
         builder.setLlmChat(llmChat);
         configureLlmMock("not valid json at all");
 
@@ -202,11 +251,8 @@ class LlmKnowledgeGraphBuilderTest {
 
         List<RetrievedDoc> chunks = List.of(
                 new RetrievedDoc("c1", "Alice works at Acme Corp.", Map.of()));
-        List<ProposedTriple> result = builder.buildFromChunks(chunks,
-                new GraphBuildContext("job-1", 1L, "jpa"), null);
-
-        // Parser fails gracefully and returns empty graph triples
-        assertNotNull(result);
+        assertThrows(IllegalStateException.class, () -> builder.buildFromChunks(chunks,
+                new GraphBuildContext("job-1", 1L, "jpa"), null));
     }
 
     @Test

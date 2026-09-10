@@ -20,7 +20,6 @@ import { Observable, Subject, BehaviorSubject } from 'rxjs';
 import { throttleTime } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import { ChatStorageService } from './chat-storage.service';
-import { AgentService } from './agent.service';
 import { ReasoningTrailDto } from './kb-grounding.service';
 import {
   AgentProvider,
@@ -154,8 +153,7 @@ export class LocalAgentChatService extends BaseService {
   constructor(
     private http: HttpClient,
     private ngZone: NgZone,
-    private storageService: ChatStorageService,
-    private agentService: AgentService
+    private storageService: ChatStorageService
   ) {
     super();
     this.setupThrottledStreaming();
@@ -216,8 +214,11 @@ export class LocalAgentChatService extends BaseService {
     message: string,
     agent: AgentProvider,
     options: {
+      sessionId?: string;
       skipPermissions?: boolean;
       workingDirectory?: string;
+      enableMemory?: boolean;
+      systemPromptOverride?: string;
       includeHistory?: boolean;
       maxHistoryMessages?: number;
       // RAG options
@@ -233,7 +234,7 @@ export class LocalAgentChatService extends BaseService {
       graphRagConversationId?: string;
       // Folder context injection
       folderId?: string;
-      // Timeout (0 = no timeout, default 300 = 5 minutes)
+      // Timeout (0 selects the server-owned five-minute default)
       timeoutSeconds?: number;
       // Inline attachments (images, text files)
       attachments?: MessageAttachment[];
@@ -265,9 +266,12 @@ export class LocalAgentChatService extends BaseService {
     // Build request with RAG options, folder context, and timeout
     const request: LocalAgentChatRequest = {
       message,
+      sessionId: options.sessionId ?? session.id,
       agentName: agent.name,
-      skipPermissions: options.skipPermissions ?? true,
+      skipPermissions: options.skipPermissions ?? false,
       workingDirectory: options.workingDirectory,
+      enableMemory: options.enableMemory ?? true,
+      systemPromptOverride: options.systemPromptOverride,
       includeHistory: options.includeHistory !== false,
       chatHistory,
       // RAG configuration
@@ -283,22 +287,26 @@ export class LocalAgentChatService extends BaseService {
       graphRagConversationId: options.graphRagConversationId,
       // Folder context injection
       folderId: options.folderId,
-      // Timeout configuration (0 = no timeout)
+      // Timeout configuration (0 = server-owned safety default)
       timeoutSeconds: options.timeoutSeconds ?? 300,
       // Attachments
-      attachments: options.attachments
+      // Keep previews and other UI-only fields out of the wire payload. In particular,
+      // previewUrl duplicates every image's base64 data and can otherwise double request memory.
+      attachments: options.attachments?.map(attachment => ({
+        filename: attachment.filename || attachment.name,
+        mimeType: attachment.mimeType,
+        base64Data: attachment.base64Data,
+        textContent: attachment.textContent ?? attachment.content,
+        isImage: attachment.isImage === true
+      }))
     };
 
     console.debug('[LocalAgentChat] Sending request with RAG enabled:', request.enableRag, 'timeout:', request.timeoutSeconds, 's',
       'attachments:', request.attachments?.length ?? 0);
 
-    // Start streaming — use multipart endpoint when file attachments are present
-    const hasFileAttachments = options.attachments?.some(a => a.isImage && a.base64Data);
-    if (hasFileAttachments) {
-      await this.streamWithMultipart(session, request);
-    } else {
-      await this.streamWithFetch(session, request);
-    }
+    // The harness endpoint owns bounded attachment materialization. Keeping one JSON/SSE
+    // transport also removes the old /stream-with-files call, for which no server route existed.
+    await this.streamWithFetch(session, request);
   }
 
   /**
@@ -315,85 +323,6 @@ export class LocalAgentChatService extends BaseService {
         role: m.role,
         content: m.content
       }));
-  }
-
-  /**
-   * Stream response using multipart form upload (for file/image attachments).
-   * Sends the request JSON + attachments as FormData to the stream-with-files endpoint.
-   */
-  private async streamWithMultipart(session: LocalAgentSession, request: LocalAgentChatRequest): Promise<void> {
-    try {
-      console.debug('[LocalAgentChat] Starting multipart stream request with', request.attachments?.length, 'attachments');
-
-      this.currentAbortController = new AbortController();
-      this.currentProcessId = null;
-
-      // Build FormData with the request JSON and any attachments
-      const formData = new FormData();
-
-      // Strip previewUrl and base64Data from request JSON (files go as multipart parts)
-      const requestCopy = { ...request };
-      delete requestCopy.attachments;
-      formData.append('request', new Blob([JSON.stringify(requestCopy)], { type: 'application/json' }));
-
-      // Add image files as multipart parts, text attachments go inline in the request
-      const textAttachments: MessageAttachment[] = [];
-      if (request.attachments) {
-        for (const att of request.attachments) {
-          if (att.isImage && att.base64Data) {
-            // Convert base64 back to binary for multipart upload
-            const byteString = atob(att.base64Data);
-            const ab = new ArrayBuffer(byteString.length);
-            const ia = new Uint8Array(ab);
-            for (let i = 0; i < byteString.length; i++) {
-              ia[i] = byteString.charCodeAt(i);
-            }
-            const blob = new Blob([ab], { type: att.mimeType });
-            formData.append('files', blob, att.filename);
-          } else if (att.textContent) {
-            textAttachments.push(att);
-          }
-        }
-      }
-
-      // Re-add text attachments to the request (they're small enough for JSON)
-      if (textAttachments.length > 0) {
-        // formData.get('request') returns a Blob, not a string — read it back as text first
-        const requestBlob = formData.get('request') as Blob;
-        const requestText = await requestBlob.text();
-        const updatedRequest = JSON.parse(requestText);
-        updatedRequest.attachments = textAttachments;
-        formData.set('request', new Blob([JSON.stringify(updatedRequest)], { type: 'application/json' }));
-      }
-
-      const response = await fetch(`${this.backendUrl}/agents/chat/stream-with-files`, {
-        method: 'POST',
-        headers: {
-          'Accept': 'text/event-stream'
-        },
-        body: formData,
-        signal: this.currentAbortController.signal
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      // Redirect to the shared SSE processing logic by wrapping as a "fake" JSON request
-      // The stream-with-files endpoint returns the same SSE format as /stream
-      // So we can reuse the exact same reader loop
-      await this.readSseStream(session, response);
-
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        console.debug('[LocalAgentChat] Multipart request aborted');
-      } else {
-        console.error('[LocalAgentChat] Multipart streaming error:', error);
-        this.streamingError$.next(error.message || 'Unknown error');
-        this.finalizeStreaming(session);
-      }
-    }
   }
 
   /**
@@ -433,8 +362,13 @@ export class LocalAgentChatService extends BaseService {
         console.debug('[LocalAgentChat] Request aborted by user');
       } else {
         console.error('[LocalAgentChat] Streaming error:', error);
-        this.streamingError$.next(error.message || 'Unknown error');
-        this.finalizeStreaming(session);
+        const message = error.message || 'Unknown error';
+        if (this.currentStreamingMessage) {
+          this.handleStreamError(session, message);
+        } else {
+          this.streamingError$.next(message);
+        }
+        this.finalizeStreaming();
       }
     }
   }
@@ -449,6 +383,7 @@ export class LocalAgentChatService extends BaseService {
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEventType = 'message';
+      let sawTerminalEvent = false;
 
       const emitContentUpdate = () => {
         const fullContent = this.getCurrentContent();
@@ -474,6 +409,17 @@ export class LocalAgentChatService extends BaseService {
             const parsed = JSON.parse(data);
 
             switch (currentEventType) {
+              case 'harness_session':
+                session.metadata = {
+                  ...(session.metadata || {}),
+                  harnessSessionId: parsed.session_id,
+                  engine: 'kompile-cli-main',
+                  provider: parsed.provider,
+                  model: parsed.model
+                };
+                this.storageService.updateSession(session);
+                break;
+
               case 'start':
                 // Capture processId from start event for cancellation
                 if (parsed.processId) {
@@ -490,6 +436,7 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'cancelled':
+                sawTerminalEvent = true;
                 // Process was cancelled by user
                 console.debug('[LocalAgentChat] Process cancelled:', parsed);
                 if (this.currentStreamingMessage) {
@@ -513,6 +460,15 @@ export class LocalAgentChatService extends BaseService {
                   }
                   this.currentStreamingMessage.toolUses.push(parsed);
                 }
+                break;
+
+              case 'tool_result':
+                console.debug('[LocalAgentChat] Tool completed:', parsed);
+                this.result$.next({
+                  durationMs: parsed.durationMs || 0,
+                  numTurns: 0,
+                  isError: parsed.ok === false
+                });
                 break;
 
               case 'result':
@@ -581,11 +537,13 @@ export class LocalAgentChatService extends BaseService {
                 break;
 
               case 'complete':
+                sawTerminalEvent = true;
                 console.debug('[LocalAgentChat] Complete message received');
                 this.handleStreamComplete(session, parsed);
                 break;
 
               case 'error':
+                sawTerminalEvent = true;
                 console.error('[LocalAgentChat] Error event:', parsed);
                 this.handleStreamError(session, typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
                 break;
@@ -637,8 +595,11 @@ export class LocalAgentChatService extends BaseService {
         }
       }
 
-      // Finalize streaming
-      this.finalizeStreaming(session);
+      if (!sawTerminalEvent) {
+        throw new Error('Kompile harness stream ended without a terminal event');
+      }
+
+      this.finalizeStreaming();
   }
 
   /**
@@ -683,22 +644,8 @@ export class LocalAgentChatService extends BaseService {
     this.currentStreamingMessage = null;
   }
 
-  /**
-   * Finalize streaming if no complete event was received.
-   */
-  private finalizeStreaming(session: LocalAgentSession): void {
-    if (this.currentStreamingMessage && this.currentStreamingMessage.streaming) {
-      this.currentStreamingMessage.streaming = false;
-      this.currentStreamingMessage.content = this.getCurrentContent();
-      this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
-
-      this.storageService.updateSession(session);
-      this.streamingComplete$.next(this.currentStreamingMessage);
-
-      // Only emit final content if stream wasn't already completed via a 'complete' event
-      this.streamingContent$.next(this.getCurrentContent());
-    }
-
+  /** Clear request-scoped transport state after a terminal event or handled failure. */
+  private finalizeStreaming(): void {
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
     this.currentProcessId = null;
@@ -1138,10 +1085,12 @@ export class LocalAgentChatService extends BaseService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /** The context budget of the model behind an agent (window, output cap, input budget). */
-  getContextBudget(agentName: string): Observable<ContextBudget> {
+  getContextBudget(agentName: string, workingDirectory?: string): Observable<ContextBudget> {
+    const params: { [key: string]: string } = { agentName };
+    if (workingDirectory) params['workingDirectory'] = workingDirectory;
     return this.http.get<ContextBudget>(
       `${this.backendUrl}/agents/chat/context-budget`,
-      { params: { agentName } });
+      { params });
   }
 
   /**

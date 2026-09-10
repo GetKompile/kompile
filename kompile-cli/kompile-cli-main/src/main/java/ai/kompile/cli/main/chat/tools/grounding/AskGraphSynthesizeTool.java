@@ -63,11 +63,10 @@ public class AskGraphSynthesizeTool implements CliTool {
 
     @Override
     public String description() {
-        return "Synthesize ranked, grounded answers to a question from the knowledge base. Each answer "
-                + "fuses retrieval + ontology-type signals — and, when the query implies a relation, KB "
-                + "verification + calibrated KGE plausibility — into a likelihood [0,1] with an "
-                + "operator-tree trace. KB-refuted or type-violating candidates are demoted automatically. "
-                + "Use this to get a ranked, checkable answer instead of guessing.";
+        return "Synthesize ranked answers to a question from the knowledge base. The configured graph "
+                + "backend supplies retrieval, verification and any available ontology/KGE signals. "
+                + "Optional chatModel.provider/modelId uses native chat to interpret the returned evidence; "
+                + "model answers do not replace engine scores, rankings or verification.";
     }
 
     @Override
@@ -75,6 +74,7 @@ public class AskGraphSynthesizeTool implements CliTool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
         props.putObject("query")
                 .put("type", "string")
@@ -102,7 +102,10 @@ public class AskGraphSynthesizeTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Synthesize KB answer");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) throws ToolExecutionException {
         String query = params.path("query").asText("");
         if (query.isBlank()) {
             return ToolResult.error("query is required");

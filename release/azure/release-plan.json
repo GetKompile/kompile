@@ -419,7 +419,7 @@
         "dl4jLane": "linux-x86_64-zluda",
         "requireSdk": false,
         "variants": [
-          {"name": "zluda", "classifier": "linux-x86_64-cuda-12.9-zluda", "requireSdk": false}
+          {"name": "cuda-12.9", "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4", "requireSdk": false}
         ]
       }
     },
@@ -438,7 +438,26 @@
         "dl4jLane": "windows-x86_64-zluda",
         "requireSdk": false,
         "variants": [
-          {"name": "zluda", "classifier": "windows-x86_64-cuda-12.9-zluda", "requireSdk": false}
+          {"name": "cuda-12.9", "classifier": "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-zluda-rocm-10.0.0",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.9.1-devel-ubuntu22.04",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-zluda-rocm-10.0.0",
+        "requireSdk": false,
+        "variants": [
+          {"name": "cuda-12.9", "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0", "kompileVariant": "amd-zluda", "requireSdk": false}
         ]
       }
     }

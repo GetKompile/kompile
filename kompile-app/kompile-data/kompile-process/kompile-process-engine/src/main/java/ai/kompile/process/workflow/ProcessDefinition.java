@@ -29,7 +29,7 @@ import java.util.Map;
 
 /**
  * A versioned, executable process definition.
- * This is the generalized equivalent of the 14-step FP&amp;A workflow.
+ * This is the generalized equivalent of the multi-step operational workflow.
  * Binds to an ontology version and defines steps, gates, controls, and agent assignments.
  */
 @Data

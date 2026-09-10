@@ -23,6 +23,10 @@ public final class TerminalTitleController {
     private static final String BEL = "\007";
     private static final int MAX_TITLE_LENGTH = 120;
     private static final String[] BUSY_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
+    /** Fixed icon so a foreground tool call reads differently from model thinking. */
+    private static final String TOOL_ICON = "⚙";
+    /** Fixed icon for background work: processes running while the REPL is idle. */
+    private static final String PROCESS_ICON = "▶";
 
     private final Object lock = new Object();
     private volatile Terminal terminal;
@@ -32,6 +36,7 @@ public final class TerminalTitleController {
     private String busyTitle = "";
     private int busyFrame;
     private long activityVersion;
+    private int runningProcessCount;
 
     public void attach(Terminal terminal, String readyTitle) {
         synchronized (lock) {
@@ -61,7 +66,13 @@ public final class TerminalTitleController {
             reset();
             return;
         }
-        StringBuilder title = new StringBuilder(readyTitle).append(" · ").append(phase.label());
+        StringBuilder title = new StringBuilder(readyTitle).append(" · ");
+        if (phase == ChatActivityPhase.WORKING) {
+            // Distinct fixed icon: main tool use must not look like model thinking.
+            title.append(TOOL_ICON).append(' ').append(phase.label());
+        } else {
+            title.append(phase.label());
+        }
         if (detail != null && !detail.isBlank()) {
             title.append(" · ").append(detail.trim());
         }
@@ -76,13 +87,29 @@ public final class TerminalTitleController {
         update(ChatActivityPhase.fromLabel(label), ChatActivityPhase.detailFromLabel(label));
     }
 
+    /**
+     * Show background process activity in the tab title. The foreground owns the
+     * title while busy; the overlay applies only over the idle/ready title and is
+     * reapplied whenever the foreground work finishes.
+     */
+    public void updateProcessActivity(int processCount) {
+        synchronized (lock) {
+            runningProcessCount = Math.max(0, processCount);
+            if (busyAnimation != null) {
+                // Foreground work owns the title; the overlay reappears on reset().
+                return;
+            }
+            writeLocked(renderIdleTitleLocked());
+        }
+    }
+
     /** Replace the idle/session title and immediately return to that ready state. */
     public void setReadyTitle(String title) {
         if (title == null || title.isBlank()) return;
         synchronized (lock) {
             stopBusyLocked();
             readyTitle = sanitize(title);
-            writeLocked(readyTitle);
+            writeLocked(renderIdleTitleLocked());
         }
     }
 
@@ -97,7 +124,7 @@ public final class TerminalTitleController {
     public void reset() {
         synchronized (lock) {
             stopBusyLocked();
-            writeLocked(readyTitle);
+            writeLocked(renderIdleTitleLocked());
         }
     }
 
@@ -106,6 +133,12 @@ public final class TerminalTitleController {
             stopBusyLocked();
             writeLocked(title);
         }
+    }
+
+    private String renderIdleTitleLocked() {
+        if (runningProcessCount <= 0) return readyTitle;
+        return PROCESS_ICON + " " + readyTitle + " · " + runningProcessCount
+                + (runningProcessCount == 1 ? " process" : " processes");
     }
 
     private void startBusy(String title) {

@@ -18,12 +18,14 @@ package ai.kompile.process.discovery;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactContributor;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactImporter;
 import ai.kompile.process.discovery.mining.trace.ProcessReasoningTraceStore;
 import ai.kompile.process.service.ProcessEngineService;
 import ai.kompile.process.workflow.ProcessDefinition;
+import ai.kompile.process.workflow.ProcessStatus;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -33,9 +35,12 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Makes process-mining state portable through {@code .kgraph}.
@@ -50,7 +55,10 @@ public class ProcessUnifiedGraphArtifacts
 
     public static final String SUGGESTIONS_JSON = "process/suggestions.json";
     public static final String DEFINITIONS_JSON = "process/definitions.json";
-    public static final String TRACE_MODEL_PREFIX = "trace:process:";
+    public static final String TRACE_JSON_PREFIX = "process/reasoning-traces/v1/";
+    public static final String TRACE_JSON_SUFFIX = ".json";
+    public static final String LEGACY_TRACE_MODEL_PREFIX = "trace:process:";
+    private static final int MAX_TRACE_ARTIFACTS = 256;
 
     private static final TypeReference<List<ProcessSuggestion>> SUGGESTION_LIST =
             new TypeReference<>() { };
@@ -70,7 +78,7 @@ public class ProcessUnifiedGraphArtifacts
     }
 
     public static String traceArtifactName(String suggestionId) {
-        return TRACE_MODEL_PREFIX + suggestionId;
+        return TRACE_JSON_PREFIX + suggestionId + TRACE_JSON_SUFFIX;
     }
 
     public static void putSuggestions(UnifiedGraph graph, List<ProcessSuggestion> suggestions) {
@@ -87,7 +95,8 @@ public class ProcessUnifiedGraphArtifacts
 
     public static void putTrace(UnifiedGraph graph, String suggestionId, ReasoningTrace trace) {
         if (graph != null && suggestionId != null && !suggestionId.isBlank() && trace != null) {
-            graph.putModel(traceArtifactName(suggestionId), trace);
+            graph.putArtifactText(traceArtifactName(suggestionId), ReasoningTraceJsonCodec.encode(
+                    ProcessReasoningTraceStore.traceId(suggestionId), suggestionId, trace));
         }
     }
 
@@ -102,14 +111,21 @@ public class ProcessUnifiedGraphArtifacts
     public void contribute(Long factSheetId, UnifiedGraph graph) {
         List<ProcessSuggestion> suggestions = suggestionsForFactSheet(factSheetId);
         if (!suggestions.isEmpty()) {
-            for (ProcessSuggestion suggestion : suggestions) {
-                if (suggestion.getId() != null) {
-                    suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
-                    suggestion.setReasoningTraceArtifactName(traceArtifactName(suggestion.getId()));
+            List<ProcessSuggestion> portableSuggestions = suggestions.stream()
+                    .map(ProcessUnifiedGraphArtifacts::copySuggestion)
+                    .toList();
+            for (ProcessSuggestion suggestion : portableSuggestions) {
+                suggestion.setReasoningTraceId(null);
+                suggestion.setReasoningTraceArtifactName(null);
+                if (suggestion.getId() != null && traceStore != null) {
+                    traceStore.get(suggestion.getId()).ifPresent(trace -> {
+                        putTrace(graph, suggestion.getId(), trace);
+                        suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
+                        suggestion.setReasoningTraceArtifactName(traceArtifactName(suggestion.getId()));
+                    });
                 }
             }
-            putJsonArtifact(graph, SUGGESTIONS_JSON, suggestions);
-            contributeTraces(graph, suggestions);
+            putJsonArtifact(graph, SUGGESTIONS_JSON, portableSuggestions);
         }
 
         List<ProcessDefinition> definitions = definitionsForFactSheet(factSheetId);
@@ -119,12 +135,96 @@ public class ProcessUnifiedGraphArtifacts
     }
 
     @Override
+    public void validateArtifacts(Long factSheetId, UnifiedGraph graph) {
+        List<ProcessSuggestion> suggestions = decodeSuggestions(graph);
+        List<ProcessDefinition> definitions = decodeDefinitions(graph);
+        validateTraceArtifacts(graph, suggestions);
+        validateDestinationOwnership(factSheetId, suggestions, definitions);
+    }
+
+    @Override
+    public PreparedImport prepareArtifacts(Long factSheetId, UnifiedGraph incoming, UnifiedGraph previous) {
+        validateArtifacts(factSheetId, incoming);
+        List<ProcessSuggestion> suggestions = decodeSuggestions(incoming);
+        suggestions.forEach(suggestion -> suggestion.setFactSheetId(factSheetId));
+        List<ProcessDefinition> definitions = decodeDefinitions(incoming);
+        definitions.forEach(definition -> definition.setFactSheetId(factSheetId));
+        Set<String> traceIds = incoming.artifacts().keySet().stream()
+                .filter(ProcessUnifiedGraphArtifacts::isJsonTraceArtifact)
+                .map(ProcessUnifiedGraphArtifacts::suggestionIdFromTraceName)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+
+        Map<String, ProcessSuggestion> priorSuggestions = new LinkedHashMap<>();
+        if (suggestionStore != null) {
+            for (ProcessSuggestion suggestion : suggestions) {
+                suggestionStore.get(suggestion.getId())
+                        .ifPresent(prior -> priorSuggestions.put(suggestion.getId(), copySuggestion(prior)));
+            }
+        }
+        Map<String, ReasoningTrace> priorTraces = new LinkedHashMap<>();
+        if (traceStore != null) {
+            for (String traceId : traceIds) {
+                traceStore.get(traceId).ifPresent(trace -> priorTraces.put(traceId, trace));
+            }
+        }
+        Map<String, ProcessDefinition> priorDefinitions = new LinkedHashMap<>();
+        if (processEngineService != null) {
+            for (ProcessDefinition definition : definitions) {
+                ProcessDefinition prior = existingDefinition(definition);
+                if (prior != null) {
+                    priorDefinitions.put(definitionKey(definition),
+                            MAPPER.convertValue(prior, ProcessDefinition.class));
+                }
+            }
+            boolean createsDefinition = definitions.stream()
+                    .anyMatch(definition -> !priorDefinitions.containsKey(definitionKey(definition)));
+            if (createsDefinition && !processEngineService.supportsProcessDefinitionSnapshotRemoval()) {
+                throw new IllegalStateException(
+                        "Process engine does not support exact snapshot rollback");
+            }
+        }
+        AtomicBoolean rolledBack = new AtomicBoolean();
+        return new PreparedImport() {
+            @Override
+            public int commit() {
+                return importArtifacts(factSheetId, incoming);
+            }
+
+            @Override
+            public synchronized void rollback() {
+                if (rolledBack.get()) return;
+                List<RuntimeException> failures = new java.util.ArrayList<>();
+                rollbackDefinitions(definitions, priorDefinitions, failures);
+                rollbackSuggestions(suggestions, priorSuggestions, failures);
+                rollbackTraces(traceIds, priorTraces, failures);
+                if (!failures.isEmpty()) {
+                    IllegalStateException failure =
+                            new IllegalStateException("Process artifact rollback was incomplete");
+                    failures.forEach(failure::addSuppressed);
+                    throw failure;
+                }
+                rolledBack.set(true);
+            }
+        };
+    }
+
+    @Override
     public int importArtifacts(Long factSheetId, UnifiedGraph graph) {
         int restored = 0;
+        restored += importTraces(graph);
         restored += importSuggestions(factSheetId, graph);
         restored += importDefinitions(factSheetId, graph);
-        restored += importTraces(graph);
         return restored;
+    }
+
+    @Override
+    public boolean supportsExactRollback() {
+        return true;
+    }
+
+    @Override
+    public Set<String> managedArtifactPrefixes() {
+        return Set.of(SUGGESTIONS_JSON, DEFINITIONS_JSON, TRACE_JSON_PREFIX, LEGACY_TRACE_MODEL_PREFIX);
     }
 
     private List<ProcessSuggestion> suggestionsForFactSheet(Long factSheetId) {
@@ -144,19 +244,6 @@ public class ProcessUnifiedGraphArtifacts
                 .toList();
     }
 
-    private void contributeTraces(UnifiedGraph graph, List<ProcessSuggestion> suggestions) {
-        if (traceStore == null) {
-            return;
-        }
-        for (ProcessSuggestion suggestion : suggestions) {
-            if (suggestion.getId() == null) {
-                continue;
-            }
-            traceStore.get(suggestion.getId())
-                    .ifPresent(trace -> graph.putModel(traceArtifactName(suggestion.getId()), trace));
-        }
-    }
-
     private void putJsonArtifact(UnifiedGraph graph, String name, Object value) {
         putJsonArtifactStatic(graph, name, value);
     }
@@ -165,81 +252,259 @@ public class ProcessUnifiedGraphArtifacts
         try {
             graph.putArtifactText(name, MAPPER.writeValueAsString(value));
         } catch (Exception e) {
-            log.warn("Could not write process artifact {} into .kgraph: {}", name, e.getMessage());
+            throw new IllegalStateException("Could not write process artifact " + name + " into .kgraph", e);
         }
+    }
+
+    private static ProcessSuggestion copySuggestion(ProcessSuggestion suggestion) {
+        return MAPPER.convertValue(suggestion, ProcessSuggestion.class);
     }
 
     private int importSuggestions(Long factSheetId, UnifiedGraph graph) {
         if (suggestionStore == null) {
             return 0;
         }
-        String json = graph.artifactText(SUGGESTIONS_JSON);
-        if (json == null || json.isBlank()) {
-            return 0;
-        }
-        try {
-            List<ProcessSuggestion> suggestions = MAPPER.readValue(json, SUGGESTION_LIST);
-            for (ProcessSuggestion suggestion : suggestions) {
-                if (factSheetId != null) {
-                    suggestion.setFactSheetId(factSheetId);
-                }
-                if (suggestion.getId() != null) {
-                    suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
-                    suggestion.setReasoningTraceArtifactName(traceArtifactName(suggestion.getId()));
-                }
-                suggestionStore.save(suggestion);
+        List<ProcessSuggestion> suggestions = decodeSuggestions(graph);
+        for (ProcessSuggestion suggestion : suggestions) {
+            if (factSheetId != null) {
+                suggestion.setFactSheetId(factSheetId);
             }
-            return suggestions.size();
-        } catch (Exception e) {
-            log.warn("Could not restore process suggestions from .kgraph: {}", e.getMessage());
-            return 0;
+            ProcessSuggestion existing = suggestionStore.get(suggestion.getId()).orElse(null);
+            if (existing != null && existing.equals(suggestion)) continue;
+            String traceName = traceArtifactName(suggestion.getId());
+            if (traceStore != null && graph.artifact(traceName) != null) {
+                suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
+                suggestion.setReasoningTraceArtifactName(traceName);
+            } else {
+                suggestion.setReasoningTraceId(null);
+                suggestion.setReasoningTraceArtifactName(null);
+            }
+            suggestionStore.save(suggestion);
         }
+        return suggestions.size();
     }
 
     private int importDefinitions(Long factSheetId, UnifiedGraph graph) {
         if (processEngineService == null) {
             return 0;
         }
-        String json = graph.artifactText(DEFINITIONS_JSON);
-        if (json == null || json.isBlank()) {
-            return 0;
-        }
-        try {
-            List<ProcessDefinition> definitions = MAPPER.readValue(json, DEFINITION_LIST);
-            for (ProcessDefinition definition : definitions) {
-                if (factSheetId != null) {
-                    definition.setFactSheetId(factSheetId);
-                }
-                processEngineService.restoreProcessDefinition(definition);
+        List<ProcessDefinition> definitions = decodeDefinitions(graph);
+        for (ProcessDefinition definition : definitions) {
+            if (factSheetId != null) {
+                definition.setFactSheetId(factSheetId);
             }
-            return definitions.size();
-        } catch (Exception e) {
-            log.warn("Could not restore process definitions from .kgraph: {}", e.getMessage());
-            return 0;
+            ProcessDefinition existing = existingDefinition(definition);
+            if (existing != null && existing.equals(definition)) continue;
+            // Portable archives never confer execution approval in the destination environment.
+            definition.setStatus(ProcessStatus.DRAFT);
+            definition.setApprovedBy(null);
+            definition.setApprovedAt(null);
+            processEngineService.restoreProcessDefinition(definition);
         }
+        return definitions.size();
     }
 
     private int importTraces(UnifiedGraph graph) {
-        if (traceStore == null) {
-            return 0;
-        }
-        int restored = 0;
+        if (traceStore == null) return 0;
         Set<String> traceNames = new LinkedHashSet<>(graph.artifacts().keySet()).stream()
-                .filter(name -> name.startsWith(TRACE_MODEL_PREFIX))
+                .filter(ProcessUnifiedGraphArtifacts::isJsonTraceArtifact)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        int restored = 0;
         for (String name : traceNames) {
-            try {
-                ReasoningTrace trace = graph.model(name);
-                String suggestionId = name.substring(TRACE_MODEL_PREFIX.length());
-                if (trace != null && !suggestionId.isBlank()) {
-                    traceStore.save(suggestionId, trace);
-                    restored++;
-                }
-            } catch (RuntimeException e) {
-                log.warn("Could not restore process reasoning trace {} from .kgraph: {}",
-                        name, e.getMessage());
-            }
+            String suggestionId = suggestionIdFromTraceName(name);
+            ReasoningTrace trace = ReasoningTraceJsonCodec.decode(graph.artifactText(name), suggestionId);
+            traceStore.save(suggestionId, trace);
+            restored++;
         }
         return restored;
+    }
+
+    private static List<ProcessSuggestion> decodeSuggestions(UnifiedGraph graph) {
+        String json = graph == null ? null : graph.artifactText(SUGGESTIONS_JSON);
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<ProcessSuggestion> suggestions = MAPPER.readValue(json, SUGGESTION_LIST);
+            if (suggestions == null || suggestions.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("Process suggestions artifact contains null entries");
+            }
+            suggestions.forEach(suggestion -> validatePortableId(suggestion.getId(), "suggestion"));
+            return suggestions;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Could not decode process suggestions artifact", e);
+        }
+    }
+
+    private static List<ProcessDefinition> decodeDefinitions(UnifiedGraph graph) {
+        String json = graph == null ? null : graph.artifactText(DEFINITIONS_JSON);
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<ProcessDefinition> definitions = MAPPER.readValue(json, DEFINITION_LIST);
+            if (definitions == null || definitions.stream().anyMatch(Objects::isNull)) {
+                throw new IllegalArgumentException("Process definitions artifact contains null entries");
+            }
+            definitions.forEach(definition -> validatePortableId(definition.getId(), "definition"));
+            return definitions;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Could not decode process definitions artifact", e);
+        }
+    }
+
+    private static void validateTraceArtifacts(UnifiedGraph graph, List<ProcessSuggestion> suggestions) {
+        if (graph == null) return;
+        List<String> jsonTraces = graph.artifacts().keySet().stream()
+                .filter(ProcessUnifiedGraphArtifacts::isJsonTraceArtifact).sorted().toList();
+        if (jsonTraces.size() > MAX_TRACE_ARTIFACTS) {
+            throw new IllegalArgumentException("Too many process trace artifacts");
+        }
+        Set<String> suggestionIds = suggestions.stream().map(ProcessSuggestion::getId)
+                .collect(java.util.stream.Collectors.toSet());
+        for (String name : jsonTraces) {
+            String suggestionId = suggestionIdFromTraceName(name);
+            validatePortableId(suggestionId, "trace suggestion");
+            if (!suggestionIds.contains(suggestionId)) {
+                throw new IllegalArgumentException("Orphan process trace artifact: " + name);
+            }
+            byte[] bytes = graph.artifact(name);
+            if (bytes == null || bytes.length > ReasoningTraceJsonCodec.MAX_BYTES) {
+                throw new IllegalArgumentException("Invalid process trace artifact size: " + name);
+            }
+            ReasoningTraceJsonCodec.decode(graph.artifactText(name), suggestionId);
+        }
+        for (ProcessSuggestion suggestion : suggestions) {
+            String expectedName = traceArtifactName(suggestion.getId());
+            if (suggestion.getReasoningTraceArtifactName() != null
+                    && !expectedName.equals(suggestion.getReasoningTraceArtifactName())) {
+                throw new IllegalArgumentException("Process suggestion trace artifact identity mismatch: "
+                        + suggestion.getId());
+            }
+            String expectedId = ProcessReasoningTraceStore.traceId(suggestion.getId());
+            if (suggestion.getReasoningTraceId() != null
+                    && !expectedId.equals(suggestion.getReasoningTraceId())) {
+                throw new IllegalArgumentException("Process suggestion trace ID mismatch: "
+                        + suggestion.getId());
+            }
+        }
+        graph.artifacts().keySet().stream()
+                .filter(name -> name.startsWith(LEGACY_TRACE_MODEL_PREFIX))
+                .forEach(name -> validatePortableId(
+                        name.substring(LEGACY_TRACE_MODEL_PREFIX.length()), "legacy trace suggestion"));
+    }
+
+    private static void validatePortableId(String id, String kind) {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,199}") || id.contains("..")) {
+            throw new IllegalArgumentException("Invalid process " + kind + " ID");
+        }
+    }
+
+    private static boolean isJsonTraceArtifact(String name) {
+        return name.startsWith(TRACE_JSON_PREFIX) && name.endsWith(TRACE_JSON_SUFFIX);
+    }
+
+    private static String suggestionIdFromTraceName(String name) {
+        return name.substring(TRACE_JSON_PREFIX.length(), name.length() - TRACE_JSON_SUFFIX.length());
+    }
+
+    private void validateDestinationOwnership(Long factSheetId,
+                                              List<ProcessSuggestion> suggestions,
+                                              List<ProcessDefinition> definitions) {
+        if (factSheetId == null) return;
+        if (suggestionStore != null) {
+            for (ProcessSuggestion suggestion : suggestions) {
+                suggestionStore.get(suggestion.getId()).ifPresent(existing -> {
+                    if (!Objects.equals(existing.getFactSheetId(), factSheetId)) {
+                        throw new IllegalArgumentException("Process suggestion ID belongs to another fact sheet: "
+                                + suggestion.getId());
+                    }
+                    ProcessSuggestion incoming = copySuggestion(suggestion);
+                    incoming.setFactSheetId(factSheetId);
+                    if (!existing.equals(incoming)) {
+                        throw new IllegalArgumentException("Conflicting process suggestion snapshot: "
+                                + suggestion.getId());
+                    }
+                });
+            }
+        }
+        if (processEngineService != null) {
+            for (ProcessDefinition definition : definitions) {
+                ProcessDefinition incoming = MAPPER.convertValue(definition, ProcessDefinition.class);
+                incoming.setFactSheetId(factSheetId);
+                ProcessDefinition existing = existingDefinition(incoming);
+                if (existing != null && !Objects.equals(existing.getFactSheetId(), factSheetId)) {
+                    throw new IllegalArgumentException("Process definition ID/version belongs to another fact sheet: "
+                            + definition.getId() + " v" + Math.max(1, definition.getVersion()));
+                }
+                if (existing != null && !existing.equals(incoming)) {
+                    throw new IllegalArgumentException("Conflicting process definition snapshot: "
+                            + definition.getId() + " v" + definition.getVersion());
+                }
+            }
+        }
+    }
+
+    private ProcessDefinition existingDefinition(ProcessDefinition definition) {
+        if (processEngineService == null) return null;
+        try {
+            return processEngineService.getProcess(
+                    definition.getId(), Math.max(1, definition.getVersion()));
+        } catch (IllegalArgumentException notFound) {
+            return null;
+        }
+    }
+
+    private void rollbackDefinitions(List<ProcessDefinition> definitions,
+                                     Map<String, ProcessDefinition> priorDefinitions,
+                                     List<RuntimeException> failures) {
+        if (processEngineService == null) return;
+        for (int i = definitions.size() - 1; i >= 0; i--) {
+            ProcessDefinition incoming = definitions.get(i);
+            ProcessDefinition prior = priorDefinitions.get(definitionKey(incoming));
+            try {
+                if (prior != null) processEngineService.restoreProcessDefinition(prior);
+                else processEngineService.removeProcessDefinitionSnapshot(
+                        incoming.getId(), Math.max(1, incoming.getVersion()));
+            } catch (RuntimeException failure) {
+                failures.add(failure);
+            }
+        }
+    }
+
+    private void rollbackSuggestions(List<ProcessSuggestion> suggestions,
+                                     Map<String, ProcessSuggestion> priorSuggestions,
+                                     List<RuntimeException> failures) {
+        if (suggestionStore == null) return;
+        for (int i = suggestions.size() - 1; i >= 0; i--) {
+            ProcessSuggestion incoming = suggestions.get(i);
+            ProcessSuggestion prior = priorSuggestions.get(incoming.getId());
+            try {
+                if (prior != null) suggestionStore.save(prior);
+                else suggestionStore.delete(incoming.getId());
+            } catch (RuntimeException failure) {
+                failures.add(failure);
+            }
+        }
+    }
+
+    private void rollbackTraces(Set<String> traceIds, Map<String, ReasoningTrace> priorTraces,
+                                List<RuntimeException> failures) {
+        if (traceStore == null) return;
+        List<String> ids = new java.util.ArrayList<>(traceIds);
+        for (int i = ids.size() - 1; i >= 0; i--) {
+            String id = ids.get(i);
+            ReasoningTrace prior = priorTraces.get(id);
+            try {
+                if (prior != null) traceStore.save(id, prior);
+                else traceStore.delete(id);
+            } catch (RuntimeException failure) {
+                failures.add(failure);
+            }
+        }
+    }
+
+    private static String definitionKey(ProcessDefinition definition) {
+        return definition.getId() + "_v" + Math.max(1, definition.getVersion());
     }
 }

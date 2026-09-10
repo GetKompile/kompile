@@ -18,6 +18,8 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.coordination.*;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,11 +33,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MCP tool for coordinating file edits, process awareness, and agent activity
- * across multiple concurrent agents. Delegates to {@link CoordinationStateManager}.
+ * Agent message-passing and coordination framework. The historical tool id remains
+ * {@code edit_coordinator} for compatibility, while edit locks are now one capability
+ * alongside peer messages, process presence, and system-wide high-memory activities.
  *
      * <p>Actions: register_edit, release_edit, query_edits, query_processes,
-     * register_agent, query_agents, publish_process, unpublish_process, awareness, status.
+     * register_agent, query_agents, send_message, broadcast_message, read_messages,
+     * ack_message, preflight_activity, query_activities, release_activity,
+     * publish_process, unpublish_process, awareness, status.
  */
 public class EditCoordinatorTool implements CliTool {
 
@@ -50,7 +55,9 @@ public class EditCoordinatorTool implements CliTool {
 
     @Override
     public String description() {
-        return "Coordinate file edits and agent activity when using multi_task or task with concurrent agents.\n\n"
+        return "Agent message bus and coordination framework (legacy id: edit_coordinator). "
+                + "Agents exchange durable direct/broadcast messages, publish work, coordinate files, "
+                + "and inspect the user-wide high-memory activity lane.\n\n"
                 + "REQUIRED WORKFLOW when multiple agents may edit files:\n"
                 + "1. register_agent — announce what you're working on\n"
                 + "2. query_edits — check if target files are locked by another agent\n"
@@ -60,8 +67,18 @@ public class EditCoordinatorTool implements CliTool {
                 + "Editing SEVERAL files (e.g. before edit_batch/edit_patch)? Use register_edits with "
                 + "file_paths to lock them all in ONE call (all-or-nothing unless allow_partial=true), "
                 + "then release_edits with lock_ids when done.\n\n"
-                + "Other actions: awareness (one-call cross-agent snapshot with risks and next steps), "
+                + "High-memory builds, tests, crawls, model work, and indexing are preflighted "
+                + "automatically by the harness; blocked launches install a one-shot resource watch. "
+                + "preflight_activity is dry; watch_activity explicitly watches peer work and RAM/GPU capacity. "
+                + "Native chat wakes automatically; external MCP agents must hold wait_for_activity open "
+                + "and repeat it on timeout instead of ending their turn. query_activity_waits lists this "
+                + "session's watches; cancel_activity_wait cancels one. Watches end on host shutdown "
+                + "or after 24 hours, and never launch work or reserve capacity.\n\n"
+                + "Other actions: awareness (one-call cross-agent/resource snapshot with risks and next steps), "
                 + "query_processes (see running background processes), query_agents (see all active agents), "
+                + "send_message/broadcast_message/read_messages/ack_message (durable project-local bus; cooperative "
+                + "delivery does not wake an externally owned model turn), "
+                + "query_activities/release_activity (system-wide high-memory reservations), "
                 + "publish_process/unpublish_process (track background work), status (combined dashboard).";
     }
 
@@ -77,12 +94,19 @@ public class EditCoordinatorTool implements CliTool {
         action.put("description",
                 "Action to perform: register_edit, release_edit, register_edits, release_edits, "
                         + "query_edits, query_processes, "
-                        + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
+                        + "register_agent, query_agents, send_message, broadcast_message, read_messages, ack_message, "
+                        + "preflight_activity, watch_activity, wait_for_activity, query_activity_waits, cancel_activity_wait, "
+                        + "query_activities, release_activity, "
+                        + "publish_process, unpublish_process, awareness, status");
         action.putArray("enum")
                 .add("register_edit").add("release_edit")
                 .add("register_edits").add("release_edits")
                 .add("query_edits").add("query_processes")
                 .add("register_agent").add("query_agents")
+                .add("send_message").add("broadcast_message").add("read_messages").add("ack_message")
+                .add("preflight_activity").add("query_activities").add("release_activity")
+                .add("watch_activity").add("wait_for_activity")
+                .add("query_activity_waits").add("cancel_activity_wait")
                 .add("publish_process").add("unpublish_process")
                 .add("awareness").add("status");
 
@@ -122,9 +146,65 @@ public class EditCoordinatorTool implements CliTool {
         agentName.put("type", "string");
         agentName.put("description", "Agent name (optional, for register_agent)");
 
+        ObjectNode toolSessionId = props.putObject("tool_session_id");
+        toolSessionId.put("type", "string");
+        toolSessionId.put("description",
+                "Tool-call/transcript session correlated with this coordination agent (defaults to current tool session)");
+
+        ObjectNode roleName = props.putObject("role_name");
+        roleName.put("type", "string");
+        roleName.put("description", "Optional Kompile role or agent profile for register_agent");
+
+        ObjectNode parentSessionId = props.putObject("parent_session_id");
+        parentSessionId.put("type", "string");
+        parentSessionId.put("description",
+                "Optional parent coordination session for register_agent; inherited automatically by spawned agents");
+
         ObjectNode includeStale = props.putObject("include_stale");
         includeStale.put("type", "boolean");
         includeStale.put("description", "Include stale/expired entries in query results (default: false)");
+
+        ObjectNode targetSessionId = props.putObject("target_session_id");
+        targetSessionId.put("type", "string");
+        targetSessionId.put("description", "Recipient coordination session ID for send_message");
+
+        ObjectNode message = props.putObject("message");
+        message.put("type", "string");
+        message.put("description", "Message body for send_message (maximum 64 KiB UTF-8)");
+
+        ObjectNode messageKind = props.putObject("message_kind");
+        messageKind.put("type", "string");
+        messageKind.put("description", "Message kind such as message, request, response, notice, or cancel");
+
+        ObjectNode replyTo = props.putObject("reply_to");
+        replyTo.put("type", "string");
+        replyTo.put("description", "Optional message ID this delivery replies to");
+
+        ObjectNode messageId = props.putObject("message_id");
+        messageId.put("type", "string");
+        messageId.put("description", "Message ID to remove from this session's mailbox with ack_message");
+
+        ObjectNode maxResults = props.putObject("max_results");
+        maxResults.put("type", "integer");
+        maxResults.put("description", "Maximum pending messages returned by read_messages (default 20, maximum 100)");
+
+        ObjectNode activityId = props.putObject("activity_id");
+        activityId.put("type", "string");
+        activityId.put("description", "System activity reservation ID for release_activity");
+
+        props.putObject("tool_name").put("type", "string")
+                .put("description", "preflight_activity/watch_activity: target tool name; use with tool_arguments to apply /resources rules");
+        props.putObject("tool_arguments").put("type", "object")
+                .put("description", "Exact arguments of the proposed tool call, including command for bash or action=launch for process");
+        ObjectNode activityKind = props.putObject("activity_kind");
+        activityKind.put("type", "string");
+        activityKind.put("description", "preflight_activity/watch_activity kind: build, test, crawl, model, benchmark, or index");
+
+        props.putObject("wait_id").put("type", "string")
+                .put("description", "Resource watch id for wait_for_activity or cancel_activity_wait");
+        props.putObject("timeout_seconds").put("type", "integer").put("default", 25)
+                .put("minimum", 1).put("maximum", 300)
+                .put("description", "Held wait timeout; repeat wait_for_activity on WAITING without relaunching work");
 
         ObjectNode processId = props.putObject("process_id");
         processId.put("type", "string");
@@ -178,9 +258,28 @@ public class EditCoordinatorTool implements CliTool {
             case "query_processes":
                 return executeQueryProcesses();
             case "register_agent":
-                return executeRegisterAgent(params);
+                return executeRegisterAgent(params, context);
             case "query_agents":
                 return executeQueryAgents(params);
+            case "send_message":
+                return executeSendMessage(params);
+            case "broadcast_message":
+                return executeBroadcastMessage(params);
+            case "read_messages":
+                return executeReadMessages(params);
+            case "ack_message":
+                return executeAckMessage(params);
+            case "preflight_activity":
+                return executePreflightActivity(params, context);
+            case "watch_activity":
+            case "wait_for_activity":
+            case "query_activity_waits":
+            case "cancel_activity_wait":
+                return executeActivityWait(action, params, context);
+            case "query_activities":
+                return executeQueryActivities();
+            case "release_activity":
+                return executeReleaseActivity(params);
             case "publish_process":
                 return executePublishProcess(params);
             case "unpublish_process":
@@ -193,7 +292,10 @@ public class EditCoordinatorTool implements CliTool {
                 return ToolResult.error("Unknown action: " + action
                         + ". Valid: register_edit, release_edit, register_edits, release_edits, "
                         + "query_edits, query_processes, "
-                        + "register_agent, query_agents, publish_process, unpublish_process, awareness, status");
+                        + "register_agent, query_agents, send_message, broadcast_message, read_messages, ack_message, "
+                        + "preflight_activity, watch_activity, wait_for_activity, query_activity_waits, cancel_activity_wait, "
+                        + "query_activities, release_activity, "
+                        + "publish_process, unpublish_process, awareness, status");
         }
     }
 
@@ -366,28 +468,44 @@ public class EditCoordinatorTool implements CliTool {
                     StringUtils.truncate(p.getSessionId(), 10),
                     StringUtils.truncate(p.getCommand(), 30),
                     p.getState(),
-                    formatAge(p.getStartedAt())));
+                    FormatUtils.formatDuration(p.getDuration()) + " resource=" + ResourcePolicy.processClass(coordinator.getProjectRoot(), p)));
         }
 
         return ToolResult.success("processes", sb.toString(),
                 Map.of("count", processes.size()));
     }
 
-    private ToolResult executeRegisterAgent(JsonNode params) {
+    private ToolResult executeRegisterAgent(JsonNode params, ToolContext context) {
         String task = params.path("task").asText("");
         if (task.isEmpty()) {
             return ToolResult.error("task is required for register_agent");
         }
 
         String agentName = params.path("agent_name").asText("unknown");
+        String parentSessionId = params.path("parent_session_id").asText("");
+        if (parentSessionId.isBlank()) {
+            parentSessionId = System.getenv("KOMPILE_PARENT_SESSION_ID");
+        }
+        if (parentSessionId != null && parentSessionId.isBlank()) parentSessionId = null;
+        String toolSessionId = params.path("tool_session_id").asText("");
+        if (toolSessionId.isBlank() && context != null) {
+            toolSessionId = context.getSessionId();
+        }
+        String roleName = params.path("role_name").asText("");
+        if (roleName.isBlank() && context != null && context.getAgent() != null) {
+            roleName = context.getAgent().getRoleName();
+            if (roleName == null || roleName.isBlank()) {
+                roleName = context.getAgent().getName();
+            }
+        }
         int depth = 0;
         String depthEnv = System.getenv("KOMPILE_SUBAGENT_DEPTH");
         if (depthEnv != null) {
             try { depth = Integer.parseInt(depthEnv); } catch (NumberFormatException ignored) {}
         }
 
-        coordinator.registerAgent(task, null, agentName, depth,
-                ProcessHandle.current().pid());
+        coordinator.registerAgent(task, parentSessionId, agentName, depth,
+                ProcessHandle.current().pid(), toolSessionId, roleName);
 
         return ToolResult.success("registered",
                 "Agent registered: " + agentName + " — " + task,
@@ -419,6 +537,188 @@ public class EditCoordinatorTool implements CliTool {
 
         return ToolResult.success("agents", sb.toString(),
                 Map.of("count", agents.size()));
+    }
+
+    private ToolResult executeSendMessage(JsonNode params) {
+        String targetSessionId = params.path("target_session_id").asText("");
+        String message = params.path("message").asText("");
+        if (targetSessionId.isBlank() || message.isBlank()) {
+            return ToolResult.error("target_session_id and message are required for send_message");
+        }
+        String kind = params.path("message_kind").asText("message");
+        String replyTo = params.path("reply_to").asText(null);
+        try {
+            CoordinationMessage delivered = coordinator.sendMessage(
+                    targetSessionId, kind, message, replyTo);
+            return ToolResult.success("message queued",
+                    "Message " + delivered.getMessageId() + " queued for " + targetSessionId
+                            + ". Delivery is durable; the recipient reads it with read_messages or awareness.",
+                    Map.of("messageId", delivered.getMessageId(),
+                            "targetSessionId", delivered.getTargetSessionId(),
+                            "kind", delivered.getKind()));
+        } catch (Exception e) {
+            return ToolResult.error("Could not queue coordination message: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeBroadcastMessage(JsonNode params) {
+        String message = params.path("message").asText("");
+        if (message.isBlank()) {
+            return ToolResult.error("message is required for broadcast_message");
+        }
+        String kind = params.path("message_kind").asText("notice");
+        String replyTo = params.path("reply_to").asText(null);
+        List<CoordinationMessage> delivered = coordinator.broadcastMessage(kind, message, replyTo);
+        return ToolResult.success("message broadcast",
+                "Broadcast queued for " + delivered.size() + " active peer(s). "
+                        + "Delivery is durable but does not interrupt externally owned turns.",
+                Map.of("delivered", delivered.size(), "kind", kind,
+                        "messageIds", delivered.stream()
+                                .map(CoordinationMessage::getMessageId).toList()));
+    }
+
+    private ToolResult executeReadMessages(JsonNode params) {
+        int maxResults = params.path("max_results").asInt(20);
+        List<CoordinationMessage> messages = coordinator.readMessages(maxResults);
+        if (messages.isEmpty()) {
+            return ToolResult.success("No pending coordination messages");
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Pending coordination messages (acknowledge after processing):\n\n");
+        for (CoordinationMessage message : messages) {
+            sb.append("  ").append(message.getMessageId())
+                    .append("  from=").append(message.getSenderSessionId())
+                    .append("  kind=").append(message.getKind())
+                    .append("  sent=").append(message.getSentAt()).append("\n");
+            if (message.getReplyTo() != null) {
+                sb.append("    reply_to: ").append(message.getReplyTo()).append("\n");
+            }
+            sb.append("    ").append(message.getMessage().replace("\n", "\n    ")).append("\n\n");
+        }
+        return ToolResult.success("coordination messages", sb.toString().stripTrailing(),
+                Map.of("count", messages.size()));
+    }
+
+    private ToolResult executeAckMessage(JsonNode params) {
+        String messageId = params.path("message_id").asText("");
+        if (messageId.isBlank()) {
+            return ToolResult.error("message_id is required for ack_message");
+        }
+        boolean acknowledged;
+        try {
+            acknowledged = coordinator.acknowledgeMessage(messageId);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error("Invalid message_id: " + e.getMessage());
+        }
+        return acknowledged
+                ? ToolResult.success("message acknowledged", "Removed message " + messageId)
+                : ToolResult.error("Message not found in this session's mailbox: " + messageId);
+    }
+
+    /** Used by the workflow gate only for a real, host-deliverable resource pause. */
+    public boolean canPauseForActivity(String session, String waitId) {
+        try {
+            ActivityWaitRegistry.Snapshot wait = coordinator.activityWaits().get(session, waitId);
+            return wait.wakeSupported() && (wait.state() == ActivityWaitRegistry.State.WAITING
+                    || wait.state() == ActivityWaitRegistry.State.READY
+                    || wait.state() == ActivityWaitRegistry.State.EXPIRED);
+        } catch (IllegalArgumentException missing) {
+            return false;
+        }
+    }
+
+    private ToolResult executeActivityWait(String action, JsonNode params, ToolContext context) {
+        String session = context == null || context.getSessionId() == null
+                ? coordinator.getSessionId() : context.getSessionId();
+        ActivityWaitRegistry waits = coordinator.activityWaits();
+        try {
+            if ("query_activity_waits".equals(action)) {
+                List<ActivityWaitRegistry.Snapshot> snapshots = waits.list(session);
+                return ToolResult.success("resource watches", snapshots.toString(),
+                        Map.of("waits", snapshots, "count", snapshots.size()));
+            }
+            ActivityWaitRegistry.Snapshot wait;
+            if ("watch_activity".equals(action)) {
+                if (context != null && context.isAborted()) return ToolResult.error("Resource watch cancelled");
+                if (params.has("tool_name")) {
+                    if (!params.path("tool_arguments").isObject()) return ToolResult.error("tool_arguments must be an object");
+                    wait = new HighMemoryToolCallGuard(coordinator).watchToolCall(
+                            params.path("tool_name").asText(), params.get("tool_arguments"), context);
+                } else {
+                    wait = new HighMemoryToolCallGuard(coordinator).watch(
+                            params.path("activity_kind").asText("build"),
+                            params.path("description").asText("blocked high-memory work"), context);
+                }
+            } else {
+                String id = params.path("wait_id").asText("");
+                if (id.isBlank()) return ToolResult.error("wait_id is required for " + action);
+                if ("cancel_activity_wait".equals(action)) {
+                    wait = waits.cancel(session, id);
+                } else {
+                    int seconds = params.path("timeout_seconds").asInt(25);
+                    if (seconds < 1 || seconds > 300) return ToolResult.error("timeout_seconds must be 1..300");
+                    wait = waits.await(session, id, seconds * 1_000L,
+                            () -> context != null && context.isAborted());
+                }
+            }
+            String guidance = wait.state() == ActivityWaitRegistry.State.WAITING
+                    ? (wait.wakeSupported() ? "\nYou may pause; this host will wake the agent."
+                    : "\nCall wait_for_activity with this wait_id; repeat on WAITING. "
+                      + "Do not end the external model turn expecting an unsolicited wake-up.") : "";
+            return ToolResult.success("resource watch " + wait.state(), wait.notification() + guidance,
+                    Map.of("resourceWaitId", wait.waitId(), "state", wait.state().name(),
+                            "ready", wait.state() == ActivityWaitRegistry.State.READY,
+                            "wakeSupported", wait.wakeSupported()));
+        } catch (IllegalArgumentException | IllegalStateException failure) {
+            return ToolResult.error(failure.getMessage());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return ToolResult.error("Resource wait interrupted and cancelled; no work started");
+        }
+    }
+
+    private ToolResult executePreflightActivity(JsonNode params, ToolContext context) {
+        if (params.has("tool_name")) {
+            if (!params.path("tool_arguments").isObject()) return ToolResult.error("tool_arguments must be an object");
+            return new HighMemoryToolCallGuard(coordinator).inspectToolCall(
+                    params.path("tool_name").asText(), params.get("tool_arguments"), context);
+        }
+        String kind = params.path("activity_kind").asText("build");
+        String description = params.path("description").asText("manual high-memory preflight");
+        return new HighMemoryToolCallGuard(coordinator).inspect(kind, description, context);
+    }
+
+    private ToolResult executeQueryActivities() {
+        List<CoordinationActivity> activities = coordinator.queryHighMemoryActivities();
+        if (activities.isEmpty()) {
+            return ToolResult.success("No active high-memory activities");
+        }
+        StringBuilder output = new StringBuilder("System-wide high-memory activities:\n");
+        for (CoordinationActivity activity : activities) {
+            output.append("  - ").append(activity.getActivityId())
+                    .append(" ").append(activity.getKind())
+                    .append(" by ").append(firstNonBlank(activity.getAgentName(), activity.getSessionId()))
+                    .append(" via ").append(activity.getToolName())
+                    .append(" — ").append(activity.getDescription()).append('\n');
+        }
+        return ToolResult.success("high-memory activities", output.toString().stripTrailing(),
+                Map.of("count", activities.size()));
+    }
+
+    private ToolResult executeReleaseActivity(JsonNode params) {
+        String activityId = params.path("activity_id").asText("");
+        if (activityId.isBlank()) {
+            return ToolResult.error("activity_id is required for release_activity");
+        }
+        boolean released;
+        try {
+            released = coordinator.releaseHighMemoryActivity(activityId);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.error("Invalid activity_id: " + e.getMessage());
+        }
+        return released
+                ? ToolResult.success("activity released", "Released system activity " + activityId)
+                : ToolResult.error("Activity is not owned by this session or no longer exists: " + activityId);
     }
 
     private ToolResult executePublishProcess(JsonNode params) {
@@ -460,12 +760,23 @@ public class EditCoordinatorTool implements CliTool {
         List<AgentEntry> agents = coordinator.queryAgents();
         List<EditLockEntry> edits = coordinator.queryEdits();
         List<ProcessCoordEntry> processes = coordinator.queryProcesses();
+        List<CoordinationMessage> messages = coordinator.readMessages(100);
+        List<CoordinationActivity> activities = coordinator.queryHighMemoryActivities();
+        Map<String, Object> capacity;
+        try {
+            capacity = LocalSubprocessWatchdog.get().sampleCapacityStatus();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            capacity = Map.of("wouldAdmit", false,
+                    "reason", "capacity sample interrupted");
+        }
 
         long runningProcesses = processes.stream()
                 .filter(p -> "RUNNING".equalsIgnoreCase(p.getState()))
                 .count();
         long buildProcesses = processes.stream()
-                .filter(p -> isBuildOrTestCommand(p.getCommand()) || isBuildOrTestCommand(p.getDescription()))
+                .filter(ProcessCoordEntry::isRunningState)
+                .filter(p -> "high".equals(ResourcePolicy.processClass(coordinator.getProjectRoot(), p)))
                 .count();
 
         StringBuilder sb = new StringBuilder();
@@ -502,20 +813,61 @@ public class EditCoordinatorTool implements CliTool {
 
         sb.append("\nProcesses visible across agents: ").append(processes.size())
                 .append(" (").append(runningProcesses).append(" running, ")
-                .append(buildProcesses).append(" build/test-like)\n");
+                .append(buildProcesses).append(" high-resource)\n");
         if (processes.isEmpty()) {
             sb.append("  (none)\n");
         } else {
             for (ProcessCoordEntry p : processes) {
                 sb.append("  - ").append(p.getProcessId())
                         .append(" ").append(p.getState())
+                        .append(" resource=").append(ResourcePolicy.processClass(coordinator.getProjectRoot(), p))
                         .append(" pid=").append(p.getPid())
                         .append(" by ").append(p.getAgentName())
                         .append(" [").append(StringUtils.truncate(p.getSessionId(), 18)).append("]")
-                        .append(" for ").append(formatAge(p.getStartedAt()))
+                        .append(" for ").append(FormatUtils.formatDuration(p.getDuration()))
                         .append(" — ").append(StringUtils.truncate(safe(p.getDescription()), 90))
                         .append("\n");
             }
+        }
+
+        sb.append("\nPending coordination messages: ").append(messages.size()).append("\n");
+        if (messages.isEmpty()) {
+            sb.append("  (none)\n");
+        } else {
+            for (CoordinationMessage message : messages.stream().limit(5).toList()) {
+                sb.append("  - ").append(message.getMessageId())
+                        .append(" from ").append(StringUtils.truncate(message.getSenderSessionId(), 18))
+                        .append(" [").append(message.getKind()).append("] — ")
+                        .append(StringUtils.truncate(message.getMessage().replace('\n', ' '), 90))
+                        .append("\n");
+            }
+            if (messages.size() > 5) {
+                sb.append("  - ... and ").append(messages.size() - 5).append(" more\n");
+            }
+        }
+
+        sb.append("\nSystem-wide high-memory activities: ").append(activities.size()).append("\n");
+        if (activities.isEmpty()) {
+            sb.append("  (none)\n");
+        } else {
+            for (CoordinationActivity activity : activities) {
+                sb.append("  - ").append(activity.getKind())
+                        .append(" ").append(activity.getActivityId())
+                        .append(" by ").append(firstNonBlank(
+                                activity.getAgentName(), activity.getSessionId(), "unknown"))
+                        .append(" in ").append(activity.getProjectRoot())
+                        .append(" — ").append(StringUtils.truncate(
+                                safe(activity.getDescription()), 90)).append("\n");
+            }
+        }
+
+        sb.append("\nHost memory/GPU preflight: ")
+                .append(Boolean.TRUE.equals(capacity.get("wouldAdmit")) ? "available" : "constrained")
+                .append(" — ").append(capacity.getOrDefault("reason", "current thresholds satisfied"))
+                .append("\n");
+        Object capacitySnapshot = capacity.get("capacity");
+        if (capacitySnapshot != null) {
+            sb.append("  ").append(capacitySnapshot).append("\n");
         }
 
         sb.append("\nCoordination guidance:\n");
@@ -525,16 +877,25 @@ public class EditCoordinatorTool implements CliTool {
         if (runningProcesses > 0) {
             sb.append("  - Check running process output before launching duplicate builds/tests.\n");
         }
+        if (!activities.isEmpty()) {
+            sb.append("  - Do not start another high-memory activity until the system lane is released.\n");
+        }
         if (agents.size() > 1) {
             sb.append("  - Align with active agents' task scopes before overlapping edits.\n");
         }
-        if (edits.isEmpty() && runningProcesses == 0 && agents.size() <= 1) {
+        if (!messages.isEmpty()) {
+            sb.append("  - Process pending messages, then acknowledge each with ack_message.\n");
+        }
+        if (edits.isEmpty() && runningProcesses == 0 && activities.isEmpty()
+                && agents.size() <= 1 && messages.isEmpty()) {
             sb.append("  - No cross-agent contention detected.\n");
         }
 
         return ToolResult.success("awareness", sb.toString(),
                 Map.of("agents", agents.size(), "edits", edits.size(),
-                        "processes", processes.size(), "runningProcesses", runningProcesses));
+                        "processes", processes.size(), "runningProcesses", runningProcesses,
+                        "pendingMessages", messages.size(), "activities", activities.size(),
+                        "capacity", capacity));
     }
 
     private ToolResult executeStatus() {
@@ -546,12 +907,12 @@ public class EditCoordinatorTool implements CliTool {
         return text == null ? "" : text;
     }
 
-    private static boolean isBuildOrTestCommand(String text) {
-        if (text == null) return false;
-        String lower = text.toLowerCase();
-        return lower.contains("mvn") || lower.contains("gradle") || lower.contains("npm test")
-                || lower.contains("pytest") || lower.contains(" build") || lower.contains(" test")
-                || lower.contains("surefire") || lower.contains("failsafe");
+    private static String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
     }
 
     private static String formatAge(Instant since) {

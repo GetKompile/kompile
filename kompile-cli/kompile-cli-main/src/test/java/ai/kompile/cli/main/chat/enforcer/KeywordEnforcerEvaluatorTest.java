@@ -233,10 +233,35 @@ class KeywordEnforcerEvaluatorTest {
                         "rm -rf", false, false, "No rm -rf", "error", "command")),
                 "No rm -rf");
 
+        // "echo hello" is compliant under both the keyword rules and the shell mandate.
         EnforcerToolCallDecision decision = eval.evaluateToolCall("bash",
-                "{\"command\": \"ls -la\"}", EnforcerPolicy.from("No rm -rf", 2));
+                "{\"command\": \"echo hello\"}", EnforcerPolicy.from("No rm -rf", 2));
 
         assertTrue(decision.isAllowed());
+    }
+
+    @Test
+    void toolCallAllowedWhenShellMandateIsCompliant() {
+        // No rules at all — the deterministic shell mandate alone must not block
+        // a pipe-filtering build command.
+        KeywordEnforcerEvaluator eval = new KeywordEnforcerEvaluator(List.of(), "");
+
+        EnforcerToolCallDecision piped = eval.evaluateToolCall("bash",
+                "{\"command\": \"mvn test | grep ERROR\"}", EnforcerPolicy.from("", 2));
+
+        assertTrue(piped.isAllowed());
+    }
+
+    @Test
+    void toolCallBlockedByShellMandateEvenWithoutRules() {
+        KeywordEnforcerEvaluator eval = new KeywordEnforcerEvaluator(List.of(), "");
+
+        EnforcerToolCallDecision sed = eval.evaluateToolCall("bash",
+                "{\"command\": \"sed -i 's/a/b/' src/Foo.java\"}", EnforcerPolicy.from("", 2));
+
+        assertFalse(sed.isAllowed(), "shell mandate must block sed -i even with no user rules");
+        assertEquals(EnforcerToolCallDecision.Action.BLOCK, sed.getAction());
+        assertTrue(sed.blockMessage().contains("edit"), "must name the replacement tool");
     }
 
     @Test
@@ -283,11 +308,11 @@ class KeywordEnforcerEvaluatorTest {
 
     @Test
     void toolCallCorrectionIncludesRulesAndRecomplianceSteps() {
-        EnforcerPolicy policy = new EnforcerPolicy("BAN_TOOL: bash\nBAN_CMD: rm -rf", 2, false);
+        EnforcerPolicy policy = new EnforcerPolicy("BAN_TOOL: bash\nBAN_CMD: echo forbidden", 2, false);
         KeywordEnforcerEvaluator eval = KeywordEnforcerEvaluator.fromPolicy(policy, objectMapper);
 
         EnforcerToolCallDecision decision = eval.evaluateToolCall("bash",
-                "{\"command\": \"rm -rf /\"}", policy);
+                "{\"command\": \"echo forbidden\"}", policy);
 
         assertFalse(decision.isAllowed());
         String correction = decision.getCorrectionPrompt();

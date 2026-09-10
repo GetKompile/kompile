@@ -148,19 +148,17 @@ class DiscordOAuthHandlerTest {
         }
 
         @Test
-        @DisplayName("contains 'messages.read' scope")
-        void containsMessagesRead() {
+        @DisplayName("does not imply bot-only message access")
+        void excludesBotOnlyMessageScope() {
             List<String> scopes = unconfiguredHandler().getRequiredScopes();
-            assertTrue(scopes.contains("messages.read"),
-                    "Required scopes must include 'messages.read'. Got: " + scopes);
+            assertFalse(scopes.contains("messages.read"));
         }
 
         @Test
-        @DisplayName("returns at least the four default scopes")
-        void returnsAtLeastFourScopes() {
+        @DisplayName("returns the two account-discovery scopes")
+        void returnsAccountDiscoveryScopes() {
             List<String> scopes = unconfiguredHandler().getRequiredScopes();
-            assertTrue(scopes.size() >= 4,
-                    "Expected at least 4 default scopes but got: " + scopes);
+            assertEquals(2, scopes.size());
         }
 
         @Test
@@ -201,27 +199,10 @@ class DiscordOAuthHandlerTest {
     class RelatedSources {
 
         @Test
-        @DisplayName("contains 'discord'")
-        void containsDiscord() {
+        @DisplayName("does not claim bot-backed ingestion sources")
+        void doesNotClaimBotBackedSources() {
             List<String> sources = unconfiguredHandler().getRelatedSources();
-            assertTrue(sources.contains("discord"),
-                    "Related sources must include 'discord'. Got: " + sources);
-        }
-
-        @Test
-        @DisplayName("contains 'discord-history'")
-        void containsDiscordHistory() {
-            List<String> sources = unconfiguredHandler().getRelatedSources();
-            assertTrue(sources.contains("discord-history"),
-                    "Related sources must include 'discord-history'. Got: " + sources);
-        }
-
-        @Test
-        @DisplayName("returns exactly two sources")
-        void returnsTwoSources() {
-            List<String> sources = unconfiguredHandler().getRelatedSources();
-            assertEquals(2, sources.size(),
-                    "Expected exactly 2 related sources but got: " + sources);
+            assertTrue(sources.isEmpty());
         }
     }
 

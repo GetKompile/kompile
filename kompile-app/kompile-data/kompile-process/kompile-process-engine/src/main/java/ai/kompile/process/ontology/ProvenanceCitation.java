@@ -26,7 +26,7 @@ import java.time.Instant;
 
 /**
  * Links an ontology claim back to its evidence source.
- * The same provenance model used in the FP&amp;A evidence graph.
+ * The same provenance model used in the reference evidence graph.
  */
 @Data
 @Builder
@@ -37,7 +37,7 @@ public class ProvenanceCitation implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private SourceType sourceType;
-    /** Source identifier, e.g., "FP&A_Close_SOP_v3.2.docx". */
+    /** Source identifier, e.g., "operations-procedure-v3.2.docx". */
     private String sourceId;
     /** Location within the source, e.g., "§3.2", "cell D60", "0:42:13", "turn 23". */
     private String location;

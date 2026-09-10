@@ -57,7 +57,6 @@ import {
   LocalAgentSession,
   RagServiceStatus,
   ChatFolder,
-  KompileLocalModelStatus,
   ActiveModelContext,
   MessageAttachment
 } from '@shared/models/api-models';
@@ -276,7 +275,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   agents: AgentProvider[] = [];
   selectedAgent: AgentProvider | null = null;
-  skipPermissions: boolean = true;
+  // The browser does not advertise a permission toggle: CLI defaults are not a security boundary.
+  skipPermissions: boolean = false;
   agentsLoading: boolean = false;
 
   // Context budget of the selected agent's model (staging metadata for local models,
@@ -308,10 +308,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   graphRagSearchType: string = 'LOCAL';
   graphRagMaxResults: number = 5;
 
-  // Timeout settings (0 = no timeout)
+  // Timeout settings (0 = server-owned five-minute safety default)
   timeoutSeconds: number = 300; // Default 5 minutes
   timeoutOptions: { label: string; value: number }[] = [
-    { label: 'No timeout', value: 0 },
+    { label: 'Default safety limit (5 minutes)', value: 0 },
     { label: '1 minute', value: 60 },
     { label: '2 minutes', value: 120 },
     { label: '5 minutes', value: 300 },
@@ -322,11 +322,6 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   // Agent session for chat
   private agentSession: LocalAgentSession | null = null;
-
-  // Kompile Local Model state
-  kompileLocalStatus: any = null;
-  kompileLocalStagingUrl: string = 'http://localhost:8090';
-  kompileLocalLoading: boolean = false;
 
   // Attachment state
   pendingAttachments: MessageAttachment[] = [];
@@ -509,7 +504,6 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.checkRagServiceStatus();
     this.loadAgents();
     this.loadFolders();
-    this.loadKompileLocalStatus();
     this.initModelContext();
     this.loadSystemPrompts();
 
@@ -1009,6 +1003,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         session.messages = messages;
         this.currentSession = session;
         this.messages = messages;
+        this.currentConversationId = session.conversationId || null;
+        this.agentSession = null;
+        this.pendingAttachments = [];
         this.shouldScrollToBottom = true;
         this.updateMonitorSubscription();
         this.cdr.markForCheck();
@@ -1039,6 +1036,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.messages = [];
     this.currentConversationId = null;
     this.agentSession = null; // Reset agent session for new chat
+    this.pendingAttachments = [];
     this.saveSessions();
     this.updateMonitorSubscription();
     this.cdr.detectChanges();
@@ -1048,6 +1046,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.currentSession = session;
     this.messages = [...session.messages];
     this.currentConversationId = session.conversationId || null;
+    this.pendingAttachments = [];
 
     if (session.agentName) {
       this.selectedAgent = this.agents.find(a => a.name === session.agentName) || null;
@@ -1077,6 +1076,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         if (this.currentSession?.id === session.id) {
           this.currentSession = null;
           this.messages = [];
+          this.currentConversationId = null;
+          this.agentSession = null;
+          this.pendingAttachments = [];
           this.updateMonitorSubscription();
         }
         this.saveSessions();
@@ -1354,7 +1356,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         content,
         this.selectedAgent,
         {
+          sessionId: this.currentSession?.id || this.agentSession.id,
           skipPermissions: this.skipPermissions,
+          enableMemory: true,
+          systemPromptOverride: this.systemPrompt.trim() || undefined,
           enableRag: this.ragEnabled,
           ragMaxResults: this.ragMaxResults,
           ragSimilarityThreshold: this.ragThreshold,
@@ -1553,12 +1558,34 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       .afterClosed()
       .pipe(filter(confirmed => confirmed === true))
       .subscribe(() => {
+        const previous = this.currentSession;
+        const now = new Date().toISOString();
+        const freshSession: ChatSession = {
+          id: this.generateId(),
+          name: 'New Chat',
+          messages: [],
+          createdAt: now,
+          updatedAt: now,
+          agentName: this.selectedAgent?.name || previous?.agentName
+        };
+        if (previous) {
+          const index = this.sessions.findIndex(
+            session => session === previous || session.id === previous.id);
+          if (index >= 0) {
+            this.sessions[index] = freshSession;
+          } else {
+            this.sessions.unshift(freshSession);
+          }
+        } else {
+          this.sessions.unshift(freshSession);
+        }
+        this.currentSession = freshSession;
         this.messages = [];
         this.currentConversationId = null;
-        if (this.currentSession) {
-          this.currentSession.messages = [];
-          this.saveSessions();
-        }
+        this.agentSession = null;
+        this.pendingAttachments = [];
+        this.saveSessions();
+        this.updateMonitorSubscription();
         this.cdr.detectChanges();
       });
   }
@@ -1793,16 +1820,20 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   private loadAgents(): void {
     this.agentsLoading = true;
     this.cdr.markForCheck();
-    this.agentService.getAllAgents().subscribe({
+    this.agentService.getChatHarnessAgents().subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
           this.agentsLoading = false;
 
-          // Auto-select default or first available agent
-          const defaultAgent = agents.find((a: AgentProvider) => a.isDefault && a.available);
-          const firstAvailable = agents.find((a: AgentProvider) => a.available);
-          this.selectedAgent = defaultAgent || firstAvailable || null;
+          // Preserve the session's harness persona, then fall back to the configured default.
+          const sessionAgent = this.currentSession?.agentName;
+          this.selectedAgent = (sessionAgent
+            ? agents.find((a: AgentProvider) => a.name === sessionAgent && a.available)
+            : undefined)
+            || agents.find((a: AgentProvider) => a.isDefault && a.available)
+            || agents.find((a: AgentProvider) => a.available)
+            || null;
           if (this.selectedAgent) {
             this.loadAgentCapabilities(this.selectedAgent);
           }
@@ -1820,30 +1851,25 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   /**
-   * Refresh agent availability by re-checking CLI installations.
-   * Calls backend to run version checks on each agent command.
+   * Refresh the authoritative kompile-cli-main harness persona and role catalog.
    */
   refreshAgents(): void {
     this.agentsLoading = true;
     this.cdr.markForCheck();
-    this.agentService.refreshAllAgents().subscribe({
+    this.agentService.refreshChatHarnessAgents().subscribe({
       next: (agents: AgentProvider[]) => {
         this.ngZone.run(() => {
           this.agents = agents;
           this.agentsLoading = false;
 
-          // Re-select if current agent is no longer available
-          if (this.selectedAgent && !this.selectedAgent.available) {
-            const stillAvailable = agents.find((a: AgentProvider) => a.name === this.selectedAgent?.name && a.available);
-            if (stillAvailable) {
-              this.selectedAgent = stillAvailable;
-            } else {
-              // Select first available instead
-              const firstAvailable = agents.find((a: AgentProvider) => a.available);
-              this.selectedAgent = firstAvailable || null;
-            }
-            this.refreshContextBudget();
-          }
+          const stillAvailable = this.selectedAgent
+            ? agents.find((a: AgentProvider) => a.name === this.selectedAgent?.name && a.available)
+            : undefined;
+          this.selectedAgent = stillAvailable
+            || agents.find((a: AgentProvider) => a.isDefault && a.available)
+            || agents.find((a: AgentProvider) => a.available)
+            || null;
+          this.refreshContextBudget();
           this.cdr.detectChanges();
         });
       },
@@ -1922,6 +1948,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   private needsCompactionBeforeSend(): boolean {
     const budget = this.contextBudget;
     if (!this.selectedAgent || !this.agentSession || !budget) return false;
+    if (budget.source === 'kompile-cli-main') return false;
     const trigger = budget.inputBudgetTokens * (budget.compactTriggerRatio || 0.8);
     return this.estimatedContextTokens > trigger;
   }
@@ -1935,6 +1962,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     const agent = this.selectedAgent;
     const session = this.agentSession;
     if (!agent || this.isCompacting) return;
+    if (this.contextBudget?.source === 'kompile-cli-main') {
+      if (manual) {
+        this.addSystemNotice('Context compaction is managed automatically by the Kompile CLI harness.');
+      }
+      return;
+    }
     if (!session || session.messages.length === 0) {
       if (manual) {
         this.addSystemNotice('Nothing to compact yet — send a few messages first.');
@@ -2029,6 +2062,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private loadAgentCapabilities(agent: AgentProvider): void {
+    if (agent.agentType === 'HARNESS') {
+      this.agentSupportsVision = agent.supportsVision === true;
+      this.cdr.markForCheck();
+      return;
+    }
     if (agent.agentType !== 'API') {
       // CLI agents (claude, codex) handle vision natively via passthrough
       this.agentSupportsVision = true;
@@ -2050,6 +2088,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   onSkipPermissionsChange(): void {
     if (this.selectedAgent) {
+      if (this.selectedAgent.agentType === 'HARNESS') {
+        this.selectedAgent.skipPermissions = this.skipPermissions;
+        this.saveSessions();
+        return;
+      }
       this.agentService.updateSkipPermissions(this.selectedAgent.name, this.skipPermissions)
         .subscribe({
           next: () => {
@@ -2072,7 +2115,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       'codex': '💻',
       'codex-cli': '💻',
       'gemini': '✨',
-      'gemini-cli': '✨'
+      'gemini-cli': '✨',
+      'coder': '🛠️',
+      'crawler': '🕸️',
+      'planner': '🧭'
     };
     // For API agents, use a different icon
     const agent = this.agents.find(a => a.name === agentName);
@@ -2212,83 +2258,6 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.apiAgentTestLoading = false;
         this.apiAgentTestResult = 'Error: ' + (err.message || 'Connection failed');
-        this.cdr.markForCheck();
-      }
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // KOMPILE LOCAL MODEL
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  loadKompileLocalStatus(): void {
-    this.agentService.getKompileLocalStatus().subscribe({
-      next: (status: KompileLocalModelStatus) => {
-        this.kompileLocalStatus = status;
-        if (status.stagingUrl) {
-          this.kompileLocalStagingUrl = status.stagingUrl;
-        }
-        this.cdr.markForCheck();
-      },
-      error: () => {
-        this.kompileLocalStatus = null;
-        this.cdr.markForCheck();
-      }
-    });
-  }
-
-  connectKompileLocal(): void {
-    this.kompileLocalLoading = true;
-    this.cdr.markForCheck();
-
-    this.agentService.connectKompileLocal(this.kompileLocalStagingUrl).subscribe({
-      next: () => {
-        this.kompileLocalLoading = false;
-        this.loadKompileLocalStatus();
-        this.refreshAgents();
-      },
-      error: (err: any) => {
-        this.kompileLocalLoading = false;
-        console.error('Failed to connect kompile-local:', err);
-        this.snackBar.open('Failed to connect Kompile Local', 'Dismiss', { duration: 4000 });
-        this.cdr.markForCheck();
-      }
-    });
-  }
-
-  disconnectKompileLocal(): void {
-    this.kompileLocalLoading = true;
-    this.cdr.markForCheck();
-
-    this.agentService.disconnectKompileLocal().subscribe({
-      next: () => {
-        this.kompileLocalLoading = false;
-        this.loadKompileLocalStatus();
-        this.refreshAgents();
-      },
-      error: (err: any) => {
-        this.kompileLocalLoading = false;
-        console.error('Failed to disconnect kompile-local:', err);
-        this.snackBar.open('Failed to disconnect Kompile Local', 'Dismiss', { duration: 4000 });
-        this.cdr.markForCheck();
-      }
-    });
-  }
-
-  refreshKompileLocalStatus(): void {
-    this.kompileLocalLoading = true;
-    this.cdr.markForCheck();
-
-    this.agentService.discoverKompileLocal().subscribe({
-      next: () => {
-        this.kompileLocalLoading = false;
-        this.loadKompileLocalStatus();
-        this.refreshAgents();
-      },
-      error: (err: any) => {
-        this.kompileLocalLoading = false;
-        console.error('Failed to refresh kompile-local:', err);
-        this.snackBar.open('Failed to refresh Kompile Local status', 'Dismiss', { duration: 4000 });
         this.cdr.markForCheck();
       }
     });
@@ -2586,35 +2555,71 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private processFiles(files: File[]): void {
+    const maxAttachments = 8;
+    const maxAttachmentBytes = 5 * 1024 * 1024;
+    const maxTotalBytes = 20 * 1024 * 1024;
+    let reservedCount = this.pendingAttachments.length;
+    let reservedBytes = this.pendingAttachments.reduce(
+      (total, attachment) => total + (attachment.size || 0), 0);
+
     for (const file of files) {
-      if (file.size > 5 * 1024 * 1024) {
-        console.warn(`File ${file.name} exceeds 5MB limit, skipping`);
+      if (reservedCount >= maxAttachments) {
+        this.snackBar.open('A chat turn may include at most 8 attachments', 'Dismiss', { duration: 4000 });
+        break;
+      }
+      if (file.size > maxAttachmentBytes) {
+        this.snackBar.open(`${file.name} exceeds the 5 MiB attachment limit`, 'Dismiss', { duration: 4000 });
         continue;
       }
+      if (reservedBytes + file.size > maxTotalBytes) {
+        this.snackBar.open('Attachments exceed the 20 MiB total limit', 'Dismiss', { duration: 4000 });
+        break;
+      }
+
+      const lowerName = file.name.toLowerCase();
       const isImage = file.type.startsWith('image/');
+      const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
+      const isText = file.type.startsWith('text/') ||
+        /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|ya?ml|log|properties|ini|java|kt|py|ts|tsx|js|jsx|html|css|scss|sql|sh|c|cc|cpp|cu|cuh|h|hpp|rs|go|toml|gradle)$/i.test(lowerName);
+      if (!isImage && !isPdf && !isText) {
+        this.snackBar.open(
+          `${file.name} is not a supported image, PDF, or text file`,
+          'Dismiss',
+          { duration: 4000 });
+        continue;
+      }
       if (isImage && !this.agentSupportsVision) {
-        console.warn(`Agent does not support vision, skipping image ${file.name}`);
+        this.snackBar.open(
+          'The active CLI provider does not accept image attachments',
+          'Dismiss',
+          { duration: 4000 });
         continue;
       }
 
+      reservedCount++;
+      reservedBytes += file.size;
       const reader = new FileReader();
       reader.onload = () => {
         const attachment: MessageAttachment = {
           filename: file.name,
           mimeType: file.type || 'application/octet-stream',
-          isImage: isImage
+          isImage,
+          size: file.size
         };
-        if (isImage) {
+        if (isImage || isPdf) {
           const dataUrl = reader.result as string;
           attachment.base64Data = dataUrl.split(',')[1];
-          attachment.previewUrl = dataUrl;
+          if (isImage) attachment.previewUrl = dataUrl;
         } else {
           attachment.textContent = reader.result as string;
         }
         this.pendingAttachments.push(attachment);
         this.cdr.markForCheck();
       };
-      if (isImage) {
+      reader.onerror = () => {
+        this.snackBar.open(`Could not read ${file.name}`, 'Dismiss', { duration: 4000 });
+      };
+      if (isImage || isPdf) {
         reader.readAsDataURL(file);
       } else {
         reader.readAsText(file);

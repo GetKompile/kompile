@@ -17,6 +17,7 @@
 package ai.kompile.app.mcp;
 
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.app.services.mcp.ScopedMcpCapabilityService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -103,6 +104,13 @@ public class McpServerConfig implements ApplicationListener<ApplicationReadyEven
 
         // Use method reference to defer URL resolution until a client actually connects
         return new SpringMvcSseServerTransport(objectMapper, serverPortService::getBaseUrl, messageEndpoint, sseEndpoint);
+    }
+
+    /** Scoped bearer URLs exist only when their HTTP MCP boundary is mounted. */
+    @Bean
+    @ConditionalOnProperty(name = "mcp.server.transport", havingValue = "sse", matchIfMissing = true)
+    public ScopedMcpCapabilityService scopedMcpCapabilityService() {
+        return new ScopedMcpCapabilityService(objectMapper, serverPortService);
     }
 
     /**

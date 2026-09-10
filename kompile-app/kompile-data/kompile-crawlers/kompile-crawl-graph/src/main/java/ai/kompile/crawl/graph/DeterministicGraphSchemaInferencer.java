@@ -11,6 +11,7 @@ import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 
 import java.util.List;
 import java.util.Locale;
@@ -49,7 +50,8 @@ final class DeterministicGraphSchemaInferencer {
                 nodeTypes.putIfAbsent(type, new NodeType(
                         type,
                         "Type emitted by deterministic or source-native crawl extraction.",
-                        null));
+                        null,
+                        SchemaHierarchyVocabulary.parentForGeneratedType(type)));
             }
         }
 
@@ -66,10 +68,17 @@ final class DeterministicGraphSchemaInferencer {
                 if (type == null || sourceType == null || targetType == null) {
                     continue;
                 }
+                String connectionFamily =
+                        SchemaHierarchyVocabulary.connectionFamilyForPredicate(type);
+                if (connectionFamily == null) {
+                    continue;
+                }
                 relationshipTypes.putIfAbsent(type, new RelationshipType(
                         type,
                         "Relationship emitted by deterministic or source-native crawl extraction.",
-                        null));
+                        null,
+                        List.of(),
+                        connectionFamily));
                 patterns.add("(" + sourceType + ")-[:" + type + "]->(" + targetType + ")");
             }
         }

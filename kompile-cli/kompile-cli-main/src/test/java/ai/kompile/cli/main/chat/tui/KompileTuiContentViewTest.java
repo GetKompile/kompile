@@ -11,6 +11,84 @@ import static org.junit.jupiter.api.Assertions.*;
 class KompileTuiContentViewTest {
 
     @Test
+    void ephemeralAlertsExpireWithoutClearingNewerMessagesOrTranscript() {
+        assertEquals(10, KompileTui.EPHEMERAL_MESSAGE_SECONDS);
+        try (BackgroundProcessManager processes = new BackgroundProcessManager("alert-expiry")) {
+            KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                    new MessageQueue("alert-expiry"), new TerminalRenderer(false));
+            tui.recordInScrollRegion("permanent result");
+            java.util.List<Runnable> timers = new java.util.ArrayList<>();
+            tui.showAlert("first completion", timers::add);
+            tui.showAlert("newer completion", timers::add);
+            timers.get(0).run();
+            assertEquals("newer completion", tui.getTopBar().getAlert());
+            timers.get(1).run();
+            assertEquals("", tui.getTopBar().getAlert());
+            assertTrue(tui.getVisibleContentLines().contains("permanent result"));
+            assertFalse(tui.getVisibleContentLines().contains("newer completion"));
+            tui.showAlert("cleared notice", timers::add);
+            tui.clearAlert();
+            tui.showAlert("replacement", timers::add);
+            timers.get(2).run();
+            assertEquals("replacement", tui.getTopBar().getAlert());
+            timers.get(3).run();
+            assertEquals("", tui.getTopBar().getAlert());
+        }
+    }
+
+    @Test
+    void dashboardUsesAStableResponsivePinnedRegion() {
+        assertEquals(0, KompileTui.dashboardRowsForTerminal(12));
+        assertEquals(0, KompileTui.dashboardRowsForTerminal(16));
+        assertEquals(8, KompileTui.dashboardRowsForTerminal(24));
+        assertEquals(9, KompileTui.dashboardRowsForTerminal(80));
+        assertEquals(0, KompileTui.dashboardRowsForLayout(16, 3, 2),
+                "small terminals must retain usable transcript/input rows");
+        assertEquals(8, KompileTui.dashboardRowsForLayout(24, 3, 3));
+
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-dashboard-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-dashboard-queue"),
+                    new TerminalRenderer(false));
+            int normalTop = tui.scrollTop();
+
+            tui.setDashboard("Elthoria", java.util.stream.IntStream.range(0, 12)
+                    .mapToObj(index -> "line " + index).toList());
+
+            assertTrue(tui.getDashboardSnapshot().visible());
+            assertEquals("Elthoria", tui.getDashboardSnapshot().title());
+            assertEquals(8, tui.getDashboardSnapshot().lines().size());
+            assertEquals(normalTop + KompileTui.dashboardRowsForTerminal(24), tui.scrollTop());
+
+            int pinnedTop = tui.scrollTop();
+            tui.setDashboard("Elthoria refreshed", java.util.List.of("new state"));
+            assertEquals(pinnedTop, tui.scrollTop(),
+                    "dashboard content changes must not move the transcript anchor");
+
+            tui.clearDashboard();
+            assertFalse(tui.getDashboardSnapshot().visible());
+            assertEquals(normalTop, tui.scrollTop());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void compactDashboardKeepsNextAndReportsTheActualHiddenCount() {
+        java.util.List<String> lines = java.util.List.of(
+                "Campaign", "Hero", "World", "Scene", "Combat", "Map", "Next");
+
+        assertEquals(java.util.List.of(
+                        "Campaign", "Hero", "World", "Next", "… 3 more details"),
+                KompileTui.dashboardContentLines(lines, 5));
+        assertEquals(java.util.List.of("Next"),
+                KompileTui.dashboardContentLines(lines, 1));
+    }
+
+    @Test
     void queuePaneUsesStableBoundedRowsForTerminalHeight() {
         assertEquals(1, KompileTui.queueRowsForTerminal(12));
         assertEquals(2, KompileTui.queueRowsForTerminal(16));
@@ -335,7 +413,7 @@ class KompileTuiContentViewTest {
     }
 
     @Test
-    void mismatchedRefreshSwitchesActiveViewAndKeepsItScrollable() {
+    void staleRefreshesCannotReplaceNewerActivityOrMainSelection() {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-active-view-switch-test");
         try {
@@ -343,24 +421,34 @@ class KompileTuiContentViewTest {
                     new BackgroundTaskManager(), processes,
                     new MessageQueue("tui-active-view-switch-queue"),
                     new TerminalRenderer(false));
+            tui.printInScrollRegion("retained parent transcript");
 
             tui.showActivityView("process:one", "process one",
                     "one-1\none-2\none-3\none-4\none-5\none-6\none-7");
-            assertTrue(tui.pageContent(1));
-            assertTrue(tui.getContentScrollOffset() > 0);
-
-            // A background refresh for a newly selected process must switch the
-            // rendered view instead of being silently discarded.
-            tui.updateActivityView("process:two", "process two",
+            tui.showActivityView("process:two", "process two",
                     "two-1\ntwo-2\ntwo-3\ntwo-4\ntwo-5\ntwo-6\ntwo-7");
+
+            // A delayed refresh for the previously viewed process cannot replace
+            // the newer explicit selection.
+            tui.updateActivityView("process:one", "stale process one", "stale output");
             assertEquals("process:two", tui.getContentViewKey());
             assertTrue(tui.getContentViewLines().contains("── process two ──"));
-            assertEquals(0, tui.getContentScrollOffset());
+            assertFalse(tui.getContentViewLines().contains("stale output"));
 
-            // Repaint is safe even before an interactive terminal is attached.
-            tui.redrawContentView();
-            assertTrue(tui.pageContent(1));
-            assertFalse(tui.getVisibleContentLines().contains("two-7"));
+            // The inverse stale callback (captured while Main was active) is also
+            // guarded and cannot overwrite a child selected afterward.
+            java.util.concurrent.atomic.AtomicBoolean mainStillSelected =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            tui.showMainViewIf(mainStillSelected::get);
+            assertEquals("process:two", tui.getContentViewKey());
+
+            // Once Main is explicitly selected, later child output stays retained
+            // by its owner but cannot reopen the child transcript.
+            tui.showMainView();
+            tui.updateActivityView("process:two", "process two", "late child output");
+            assertTrue(tui.isMainContentView());
+            assertEquals(java.util.List.of("retained parent transcript"),
+                    tui.getContentViewLines());
         } finally {
             processes.close();
         }
@@ -439,6 +527,44 @@ class KompileTuiContentViewTest {
                             "You: prior question",
                             "Assistant: prior answer"),
                     tui.getContentViewLines());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void viewRefreshWaitingForDrawLockCannotOverwriteANewPicker() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-picker-view-race-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-picker-view-race-queue"), new TerminalRenderer(false));
+            tui.rememberMainTranscriptLine("retained transcript");
+            for (boolean main : new boolean[] { true, false }) {
+                java.util.concurrent.FutureTask<Void> refresh = new java.util.concurrent.FutureTask<>(() -> {
+                    if (main) tui.showMainViewIf(() -> true);
+                    else tui.showActivityView("process:late", "late process", "late output");
+                    return null;
+                });
+                Thread worker = new Thread(refresh, "delayed-view-refresh");
+                worker.setDaemon(true);
+                synchronized (tui.getDrawLock()) {
+                    worker.start();
+                    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+                    while (worker.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                        Thread.sleep(1);
+                    }
+                    assertEquals(Thread.State.BLOCKED, worker.getState(), "refresh must reach the draw lock");
+                    tui.showTemporaryWindow("Provider and model", java.util.List.of("first model"));
+                }
+                refresh.get(2, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals("__temporary__", tui.getContentViewKey(),
+                        "a refresh queued before picker entry must recheck ownership under the draw lock");
+                assertTrue(tui.getVisibleContentLines().get(0).contains("Provider and model"));
+                tui.closeTemporaryWindow();
+                assertEquals(java.util.List.of("retained transcript"), tui.getContentViewLines());
+            }
         } finally {
             processes.close();
         }

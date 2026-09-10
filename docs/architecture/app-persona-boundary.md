@@ -74,14 +74,14 @@ Three back-edges into app-main were inverted rather than dragged along:
 | `kompile-app-web-graph` | ✅ | ✅ | — |
 | `kompile-app-web-admin` | — | — | ✅ |
 
-Counts: shared 25, chat 18, crawl 24, graph 2, admin 85 — **154 total**.
+Counts: shared 23, chat 19, crawl 28, graph 2, admin 84 — **156 total**.
 
 Graph *viewing* is an end-user surface, so `web-graph` ships with the two end-user apps. The admin
 console does not mount it: graph **maintenance** — `/api/graph-eval`, `/api/graph-ontology`,
 `/api/graph-sim` — lives in `web-admin` and is a different surface from the aggregate/forecast read
 paths. This is a change from the pre-split arrangement, where app-main mounted everything.
 
-## shared — `kompile-app-web-shared` (25)
+## shared — `kompile-app-web-shared` (23)
 
 Mounted by all three apps: project browsing, fact sheets, documents, sources, config, setup, and the
 SPA forward.
@@ -96,12 +96,10 @@ SPA forward.
 | `DocumentManagementController` | `/api/documents` |
 | `DocumentUploadController` | `/api/documents` |
 | `SourceViewerController` | `{"/api/facts", "/api/sources"}` |
-| `SourceProviderController` | `/api/source-providers` |
+| `ChannelBrowserSessionController` | `/api/channel-integrations/browser-sessions` (portable login exchange/revocation only) |
 | `IndexBrowserController` | `/api/index-browser` |
 | `TableBrowserController` | `/api/tables` |
 | `KnowledgeSearchController` | `/api/knowledge` |
-| `NoteSyncController` | `/api/sync` |
-| `NoteSyncConfigController` | `/api/sync/config` |
 | `AppConfigController` | `/api/config/k-app` |
 | `FrontendConfigController` | `/api/config` |
 | `SetupStatusController` | `/api/setup` |
@@ -117,7 +115,7 @@ SPA forward.
 `SetupStatusController` must stay shared: `ProjectCrawlCommand` probes `/api/setup/status` on every
 generated app to decide whether the backend is ready.
 
-## chat — `kompile-app-web-chat` (18)
+## chat — `kompile-app-web-chat` (19)
 
 | Controller | Base path |
 |---|---|
@@ -129,6 +127,7 @@ generated app to decide whether the backend is ready.
 | `AgentDiagnosticController` | `/api/agents` |
 | `ChatSessionContextController` | `/api/chat-sessions/{sessionId}/context` |
 | `ConversationalRagController` | `/api/chat` |
+| `ChannelInternalChatController` | `/api/chat/channel`, `/api/chat/channel/status` (HMAC-authenticated channel engine) |
 | `RagController` | `/api/rag` |
 | `GraphRagController` | `/api/graph-rag` |
 | `SystemPromptController` | `/api/system-prompts` |
@@ -140,7 +139,21 @@ generated app to decide whether the backend is ready.
 | `VerifyElementController` | `/api/grounding` |
 | `PromptTemplateController` | `/api/prompts` |
 
-## crawl — `kompile-app-web-crawl` (24)
+`AgentChatController` is now a transport client of the external `kompile-cli-main` harness rather
+than a second web-owned agent loop. Ordinary browser turns launch `kompile chat --output-format
+stream-json` with a project-scoped, hashed transcript ID; CLI chat owns provider/model selection,
+roles/personas, tools, workflow policy, reminders, memory, compaction, and crawl lifecycle. The web
+layer only adapts JSONL events to SSE and owns exact-child cancellation. Provisioned/channel turns
+retain their separate authenticated canonical runtime.
+
+This endpoint is the deliberate exception to the otherwise classpath-only security boundary above:
+the full CLI harness can invoke host tools, so ordinary harness execution and harness cancellation
+are loopback-only. A remote caller must use HTTPS and present the integration-admin token plus the
+internal-request proof header. Capability and context-budget reads contain no credentials. Do not
+remove that method-level gate unless the chat persona gains an equivalent authenticated user
+boundary.
+
+## crawl — `kompile-app-web-crawl` (28)
 
 | Controller | Base path |
 |---|---|
@@ -162,6 +175,10 @@ generated app to decide whether the backend is ready.
 | `IndexingJobHistoryController` | `/api/indexing/history` |
 | `JobLogController` | `/api/indexing/jobs` |
 | `ScheduleController` | `/api/schedules` |
+| `SourceProviderController` | `/api/source-providers` |
+| `NoteSyncController` | `/api/sync` |
+| `NoteSyncConfigController` | `/api/sync/config` |
+| `NotionWebhookController` | `/api/sync/webhook/notion` |
 | `ConfluenceController` | `/api/confluence` |
 | `EmailValueExtractionController` | `/api/email/extract-values` |
 | `ChunkManagerController` | `/api/chunk-manager` |
@@ -324,21 +341,36 @@ remaining **53 are library-owned and belong to no persona** — they are in
 decision each persona test re-asserts; these are a consequence of the dependency graph that nothing
 re-evaluates when a pom changes.
 
-41 of the 53 land on all three ports, which is unremarkable — chat history, orchestrator, code index,
-OCR, OAuth, the knowledge-graph read surface. **12 do not**, and those splits are arbitrary rather
-than designed:
+Most library controllers land on all three ports, which is unremarkable for chat history,
+orchestrator, code index, OCR, and the knowledge-graph read surface. OAuth controller classes remain
+in a library for handler reuse but are runtime-conditional on crawl-manager. The remaining splits are
+listed below; several are historical rather than designed:
 
 | Library module | Paths | :8081 chat | :8082 crawl | :8080 admin |
 |---|---|:--:|:--:|:--:|
 | `kompile-graph-change-tracking` | `/api/graph/changes`, `/api/graph/hooks`, `/api/graph/pipelines`, `/api/graph/rules` | ✅ | — | ✅ |
-| `kompile-kclaw` | `/api/kclaw`, `/api/kclaw/channels`, `/api/kclaw/oauth`, `/api/kclaw/tasks` | — | ✅ | ✅ |
+| `kompile-kclaw` | `/api/kclaw`, `/api/kclaw/channels`, `/api/kclaw/tasks` | — | ✅ | ✅ |
 | `kompile-compute-graph-core` | `/api/compute-graph`, `/api/workflows` | — | ✅ | ✅ |
 | `kompile-process-discovery` | `/api/process/discovery`, `/api/process/mining` | — | ✅ | ✅ |
 
+Channel credential/lifecycle ownership is deliberately outside that library surface. The
+descriptor-driven `/api/channel-integrations` controller and its persistence/runtime configuration
+live in `kompile-app-web-admin`, so only :8080 restores polling/socket connections. KClaw's remaining
+`/api/kclaw/channels` surface is read-only inventory plus the HMAC-authenticated WhatsApp ingress;
+all channel control endpoints require the generated channel-admin bearer credential. Only the
+browser-session controller is shared: one-time login hashes and revocations are atomically persisted
+under the common data directory so a code minted on :8080 can authorize source maintenance on :8082
+without putting channel lifecycle ownership on the crawl classpath.
+
+Source integration ownership is the inverse: OAuth controllers and scheduled token maintenance are
+enabled only when `spring.application.name=kompile-app-crawl-manager`, and the Notion/Obsidian/Git/
+folder sync controllers plus Notion webhook physically live in `kompile-app-web-crawl`. Admin and
+chat use the managed endpoint router; they do not mount competing source runtimes.
+
 Live probe, not inference: `/api/kclaw/tasks` returns 200 on :8080 and :8082 and 404 on :8081. Two of
 these read wrong on their face — graph *change tracking* is off the one persona that writes to the
-graph, and the agent-task gateway with its OAuth surface is on the crawl manager, which has no agent
-UI. Neither is a leak the tests can call, because neither path is admin-only; both are consequences of
+graph, and the agent-task gateway is on the crawl manager, which has no agent UI. Neither is a leak
+the tests can call, because neither path is admin-only; both are consequences of
 which library each web module happened to pull in. Fixing one means moving the controller into a
 persona web module, which takes it out of `LIBRARY_UNSCOPED`.
 

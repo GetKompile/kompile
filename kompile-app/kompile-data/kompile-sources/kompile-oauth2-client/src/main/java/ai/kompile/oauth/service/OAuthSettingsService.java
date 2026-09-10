@@ -30,29 +30,33 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Service for managing OAuth provider settings using the kompile managed-JSON config pattern.
  * <p>
  * Non-secret configuration (clientId, scopes, tenantId, configured flag) is persisted to
- * {@code <dataDir>/config/oauth-config.json}. Secrets (clientSecrets) are <em>never</em>
- * written to that file; they are resolved at load time using the following precedence:
+ * {@code <dataDir>/config/oauth-config.json}. Client secrets are never written there; they are
+ * resolved at load time using the following precedence:
  * <ol>
  *   <li>OS environment variable — e.g. {@code GOOGLE_CLIENT_SECRET} (derived from the
  *       provider name; same variables the application.properties layer bridged previously).</li>
- *   <li>Optional gitignored sidecar file {@code <dataDir>/config/secrets/oauth-secrets.json},
- *       expected format: {@code { "google.client-secret": "...", ... }}.</li>
+ *   <li>An owner-only, AES-GCM encrypted sidecar file
+ *       {@code <dataDir>/config/secrets/oauth-secrets.json}.</li>
  *   <li>Empty string (provider remains unconfigured).</li>
  * </ol>
- * Calling {@link #persist()} writes only the non-secret fields back to
- * {@code oauth-config.json}.
+ * Calling {@link #persist()} writes only non-secret fields to {@code oauth-config.json}; legacy
+ * plaintext sidecar entries are encrypted in place the first time they are loaded.
  */
 @Service
 public class OAuthSettingsService {
@@ -60,7 +64,6 @@ public class OAuthSettingsService {
     private static final Logger log = LoggerFactory.getLogger(OAuthSettingsService.class);
     private static final String CONFIG_FILENAME = "oauth-config.json";
 
-    /** Kept in the constructor for backward-compatibility with existing Spring wiring. */
     private final TokenEncryptionService encryptionService;
     private final ObjectMapper objectMapper;
     private final Path configFilePath;
@@ -124,6 +127,13 @@ public class OAuthSettingsService {
             throw new IllegalArgumentException("Provider ID is required");
         }
 
+        OAuthProviderSettings current = settingsCache.get(settings.getProviderId());
+        String suppliedSecret = settings.getClientSecret();
+        if (!hasValue(suppliedSecret) || "********".equals(suppliedSecret)) {
+            settings.setClientSecret(current == null ? null : current.getClientSecret());
+        } else {
+            persistSecret(settings.getProviderId(), suppliedSecret);
+        }
         settings.setConfigured(settings.hasValidCredentials());
         settings.setLastUpdated(System.currentTimeMillis());
 
@@ -140,6 +150,7 @@ public class OAuthSettingsService {
      */
     public void deleteSettings(String providerId) {
         settingsCache.remove(providerId);
+        deleteSecret(providerId);
         persist();
         notifyListeners(providerId, null);
         log.info("Deleted OAuth settings for provider: {}", providerId);
@@ -198,7 +209,7 @@ public class OAuthSettingsService {
      * Get list of supported provider IDs.
      */
     public List<String> getProviderIds() {
-        return List.of("google", "microsoft", "atlassian", "notion", "slack");
+        return List.of("google", "microsoft", "atlassian", "notion", "slack", "discord", "reddit");
     }
 
     /**
@@ -330,6 +341,18 @@ public class OAuthSettingsService {
         try {
             String json = Files.readString(secretsFilePath);
             Map<String, String> secrets = objectMapper.readValue(json, new TypeReference<Map<String, String>>() {});
+            boolean migrated = false;
+            for (Map.Entry<String, String> entry : secrets.entrySet()) {
+                String value = entry.getValue();
+                if (hasValue(value) && !value.startsWith("enc:")) {
+                    entry.setValue("enc:" + encryptionService.encrypt(value));
+                    migrated = true;
+                }
+            }
+            if (migrated) {
+                writeSecretsFile(secrets);
+                log.info("Encrypted legacy plaintext OAuth secrets in {}", secretsFilePath);
+            }
             log.info("Loaded OAuth secrets sidecar from {}", secretsFilePath);
             return secrets;
         } catch (IOException e) {
@@ -358,10 +381,58 @@ public class OAuthSettingsService {
         String fromFile = secretsFromFile.get(providerId + ".client-secret");
         if (hasValue(fromFile)) {
             log.debug("Resolved secret for provider '{}' from secrets sidecar", providerId);
-            return fromFile;
+            return encryptionService.decrypt(fromFile.substring("enc:".length()));
         }
         // (3) Unconfigured
         return "";
+    }
+
+    private synchronized void persistSecret(String providerId, String plainText) {
+        Map<String, String> secrets = loadSecretsFile();
+        secrets.put(providerId + ".client-secret", "enc:" + encryptionService.encrypt(plainText));
+        writeSecretsFile(secrets);
+    }
+
+    private synchronized void deleteSecret(String providerId) {
+        Map<String, String> secrets = loadSecretsFile();
+        if (secrets.remove(providerId + ".client-secret") != null) {
+            writeSecretsFile(secrets);
+        }
+    }
+
+    private void writeSecretsFile(Map<String, String> secrets) {
+        try {
+            Files.createDirectories(secretsFilePath.getParent());
+            Path temporary = Files.createTempFile(
+                    secretsFilePath.getParent(), ".oauth-secrets-", ".tmp");
+            try {
+                objectMapper.writeValue(temporary.toFile(), secrets);
+                restrictSecretFile(temporary);
+                try {
+                    Files.move(temporary, secretsFilePath,
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temporary, secretsFilePath, StandardCopyOption.REPLACE_EXISTING);
+                }
+                restrictSecretFile(secretsFilePath);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not persist encrypted OAuth client secret", e);
+        }
+    }
+
+    private static void restrictSecretFile(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (IOException | UnsupportedOperationException ignored) {
+            path.toFile().setReadable(false, false);
+            path.toFile().setWritable(false, false);
+            path.toFile().setReadable(true, true);
+            path.toFile().setWritable(true, true);
+        }
     }
 
     /**
@@ -369,10 +440,17 @@ public class OAuthSettingsService {
      */
     private OAuthProviderSettings createDefaultSettings(String providerId) {
         String defaultScopes = switch (providerId) {
-            case "google" -> "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly email profile";
-            case "microsoft" -> "Files.Read User.Read offline_access";
-            case "atlassian" -> "read:confluence-content.all read:jira-work read:jira-user offline_access";
+            case "google" -> "https://www.googleapis.com/auth/drive.readonly "
+                    + "https://www.googleapis.com/auth/gmail.readonly "
+                    + "https://www.googleapis.com/auth/documents.readonly "
+                    + "https://www.googleapis.com/auth/calendar.readonly email profile";
+            case "microsoft" -> "Files.Read Sites.Read.All User.Read offline_access";
+            case "atlassian" ->
+                    "read:confluence-content.all read:confluence-space.summary "
+                            + "read:jira-work read:jira-user offline_access";
             case "slack" -> "channels:history channels:read users:read";
+            case "discord" -> "identify guilds";
+            case "reddit" -> "identity read";
             default -> "";
         };
         return OAuthProviderSettings.builder()
@@ -399,8 +477,8 @@ public class OAuthSettingsService {
     /**
      * Check if a value is non-null and non-empty.
      */
-    private boolean hasValue(String value) {
-        return value != null && !value.isEmpty();
+    private static boolean hasValue(String value) {
+        return value != null && !value.isBlank();
     }
 
     // ── interfaces ────────────────────────────────────────────────────────────────

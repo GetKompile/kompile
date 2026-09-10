@@ -65,12 +65,12 @@ class RoleManagerToolTest {
         codex.put("model", "gpt-5.6-terra");
         ObjectNode thinking = codex.putObject("thinking");
         thinking.put("default", "medium");
-        thinking.putObject("models").put("gpt-5.6-sol", "ultra");
+        thinking.putObject("models").put("gpt-5.6-sol", "max");
 
         Map<String, RoleAgentDefaults> parsed =
                 RoleManagerTool.parseAgentDefaults(params);
         assertEquals("gpt-5.6-terra", parsed.get("codex").getModel());
-        assertEquals("ultra", parsed.get("codex").resolveThinking("gpt-5.6-sol"));
+        assertEquals("max", parsed.get("codex").resolveThinking("gpt-5.6-sol"));
 
         ObjectNode invalid = objectMapper.createObjectNode();
         invalid.putObject("agent_defaults").putObject("gemini").put("model", "gemini-pro");

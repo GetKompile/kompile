@@ -129,7 +129,7 @@ class ExtractionAdmissionComparatorComplexGraphTest {
                         null, 1.0, Map.of())),
                 null);
         GraphOperationalPolicy policy = GraphOperationalPolicy.builder()
-                .rule("fpna.status.not-usable", OperationalDisposition.DENY, 100,
+                .rule("canonical.status.not-usable", OperationalDisposition.DENY, 100,
                         "Do not mutate the workbook.")
                 .build();
 

@@ -4,6 +4,7 @@ import ai.kompile.cli.common.auth.ManagedCredential;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
@@ -213,6 +214,97 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
+    void googleBrowserPkceStoresRefreshTokenAndClientMetadata() throws Exception {
+        QueueTransport transport = new QueueTransport(json(200, """
+                {"access_token":"ya29.google-access","refresh_token":"1//google-refresh",
+                 "expires_in":3600,"scope":"https://www.googleapis.com/auth/gmail.readonly"}
+                """));
+        TestInteraction interaction = new TestInteraction("google-code");
+        GoogleOAuthFlow flow = new GoogleOAuthFlow(transport, "test-client");
+
+        ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
+
+        assertEquals("1//google-refresh", credential.getRefresh());
+        assertTrue(interaction.authorizationUri.toString().contains("access_type=offline"));
+        assertTrue(interaction.authorizationUri.toString().contains("prompt=consent"));
+        assertTrue(transport.requests.get(0).body().contains("code=google-code"));
+        assertTrue(transport.requests.get(0).body().contains("code_verifier="));
+        assertEquals("test-client", credential.getMetadata("clientId"));
+        assertEquals("ya29.google-access", flow.toRequestAuth(credential).token());
+    }
+
+    @Test
+    void googleRefreshOmitsRedirectAndKeepsClientMetadata() throws Exception {
+        QueueTransport transport = new QueueTransport(json(200, """
+                {"access_token":"ya29.new-access","refresh_token":"1//rotated",
+                 "expires_in":3600}
+                """));
+        GoogleOAuthFlow flow = new GoogleOAuthFlow(transport, "test-client");
+
+        ManagedCredential refreshed = flow.refresh(ManagedCredential.oauth(
+                "ya29.old", "1//old-refresh", 1L));
+
+        assertEquals("1//rotated", refreshed.getRefresh());
+        String body = transport.requests.get(0).body();
+        assertTrue(body.contains("grant_type=refresh_token"));
+        assertFalse(body.contains("redirect_uri="));
+        assertEquals("test-client", refreshed.getMetadata("clientId"));
+    }
+
+    @Test
+    void googleLoginRequiresConfiguredClientId() {
+        GoogleOAuthFlow flow = new GoogleOAuthFlow(request -> {
+            throw new AssertionError("no HTTP before client id exists");
+        }, null);
+
+        IOException error = assertThrows(IOException.class,
+                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+        assertTrue(error.getMessage().contains("KOMPILE_GOOGLE_CLIENT_ID"));
+    }
+
+    @Test
+    void microsoftDeviceFlowStoresTenantAndClientMetadata() throws Exception {
+        QueueTransport transport = new QueueTransport(
+                json(200, """
+                        {"device_code":"ms-device","user_code":"MS-CODE",
+                         "verification_uri":"https://microsoft.com/devicelogin",
+                         "interval":1,"expires_in":600}
+                        """),
+                json(200, """
+                        {"access_token":"ms-access","refresh_token":"ms-refresh",
+                         "expires_in":3600}
+                        """));
+        TestInteraction interaction = new TestInteraction(null);
+        MicrosoftOAuthFlow flow = new MicrosoftOAuthFlow(transport, immediatePoller(), "ms-client");
+
+        ManagedCredential credential = flow.login(
+                new OAuthProviderFlow.LoginOptions("device", false, null, null),
+                interaction);
+
+        assertEquals("MS-CODE", interaction.deviceUserCode);
+        assertEquals("ms-refresh", credential.getRefresh());
+        assertEquals("ms-client", credential.getMetadata("clientId"));
+        assertEquals("common", credential.getMetadata("tenant"));
+        assertTrue(transport.requests.get(0).uri().toString().contains("/common/"));
+        assertEquals("ms-access", flow.toRequestAuth(credential).token());
+    }
+
+    @Test
+    void microsoftBrowserUsesEnterpriseTenantOption() throws Exception {
+        QueueTransport transport = new QueueTransport(json(200, """
+                {"access_token":"ms-access","refresh_token":"ms-refresh","expires_in":3600}
+                """));
+        TestInteraction interaction = new TestInteraction("ms-code");
+        MicrosoftOAuthFlow flow = new MicrosoftOAuthFlow(transport, immediatePoller(), "ms-client");
+
+        flow.login(new OAuthProviderFlow.LoginOptions(
+                "browser", true, "contoso.onmicrosoft.com", null), interaction);
+
+        assertTrue(interaction.authorizationUri.toString()
+                .startsWith("https://login.microsoftonline.com/contoso.onmicrosoft.com/"));
+    }
+
+    @Test
     void radiusDeviceFlowHandlesPendingThenCompletes() throws Exception {
         QueueTransport transport = new QueueTransport(
                 json(200, """
@@ -240,6 +332,162 @@ class OAuthProviderFlowsTest {
         assertEquals(3, transport.requests.size());
     }
 
+    @Test
+    void notionBrowserFlowExchangesCodeForNonExpiringIntegrationToken() throws Exception {
+        QueueTransport transport = new QueueTransport(json(200, """
+                {"access_token":"ntn_notion-token","token_type":"bearer",
+                 "workspace_id":"ws-123","workspace_name":"Acme"}
+                """));
+        TestInteraction interaction = new TestInteraction("notion-code");
+        NotionOAuthFlow flow = new NotionOAuthFlow(transport, "notion-client", "notion-secret");
+
+        ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
+
+        assertEquals("ntn_notion-token", credential.getAccess());
+        assertEquals("", credential.getRefresh());
+        assertEquals(Long.MAX_VALUE, credential.getExpires());
+        assertEquals("ws-123", credential.getMetadata("workspaceId"));
+        String request = transport.requests.get(0).body();
+        assertTrue(request.contains("notion-code"));
+        assertEquals("Basic bm90aW9uLWNsaWVudDpub3Rpb24tc2VjcmV0",
+                transport.requests.get(0).headers().get("Authorization"));
+        assertEquals("https://api.notion.com/v1", flow.toRequestAuth(credential).baseUrl());
+    }
+
+    @Test
+    void notionLoginRequiresClientCredentials() {
+        NotionOAuthFlow flow = new NotionOAuthFlow(request -> {
+            throw new AssertionError("no HTTP before credentials exist");
+        }, null, null);
+
+        IOException error = assertThrows(IOException.class,
+                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+        assertTrue(error.getMessage().contains("KOMPILE_NOTION_CLIENT_ID"));
+    }
+
+    @Test
+    void redditBrowserFlowStoresRefreshableTokenWithBasicAuth() throws Exception {
+        QueueTransport transport = new QueueTransport(json(200, """
+                {"access_token":"reddit-access","refresh_token":"reddit-refresh",
+                 "expires_in":3600,"scope":"identity read"}
+                """));
+        TestInteraction interaction = new TestInteraction("reddit-code");
+        RedditOAuthFlow flow = new RedditOAuthFlow(transport, "reddit-client", "reddit-secret");
+
+        ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
+
+        assertEquals("reddit-refresh", credential.getRefresh());
+        assertTrue(interaction.authorizationUri.toString().contains("duration=permanent"));
+        assertEquals("Basic cmVkZGl0LWNsaWVudDpyZWRkaXQtc2VjcmV0",
+                transport.requests.get(0).headers().get("Authorization"));
+
+        QueueTransport refreshTransport = new QueueTransport(json(200, """
+                {"access_token":"reddit-new","refresh_token":"reddit-refresh",
+                 "expires_in":3600}
+                """));
+        ManagedCredential refreshed = new RedditOAuthFlow(
+                refreshTransport, "reddit-client", "reddit-secret").refresh(credential);
+        assertTrue(refreshTransport.requests.get(0).body().contains("grant_type=refresh_token"));
+        assertEquals("reddit-new", refreshed.getAccess());
+    }
+
+    @Test
+    void atlassianBrowserFlowResolvesCloudIdAndStoresClientMetadata() throws Exception {
+        QueueTransport transport = new QueueTransport(
+                json(200, """
+                        {"access_token":"atlas-access","refresh_token":"atlas-refresh",
+                         "expires_in":3600,"scope":"read:jira-work offline_access"}
+                        """),
+                json(200, """
+                        [{"id":"cloud-1","name":"acme.atlassian.net","scopes":[]}]
+                        """));
+        TestInteraction interaction = new TestInteraction("atlassian-code");
+        AtlassianOAuthFlow flow = new AtlassianOAuthFlow(transport, "atlas-client", "atlas-secret");
+
+        ManagedCredential credential = flow.login(MANUAL_BROWSER, interaction);
+
+        assertEquals("atlas-refresh", credential.getRefresh());
+        assertEquals("atlas-client", credential.getMetadata("clientId"));
+        assertEquals("cloud-1", credential.getMetadata("cloudId"));
+        assertEquals("acme.atlassian.net", credential.getMetadata("cloudName"));
+        assertTrue(transport.requests.get(1).headers().get("Authorization")
+                .endsWith("atlas-access"));
+        assertEquals("https://api.atlassian.com", flow.toRequestAuth(credential).baseUrl());
+    }
+
+    @Test
+    void atlassianLoginRequiresClientCredentials() {
+        AtlassianOAuthFlow flow = new AtlassianOAuthFlow(request -> {
+            throw new AssertionError("no HTTP before credentials exist");
+        }, null, null);
+
+        IOException error = assertThrows(IOException.class,
+                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+        assertTrue(error.getMessage().contains("KOMPILE_ATLASSIAN_CLIENT_ID"));
+    }
+
+    @Test
+    void claudeIdentitySurvivesOpaqueTokenRotationAndDeduplicatesRelogin() throws Exception {
+        QueueTransport transport = new QueueTransport(
+                json(200, """
+                        {"access_token":"claude-old","refresh_token":"r1","expires_in":3600,
+                         "account":{"uuid":"user-123","email_address":"user@example.test"},
+                         "organization":{"uuid":"org-123"}}
+                        """),
+                json(200, """
+                        {"access_token":"claude-new","refresh_token":"r2","expires_in":3600}
+                        """));
+        AnthropicOAuthFlow flow = new AnthropicOAuthFlow(transport);
+        ManagedCredential login = flow.login(MANUAL_BROWSER, new TestInteraction("code"));
+        ManagedCredential refreshed = flow.refresh(login);
+        assertEquals("user-123", refreshed.getMetadata("accountId"));
+        assertEquals("org-123", refreshed.getMetadata("organizationId"));
+        assertEquals("user@example.test", refreshed.getMetadata("email"));
+        assertEquals("r2", refreshed.getRefresh());
+        assertTrue(ai.kompile.cli.main.auth.OAuthCredentialIdentity.sameAccount("anthropic", login, refreshed));
+    }
+
+    @Test
+    void codexAcceptsIdTokenIdentityWithOpaqueAccessAndPreservesItOnRefresh() throws Exception {
+        String idPayload = """
+                {"sub":"user-1","iss":"https://auth.openai.com","email":"user@example.test","exp":1,
+                 "https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}
+                """;
+        String idToken = "e30." + Base64.getUrlEncoder().withoutPadding().encodeToString(
+                idPayload.getBytes(StandardCharsets.UTF_8)) + ".signature";
+        QueueTransport transport = new QueueTransport(
+                json(200, """
+                        {"access_token":"opaque-old","id_token":"%s","refresh_token":"r1","expires_in":3600}
+                        """.formatted(idToken)),
+                json(200, """
+                        {"access_token":"opaque-new","expires_in":3600}
+                        """));
+        OpenAiCodexOAuthFlow flow = new OpenAiCodexOAuthFlow(transport, immediatePoller());
+        ManagedCredential login = flow.login(MANUAL_BROWSER, new TestInteraction("code"));
+        ManagedCredential refreshed = flow.refresh(login);
+        assertEquals("user-1", refreshed.getMetadata("subject"));
+        assertEquals("account-123", flow.toRequestAuth(refreshed).headers().get("chatgpt-account-id"));
+        assertEquals("r1", refreshed.getRefresh());
+        assertTrue(refreshed.getExpires() > System.currentTimeMillis(), "ID token expiry is not access expiry");
+        assertFalse(refreshed.getMetadata().containsValue(idToken));
+    }
+
+    @Test
+    void copilotRejectsExpiredOrOverflowingAbsoluteExpiry() {
+        for (long expiry : new long[]{1L, Long.MAX_VALUE}) {
+            GitHubCopilotOAuthFlow flow = new GitHubCopilotOAuthFlow(new QueueTransport(json(200,
+                    "{\"token\":\"session\",\"expires_at\":" + expiry + "}")), immediatePoller());
+            assertThrows(IOException.class, () -> flow.refresh(
+                    ManagedCredential.oauth("old", "github-token", 1L)));
+        }
+    }
+
+    @Test
+    void legacyCodexRejectsTokenAtExpiryRatherThanOneMinuteAfter() throws Exception {
+        String token = openAiJwt("account", System.currentTimeMillis() / 1000L);
+        assertThrows(IOException.class, () -> OpenAiCodexOAuthFlow.toRequestAuthFromAccessToken(token));
+    }
+
     private static OAuthSupport.DeviceCodePoller immediatePoller() {
         return new OAuthSupport.DeviceCodePoller(millis -> {
         }, System::currentTimeMillis);
@@ -249,10 +497,42 @@ class OAuthProviderFlowsTest {
         return new OAuthSupport.Response(status, body);
     }
 
+    @Test
+    void legacyCodexAccessTokenRejectedWhenExpiredWithActionableMessage() throws Exception {
+        long expired = System.currentTimeMillis() / 1000L - 3600L;
+        String token = openAiJwt("account-123", expired);
+
+        IOException error = assertThrows(IOException.class,
+                () -> OpenAiCodexOAuthFlow.toRequestAuthFromAccessToken(token));
+
+        assertTrue(error.getMessage().contains("expired"));
+        assertTrue(error.getMessage().contains("kompile auth login openai-codex"));
+        // Shape detection is unchanged: the credential picker keeps labeling legacy tokens.
+        assertTrue(OpenAiCodexOAuthFlow.isLegacyAccessToken(token));
+    }
+
+    @Test
+    void legacyCodexAccessTokenAcceptedWhenNotExpired() throws Exception {
+        long live = System.currentTimeMillis() / 1000L + 3600L;
+
+        OAuthProviderFlow.RequestAuth auth =
+                OpenAiCodexOAuthFlow.toRequestAuthFromAccessToken(openAiJwt("account-123", live));
+
+        assertEquals("account-123", auth.headers().get("chatgpt-account-id"));
+        assertTrue(auth.oauth());
+    }
+
     private static String openAiJwt(String accountId) throws Exception {
+        return openAiJwt(accountId, null);
+    }
+
+    private static String openAiJwt(String accountId, Long expiresAtSeconds) throws Exception {
         ObjectNode payload = OAuthSupport.MAPPER.createObjectNode();
         payload.putObject("https://api.openai.com/auth")
                 .put("chatgpt_account_id", accountId);
+        if (expiresAtSeconds != null) {
+            payload.put("exp", expiresAtSeconds);
+        }
         String header = Base64.getUrlEncoder().withoutPadding().encodeToString(
                 "{\"alg\":\"none\"}".getBytes(StandardCharsets.UTF_8));
         String encodedPayload = Base64.getUrlEncoder().withoutPadding().encodeToString(

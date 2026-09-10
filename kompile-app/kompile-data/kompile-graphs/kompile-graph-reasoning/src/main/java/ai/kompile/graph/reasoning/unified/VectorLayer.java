@@ -114,6 +114,12 @@ public final class VectorLayer {
         return rows.containsKey(id);
     }
 
+    /** Remove the vector for {@code id}. No-ops when this layer has no such row. */
+    public VectorLayer remove(String id) {
+        rows.remove(Objects.requireNonNull(id, "id"));
+        return this;
+    }
+
     public String name() { return name; }
     public Target target() { return target; }
     public Dtype dtype() { return dtype; }

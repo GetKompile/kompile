@@ -137,7 +137,7 @@ public class ChatStatsCommand implements Callable<Integer> {
 
     private void printOverview(List<SessionData> sessions, List<ProviderUsageData> providerUsage) {
         // Global totals from kompile metrics
-        long totalInput = 0, totalOutput = 0, totalCacheRead = 0;
+        long totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheCreation = 0;
         int totalToolCalls = 0, totalToolErrors = 0;
         long totalDuration = 0;
         int totalUserTurns = 0, totalAssistantTurns = 0;
@@ -147,6 +147,7 @@ public class ChatStatsCommand implements Callable<Integer> {
             totalInput += s.inputTokens;
             totalOutput += s.outputTokens;
             totalCacheRead += s.cacheReadTokens;
+            totalCacheCreation += s.cacheCreationTokens;
             totalToolCalls += s.totalToolCalls;
             totalToolErrors += s.totalToolErrors;
             totalDuration += s.durationSeconds;
@@ -162,6 +163,10 @@ public class ChatStatsCommand implements Callable<Integer> {
         long provInput = providerUsage.stream().mapToLong(p -> p.inputTokens).sum();
         long provOutput = providerUsage.stream().mapToLong(p -> p.outputTokens).sum();
         long provCacheRead = providerUsage.stream().mapToLong(p -> p.cacheReadTokens).sum();
+        long provCacheCreation = providerUsage.stream()
+                .mapToLong(p -> p.cacheCreationTokens).sum();
+        long providerTotal = providerUsage.stream()
+                .mapToLong(ChatStatsCommand::providerTotalTokens).sum();
 
         System.out.println();
         System.out.println(BOLD + CYAN + "  Chat Usage Statistics" + RESET);
@@ -185,9 +190,14 @@ public class ChatStatsCommand implements Callable<Integer> {
         System.out.printf("  Input:       %s%s%s%n", GREEN, FormatUtils.formatNumber(totalInput + provInput), RESET);
         System.out.printf("  Output:      %s%s%s%n", GREEN, FormatUtils.formatNumber(totalOutput + provOutput), RESET);
         System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN,
-                FormatUtils.formatNumber(totalInput + totalOutput + provInput + provOutput), RESET);
+                FormatUtils.formatNumber(totalInput + totalOutput + totalCacheRead
+                        + totalCacheCreation + providerTotal), RESET);
         if (totalCacheRead + provCacheRead > 0) {
             System.out.printf("  Cache Read:  %s%s%s%n", CYAN, FormatUtils.formatNumber(totalCacheRead + provCacheRead), RESET);
+        }
+        if (totalCacheCreation + provCacheCreation > 0) {
+            System.out.printf("  Cache New:   %s%s%s%n", CYAN,
+                    FormatUtils.formatNumber(totalCacheCreation + provCacheCreation), RESET);
         }
 
         // Per-provider breakdown
@@ -216,7 +226,7 @@ public class ChatStatsCommand implements Callable<Integer> {
                 Map<String, Long> models = pSessions.stream()
                         .filter(p -> p.model != null)
                         .collect(Collectors.groupingBy(p -> p.model,
-                                Collectors.summingLong(p -> p.inputTokens + p.outputTokens)));
+                                Collectors.summingLong(ChatStatsCommand::providerTotalTokens)));
                 models.entrySet().stream()
                         .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(5)
@@ -338,7 +348,9 @@ public class ChatStatsCommand implements Callable<Integer> {
         System.out.println(BOLD + "  Token Usage" + RESET);
         System.out.printf("  Input:       %s%s%s%n", GREEN, FormatUtils.formatNumber(s.inputTokens), RESET);
         System.out.printf("  Output:      %s%s%s%n", GREEN, FormatUtils.formatNumber(s.outputTokens), RESET);
-        System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN, FormatUtils.formatNumber(s.inputTokens + s.outputTokens), RESET);
+        System.out.printf("  Total:       %s%s%s%n", BOLD + GREEN,
+                FormatUtils.formatNumber(s.inputTokens + s.outputTokens
+                        + s.cacheReadTokens + s.cacheCreationTokens), RESET);
         if (s.cacheReadTokens > 0) System.out.printf("  Cache Read:  %s%s%s%n", CYAN, FormatUtils.formatNumber(s.cacheReadTokens), RESET);
         if (s.cacheCreationTokens > 0) System.out.printf("  Cache New:   %s%s%s%n", CYAN, FormatUtils.formatNumber(s.cacheCreationTokens), RESET);
 
@@ -380,17 +392,24 @@ public class ChatStatsCommand implements Callable<Integer> {
         long totalInput = sessions.stream().mapToLong(s -> s.inputTokens).sum();
         long totalOutput = sessions.stream().mapToLong(s -> s.outputTokens).sum();
         long totalCacheRead = sessions.stream().mapToLong(s -> s.cacheReadTokens).sum();
+        long totalCacheCreation = sessions.stream().mapToLong(s -> s.cacheCreationTokens).sum();
         int totalToolCalls = sessions.stream().mapToInt(s -> s.totalToolCalls).sum();
 
         long provInput = providerUsage.stream().mapToLong(p -> p.inputTokens).sum();
         long provOutput = providerUsage.stream().mapToLong(p -> p.outputTokens).sum();
         long provCacheRead = providerUsage.stream().mapToLong(p -> p.cacheReadTokens).sum();
+        long provCacheCreation = providerUsage.stream()
+                .mapToLong(p -> p.cacheCreationTokens).sum();
+        long providerTotal = providerUsage.stream()
+                .mapToLong(ChatStatsCommand::providerTotalTokens).sum();
 
         Map<String, Object> tokens = new LinkedHashMap<>();
         tokens.put("input", totalInput + provInput);
         tokens.put("output", totalOutput + provOutput);
-        tokens.put("total", totalInput + totalOutput + provInput + provOutput);
+        tokens.put("total", totalInput + totalOutput + totalCacheRead + totalCacheCreation
+                + providerTotal);
         tokens.put("cacheRead", totalCacheRead + provCacheRead);
+        tokens.put("cacheCreation", totalCacheCreation + provCacheCreation);
 
         output.put("sessionCount", sessions.size());
         output.put("providerSessionCount", providerUsage.size());
@@ -407,7 +426,12 @@ public class ChatStatsCommand implements Callable<Integer> {
             ps.put("sessions", entry.getValue().size());
             ps.put("inputTokens", entry.getValue().stream().mapToLong(p -> p.inputTokens).sum());
             ps.put("outputTokens", entry.getValue().stream().mapToLong(p -> p.outputTokens).sum());
-            ps.put("totalTokens", entry.getValue().stream().mapToLong(p -> p.inputTokens + p.outputTokens).sum());
+            ps.put("cacheReadTokens", entry.getValue().stream()
+                    .mapToLong(p -> p.cacheReadTokens).sum());
+            ps.put("cacheCreationTokens", entry.getValue().stream()
+                    .mapToLong(p -> p.cacheCreationTokens).sum());
+            ps.put("totalTokens", entry.getValue().stream()
+                    .mapToLong(ChatStatsCommand::providerTotalTokens).sum());
             ps.put("apiCalls", entry.getValue().stream().mapToInt(p -> p.apiCalls).sum());
             byProvider.put(entry.getKey(), ps);
         }
@@ -424,6 +448,12 @@ public class ChatStatsCommand implements Callable<Integer> {
             ps.put("sessions", entry.getValue().size());
             ps.put("inputTokens", entry.getValue().stream().mapToLong(s -> s.inputTokens).sum());
             ps.put("outputTokens", entry.getValue().stream().mapToLong(s -> s.outputTokens).sum());
+            ps.put("cacheReadTokens", entry.getValue().stream()
+                    .mapToLong(s -> s.cacheReadTokens).sum());
+            ps.put("cacheCreationTokens", entry.getValue().stream()
+                    .mapToLong(s -> s.cacheCreationTokens).sum());
+            ps.put("totalTokens", entry.getValue().stream()
+                    .mapToLong(ChatStatsCommand::sessionTotalTokens).sum());
             ps.put("toolCalls", entry.getValue().stream().mapToInt(s -> s.totalToolCalls).sum());
             projects.put(entry.getKey(), ps);
         }
@@ -559,6 +589,7 @@ public class ChatStatsCommand implements Callable<Integer> {
                     data.projectDirectory = root.path("projectDirectory").asText(null);
                     data.inputTokens = root.path("inputTokens").asLong(0);
                     data.outputTokens = root.path("outputTokens").asLong(0);
+                    data.totalTokens = root.path("totalTokens").asLong(0);
                     data.cacheReadTokens = root.path("cacheReadTokens").asLong(0);
                     data.cacheCreationTokens = root.path("cacheCreationTokens").asLong(0);
                     data.thinkingTokens = root.path("thinkingTokens").asLong(0);
@@ -577,6 +608,19 @@ public class ChatStatsCommand implements Callable<Integer> {
     private static String truncId(String id) {
         if (id == null) return "?";
         return id.length() > 24 ? id.substring(0, 21) + "..." : id;
+    }
+
+    static long sessionTotalTokens(SessionData session) {
+        return session.inputTokens + session.outputTokens
+                + session.cacheReadTokens + session.cacheCreationTokens;
+    }
+
+    static long providerTotalTokens(ProviderUsageData usage) {
+        // Imported provider transcripts use the providers' native convention:
+        // cached tokens are a breakdown of inputTokens, not additional tokens.
+        return usage.totalTokens > 0
+                ? usage.totalTokens
+                : usage.inputTokens + usage.outputTokens;
     }
 
     // ========================================================================
@@ -618,6 +662,7 @@ public class ChatStatsCommand implements Callable<Integer> {
         public String projectDirectory;
         public long inputTokens;
         public long outputTokens;
+        public long totalTokens;
         public long cacheReadTokens;
         public long cacheCreationTokens;
         public long thinkingTokens;

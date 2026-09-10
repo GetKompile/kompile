@@ -252,7 +252,7 @@ public class LlmExecutionService {
     /**
      * Get the current model status.
      */
-    public LlmModelStatusResponse getStatus() {
+    public synchronized LlmModelStatusResponse getStatus() {
         String modelId = currentModelId.get();
         GenerationPipeline pipeline = currentPipeline.get();
         boolean loaded = pipeline != null && modelId != null;
@@ -273,6 +273,75 @@ public class LlmExecutionService {
                 .kvBucket(loaded ? this.currentKvBucket : 0)
                 .message(loaded ? "Model ready" : "No model loaded")
                 .build();
+    }
+
+    /**
+     * Capture the effective, read-only execution configuration for one request. This uses
+     * the same preset/default resolution and stop-sequence fallback as generation itself,
+     * while the service monitor prevents a concurrent load or configuration update from
+     * producing a torn snapshot.
+     */
+    public synchronized ExecutionConfigurationSnapshot snapshotExecutionConfiguration(
+            LlmGenerateRequest request) {
+        SamplingConfig sampling = buildSamplingConfig(request, currentSamplingConfig.get());
+
+        Map<String, Object> resolvedSampling = new LinkedHashMap<>();
+        resolvedSampling.put("temperature", sampling.getTemperature());
+        resolvedSampling.put("topK", sampling.getTopK());
+        resolvedSampling.put("topP", sampling.getTopP());
+        resolvedSampling.put("repetitionPenalty", sampling.getRepetitionPenalty());
+        resolvedSampling.put("doSample", sampling.isDoSample());
+        resolvedSampling.put("maxNewTokens", sampling.getMaxNewTokens());
+        resolvedSampling.put("minNewTokens", sampling.getMinNewTokens());
+        resolvedSampling.put("frequencyPenalty", sampling.getFrequencyPenalty());
+        resolvedSampling.put("presencePenalty", sampling.getPresencePenalty());
+        resolvedSampling.put("seed", sampling.getSeed());
+        resolvedSampling.put("eosTokenId", sampling.getEosTokenId());
+        resolvedSampling.put("padTokenId", sampling.getPadTokenId());
+
+        DecoderConfigRequest decoder = this.decoderConfig;
+        Map<String, Object> decoderSnapshot = new LinkedHashMap<>();
+        decoderSnapshot.put("eosTokenId", decoder.getEosTokenId());
+        decoderSnapshot.put("maxContextLength", decoder.getMaxContextLength());
+        decoderSnapshot.put("minNewTokens", decoder.getMinNewTokens());
+        decoderSnapshot.put("stopSequences", immutableList(decoder.getStopSequences()));
+        decoderSnapshot.put("seed", decoder.getSeed());
+        decoderSnapshot.put("frequencyPenalty", decoder.getFrequencyPenalty());
+        decoderSnapshot.put("presencePenalty", decoder.getPresencePenalty());
+        decoderSnapshot.put("numHeads", decoder.getNumHeads());
+        decoderSnapshot.put("headDim", decoder.getHeadDim());
+        decoderSnapshot.put("numKvLayers", decoder.getNumKvLayers());
+
+        Map<String, Object> requested = new LinkedHashMap<>();
+        requested.put("maxTokens", request.getMaxTokens());
+        requested.put("minTokens", request.getMinTokens());
+        requested.put("frequencyPenalty", request.getFrequencyPenalty());
+        requested.put("presencePenalty", request.getPresencePenalty());
+        requested.put("temperature", request.getTemperature());
+        requested.put("topK", request.getTopK());
+        requested.put("topP", request.getTopP());
+        requested.put("repetitionPenalty", request.getRepetitionPenalty());
+        requested.put("doSample", request.isDoSample());
+        requested.put("presetName", request.getPresetName());
+        requested.put("seed", request.getSeed());
+        requested.put("stopSequences", immutableList(request.getStopSequences()));
+
+        SpeculativeDecodingConfig speculative = this.speculativeConfig;
+        Map<String, Object> speculativeSnapshot = new LinkedHashMap<>();
+        speculativeSnapshot.put("enabled", speculative.isEnabled());
+        speculativeSnapshot.put("ngramSize", speculative.getNgramSize());
+        speculativeSnapshot.put("maxSpeculativeTokens", speculative.getMaxSpeculativeTokens());
+        speculativeSnapshot.put("useDraftModel", speculative.isUseDraftModel());
+        speculativeSnapshot.put("draftModelId", speculative.getDraftModelId());
+
+        return new ExecutionConfigurationSnapshot(
+                currentModelId.get(), currentDecoderPath,
+                resolvedSampling, effectiveStopSequences(request),
+                kvCacheType, currentKvBucket,
+                effectiveExecutionContext(decoder.getMaxContextLength(),
+                        currentModelContextWindow, currentKvBucket),
+                currentModelContextWindow, currentHiddenSize, decoderSnapshot,
+                requested, speculativeSnapshot);
     }
 
     // ==================== Text Generation ====================
@@ -312,10 +381,7 @@ public class LlmExecutionService {
             String generatedText = result.getText();
 
             // Apply stop sequences if configured
-            List<String> stopSequences = request.getStopSequences();
-            if (stopSequences == null || stopSequences.isEmpty()) {
-                stopSequences = decoderConfig.getStopSequences();
-            }
+            List<String> stopSequences = effectiveStopSequences(request);
             if (stopSequences != null && !stopSequences.isEmpty() && generatedText != null) {
                 generatedText = applyStopSequences(generatedText, stopSequences);
             }
@@ -539,7 +605,7 @@ public class LlmExecutionService {
     /**
      * Update decoder configuration.
      */
-    public DecoderConfigRequest updateDecoderConfig(DecoderConfigRequest config) {
+    public synchronized DecoderConfigRequest updateDecoderConfig(DecoderConfigRequest config) {
         this.decoderConfig = config;
         log.info("Updated decoder config: eosTokenId={}, maxContextLength={}, seed={}, " +
                         "frequencyPenalty={}, presencePenalty={}, minNewTokens={}, stopSequences={}",
@@ -553,7 +619,7 @@ public class LlmExecutionService {
     /**
      * Get the current decoder configuration.
      */
-    public DecoderConfigRequest getDecoderConfig() {
+    public synchronized DecoderConfigRequest getDecoderConfig() {
         return this.decoderConfig;
     }
 
@@ -603,7 +669,7 @@ public class LlmExecutionService {
     /**
      * Update speculative decoding configuration.
      */
-    public SpeculativeDecodingConfig updateSpeculativeConfig(SpeculativeDecodingConfig config) {
+    public synchronized SpeculativeDecodingConfig updateSpeculativeConfig(SpeculativeDecodingConfig config) {
         this.speculativeConfig = config;
 
         // Apply speculative decoding system properties
@@ -624,7 +690,7 @@ public class LlmExecutionService {
     /**
      * Get current speculative decoding configuration.
      */
-    public SpeculativeDecodingConfig getSpeculativeConfig() {
+    public synchronized SpeculativeDecodingConfig getSpeculativeConfig() {
         return this.speculativeConfig;
     }
 
@@ -850,6 +916,25 @@ public class LlmExecutionService {
         return earliestStop < text.length() ? text.substring(0, earliestStop) : text;
     }
 
+    private List<String> effectiveStopSequences(LlmGenerateRequest request) {
+        List<String> stopSequences = request.getStopSequences();
+        if (stopSequences == null || stopSequences.isEmpty()) {
+            stopSequences = decoderConfig.getStopSequences();
+        }
+        return immutableList(stopSequences);
+    }
+
+    private static <T> List<T> immutableList(List<T> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return Collections.unmodifiableList(new ArrayList<>(values));
+    }
+
+    private static Map<String, Object> immutableMap(Map<String, Object> values) {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(values));
+    }
+
     /**
      * Return the context window this loaded lane can actually execute. A declared model
      * window or caller override is never allowed to exceed the allocated KV ceiling.
@@ -1007,6 +1092,48 @@ public class LlmExecutionService {
             return usedMemory / (1024 * 1024);
         } catch (Exception e) {
             return -1;
+        }
+    }
+
+    /** Immutable provenance view of the settings that can affect one generation. */
+    public record ExecutionConfigurationSnapshot(
+            String loadedModelId,
+            String loadedDecoderPath,
+            Map<String, Object> resolvedSamplingConfig,
+            List<String> effectiveStopSequences,
+            String kvCacheType,
+            int kvBucket,
+            int effectiveContextLength,
+            int modelContextWindow,
+            int hiddenSize,
+            Map<String, Object> decoderConfiguration,
+            Map<String, Object> requestedSettings,
+            Map<String, Object> speculativeConfiguration) {
+
+        public ExecutionConfigurationSnapshot {
+            resolvedSamplingConfig = immutableMap(resolvedSamplingConfig);
+            effectiveStopSequences = immutableList(effectiveStopSequences);
+            decoderConfiguration = immutableMap(decoderConfiguration);
+            requestedSettings = immutableMap(requestedSettings);
+            speculativeConfiguration = immutableMap(speculativeConfiguration);
+        }
+
+        public Map<String, Object> asEvidence() {
+            Map<String, Object> evidence = new LinkedHashMap<>();
+            evidence.put("loadedModelId", loadedModelId);
+            // Do not expose an absolute host path; durable generation verifies it separately
+            // against the registry artifact before and after execution.
+            evidence.put("resolvedSamplingConfig", resolvedSamplingConfig);
+            evidence.put("effectiveStopSequences", effectiveStopSequences);
+            evidence.put("kvCacheType", kvCacheType);
+            evidence.put("kvBucket", kvBucket);
+            evidence.put("effectiveContextLength", effectiveContextLength);
+            evidence.put("modelContextWindow", modelContextWindow);
+            evidence.put("hiddenSize", hiddenSize);
+            evidence.put("decoderConfiguration", decoderConfiguration);
+            evidence.put("requestedSettings", requestedSettings);
+            evidence.put("speculativeConfiguration", speculativeConfiguration);
+            return immutableMap(evidence);
         }
     }
 }

@@ -27,11 +27,17 @@ import java.util.Map;
  */
 public interface WhatsAppApiClient {
 
-    void start(String accessToken, String phoneNumberId, String verifyToken);
+    void start(String accessToken, String phoneNumberId, String verifyToken, String appSecret);
 
     void stop();
 
     boolean isRunning();
+
+    String verifyWebhook(String mode, String token, String challenge);
+
+    boolean verifyWebhookSignature(byte[] payload, String signature);
+
+    void processWebhookPayload(Map<String, Object> body);
 
     void sendTextMessage(String to, String text);
 

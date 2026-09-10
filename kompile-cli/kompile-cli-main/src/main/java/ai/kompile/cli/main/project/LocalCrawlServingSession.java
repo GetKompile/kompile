@@ -30,17 +30,30 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Request-scoped bridge from a local crawl to Kompile's pooled serving subprocess.
+ * Reconnectable bridge from a local crawl to Kompile's pooled serving subprocess.
  *
- * <p>The project model is resolved or bootstrapped through the standalone model-staging
- * component, then the standalone model-serving executable/native image or executable JAR is
- * launched directly. Closing this session releases its lease; a compatible serving child remains
- * warm for bounded reuse and is terminated by idle eviction or pool shutdown.</p>
+ * <p>The project model is resolved read-only from artifacts provisioned by {@code model_runtime},
+ * then the standalone model-serving executable/native image or executable JAR is launched directly.
+ * Only individual inference requests hold a lease. Between requests the child remains warm for
+ * bounded reuse, then idle eviction terminates it even if the crawl is still open. The next
+ * inference request transparently acquires (or restarts) the compatible runtime.</p>
  */
 public final class LocalCrawlServingSession implements LocalServingBackend, AutoCloseable {
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
-    private final LocalServingRuntimePool.Lease runtime;
+    private final LocalServingRuntimePool.Binding binding;
+    private volatile RuntimeInfo runtimeInfo;
+    private volatile boolean closed;
+
+    // Diagnostic reads must not retain a lease or refresh the serving idle deadline.
+    private record RuntimeInfo(String modelId, String runtimePath, String runId, String logPath) {
+        static RuntimeInfo from(LocalServingRuntimePool.Lease runtime) {
+            return new RuntimeInfo(runtime.modelId(), runtime.launcher().path().toString(),
+                    runtime.subprocessRunId(),
+                    runtime.logFile() == null ? null : runtime.logFile().toString());
+        }
+    }
+
     private final HttpClient client;
     private final Duration requestTimeout;
     private final String crawlJobId;
@@ -52,7 +65,8 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
             int requestTimeoutSeconds,
             String crawlJobId,
             String knowledgeBaseId) {
-        this.runtime = runtime;
+        this.binding = runtime.binding();
+        this.runtimeInfo = RuntimeInfo.from(runtime);
         this.crawlJobId = crawlJobId;
         this.knowledgeBaseId = knowledgeBaseId;
         this.requestTimeout = Duration.ofSeconds(Math.max(30, requestTimeoutSeconds));
@@ -64,9 +78,10 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
     public static LocalCrawlServingSession start(String modelId, int timeoutSeconds)
             throws KompileLocalServingBootstrap.BootstrapException {
         ChatConfig config = new ChatConfig("kompile-local", null, modelId, null);
-        LocalServingRuntimePool.Lease runtime =
-                LocalServingRuntimePool.acquire(config, timeoutSeconds);
-        return new LocalCrawlServingSession(runtime, timeoutSeconds, null, null);
+        try (LocalServingRuntimePool.Lease runtime =
+                     LocalServingRuntimePool.acquire(config, timeoutSeconds)) {
+            return new LocalCrawlServingSession(runtime, timeoutSeconds, null, null);
+        }
     }
 
     public static LocalCrawlServingSession start(
@@ -75,37 +90,38 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
             Map<String, Object> runtimeOptions,
             int timeoutSeconds) throws Exception {
         LocalProjectModelBootstrap.ResolvedProjectModel model =
-                LocalProjectModelBootstrap.ensure(projectRoot, modelId, runtimeOptions);
-        LocalServingRuntimePool.Lease runtime =
-                LocalServingRuntimePool.acquire(
-                        model.modelId(),
-                        model.modelPath(),
-                        model.tokenizerPath(),
-                        runtimeOptions,
-                        timeoutSeconds);
-        return new LocalCrawlServingSession(
-                runtime,
-                timeoutSeconds,
-                stringOption(runtimeOptions, "crawlJobId"),
-                stringOption(runtimeOptions, "knowledgeBaseId"));
+                LocalProjectModelBootstrap.ensure(projectRoot, modelId, runtimeOptions, false);
+        try (LocalServingRuntimePool.Lease runtime =
+                     LocalServingRuntimePool.acquire(
+                             model.modelId(),
+                             model.modelPath(),
+                             model.tokenizerPath(),
+                             runtimeOptions,
+                             timeoutSeconds)) {
+            return new LocalCrawlServingSession(
+                    runtime,
+                    timeoutSeconds,
+                    stringOption(runtimeOptions, "crawlJobId"),
+                    stringOption(runtimeOptions, "knowledgeBaseId"));
+        }
     }
 
     public String modelId() {
-        return runtime.modelId();
+        return runtimeInfo.modelId();
     }
 
     public String runtimePath() {
-        return runtime.launcher().path().toString();
+        return runtimeInfo.runtimePath();
     }
 
     @Override
     public String subprocessRunId() {
-        return runtime.subprocessRunId();
+        return runtimeInfo.runId();
     }
 
     @Override
     public String subprocessLogPath() {
-        return runtime.logFile() == null ? null : runtime.logFile().toString();
+        return runtimeInfo.logPath();
     }
 
     @Override
@@ -115,12 +131,13 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
 
     @Override
     public boolean isAvailable() {
-        return runtime.isAlive();
+        // An idle-evicted model is still routable: post() restarts it on demand.
+        return !closed;
     }
 
     @Override
     public boolean matchesModel(String requestedModelId) {
-        return requestedModelId != null && requestedModelId.trim().equals(runtime.modelId());
+        return requestedModelId != null && requestedModelId.trim().equals(modelId());
     }
 
     @Override
@@ -171,41 +188,46 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         return generateChat(request, maxNewTokens);
     }
 
-    private JsonNode post(String path, Object body)
-            throws IOException, InterruptedException {
-        if (!isAvailable()) {
-            throw new IOException("Kompile serving subprocess is not running");
-        }
-        synchronized (runtime.coordinationLock()) {
-            URI endpoint = runtime.baseUrl().resolve(path);
-            String transportRequestId = UUID.randomUUID().toString();
-            lastTransportRequestId.set(transportRequestId);
-            Map<String, Object> payload = body instanceof Map<?, ?> values
-                    ? new LinkedHashMap<>((Map<String, Object>) values)
-                    : new LinkedHashMap<>(Map.of("payload", body));
-            Map<String, Object> correlation = new LinkedHashMap<>();
-            correlation.put("transportRequestId", transportRequestId);
-            correlation.put("subprocessRunId", runtime.subprocessRunId());
-            if (crawlJobId != null) correlation.put("crawlJobId", crawlJobId);
-            if (knowledgeBaseId != null) correlation.put("knowledgeBaseId", knowledgeBaseId);
-            correlation.put("modelId", runtime.modelId());
-            payload.put("correlation", correlation);
-            HttpRequest request = HttpRequest.newBuilder(endpoint)
-                    .timeout(requestTimeout)
-                    .header("Content-Type", "application/json")
-                    .header("X-Kompile-Transport-Request-Id", transportRequestId)
-                    .header("X-Kompile-Subprocess-Run-Id",
-                            runtime.subprocessRunId() == null ? "" : runtime.subprocessRunId())
-                    .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(payload)))
-                    .build();
-            HttpResponse<String> response = client.send(
-                    request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IOException("Serving subprocess " + path + " returned HTTP "
-                        + response.statusCode() + ": " + response.body());
+    private JsonNode post(String path, Object body) throws Exception {
+        requireOpen();
+        try (LocalServingRuntimePool.Lease runtime = binding.acquire()) {
+            synchronized (runtime.coordinationLock()) {
+                requireOpen();
+                runtimeInfo = RuntimeInfo.from(runtime);
+                URI endpoint = runtime.baseUrl().resolve(path);
+                String transportRequestId = UUID.randomUUID().toString();
+                lastTransportRequestId.set(transportRequestId);
+                Map<String, Object> payload = body instanceof Map<?, ?> values
+                        ? new LinkedHashMap<>((Map<String, Object>) values)
+                        : new LinkedHashMap<>(Map.of("payload", body));
+                Map<String, Object> correlation = new LinkedHashMap<>();
+                correlation.put("transportRequestId", transportRequestId);
+                correlation.put("subprocessRunId", runtime.subprocessRunId());
+                if (crawlJobId != null) correlation.put("crawlJobId", crawlJobId);
+                if (knowledgeBaseId != null) correlation.put("knowledgeBaseId", knowledgeBaseId);
+                correlation.put("modelId", runtime.modelId());
+                payload.put("correlation", correlation);
+                HttpRequest request = HttpRequest.newBuilder(endpoint)
+                        .timeout(requestTimeout)
+                        .header("Content-Type", "application/json")
+                        .header("X-Kompile-Transport-Request-Id", transportRequestId)
+                        .header("X-Kompile-Subprocess-Run-Id",
+                                runtime.subprocessRunId() == null ? "" : runtime.subprocessRunId())
+                        .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(payload)))
+                        .build();
+                HttpResponse<String> response = client.send(
+                        request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    throw new IOException("Serving subprocess " + path + " returned HTTP "
+                            + response.statusCode() + ": " + response.body());
+                }
+                return MAPPER.readTree(response.body());
             }
-            return MAPPER.readTree(response.body());
         }
+    }
+
+    private void requireOpen() throws IOException {
+        if (closed) throw new IOException("Kompile serving session is closed");
     }
 
     private static String stringOption(Map<String, Object> options, String key) {
@@ -260,7 +282,7 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
     private void requireModel(String requestedModelId) {
         if (!matchesModel(requestedModelId)) {
             throw new IllegalStateException("Requested serving model '" + requestedModelId
-                    + "' is not active (active=" + runtime.modelId() + ")");
+                    + "' is not active (active=" + modelId() + ")");
         }
     }
 
@@ -272,6 +294,6 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
 
     @Override
     public void close() {
-        runtime.close();
+        closed = true;
     }
 }

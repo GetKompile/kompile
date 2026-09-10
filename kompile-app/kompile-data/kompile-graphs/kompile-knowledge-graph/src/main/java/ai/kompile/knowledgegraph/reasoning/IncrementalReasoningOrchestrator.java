@@ -30,6 +30,7 @@ import ai.kompile.graph.reasoning.fol.MebnInferenceService;
 import ai.kompile.graph.reasoning.hybrid.HybridReasoner;
 import ai.kompile.graph.reasoning.learning.HybridConsensusTrainer;
 import ai.kompile.graph.reasoning.learning.MebnWeightLearner;
+import ai.kompile.graph.reasoning.learning.MebnWeightSerializer;
 import ai.kompile.graph.reasoning.learning.PslWeightLearningService;
 import ai.kompile.graph.reasoning.learning.SameDiffMebnStrengthLearner;
 import ai.kompile.graph.reasoning.learning.StructuredPerceptronLearner;
@@ -586,6 +587,11 @@ public class IncrementalReasoningOrchestrator {
      */
     public Optional<MTheory> registeredMTheory(long factSheetId) {
         return Optional.ofNullable(mebnTheories.get(factSheetId));
+    }
+
+    /** Remove stale managed MEBN state before a replacement import without a theory artifact. */
+    public void unregisterMTheory(long factSheetId) {
+        mebnTheories.remove(factSheetId);
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────────────
@@ -1367,9 +1373,8 @@ public class IncrementalReasoningOrchestrator {
                                 List<String> edgeKeys = new ArrayList<>(M);
                                 List<Double> currentStrengthsList = new ArrayList<>(M);
                                 for (MebnWeightLearner.Edge e : edges) {
-                                    // Key format matches what the subprocess writes back:
-                                    // "fragName:parent->child" — matches snapshotEdgeStrengths key
-                                    edgeKeys.add(e.mfrag().getName() + ":" + e.parent() + "->" + e.child());
+                                    edgeKeys.add(MebnWeightSerializer.edgeKey(
+                                            e.mfrag().getName(), e.parent(), e.child()));
                                     currentStrengthsList.add(e.mfrag().getEdgeStrength(e.parent(), e.child()));
                                 }
 

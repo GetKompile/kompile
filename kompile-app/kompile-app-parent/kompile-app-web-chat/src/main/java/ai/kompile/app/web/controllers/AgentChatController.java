@@ -18,17 +18,26 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.agent.AgentChatService;
 import ai.kompile.app.services.agent.AgentRegistryService;
+import ai.kompile.app.services.agent.ChatHarnessClient;
 import ai.kompile.app.services.agent.ChatContextBudgetService;
 import ai.kompile.app.services.agent.ChatHistoryCompactor;
+import ai.kompile.app.services.agent.ProvisionedAgentRuntime;
+import ai.kompile.app.web.security.IntegrationControlCredentials;
+import ai.kompile.channel.api.ChannelControlHeaders;
 import ai.kompile.app.web.dto.AgentChatCompactRequest;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import ai.kompile.core.agent.AgentProvider;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -52,13 +61,36 @@ public class AgentChatController {
 
     // Maximum allowed timeout to prevent indefinite waits (30 minutes)
     private static final long MAX_SSE_TIMEOUT = TimeUnit.MINUTES.toMillis(30);
+    private static final int MAX_HARNESS_TIMEOUT_SECONDS = 1_800;
+    private static final long HARNESS_SSE_GRACE_MS = TimeUnit.SECONDS.toMillis(30);
+    private static final long MAX_HARNESS_SSE_TIMEOUT = TimeUnit.MINUTES.toMillis(31);
 
     private final AgentChatService chatService;
     private final AgentRegistryService agentRegistryService;
+    private final IntegrationControlCredentials integrationCredentials;
+    private final ChatHarnessClient harnessClient;
 
     public AgentChatController(AgentChatService chatService, AgentRegistryService agentRegistryService) {
+        this(chatService, agentRegistryService, null, null);
+    }
+
+    public AgentChatController(
+            AgentChatService chatService,
+            AgentRegistryService agentRegistryService,
+            IntegrationControlCredentials integrationCredentials) {
+        this(chatService, agentRegistryService, integrationCredentials, null);
+    }
+
+    @Autowired
+    public AgentChatController(
+            AgentChatService chatService,
+            AgentRegistryService agentRegistryService,
+            IntegrationControlCredentials integrationCredentials,
+            ChatHarnessClient harnessClient) {
         this.chatService = chatService;
         this.agentRegistryService = agentRegistryService;
+        this.integrationCredentials = integrationCredentials;
+        this.harnessClient = harnessClient;
     }
 
     /**
@@ -74,16 +106,25 @@ public class AgentChatController {
      * - error: Error occurred
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamChat(@RequestBody AgentChatRequest request) {
+    public SseEmitter streamChat(
+            @RequestBody AgentChatRequest request,
+            HttpServletRequest servletRequest) {
+        requireProvisionedAccess(request, servletRequest);
+        requireHarnessAccess(request, servletRequest);
         log.info("Received chat request for agent: {}, RAG enabled: {}, timeout: {}s, message length: {}",
                 sanitizeForLog(request.getAgentName()),
                 request.isEnableRag(),
                 request.getTimeoutSeconds(),
                 request.getMessage() != null ? request.getMessage().length() : 0);
 
-        // Calculate SSE timeout: 0 = no timeout (use max), otherwise use configured value
+        boolean harnessTurn = harnessClient != null && !isProvisioned(request);
+        // A harness turn is always bounded and its SSE connection outlives the CLI's own timeout.
+        // Provisioned/legacy turns retain their existing timeout contract.
         long sseTimeout;
-        if (request.getTimeoutSeconds() <= 0) {
+        if (harnessTurn) {
+            sseTimeout = harnessSseTimeout(request.getTimeoutSeconds());
+            log.info("Using harness SSE timeout: {}ms", sseTimeout);
+        } else if (request.getTimeoutSeconds() <= 0) {
             // No timeout - use a very long timeout (effectively infinite for practical purposes)
             sseTimeout = -1L; // -1 means no timeout in SseEmitter
             log.info("Using no SSE timeout (infinite)");
@@ -105,20 +146,109 @@ public class AgentChatController {
             emitter.completeWithError(e);
         });
 
-        // Execute chat asynchronously
-        chatService.executeChat(request, emitter);
+        // Provisioned/channel turns retain their authenticated canonical runtime. Ordinary
+        // browser turns are thin clients of the full kompile-cli-main harness.
+        if (isProvisioned(request) || harnessClient == null) {
+            chatService.executeChat(request, emitter);
+        } else {
+            harnessClient.executeChat(request, emitter);
+        }
 
         return emitter;
+    }
+
+    static long harnessSseTimeout(int requestedSeconds) {
+        int effectiveSeconds = requestedSeconds <= 0
+                ? (int) TimeUnit.MILLISECONDS.toSeconds(DEFAULT_SSE_TIMEOUT)
+                : Math.min(requestedSeconds, MAX_HARNESS_TIMEOUT_SECONDS);
+        return Math.min(
+                TimeUnit.SECONDS.toMillis(effectiveSeconds) + HARNESS_SSE_GRACE_MS,
+                MAX_HARNESS_SSE_TIMEOUT);
+    }
+
+    private void requireProvisionedAccess(
+            AgentChatRequest request,
+            HttpServletRequest servletRequest) {
+        if (request.getProvisionedAgentId() == null
+                || request.getProvisionedAgentId().isBlank()) {
+            return;
+        }
+        if (integrationCredentials == null || !integrationCredentials.matches(
+                servletRequest.getHeader(ChannelControlHeaders.TOKEN_HEADER))) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNAUTHORIZED,
+                    "A valid integration admin token is required for provisioned-agent chat");
+        }
+        if (!"1".equals(servletRequest.getHeader(ChannelControlHeaders.REQUEST_HEADER))) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Provisioned-agent chat requires " + ChannelControlHeaders.REQUEST_HEADER);
+        }
+        if (!servletRequest.isSecure()
+                && !(isLoopback(servletRequest.getRemoteAddr())
+                && isLoopback(servletRequest.getServerName()))) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Remote provisioned-agent chat requires HTTPS");
+        }
+        try {
+            ProvisionedAgentRuntime.canonicalTurnId(request.getTurnId());
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+        }
+    }
+
+    private static boolean isProvisioned(AgentChatRequest request) {
+        return request != null && request.getProvisionedAgentId() != null
+                && !request.getProvisionedAgentId().isBlank();
+    }
+
+    private void requireHarnessAccess(
+            AgentChatRequest request,
+            HttpServletRequest servletRequest) {
+        if (harnessClient == null || isProvisioned(request)) return;
+        requireHarnessControlAccess(servletRequest);
+    }
+
+    private void requireHarnessControlAccess(HttpServletRequest servletRequest) {
+        if (isLoopback(servletRequest.getRemoteAddr())
+                && isLoopback(servletRequest.getServerName())) {
+            return;
+        }
+        boolean authenticated = servletRequest.isSecure()
+                && integrationCredentials != null
+                && integrationCredentials.matches(
+                servletRequest.getHeader(ChannelControlHeaders.TOKEN_HEADER))
+                && "1".equals(servletRequest.getHeader(ChannelControlHeaders.REQUEST_HEADER));
+        if (!authenticated) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Remote Kompile CLI harness access requires HTTPS and a valid integration admin token");
+        }
+    }
+
+    private static boolean isLoopback(String host) {
+        if (host == null) return false;
+        String normalized = host.toLowerCase(java.util.Locale.ROOT);
+        return "localhost".equals(normalized)
+                || "127.0.0.1".equals(normalized)
+                || "::1".equals(normalized)
+                || "0:0:0:0:0:0:0:1".equals(normalized);
     }
 
     /**
      * Cancel a running chat process.
      */
     @PostMapping("/cancel/{processId}")
-    public ResponseEntity<Map<String, Object>> cancelChat(@PathVariable String processId) {
+    public ResponseEntity<Map<String, Object>> cancelChat(
+            @PathVariable String processId,
+            HttpServletRequest servletRequest) {
         log.info("Cancelling chat process: {}", sanitizeForLog(processId));
 
-        boolean cancelled = chatService.cancelProcess(processId);
+        boolean harnessProcess = harnessClient != null && processId.startsWith("harness-");
+        if (harnessProcess) requireHarnessControlAccess(servletRequest);
+        boolean cancelled = harnessProcess
+                ? harnessClient.cancel(processId) : chatService.cancelProcess(processId);
 
         return ResponseEntity.ok(Map.of(
                 "processId", processId,
@@ -133,8 +263,23 @@ public class AgentChatController {
     public ResponseEntity<Map<String, Object>> health() {
         return ResponseEntity.ok(Map.of(
                 "status", "ok",
-                "service", "agent-chat"
+                "service", "agent-chat",
+                "engine", harnessClient == null ? "legacy-agent-chat" : "kompile-cli-main"
         ));
+    }
+
+    /** Authoritative non-secret harness personas and provider/model limits for the browser. */
+    @GetMapping("/capabilities")
+    public ResponseEntity<JsonNode> capabilities(
+            @RequestParam(required = false) String workingDirectory,
+            @RequestParam(defaultValue = "false") boolean refresh,
+            HttpServletRequest servletRequest) {
+        if (harnessClient == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
+        }
+        requireHarnessControlAccess(servletRequest);
+        return ResponseEntity.ok(harnessClient.capabilities(workingDirectory, refresh));
     }
 
     /**
@@ -144,7 +289,14 @@ public class AgentChatController {
      * show context usage and decide when to compact.
      */
     @GetMapping("/context-budget")
-    public ResponseEntity<Map<String, Object>> contextBudget(@RequestParam String agentName) {
+    public ResponseEntity<Map<String, Object>> contextBudget(
+            @RequestParam String agentName,
+            @RequestParam(required = false) String workingDirectory,
+            HttpServletRequest servletRequest) {
+        if (harnessClient != null) {
+            requireHarnessControlAccess(servletRequest);
+            return ResponseEntity.ok(harnessClient.contextBudget(agentName, workingDirectory));
+        }
         Optional<AgentProvider> agent = agentRegistryService.getAgent(agentName);
         if (agent.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Agent not found: " + agentName));
@@ -173,6 +325,12 @@ public class AgentChatController {
      */
     @PostMapping("/compact")
     public ResponseEntity<Map<String, Object>> compact(@RequestBody AgentChatCompactRequest request) {
+        if (harnessClient != null) {
+            return ResponseEntity.ok(Map.of(
+                    "compacted", false,
+                    "managedBy", "kompile-cli-main",
+                    "reason", "The CLI harness owns transcript compaction automatically"));
+        }
         Optional<AgentProvider> agent = agentRegistryService.getAgent(request.getAgentName());
         if (agent.isEmpty()) {
             return ResponseEntity.badRequest().body(
@@ -209,10 +367,13 @@ public class AgentChatController {
     public ResponseEntity<Map<String, Object>> updateSkipPermissions(
             @PathVariable String name, @RequestBody Map<String, Boolean> body) {
         boolean skip = body.getOrDefault("skipPermissions", true);
-        agentRegistryService.updateAgentSkipPermissions(name, skip);
+        if (harnessClient == null) {
+            agentRegistryService.updateAgentSkipPermissions(name, skip);
+        }
         return ResponseEntity.ok(Map.of(
                 "agent", name,
-                "skipPermissions", skip
+                "skipPermissions", skip,
+                "scope", harnessClient == null ? "provider" : "request"
         ));
     }
 

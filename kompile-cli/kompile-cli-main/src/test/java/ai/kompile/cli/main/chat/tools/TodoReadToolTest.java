@@ -4,9 +4,11 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.nio.file.Path;
 import java.util.Set;
@@ -14,10 +16,10 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ResourceLock("user.home")
 class TodoReadToolTest {
 
-    /** Fresh per test — todo state persists to <workDir>/.kompile/memory, and a shared
-     *  working directory leaks persisted todos into every later session's first load. */
+    /** Fresh project root per test; session-scoped todo files live beneath its managed memory. */
     @TempDir
     Path workDir;
 
@@ -26,9 +28,12 @@ class TodoReadToolTest {
     private ToolContext context;
     private ObjectMapper om;
     private String sessionId;
+    private String previousHome;
 
     @BeforeEach
     void setUp() {
+        previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", workDir.toString());
         readTool = new TodoReadTool();
         writeTool = new TodoWriteTool();
         om = new ObjectMapper();
@@ -42,10 +47,20 @@ class TodoReadToolTest {
         context = new ToolContext(sessionId, agent, perms, workDir, registry);
     }
 
+    @AfterEach
+    void restoreHome() {
+        if (previousHome == null) {
+            System.clearProperty("user.home");
+        } else {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
     @Test
     void testIdAndDescription() {
         assertEquals("todoread", readTool.id());
         assertNotNull(readTool.description());
+        assertTrue(readTool.compactHint().contains("session_id"));
     }
 
     @Test
@@ -126,11 +141,36 @@ class TodoReadToolTest {
     }
 
     @Test
-    void testParameterSchemaIsEmpty() {
-        // TodoRead takes no parameters
+    void testHistoricalSessionLookupDoesNotChangeDefaultSession() throws Exception {
+        String oldSessionId = "old-" + UUID.randomUUID();
+        ToolContext oldContext = new ToolContext(oldSessionId, context.getAgent(),
+                context.getPermissionService(), workDir, new ToolRegistry(om));
+        ObjectNode oldTask = om.createObjectNode();
+        oldTask.put("action", "add");
+        oldTask.put("subject", "Task from an older chat");
+        writeTool.execute(oldTask, oldContext);
+
+        ToolResult current = readTool.execute(om.createObjectNode(), context);
+        assertTrue(current.getOutput().contains("No tasks"));
+        assertFalse(current.getOutput().contains("Task from an older chat"));
+
+        ObjectNode lookup = om.createObjectNode();
+        lookup.put("session_id", oldSessionId);
+        ToolResult historical = readTool.execute(lookup, context);
+        assertFalse(historical.isError());
+        assertTrue(historical.getOutput().contains("Task from an older chat"));
+        assertEquals(oldSessionId, historical.getMetadata().get("sessionId"));
+
+        ToolResult currentAgain = readTool.execute(om.createObjectNode(), context);
+        assertTrue(currentAgain.getOutput().contains("No tasks"));
+    }
+
+    @Test
+    void testParameterSchemaOffersHistoricalSessionLookup() {
         var schema = readTool.parameterSchema();
         assertTrue(schema.has("properties"));
-        assertEquals(0, schema.path("properties").size());
+        assertEquals(1, schema.path("properties").size());
+        assertTrue(schema.path("properties").has("session_id"));
     }
 
     private void addTask(String subject) throws Exception {

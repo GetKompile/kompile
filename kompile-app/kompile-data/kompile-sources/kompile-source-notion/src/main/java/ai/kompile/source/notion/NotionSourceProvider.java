@@ -92,10 +92,7 @@ public class NotionSourceProvider implements SourceProvider {
 
     @Override
     public boolean requiresAuth() {
-        if (oauthService != null && oauthService.getConnectionStatus("notion").isConnected()) {
-            return false;
-        }
-        return true;
+        return oauthService == null || !oauthService.isConnectionUsable("notion");
     }
 
     @Override
@@ -154,11 +151,11 @@ public class NotionSourceProvider implements SourceProvider {
         return Arrays.asList(
                 SourceFormField.builder()
                         .id("apiToken")
-                        .label("Integration Token")
+                        .label("Integration Token (optional)")
                         .type(SourceFormField.FieldType.PASSWORD)
-                        .required(true)
+                        .required(false)
                         .placeholder("secret_...")
-                        .helpText("Create an integration at www.notion.so/my-integrations")
+                        .helpText("Leave empty for OAuth, or create a token at www.notion.so/my-integrations")
                         .prefixIcon("key")
                         .order(1)
                         .build(),

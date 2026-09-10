@@ -38,8 +38,10 @@ public class EmailMessageResponder implements ChannelAdapter.MessageResponder {
 
     @Override
     public void reply(ChannelAdapter.OutgoingMessage message) {
-        String subject = originalSubject;
-        if (subject != null && !subject.toLowerCase().startsWith("re:")) {
+        String subject = originalSubject == null || originalSubject.isBlank()
+                ? "Re: (no subject)"
+                : originalSubject;
+        if (!subject.toLowerCase().startsWith("re:")) {
             subject = "Re: " + subject;
         }
 
@@ -48,8 +50,10 @@ public class EmailMessageResponder implements ChannelAdapter.MessageResponder {
 
     @Override
     public void replyError(String error) {
-        String subject = originalSubject;
-        if (subject != null && !subject.toLowerCase().startsWith("re:")) {
+        String subject = originalSubject == null || originalSubject.isBlank()
+                ? "Re: (no subject)"
+                : originalSubject;
+        if (!subject.toLowerCase().startsWith("re:")) {
             subject = "Re: " + subject;
         }
 

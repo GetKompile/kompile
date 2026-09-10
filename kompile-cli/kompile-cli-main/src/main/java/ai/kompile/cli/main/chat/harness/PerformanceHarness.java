@@ -17,8 +17,10 @@
 package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +55,7 @@ public class PerformanceHarness {
     private volatile ModelPerformanceStore store;
     private volatile ExecutorService judgeExecutor;
 
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final HarnessConfig config;
     private final TerminalRenderer renderer;
     private final ChatSessionMetrics sessionMetrics;
@@ -62,28 +65,51 @@ public class PerformanceHarness {
     // Retained for lazy judge construction
     private final DirectLlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final JudgeBackend judgeBackendOverride;
 
     private volatile SwapListener swapListener;
     private volatile boolean initialized;
+    private volatile boolean judgeRuntimeEnabled;
 
     public PerformanceHarness(DirectLlmClient llmClient, ChatConfig chatConfig,
                                ObjectMapper objectMapper, TerminalRenderer renderer,
                                ChatSessionMetrics sessionMetrics) {
-        this(llmClient, chatConfig, objectMapper, renderer, sessionMetrics, null);
+        this(llmClient, chatConfig, objectMapper, renderer, sessionMetrics, null, null);
     }
 
     public PerformanceHarness(DirectLlmClient llmClient, ChatConfig chatConfig,
                                ObjectMapper objectMapper, TerminalRenderer renderer,
                                ChatSessionMetrics sessionMetrics,
                                BackgroundProcessManager processManager) {
+        this(llmClient, chatConfig, objectMapper, renderer, sessionMetrics,
+                processManager, null);
+    }
+
+    /**
+     * Standard-chat constructor with an in-process judge REPL backend. Supplying
+     * this override prevents the harness from resolving a persistent CLI judge.
+     */
+    public PerformanceHarness(DirectLlmClient llmClient, ChatConfig chatConfig,
+                              ObjectMapper objectMapper, TerminalRenderer renderer,
+                              ChatSessionMetrics sessionMetrics,
+                              BackgroundProcessManager processManager,
+                              JudgeBackend judgeBackendOverride) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.chatConfig = chatConfig;
         this.renderer = renderer;
         this.sessionMetrics = sessionMetrics;
         this.processManager = processManager;
+        this.judgeBackendOverride = judgeBackendOverride;
         // Config is cheap (one small JSON file) — load eagerly so isEnabled() works immediately
         this.config = HarnessConfig.load(objectMapper);
+        this.judgeRuntimeEnabled = config.isJudgeGlobalEnabled();
+    }
+
+    /** Apply the persistent master switch to this already-running session. */
+    public void setJudgeGlobalEnabled(boolean enabled) {
+        judgeRuntimeEnabled = enabled;
+        config.setJudgeGlobalEnabled(enabled);
     }
 
     /**
@@ -95,13 +121,17 @@ public class PerformanceHarness {
         synchronized (this) {
             if (initialized) return;
             this.store = new ModelPerformanceStore(config.getMaxRecordAge(), config.getMaxRecords());
-            this.store.loadFromFile();
+            if (config.isPersistCrossSession()) {
+                this.store.loadFromFile();
+            } else {
+                this.store.useInMemoryOnly();
+            }
             this.escapeDetector = new EscapeDetector();
             this.thinkingAnalyzer = new ThinkingAnalyzer();
             this.scorer = new CompositeScoreCalculator(config);
             this.router = new ModelRouter(config, store, chatConfig);
-            if (config.isJudgeEnabled()) {
-                this.judge = new JudgeLlmEvaluator(llmClient, objectMapper, config, processManager);
+            if (judgeRuntimeEnabled && config.isJudgeEnabled()) {
+                this.judge = newJudgeEvaluator();
             }
             this.judgeExecutor = Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "harness-judge");
@@ -191,12 +221,12 @@ public class PerformanceHarness {
     public JudgeDimensions evaluateJudge(ModelPerformanceRecord record,
                                           TurnMetrics metrics, String taskType) {
         ensureInitialized();
-        if (!config.isJudgeEnabled()) return null;
+        if (!judgeRuntimeEnabled || !config.isJudgeEnabled()) return null;
         // Lazy-create judge on first judge call (skipped in ensureInitialized if disabled at startup)
         if (judge == null) {
             synchronized (this) {
                 if (judge == null) {
-                    judge = new JudgeLlmEvaluator(llmClient, objectMapper, config, processManager);
+                    judge = newJudgeEvaluator();
                 }
             }
         }
@@ -210,6 +240,37 @@ public class PerformanceHarness {
             sessionMetrics.recordJudgeCall();
         }
         return dims;
+    }
+
+    /** Judge a proposed main-REPL tool call before it can create side effects. */
+    public EnforcerToolCallDecision evaluateToolCall(
+            String userPrompt, String assistantContext, String toolName, String toolInput) {
+        if (!config.isEnabled() || !judgeRuntimeEnabled || !config.isJudgeEnabled()) {
+            return EnforcerToolCallDecision.allow("Harness judge is disabled");
+        }
+        ensureInitialized();
+        if (judge == null || !judge.isAvailable()) {
+            return EnforcerToolCallDecision.allow("Harness judge is unavailable");
+        }
+        try {
+            EnforcerToolCallDecision decision = judge.evaluateToolCall(
+                    userPrompt, assistantContext, toolName, toolInput);
+            if (sessionMetrics != null) {
+                sessionMetrics.recordJudgeCall();
+            }
+            return decision;
+        } catch (Exception failure) {
+            // Quality judging is advisory. Enforcer policy remains the fail-closed lane.
+            return EnforcerToolCallDecision.allow(
+                    "Harness judge failed open: " + failure.getMessage());
+        }
+    }
+
+    private JudgeLlmEvaluator newJudgeEvaluator() {
+        if (judgeBackendOverride != null) {
+            return new JudgeLlmEvaluator(judgeBackendOverride, objectMapper);
+        }
+        return new JudgeLlmEvaluator(llmClient, objectMapper, config, processManager);
     }
 
     /**
@@ -266,8 +327,8 @@ public class PerformanceHarness {
             }
         }
 
-        // Flush store to persist the completed record
-        store.flush();
+        // Session-local harnesses retain metrics in memory without touching ~/.kompile.
+        if (config.isPersistCrossSession()) store.flush();
 
         // Verbose logging
         if (config.isVerboseLogging()) {
@@ -301,7 +362,7 @@ public class PerformanceHarness {
         final String finalTaskType = taskType;
 
         // Layers 3+4: Judge + thinking analysis (background thread)
-        judgeExecutor.submit(() -> {
+        judgeExecutor.submit(sessionContext.wrap(() -> {
             try {
                 // Layer 4: Thinking
                 ThinkingAnalyzer.ThinkingAnalysis thinkingAnalysis =
@@ -318,7 +379,7 @@ public class PerformanceHarness {
                     System.err.println("Harness evaluation error: " + e.getMessage());
                 }
             }
-        });
+        }));
     }
 
     /**
@@ -326,6 +387,12 @@ public class PerformanceHarness {
      */
     public void evaluateTurnAsync(String agentName, String model, String agentOutput,
                                    String sessionId, long latencyMs) {
+        evaluateTurnAsync(agentName, model, null, agentOutput, sessionId, latencyMs);
+    }
+
+    /** Backward-compatible convenience overload that retains the original user request. */
+    public void evaluateTurnAsync(String agentName, String model, String taskPrompt,
+                                  String agentOutput, String sessionId, long latencyMs) {
         evaluateTurnAsync(TurnMetrics.builder()
                 .sessionId(sessionId)
                 .agentName(agentName)
@@ -333,6 +400,7 @@ public class PerformanceHarness {
                 .provider(chatConfig != null ? chatConfig.getProvider() : null)
                 .latencyMs(latencyMs)
                 .agentOutput(agentOutput)
+                .taskPrompt(taskPrompt)
                 .build());
     }
 
@@ -389,17 +457,27 @@ public class PerformanceHarness {
     }
 
     public void shutdown() {
-        if (!initialized) return;
+        if (!initialized) {
+            if (judgeBackendOverride != null) {
+                judgeBackendOverride.close();
+            }
+            return;
+        }
         if (judgeExecutor != null) {
             judgeExecutor.shutdown();
             try {
-                judgeExecutor.awaitTermination(10, TimeUnit.SECONDS);
+                if (!judgeExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    judgeExecutor.shutdownNow();
+                }
             } catch (InterruptedException e) {
+                judgeExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
             }
         }
         if (judge != null) {
             judge.close();
+        } else if (judgeBackendOverride != null) {
+            judgeBackendOverride.close();
         }
         if (config.isPersistCrossSession() && store != null) {
             store.flush();
@@ -425,4 +503,5 @@ public class PerformanceHarness {
     public interface SwapListener {
         void onModelSwap(String agentName, String fromModel, String toModel, String reason);
     }
+
 }

@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.common.http;
 
+import ai.kompile.channel.api.ChannelControlHeaders;
+import ai.kompile.cli.common.auth.IntegrationAdminCredential;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -110,8 +112,7 @@ public class KompileHttpClient {
      * Sends a GET request and deserializes the response.
      */
     public <T> T get(String path, Class<T> responseType) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, false)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -124,8 +125,7 @@ public class KompileHttpClient {
      * Sends a GET request and deserializes to a generic type.
      */
     public <T> T get(String path, TypeReference<T> typeRef) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, false)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -138,8 +138,7 @@ public class KompileHttpClient {
      * Sends a GET request and returns raw string response.
      */
     public String getString(String path) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, false)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
@@ -153,8 +152,7 @@ public class KompileHttpClient {
      */
     public <T> T post(String path, Object body, Class<T> responseType) throws IOException, InterruptedException {
         String json = objectMapper.writeValueAsString(body);
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json))
@@ -172,8 +170,7 @@ public class KompileHttpClient {
      */
     public String postString(String path, Object body) throws IOException, InterruptedException {
         String json = objectMapper.writeValueAsString(body);
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json))
@@ -187,8 +184,7 @@ public class KompileHttpClient {
      * Sends a POST request with no body.
      */
     public String postEmpty(String path) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
@@ -202,8 +198,7 @@ public class KompileHttpClient {
      */
     public String putString(String path, Object body) throws IOException, InterruptedException {
         String json = objectMapper.writeValueAsString(body);
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(json))
@@ -218,8 +213,7 @@ public class KompileHttpClient {
      */
     public <T> T put(String path, Object body, Class<T> responseType) throws IOException, InterruptedException {
         String json = objectMapper.writeValueAsString(body);
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(json))
@@ -236,8 +230,7 @@ public class KompileHttpClient {
      * Sends a DELETE request.
      */
     public String delete(String path) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Accept", "application/json")
                 .DELETE()
                 .build();
@@ -329,8 +322,7 @@ public class KompileHttpClient {
         }
         out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, true)
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray()))
                 .build();
@@ -345,8 +337,7 @@ public class KompileHttpClient {
      * derive a default filename when needed.
      */
     public String downloadToFile(String path, Path outputFile) throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(urlFor(path)))
+        HttpRequest request = requestBuilder(path, false)
                 .GET()
                 .build();
         HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -365,6 +356,33 @@ public class KompileHttpClient {
             String body = response.body() != null ? response.body() : "";
             throw new IOException("HTTP " + response.statusCode() + ": " + body);
         }
+    }
+
+    private HttpRequest.Builder requestBuilder(String path, boolean mutation) throws IOException {
+        URI uri = URI.create(urlFor(path));
+        HttpRequest.Builder request = HttpRequest.newBuilder().uri(uri);
+        if (requiresIntegrationCredential(path, mutation)) {
+            String token = IntegrationAdminCredential.loadFor(uri);
+            if (token != null && !token.isBlank()) {
+                request.header(ChannelControlHeaders.TOKEN_HEADER, token);
+                if (mutation) request.header(ChannelControlHeaders.REQUEST_HEADER, "1");
+            }
+        }
+        return request;
+    }
+
+    static boolean requiresIntegrationCredential(String rawPath, boolean mutation) {
+        String path = rawPath == null ? "" : rawPath.split("[?#]", 2)[0];
+        boolean integration = path.equals("/api/channel-integrations")
+                || path.startsWith("/api/channel-integrations/")
+                || path.equals("/api/kclaw") || path.startsWith("/api/kclaw/")
+                || path.equals("/api/sync") || path.startsWith("/api/sync/")
+                || path.equals("/api/oauth") || path.startsWith("/api/oauth/")
+                || path.equals("/api/source-providers") || path.startsWith("/api/source-providers/");
+        boolean sourceMutation = mutation && (path.equals("/api/unified-crawl")
+                || path.startsWith("/api/unified-crawl/")
+                || path.equals("/api/documents") || path.startsWith("/api/documents/"));
+        return integration || sourceMutation;
     }
 
     /**

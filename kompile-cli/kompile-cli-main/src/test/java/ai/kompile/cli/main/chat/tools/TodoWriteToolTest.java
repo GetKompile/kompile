@@ -1,27 +1,34 @@
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@ResourceLock("user.home")
 class TodoWriteToolTest {
 
-    /** Fresh per test — todo state persists to <workDir>/.kompile/memory, and a shared
-     *  working directory leaks persisted todos into every later session's first load. */
+    /** Fresh project root per test; session-scoped todo files live beneath its managed memory. */
     @TempDir
     Path workDir;
 
@@ -29,9 +36,12 @@ class TodoWriteToolTest {
     private ToolContext context;
     private ObjectMapper om;
     private String sessionId;
+    private String previousHome;
 
     @BeforeEach
     void setUp() {
+        previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", workDir.toString());
         tool = new TodoWriteTool();
         om = new ObjectMapper();
         // Use a unique session ID per test to avoid cross-test contamination
@@ -45,11 +55,21 @@ class TodoWriteToolTest {
         context = new ToolContext(sessionId, agent, perms, workDir, registry);
     }
 
+    @AfterEach
+    void restoreHome() {
+        if (previousHome == null) {
+            System.clearProperty("user.home");
+        } else {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
     @Test
     void testIdAndDescription() {
         assertEquals("todowrite", tool.id());
         assertNotNull(tool.description());
         assertTrue(tool.description().contains("todo"));
+        assertTrue(tool.compactHint().contains("current transcript"));
     }
 
     @Test
@@ -64,7 +84,7 @@ class TodoWriteToolTest {
         assertFalse(result.isError());
         assertTrue(result.getOutput().contains("Added task"));
 
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
         assertEquals(1, todos.size());
         assertEquals("Implement feature X", todos.get(0).subject);
         assertEquals("Add the new endpoint", todos.get(0).description);
@@ -81,7 +101,7 @@ class TodoWriteToolTest {
 
         tool.execute(params, context);
 
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
         assertEquals(1, todos.size());
         assertEquals("high", todos.get(0).priority);
     }
@@ -95,7 +115,7 @@ class TodoWriteToolTest {
 
         tool.execute(params, context);
 
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
         assertEquals("medium", todos.get(0).priority);
     }
 
@@ -117,7 +137,7 @@ class TodoWriteToolTest {
         addParams.put("subject", "Task to update");
         tool.execute(addParams, context);
 
-        String taskId = TodoWriteTool.getTodos(sessionId).get(0).id;
+        String taskId = TodoWriteTool.getTodos(sessionId, workDir).get(0).id;
 
         // Update status
         ObjectNode updateParams = om.createObjectNode();
@@ -129,7 +149,7 @@ class TodoWriteToolTest {
 
         assertFalse(result.isError());
         assertTrue(result.getOutput().contains("pending → in_progress"));
-        assertEquals("in_progress", TodoWriteTool.getTodos(sessionId).get(0).status);
+        assertEquals("in_progress", TodoWriteTool.getTodos(sessionId, workDir).get(0).status);
     }
 
     @Test
@@ -139,7 +159,7 @@ class TodoWriteToolTest {
         addParams.put("subject", "Task to complete");
         tool.execute(addParams, context);
 
-        String taskId = TodoWriteTool.getTodos(sessionId).get(0).id;
+        String taskId = TodoWriteTool.getTodos(sessionId, workDir).get(0).id;
 
         ObjectNode updateParams = om.createObjectNode();
         updateParams.put("action", "update");
@@ -147,7 +167,7 @@ class TodoWriteToolTest {
         updateParams.put("status", "completed");
 
         tool.execute(updateParams, context);
-        assertEquals("completed", TodoWriteTool.getTodos(sessionId).get(0).status);
+        assertEquals("completed", TodoWriteTool.getTodos(sessionId, workDir).get(0).status);
     }
 
     @Test
@@ -179,7 +199,7 @@ class TodoWriteToolTest {
         addParams.put("subject", "Task to delete");
         tool.execute(addParams, context);
 
-        String taskId = TodoWriteTool.getTodos(sessionId).get(0).id;
+        String taskId = TodoWriteTool.getTodos(sessionId, workDir).get(0).id;
 
         ObjectNode deleteParams = om.createObjectNode();
         deleteParams.put("action", "delete");
@@ -189,7 +209,7 @@ class TodoWriteToolTest {
 
         assertFalse(result.isError());
         assertTrue(result.getOutput().contains("Deleted"));
-        assertTrue(TodoWriteTool.getTodos(sessionId).isEmpty());
+        assertTrue(TodoWriteTool.getTodos(sessionId, workDir).isEmpty());
     }
 
     @Test
@@ -221,7 +241,7 @@ class TodoWriteToolTest {
             tool.execute(params, context);
         }
 
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
         assertEquals(5, todos.size());
         assertEquals("Task 1", todos.get(0).subject);
         assertEquals("Task 5", todos.get(4).subject);
@@ -235,10 +255,121 @@ class TodoWriteToolTest {
         params.put("subject", "Session A task");
         tool.execute(params, context);
 
-        // Different session should be empty
+        // A different transcript in the same project starts empty and persists separately.
         String otherSession = "other-" + UUID.randomUUID();
-        assertTrue(TodoWriteTool.getTodos(otherSession).isEmpty());
-        assertEquals(1, TodoWriteTool.getTodos(sessionId).size());
+        assertTrue(TodoWriteTool.getTodos(otherSession, workDir).isEmpty());
+        ToolContext otherContext = new ToolContext(otherSession, context.getAgent(),
+                context.getPermissionService(), workDir, new ToolRegistry(om));
+        ObjectNode otherParams = om.createObjectNode();
+        otherParams.put("action", "add");
+        otherParams.put("subject", "Session B task");
+        tool.execute(otherParams, otherContext);
+
+        assertEquals(1, TodoWriteTool.getTodos(sessionId, workDir).size());
+        assertEquals("Session A task", TodoWriteTool.getTodos(sessionId, workDir).get(0).subject);
+        assertEquals("Session B task", TodoWriteTool.getTodos(otherSession, workDir).get(0).subject);
+        assertNotEquals(TodoWriteTool.sessionTodoPath(sessionId),
+                TodoWriteTool.sessionTodoPath(otherSession));
+    }
+
+    @Test
+    void testPersistedTasksReloadForResumedSession() throws Exception {
+        ObjectNode params = om.createObjectNode();
+        params.put("action", "add");
+        params.put("subject", "Survives process restart");
+        tool.execute(params, context);
+
+        ToolContext resumedContext = new ToolContext(sessionId, context.getAgent(),
+                context.getPermissionService(), workDir, new ToolRegistry(om));
+
+        List<TodoWriteTool.TodoItem> reloaded = TodoWriteTool.getTodos(resumedContext);
+        assertEquals(1, reloaded.size());
+        assertEquals("Survives process restart", reloaded.get(0).subject);
+    }
+
+    @Test
+    void testConcurrentAddsInOneSessionAreNotLost() throws Exception {
+        int taskCount = 12;
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        try {
+            List<Future<ToolResult>> writes = new ArrayList<>();
+            for (int i = 0; i < taskCount; i++) {
+                int taskNumber = i;
+                writes.add(executor.submit(() -> {
+                    ObjectNode params = om.createObjectNode();
+                    params.put("action", "add");
+                    params.put("subject", "Concurrent task " + taskNumber);
+                    return tool.execute(params, context);
+                }));
+            }
+            for (Future<ToolResult> write : writes) {
+                assertFalse(write.get().isError());
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        List<TodoWriteTool.TodoItem> persisted = TodoWriteTool.getTodos(sessionId, workDir);
+        assertEquals(taskCount, persisted.size());
+        assertEquals(taskCount, persisted.stream().map(item -> item.id).distinct().count());
+    }
+
+    @Test
+    @ResourceLock("kompile.transcript.uuid")
+    void testDefaultWriteUsesActiveTranscriptId() throws Exception {
+        String previous = System.getProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+        String activeTranscriptId = "transcript-" + UUID.randomUUID();
+        try {
+            System.setProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, activeTranscriptId);
+            ObjectNode params = om.createObjectNode();
+            params.put("action", "add");
+            params.put("subject", "Bound to active transcript");
+
+            tool.execute(params, context);
+
+            assertEquals("Bound to active transcript",
+                    TodoWriteTool.getTodos(activeTranscriptId, workDir).get(0).subject);
+            assertTrue(TodoWriteTool.getTodos(sessionId, workDir).isEmpty());
+        } finally {
+            if (previous == null) {
+                System.clearProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY);
+            } else {
+                System.setProperty(TranscriptLogScope.TRANSCRIPT_ID_PROPERTY, previous);
+            }
+        }
+    }
+
+    @Test
+    void testLegacyGlobalTasksRequireTheirRecordedSessionOrExplicitLegacyLookup() throws Exception {
+        Path legacyFile = workDir.resolve(".kompile").resolve("memory")
+                .resolve("project-todos.json.md");
+        Files.createDirectories(legacyFile.getParent());
+        ObjectNode legacyRoot = om.createObjectNode();
+        legacyRoot.put("schema", "kompile-project-todos-v1");
+        legacyRoot.put("sessionId", "old-session");
+        legacyRoot.putArray("todos").addObject()
+                .put("id", "1")
+                .put("subject", "Legacy task")
+                .put("status", "pending")
+                .put("priority", "medium");
+        Files.writeString(legacyFile, om.writeValueAsString(legacyRoot));
+
+        assertTrue(TodoWriteTool.getTodos(sessionId, workDir).isEmpty(),
+                "legacy global data must not leak into an unrelated current session");
+        assertEquals("Legacy task",
+                TodoWriteTool.getTodos("old-session", workDir).get(0).subject);
+        assertEquals("Legacy task",
+                TodoWriteTool.getTodos(TodoWriteTool.LEGACY_SESSION_ID, workDir).get(0).subject);
+    }
+
+    @Test
+    void testSessionIdCannotEscapeTodoDirectory() {
+        Path taskFile = TodoWriteTool.sessionTodoPath("../../outside");
+        Path todoDirectory = workDir.resolve(".kompile").resolve("conversations")
+                .toAbsolutePath().normalize();
+
+        assertEquals(todoDirectory, taskFile.getParent());
+        assertTrue(taskFile.startsWith(todoDirectory));
     }
 
     @Test
@@ -253,7 +384,7 @@ class TodoWriteToolTest {
 
         assertFalse(result.isError());
         assertTrue(result.getOutput().contains("Set 2 task(s)"));
-        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workDir);
         assertEquals("First plain task", todos.get(0).subject);
         assertEquals("pending", todos.get(0).status);
         assertEquals("medium", todos.get(1).priority);
@@ -265,9 +396,10 @@ class TodoWriteToolTest {
      * The array is built field by field; this pins the persisted shape.
      */
     @Test
-    void testSetPersistsTodosToProjectMemory(@TempDir Path dir) throws Exception {
-        ToolContext isolated = new ToolContext("persist-" + UUID.randomUUID(), context.getAgent(),
-                context.getPermissionService(), dir, new ToolRegistry(om));
+    void testSetPersistsTodosToTranscriptState() throws Exception {
+        String persistedSessionId = "persist-" + UUID.randomUUID();
+        ToolContext isolated = new ToolContext(persistedSessionId, context.getAgent(),
+                context.getPermissionService(), workDir, new ToolRegistry(om));
 
         ObjectNode params = om.createObjectNode();
         params.put("action", "set");
@@ -279,14 +411,18 @@ class TodoWriteToolTest {
         ToolResult result = tool.execute(params, isolated);
         assertFalse(result.isError());
 
-        Path file = dir.resolve(".kompile").resolve("memory").resolve("project-todos.json.md");
+        Path file = TodoWriteTool.sessionTodoPath(persistedSessionId);
         assertTrue(Files.isRegularFile(file));
         JsonNode root = om.readTree(file.toFile());
+        assertEquals("kompile-session-todos-v2", root.path("schema").asText());
+        assertEquals(persistedSessionId, root.path("sessionId").asText());
         assertEquals(1, root.path("todos").size());
         JsonNode persisted = root.path("todos").get(0);
         assertEquals("Persisted task", persisted.path("subject").asText());
         assertEquals("in_progress", persisted.path("status").asText());
         assertEquals("high", persisted.path("priority").asText());
+        assertFalse(Files.exists(workDir.resolve(".kompile").resolve("memory")
+                .resolve("project-todos.json.md")));
     }
 
     @Test
@@ -297,7 +433,7 @@ class TodoWriteToolTest {
         addParams.put("priority", "low");
         tool.execute(addParams, context);
 
-        String taskId = TodoWriteTool.getTodos(sessionId).get(0).id;
+        String taskId = TodoWriteTool.getTodos(sessionId, workDir).get(0).id;
 
         ObjectNode updateParams = om.createObjectNode();
         updateParams.put("action", "update");
@@ -307,7 +443,7 @@ class TodoWriteToolTest {
 
         tool.execute(updateParams, context);
 
-        TodoWriteTool.TodoItem item = TodoWriteTool.getTodos(sessionId).get(0);
+        TodoWriteTool.TodoItem item = TodoWriteTool.getTodos(sessionId, workDir).get(0);
         assertEquals("Updated subject", item.subject);
         assertEquals("high", item.priority);
     }

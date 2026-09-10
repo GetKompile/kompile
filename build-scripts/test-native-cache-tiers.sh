@@ -137,6 +137,9 @@ kompile_native_remote_copy() {
   elif [[ "${destination}" == "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/"* ]]; then
     relative="${destination#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}"
     mkdir -p "${REMOTE_STORE}/$(dirname "${relative}")"
+    # Blob overwrite replaces the object; it does not write through the old
+    # local inode (which inherits read-only cache permissions in this fixture).
+    rm -f -- "${REMOTE_STORE}/${relative}"
     cp "${source}" "${REMOTE_STORE}/${relative}"
   else
     return 1
@@ -178,4 +181,29 @@ if kompile_native_validate_cache_receipt     "${LEGACY_IMAGE}.native-cache" "${A
   fail "legacy v2 sidecar was accepted as a v3 independent-stage receipt"
 fi
 
-printf 'PASS: independent Native Image AOT/runtime cache tiers\n'
+# Bounded local retention must not change remote retention or target isolation.
+KOMPILE_NATIVE_CACHE_RETENTION=2
+key_b="$(printf key-b | kompile_sha256_stdin)"
+key_c="$(printf key-c | kompile_sha256_stdin)"
+kompile_publish_cached_native_image fixture "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2"
+touch -t 202001010000 "$KOMPILE_NATIVE_CACHE_DIR/fixture/$AOT_RECEIPT_KEY/.last-used"
+touch -t 202101010000 "$KOMPILE_NATIVE_CACHE_DIR/fixture/$key_b/.last-used"
+kompile_restore_cached_native_image fixture "$TARGET_IMAGE" "$AOT_RECEIPT_KEY" "$RUNTIME_RECEIPT_V2"
+kompile_publish_cached_native_image other "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2"
+kompile_publish_cached_native_image fixture "$TARGET_IMAGE" "$key_c" "$RUNTIME_RECEIPT_V2"
+[[ ! -e "$KOMPILE_NATIVE_CACHE_DIR/fixture/$key_b" &&
+   -d "$KOMPILE_NATIVE_CACHE_DIR/fixture/$AOT_RECEIPT_KEY" &&
+   -d "$KOMPILE_NATIVE_CACHE_DIR/other/$key_b" &&
+   -f "$REMOTE_STORE/fixture/$key_b/native-worker" ]] || fail 'local retention crossed ownership or ignored hit usage'
+# An unsuccessful remote lookup may leave an empty key directory. Publishing
+# later must repair that empty state instead of permanently disabling the cache.
+mkdir -p "$KOMPILE_NATIVE_CACHE_DIR/empty/$key_b"
+kompile_publish_cached_native_image empty "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2" || fail 'empty entry cannot recover'
+# Unexpected entry contents prevent pruning, not deletion of unknown data.
+printf evidence > "$KOMPILE_NATIVE_CACHE_DIR/fixture/$AOT_RECEIPT_KEY/keep"
+kompile_publish_cached_native_image fixture "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2"
+[[ -f "$KOMPILE_NATIVE_CACHE_DIR/fixture/$AOT_RECEIPT_KEY/keep" &&
+   -d "$KOMPILE_NATIVE_CACHE_DIR/fixture/$key_c" ]] || fail 'unsafe bucket pruned'
+# A valid target remains usable even when its shared entry is unsafe.
+kompile_restore_cached_native_image fixture "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2" || fail 'normal target hit lost'
+printf 'PASS: independent Native Image AOT/runtime cache tiers and bounded local retention\n'

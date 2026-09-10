@@ -17,6 +17,7 @@
 package ai.kompile.process.discovery.mining;
 
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -337,8 +338,11 @@ class ReasoningGraphProcessGeneratorTest {
         assertTrue(suggestionsJson.contains("\"hybridReasoning\""));
         assertTrue(suggestionsJson.contains("\"pslStructuralScore\""));
         for (ReasoningGraphProcessGenerator.Candidate candidate : result.candidates()) {
-            assertNotNull(graph.model(ProcessUnifiedGraphArtifacts.traceArtifactName(
-                    candidate.suggestion().getId())));
+            String suggestionId = candidate.suggestion().getId();
+            String json = graph.artifactText(ProcessUnifiedGraphArtifacts.traceArtifactName(suggestionId));
+            assertNotNull(json);
+            assertEquals(candidate.reasoningTrace().steps(),
+                    ReasoningTraceJsonCodec.decode(json, suggestionId).steps());
         }
     }
 

@@ -7,7 +7,7 @@
  * API endpoint setup, display options) and the settings page tabs.
  */
 
-import { test, expect, triggerAngularCD } from './fixtures/kompile.fixture';
+import { test, expect, triggerAngularCD } from '../fixtures/kompile.fixture';
 
 
 test.describe('Settings Sidebar — Agent Configuration', () => {

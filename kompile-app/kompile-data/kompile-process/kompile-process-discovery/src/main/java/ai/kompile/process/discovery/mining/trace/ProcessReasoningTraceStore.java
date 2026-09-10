@@ -17,15 +17,16 @@
 package ai.kompile.process.discovery.mining.trace;
 
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
 /**
@@ -58,13 +59,18 @@ public class ProcessReasoningTraceStore {
         }
         try {
             Files.createDirectories(storageDir);
-            try (ObjectOutputStream out = new ObjectOutputStream(
-                    Files.newOutputStream(fileForSuggestion(suggestionId)))) {
-                out.writeObject(trace);
+            Path target = fileForSuggestion(suggestionId);
+            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
+            String json = ReasoningTraceJsonCodec.encode(traceId(suggestionId), suggestionId, trace);
+            Files.writeString(temp, json, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
-            log.warn("Failed to persist process reasoning trace for suggestion {}: {}",
-                    suggestionId, e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to persist process reasoning trace for suggestion " + suggestionId, e);
         }
     }
 
@@ -76,21 +82,40 @@ public class ProcessReasoningTraceStore {
         if (!Files.isRegularFile(file)) {
             return Optional.empty();
         }
-        try (ObjectInputStream in = new ObjectInputStream(Files.newInputStream(file))) {
-            Object value = in.readObject();
-            return value instanceof ReasoningTrace trace ? Optional.of(trace) : Optional.empty();
-        } catch (IOException | ClassNotFoundException e) {
+        try {
+            if (Files.size(file) > ReasoningTraceJsonCodec.MAX_BYTES) {
+                throw new IllegalArgumentException("Process reasoning trace exceeds maximum size");
+            }
+            String json = Files.readString(file, StandardCharsets.UTF_8);
+            return Optional.of(ReasoningTraceJsonCodec.decode(json, suggestionId));
+        } catch (IOException | IllegalArgumentException e) {
             log.warn("Failed to load process reasoning trace for suggestion {}: {}",
                     suggestionId, e.getMessage());
             return Optional.empty();
         }
     }
 
-    private Path fileForSuggestion(String suggestionId) {
-        return storageDir.resolve(fileSafe(suggestionId) + ".ser");
+    /** Delete one durable trace; missing traces are an idempotent no-op. */
+    public void delete(String suggestionId) {
+        Path file = fileForSuggestion(suggestionId);
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to delete process reasoning trace " + suggestionId, e);
+        }
     }
 
-    private static String fileSafe(String value) {
-        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+    private Path fileForSuggestion(String suggestionId) {
+        validateSuggestionId(suggestionId);
+        Path root = storageDir.toAbsolutePath().normalize();
+        Path file = root.resolve(suggestionId + ".json").normalize();
+        if (!file.startsWith(root)) throw new IllegalArgumentException("Trace path escapes storage directory");
+        return file;
+    }
+
+    private static void validateSuggestionId(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,199}") || value.contains("..")) {
+            throw new IllegalArgumentException("Invalid process trace suggestion ID");
+        }
     }
 }

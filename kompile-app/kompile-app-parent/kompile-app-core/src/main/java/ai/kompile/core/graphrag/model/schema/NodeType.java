@@ -16,16 +16,34 @@
 
 package ai.kompile.core.graphrag.model.schema;
 
-import lombok.AllArgsConstructor;
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class NodeType {
     private String label; // The Neo4j label for this node type (e.g., "PERSON", "COMPANY")
     private String description; // A natural language description of what this node type represents
     private List<PropertyType> properties; // List of allowed properties for this node type
+
+    /** Optional direct parent in the reusable entity-type hierarchy. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonAlias({"superType", "supertype", "parent_type"})
+    private String parentType;
+
+    /** Preserves the established schema API for flat schemas. */
+    public NodeType(String label, String description, List<PropertyType> properties) {
+        this(label, description, properties, null);
+    }
+
+    public NodeType(String label, String description, List<PropertyType> properties,
+                    String parentType) {
+        this.label = label;
+        this.description = description;
+        this.properties = properties;
+        this.parentType = parentType;
+    }
 }

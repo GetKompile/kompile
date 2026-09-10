@@ -52,7 +52,7 @@ class ManagedServiceEndpointsCorsConfigurationTest {
         CorsConfiguration cors = configuration.currentConfiguration();
         assertTrue(cors.getAllowedMethods().contains("GET"));
         assertTrue(cors.getAllowedMethods().contains("POST"));
-        assertEquals(Boolean.FALSE, cors.getAllowCredentials());
+        assertEquals(Boolean.TRUE, cors.getAllowCredentials());
     }
 
     @Test
@@ -81,6 +81,7 @@ class ManagedServiceEndpointsCorsConfigurationTest {
 
         assertEquals("http://localhost:19381",
                 response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
         assertEquals(200, response.getStatus());
     }
 

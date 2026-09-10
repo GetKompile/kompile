@@ -126,12 +126,13 @@ class DefaultDiscordApiClientTest {
         );
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "CH1", author, "Hello world",
+                "msg1", "CH1", "G1", author, "Hello world",
                 System.currentTimeMillis(), "msg0", List.of("https://file.url")
         );
 
         assertEquals("msg1", message.id());
         assertEquals("CH1", message.channelId());
+        assertEquals("G1", message.guildId());
         assertEquals("testuser", message.author().username());
         assertEquals("Hello world", message.content());
         assertEquals("msg0", message.referencedMessageId());
@@ -146,7 +147,7 @@ class DefaultDiscordApiClientTest {
         );
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg2", "CH2", author, "Standalone message",
+                "msg2", "CH2", null, author, "Standalone message",
                 System.currentTimeMillis(), null, null
         );
 

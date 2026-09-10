@@ -60,7 +60,7 @@ public class UnifiedPipelineDefinition {
      * the framework Pipeline from domain-specific config.
      */
     public enum PipelineKind {
-        LLM, VLM, RAG, GENERIC
+        LLM, VLM, RAG, GENERIC, TRANSLATION
     }
 
     /**
@@ -114,6 +114,16 @@ public class UnifiedPipelineDefinition {
      * happens lazily in the subprocess.</p>
      */
     private Map<String, Object> pipelineSpec;
+
+    /**
+     * Optional standalone host processor: CHAT_MODEL with kind LLM or TRANSLATION,
+     * topology SEQUENCE, and no pipelineSpec. Translation uses operation=translation
+     * and nested translation options; its underlying provider capability is text.
+     * Only non-secret selectors/options belong here; credentials remain in host chat configuration.
+     * Composed host stages instead live in pipelineSpec with an LLM envelope; mixing
+     * host processors and local tensor runners is unsupported.
+     */
+    private Map<String, Object> processor;
 
     /** Named input and output contracts exposed to MCP pipeline authors. */
     private Map<String, DataContract> inputs;

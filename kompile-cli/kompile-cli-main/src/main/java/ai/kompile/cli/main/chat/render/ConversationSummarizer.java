@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.render;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * LLM-driven conversation summarizer. Produces a structured 9-section summary
@@ -52,8 +53,9 @@ public class ConversationSummarizer {
     }
 
     /**
-     * Generate a structured summary of the given conversation history.
-     * Streams the summary to stdout as it is produced.
+     * Generate a structured summary without rendering its private text. The owning
+     * chat turn handles progress separately; neither stdout nor the normal model
+     * output consumer may receive the summary.
      *
      * @param history          conversation entries to summarize
      * @param focusInstruction optional user-provided focus hint (e.g. "focus
@@ -71,8 +73,19 @@ public class ConversationSummarizer {
         String transcript = serializeHistory(history);
         String prompt = buildPrompt(transcript, focusInstruction);
 
-        DirectLlmClient.StreamResult result = directLlmClient.streamOneShot(
-                prompt, SUMMARY_SYSTEM_PROMPT, modelOverride);
+        // Compaction owns the parent turn, but runs outside streamDirectTurn's
+        // managed output scope. A null consumer falls back to raw stdout and
+        // paints over the live input pane; an existing consumer would expose the
+        // private summary as ordinary assistant text. Suppress both routes and
+        // restore the owner even on cancellation or a failed utility request.
+        Consumer<String> previousOutput = directLlmClient.getOutputConsumer();
+        DirectLlmClient.StreamResult result;
+        directLlmClient.setOutputConsumer(ignored -> { });
+        try {
+            result = directLlmClient.streamOneShot(prompt, SUMMARY_SYSTEM_PROMPT, modelOverride);
+        } finally {
+            directLlmClient.setOutputConsumer(previousOutput);
+        }
 
         return new SummaryResult(
                 result.text, result.inputTokens, result.outputTokens,

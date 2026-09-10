@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.format;
 import ai.kompile.cli.common.chat.sources.adapters.CodexAdapter;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -641,6 +642,29 @@ public class ConversationExporter {
     }
 
     /**
+    /**
+     * Title/summary derived from the first real user turn. Reminder decoration and
+     * compaction headers are skipped so exported native sessions keep the original
+     * conversation title instead of generic infrastructure text.
+     */
+    static String deriveTitleFromTurns(List<ChatHistory.Turn> turns) {
+        for (ChatHistory.Turn turn : turns) {
+            if (turn == null || !"user".equals(turn.role())) continue;
+            String content = turn.content();
+            if (content == null || content.isBlank()) continue;
+            content = ReminderManager.stripReminderBlock(content).strip();
+            if (content.isEmpty()) continue;
+            if (content.startsWith("This is a compacted cross-agent resume context.")
+                    || content.startsWith("[Compacted cross-agent resume context]")) {
+                continue;
+            }
+            String normalized = content.replaceAll("\\s+", " ");
+            return normalized.length() > 80 ? normalized.substring(0, 77) + "..." : normalized;
+        }
+        return "Resumed conversation";
+    }
+
+    /**
      * Updates or creates the sessions-index.json for Claude Code.
      */
     private static void updateClaudeSessionsIndex(Path projectDir, String sessionId,
@@ -658,12 +682,8 @@ public class ConversationExporter {
         ObjectNode sessionMeta = index.putObject(sessionId);
         sessionMeta.put("id", sessionId);
 
-        // Generate summary from first user message
-        String summary = turns.stream()
-                .filter(t -> "user".equals(t.role()))
-                .findFirst()
-                .map(t -> t.content().length() > 80 ? t.content().substring(0, 77) + "..." : t.content())
-                .orElse("Resumed conversation");
+        // Summary from the first real user message (skips reminder/compaction wrappers)
+        String summary = deriveTitleFromTurns(turns);
         sessionMeta.put("summary", summary);
 
         sessionMeta.put("messageCount", turns.size());
@@ -894,11 +914,7 @@ public class ConversationExporter {
         ObjectNode sessionMeta = index.putObject(sessionId);
         sessionMeta.put("id", sessionId);
 
-        String summary = turns.stream()
-                .filter(t -> "user".equals(t.role()))
-                .findFirst()
-                .map(t -> t.content().length() > 80 ? t.content().substring(0, 77) + "..." : t.content())
-                .orElse("Resumed conversation");
+        String summary = deriveTitleFromTurns(turns);
         sessionMeta.put("summary", summary);
         sessionMeta.put("messageCount", turns.size());
         sessionMeta.put("createdAt", Instant.now().toString());
@@ -971,11 +987,7 @@ public class ConversationExporter {
         // info.putNull("parentID");  // Omitted - optional field
         // info.putNull("workspaceID");  // Omitted - optional field
 
-        String title = turns.stream()
-                .filter(t -> "user".equals(t.role()))
-                .findFirst()
-                .map(t -> t.content().length() > 80 ? t.content().substring(0, 77) + "..." : t.content())
-                .orElse("Resumed conversation");
+        String title = deriveTitleFromTurns(turns);
         info.put("title", title);
         info.put("version", "1.3.17");
 

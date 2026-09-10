@@ -65,6 +65,11 @@ class CrawlStepBehaviorTest {
     static class InMemoryMatrixGraphStore implements MatrixGraphStore {
 
         private final Map<String, AdjacencyMatrixGraph> graphs = new ConcurrentHashMap<>();
+        // Keep bounded-scan cursors over insertion-ordered indexes rather than deriving pages
+        // from getAllNodes()/a full graph scan.  This mirrors the production cursor contract while
+        // keeping this fixture independent of vector-store internals.
+        private final Map<String, List<MatrixGraphNode>> nodePages = new ConcurrentHashMap<>();
+        private final Map<String, List<MatrixGraphStore.StoredEdge>> edgePages = new ConcurrentHashMap<>();
 
         private AdjacencyMatrixGraph getOrCreate(String graphId) {
             return graphs.computeIfAbsent(graphId,
@@ -90,6 +95,8 @@ class CrawlStepBehaviorTest {
 
         @Override
         public boolean deleteGraph(String graphId) {
+            nodePages.remove(graphId);
+            edgePages.remove(graphId);
             return graphs.remove(graphId) != null;
         }
 
@@ -113,18 +120,35 @@ class CrawlStepBehaviorTest {
 
         @Override
         public int addNode(String graphId, MatrixGraphNode node) {
-            return getOrCreate(graphId).addNode(node);
+            AdjacencyMatrixGraph graph = getOrCreate(graphId);
+            int index = graph.addNode(node);
+            graph.getNode(node.getNodeId()).ifPresent(canonical ->
+                    upsertNodePage(graphId, canonical));
+            return index;
         }
 
         @Override
         public void updateNode(String graphId, MatrixGraphNode node) {
-            getOrCreate(graphId).addNode(node);
+            addNode(graphId, node);
         }
 
         @Override
         public boolean removeNode(String graphId, String nodeId) {
             AdjacencyMatrixGraph g = graphs.get(graphId);
-            return g != null && g.removeNode(nodeId);
+            if (g == null || !g.removeNode(nodeId)) {
+                return false;
+            }
+            List<MatrixGraphNode> nodes = nodePages.get(graphId);
+            if (nodes != null) {
+                nodes.removeIf(node -> nodeId.equals(node.getNodeId()));
+            }
+            List<MatrixGraphStore.StoredEdge> edges = edgePages.get(graphId);
+            if (edges != null) {
+                edges.removeIf(edge -> {
+                    return nodeId.equals(edge.sourceNodeId()) || nodeId.equals(edge.targetNodeId());
+                });
+            }
+            return true;
         }
 
         @Override
@@ -155,14 +179,29 @@ class CrawlStepBehaviorTest {
         public boolean addEdge(String graphId, String sourceNodeId, String targetNodeId,
                                double weight, String edgeType, boolean bidirectional) {
             AdjacencyMatrixGraph g = getOrCreate(graphId);
-            return g.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional);
+            boolean added = g.addEdge(sourceNodeId, targetNodeId, weight, edgeType, bidirectional);
+            if (added) {
+                MatrixGraphStore.StoredEdge edge = new MatrixGraphStore.StoredEdge(
+                        sourceNodeId, targetNodeId, edgeType, weight, bidirectional,
+                        null, null, null, Map.of());
+                upsertEdgePage(graphId, edge);
+            }
+            return added;
         }
 
         @Override
         public boolean removeEdge(String graphId, String sourceNodeId, String targetNodeId,
                                   String edgeType) {
             AdjacencyMatrixGraph g = graphs.get(graphId);
-            return g != null && g.removeEdge(sourceNodeId, targetNodeId, edgeType);
+            if (g == null || !g.removeEdge(sourceNodeId, targetNodeId, edgeType)) {
+                return false;
+            }
+            List<MatrixGraphStore.StoredEdge> edges = edgePages.get(graphId);
+            if (edges != null) {
+                edges.removeIf(edge -> edgeKey(sourceNodeId, targetNodeId, edgeType)
+                        .equals(edgeKey(edge)));
+            }
+            return true;
         }
 
         @Override
@@ -215,6 +254,67 @@ class CrawlStepBehaviorTest {
                 }
             }
             return count;
+        }
+
+        @Override
+        public MatrixGraphStore.ScanPage<MatrixGraphNode> scanNodes(String graphId, int cursor, int pageSize) {
+            return boundedPage(nodePages.get(graphId), cursor, pageSize);
+        }
+
+        @Override
+        public MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> scanEdges(
+                String graphId, int cursor, int pageSize) {
+            return boundedPage(edgePages.get(graphId), cursor, pageSize);
+        }
+
+        private void upsertNodePage(String graphId, MatrixGraphNode node) {
+            List<MatrixGraphNode> nodes = nodePages.computeIfAbsent(graphId, ignored -> new ArrayList<>());
+            for (int i = 0; i < nodes.size(); i++) {
+                if (node.getNodeId().equals(nodes.get(i).getNodeId())) {
+                    nodes.set(i, node);
+                    return;
+                }
+            }
+            nodes.add(node);
+        }
+
+        private void upsertEdgePage(String graphId, MatrixGraphStore.StoredEdge edge) {
+            List<MatrixGraphStore.StoredEdge> edges = edgePages.computeIfAbsent(
+                    graphId, ignored -> new ArrayList<>());
+            for (int i = 0; i < edges.size(); i++) {
+                if (edgeKey(edge).equals(edgeKey(edges.get(i)))) {
+                    edges.set(i, edge);
+                    return;
+                }
+            }
+            edges.add(edge);
+        }
+
+        private static String edgeKey(MatrixGraphStore.StoredEdge edge) {
+            return edgeKey(edge.sourceNodeId(), edge.targetNodeId(), edge.edgeType());
+        }
+
+        private static String edgeKey(String sourceNodeId, String targetNodeId, String edgeType) {
+            return sourceNodeId + "\u0000" + targetNodeId + "\u0000" + edgeType;
+        }
+
+        private static <T> MatrixGraphStore.ScanPage<T> boundedPage(
+                List<T> indexedItems, int cursor, int pageSize) {
+            if (cursor < 0 || pageSize <= 0) {
+                throw new IllegalArgumentException("cursor must be >= 0 and pageSize must be > 0");
+            }
+            if (indexedItems == null || indexedItems.isEmpty()) {
+                return new MatrixGraphStore.ScanPage<>(List.of(), 0, false);
+            }
+
+            int start = Math.max(0, cursor);
+            if (start >= indexedItems.size()) {
+                return new MatrixGraphStore.ScanPage<>(List.of(), indexedItems.size(), false);
+            }
+
+            int end = (int) Math.min((long) indexedItems.size(), (long) start + pageSize);
+            return new MatrixGraphStore.ScanPage<>(indexedItems.subList(start, end), end,
+                    end < indexedItems.size());
         }
 
         @Override
@@ -323,6 +423,58 @@ class CrawlStepBehaviorTest {
         // All 2500 entities must be covered
         assertEquals(totalCount, allSeenNodeIds.size(),
                 "All entities must be reachable across the pages");
+    }
+
+    /**
+     * 1b-boundary — the fixture's bounded MatrixGraphStore scans honor page limits, advance the
+     * underlying cursor, and return an empty terminal page at the end for both nodes and edges.
+     */
+    @Test
+    void boundedScans_honorCursorAndPageBoundaries() {
+        Long fsId = 431L;
+        createEntityNode(fsId, "bound-a", "Bounded A");
+        createEntityNode(fsId, "bound-b", "Bounded B");
+        createEntityNode(fsId, "bound-c", "Bounded C");
+
+        String graphId = "factsheet_" + fsId;
+        MatrixGraphStore.ScanPage<MatrixGraphNode> firstNodes = store.scanNodes(graphId, 0, 2);
+        assertEquals(2, firstNodes.items().size());
+        assertTrue(firstNodes.hasMore());
+        assertEquals(2, firstNodes.nextCursor());
+
+        MatrixGraphStore.ScanPage<MatrixGraphNode> lastNodes =
+                store.scanNodes(graphId, firstNodes.nextCursor(), 2);
+        assertEquals(1, lastNodes.items().size());
+        assertFalse(lastNodes.hasMore());
+        assertEquals(3, lastNodes.nextCursor());
+
+        MatrixGraphStore.ScanPage<MatrixGraphNode> endNodes =
+                store.scanNodes(graphId, lastNodes.nextCursor(), 2);
+        assertTrue(endNodes.items().isEmpty());
+        assertFalse(endNodes.hasMore());
+        assertThrows(IllegalArgumentException.class, () -> store.scanNodes(graphId, -1, 1));
+        assertThrows(IllegalArgumentException.class, () -> store.scanNodes(graphId, 0, 0));
+
+        assertTrue(store.addEdge(graphId, "entity_bound-a", "entity_bound-b", 0.7,
+                "RELATED_TO", false));
+        assertTrue(store.addEdge(graphId, "entity_bound-b", "entity_bound-c", 0.8,
+                "RELATED_TO", false));
+        MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> firstEdges =
+                store.scanEdges(graphId, 0, 1);
+        assertEquals(1, firstEdges.items().size());
+        assertTrue(firstEdges.hasMore());
+        assertEquals("entity_bound-a", firstEdges.items().get(0).sourceNodeId());
+
+        MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> lastEdges =
+                store.scanEdges(graphId, firstEdges.nextCursor(), 1);
+        assertEquals(1, lastEdges.items().size());
+        assertFalse(lastEdges.hasMore());
+        assertEquals("entity_bound-b", lastEdges.items().get(0).sourceNodeId());
+
+        MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> endEdges =
+                store.scanEdges(graphId, lastEdges.nextCursor(), 1);
+        assertTrue(endEdges.items().isEmpty());
+        assertFalse(endEdges.hasMore());
     }
 
     /**

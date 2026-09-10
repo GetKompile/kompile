@@ -46,6 +46,11 @@ public class AppClientMixin {
         return jsonOutput;
     }
 
+    /** Whether the user pinned an explicit kompile backend with {@code --url} / {@code --port}. */
+    public boolean hasPinnedTarget() {
+        return pinnedUrl() != null;
+    }
+
     /**
      * Resolves a KompileHttpClient: {@code --url} > {@code --port} > per-path routing.
      * Returns null and prints an error if nothing is reachable.

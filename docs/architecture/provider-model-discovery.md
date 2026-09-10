@@ -1,6 +1,6 @@
 # Provider model discovery
 
-This document describes provider-owned dynamic model discovery, typed failure semantics, stale-cache fallback, credential-isolated caching, explicit refresh, and the provider matrix implemented by `ChatProvider.modelDiscoveryStrategy()`.
+This document describes provider-owned dynamic model discovery, typed failure semantics, credential-isolated short-lived caching, explicit live refresh, and the provider matrix implemented by `ChatProvider.modelDiscoveryStrategy()`.
 
 ## Capability precedence
 
@@ -11,28 +11,47 @@ Thinking controls are resolved in this order:
    `ai/kompile/cli/main/chat/providers/<provider>.json`.
 3. No selector. Unknown models never inherit another model family's controls.
 
-Live metadata always wins. Codex binds the selected Kompile OAuth credential
-to the official app-server with the external `chatgptAuthTokens` flow before
-calling `model/list`; it never relies on a separate Codex CLI login. OpenCode
-uses `opencode models --verbose`, Anthropic reads
+Live metadata always wins. Provider resources may also declare a narrowly scoped
+`wireValues` map to migrate obsolete persisted values before request serialization;
+those aliases are never offered as selectable capabilities. OpenAI reasoning effort
+choices end at `max`. Direct-provider endpoint, response-shape, identifier, and
+pagination contracts are loaded from
+`ai/kompile/cli/main/chat/model-catalogs.json`; that resource contains no model
+ids. OpenAI subscription discovery binds the selected Kompile OAuth credential
+to the installed Codex app-server and calls its authoritative `model/list`
+method. This avoids pinning the catalog to a stale HTTP `client_version`; the
+Codex CLI must be installed, but it does not need a separate login. OpenCode is
+an explicitly selected native-agent provider and uses `opencode models --verbose`. Anthropic reads
 `capabilities.effort`, and OpenRouter reads
 `reasoning.supported_efforts`.
 
-Codex discovery runs with an isolated temporary `CODEX_HOME`. Upstream
-`model/list` uses `OnlineIfUncached`, so isolation prevents a stale user-level
-Codex cache from satisfying an explicit Kompile refresh without contacting the
-provider. The selected external OAuth token is process-local and the temporary
-home is removed when discovery finishes.
+The interactive setup and picker always force a provider request. Provider,
+authentication, timeout, pagination, and schema failures return no live models
+and a typed error. They never substitute stale rows or the currently
+configured model as if they were live. Non-interactive callers may reuse only
+a fresh, credential-scoped cache entry and receive an explicit cache
+provenance message; there is no stale-cache fallback.
 
-Codex also logs and swallows upstream catalog refresh failures before returning
-its bundled catalog. Kompile recognizes that diagnostic (and any unexpected
-cache hit in the isolated home), rejects the bundled rows, and reports
-`UNAVAILABLE` instead of labeling them live.
+### Last known good catalog fallback
 
-Codex discovery results identify the resolved app-server runtime. Protocol,
-authentication, timeout, process-exit, and sanitized stderr diagnostics remain
-attached to typed failures so an old or broken Windows npm shim cannot look
-like a successful static model fallback.
+Every usable live response is recorded per provider (model ids, base URL, and
+time) in `~/.kompile/cache/model-catalogs.json`. When the live request cannot
+populate a list, the interactive picker and setup wizard:
+
+1. retry transport-grade failures (`TIMEOUT`, `UNAVAILABLE`, `RATE_LIMITED`)
+   once automatically;
+2. otherwise offer the recorded last known good catalog with its age and the
+   live failure reason, visibly labeled (never rendered as live results);
+3. and still accept a manually typed model id.
+
+An authoritative live list that simply does not contain a typed `/model <id>`
+is still rejected; only transport failures unlock recorded-catalog matches.
+The recorded store never blocks a live switch — recording is best-effort.
+
+Built-in credentials are origin-bound to the provider or OAuth base URL. An
+endpoint on another origin must use the explicit `custom` provider. Providers
+without credentials, such as a remote Ollama runtime, may use their configured
+endpoint directly.
 
 ## Documented fallback marker
 
@@ -42,6 +61,7 @@ Every provider resource must contain:
 - an upstream `source.url`
 - `source.verifiedAt`
 - a notice containing the literal `DOCUMENTED_FALLBACK`
+- optional `wireValues` aliases for migrating obsolete persisted values
 
 When a fallback supplies controls, the setup and picker label contains the
 classpath resource and the interactive wizard prints the resource-to-source
@@ -54,6 +74,7 @@ inventing controls that the request serializer cannot honor.
 
 ## Validation
 
-Focused tests cover endpoint and pagination behavior, native Codex/OpenCode
-catalogs, provider response shapes, fallback provenance, exact wire values,
-defaults, and unsupported-model behavior.
+Focused tests cover endpoint and pagination behavior, direct OAuth Codex and
+native OpenCode catalogs, provider-specific response shapes and identifier
+fields, credential origin binding, exact wire values, loud outage/schema
+failures, defaults, and unsupported-model behavior.

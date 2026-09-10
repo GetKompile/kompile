@@ -644,6 +644,10 @@
                 <configuration>
                     <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
                     <classifier>exec</classifier>
+                    <!-- CPU native payloads can take this archive beyond 2 GiB. Boot 3.2.5's
+                         new ZIP loader overflows large offsets (spring-boot#42012); keep the
+                         supported classic loader until the Boot baseline includes that fix. -->
+                    <loaderImplementation>CLASSIC</loaderImplementation>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

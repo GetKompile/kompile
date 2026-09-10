@@ -44,16 +44,29 @@ public class DefaultEmailClient implements EmailClient {
         this.config = config;
 
         Properties props = new Properties();
+        String storeProtocol = config.protocol();
         props.put("mail.store.protocol", config.protocol());
-        props.put("mail.imap.host", config.host());
-        props.put("mail.imap.port", String.valueOf(config.port()));
-        props.put("mail.imap.ssl.enable", String.valueOf(config.useSsl()));
-        props.put("mail.imap.starttls.enable", String.valueOf(config.useStartTls()));
+        props.put("mail." + storeProtocol + ".host", config.host());
+        props.put("mail." + storeProtocol + ".port", String.valueOf(config.port()));
+        props.put("mail." + storeProtocol + ".ssl.enable", "true");
+        props.put("mail." + storeProtocol + ".ssl.checkserveridentity", "true");
+        props.put("mail." + storeProtocol + ".connectiontimeout", "30000");
+        props.put("mail." + storeProtocol + ".timeout", "30000");
+        props.put("mail." + storeProtocol + ".writetimeout", "30000");
 
         props.put("mail.smtp.host", config.smtpHost());
         props.put("mail.smtp.port", String.valueOf(config.smtpPort()));
         props.put("mail.smtp.auth", "true");
-        props.put("mail.smtp.starttls.enable", String.valueOf(config.useStartTls()));
+        props.put("mail.smtp.ssl.checkserveridentity", "true");
+        props.put("mail.smtp.connectiontimeout", "30000");
+        props.put("mail.smtp.timeout", "30000");
+        props.put("mail.smtp.writetimeout", "30000");
+        if (config.smtpPort() == 465) {
+            props.put("mail.smtp.ssl.enable", "true");
+        } else {
+            props.put("mail.smtp.starttls.enable", "true");
+            props.put("mail.smtp.starttls.required", "true");
+        }
 
         this.session = Session.getInstance(props, new Authenticator() {
             @Override
@@ -63,12 +76,7 @@ public class DefaultEmailClient implements EmailClient {
         });
 
         try {
-            this.store = session.getStore(config.protocol());
-            this.store.connect(config.host(), config.username(), config.password());
-
-            this.inbox = store.getFolder("INBOX");
-            this.inbox.open(Folder.READ_WRITE);
-
+            connectStore();
             this.running = true;
             startPolling();
 
@@ -89,18 +97,29 @@ public class DefaultEmailClient implements EmailClient {
             pollThread.interrupt();
         }
 
-        try {
-            if (inbox != null && inbox.isOpen()) {
-                inbox.close(false);
-            }
-            if (store != null) {
-                store.close();
-            }
-        } catch (Exception e) {
-            log.error("Error closing email store", e);
-        }
+        closeStore();
 
         log.info("Email client stopped");
+    }
+
+    private synchronized void connectStore() throws Exception {
+        closeStore();
+        this.store = session.getStore(config.protocol());
+        this.store.connect(config.host(), config.username(), config.password());
+        this.inbox = store.getFolder("INBOX");
+        this.inbox.open(Folder.READ_WRITE);
+    }
+
+    private synchronized void closeStore() {
+        try {
+            if (inbox != null && inbox.isOpen()) inbox.close(false);
+            if (store != null && store.isConnected()) store.close();
+        } catch (Exception e) {
+            log.debug("Error closing email store", e);
+        } finally {
+            inbox = null;
+            store = null;
+        }
     }
 
     @Override
@@ -113,7 +132,7 @@ public class DefaultEmailClient implements EmailClient {
         List<EmailMessage> messages = new ArrayList<>();
 
         if (inbox == null || !inbox.isOpen()) {
-            return messages;
+            throw new IllegalStateException("Email inbox is disconnected");
         }
 
         try {
@@ -127,6 +146,8 @@ public class DefaultEmailClient implements EmailClient {
             }
         } catch (Exception e) {
             log.error("Error fetching unread emails", e);
+            throw e instanceof RuntimeException runtime
+                    ? runtime : new IllegalStateException("Could not poll email inbox", e);
         }
 
         return messages;
@@ -165,16 +186,21 @@ public class DefaultEmailClient implements EmailClient {
             log.info("Sent email to {}", to);
         } catch (Exception e) {
             log.error("Failed to send email to {}", to, e);
+            throw new IllegalStateException("Failed to send email", e);
         }
     }
 
     @Override
     public void sendReply(String to, String subject, String body, String replyToMessageId) {
         try {
+            String safeSubject = subject == null || subject.isBlank()
+                    ? "Re: (no subject)"
+                    : subject;
             MimeMessage message = new MimeMessage(session);
             message.setFrom(new InternetAddress(config.fromAddress(), config.fromName()));
             message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(to));
-            message.setSubject(subject.startsWith("Re:") ? subject : "Re: " + subject, "UTF-8");
+            message.setSubject(safeSubject.regionMatches(true, 0, "Re:", 0, 3)
+                    ? safeSubject : "Re: " + safeSubject, "UTF-8");
             message.setText(body, "UTF-8");
 
             if (replyToMessageId != null && !replyToMessageId.isEmpty()) {
@@ -186,6 +212,7 @@ public class DefaultEmailClient implements EmailClient {
             log.info("Sent email reply to {}", to);
         } catch (Exception e) {
             log.error("Failed to send email reply to {}", to, e);
+            throw new IllegalStateException("Failed to send email reply", e);
         }
     }
 
@@ -213,6 +240,15 @@ public class DefaultEmailClient implements EmailClient {
                     break;
                 } catch (Exception e) {
                     log.error("Error in email polling", e);
+                    notifyError(e);
+                    if (running) {
+                        try {
+                            connectStore();
+                            notifyReady();
+                        } catch (Exception reconnectFailure) {
+                            notifyError(reconnectFailure);
+                        }
+                    }
                     try {
                         Thread.sleep(5000);
                     } catch (InterruptedException ie) {
@@ -228,7 +264,10 @@ public class DefaultEmailClient implements EmailClient {
 
     private EmailMessage convertMessage(Message msg) {
         try {
-            String messageId = extractMessageId(msg.getHeader("Message-ID")[0]);
+            String[] messageIdHeaders = msg.getHeader("Message-ID");
+            String messageId = messageIdHeaders != null && messageIdHeaders.length > 0
+                    ? extractMessageId(messageIdHeaders[0])
+                    : "generated-" + Integer.toUnsignedString(System.identityHashCode(msg));
 
             Address[] from = msg.getFrom();
             String fromEmail = from != null && from.length > 0 
@@ -267,12 +306,56 @@ public class DefaultEmailClient implements EmailClient {
                     replyToAddr,
                     inReplyToId,
                     references,
+                    authenticatedSender(msg, fromEmail, config.trustedAuthenticationServer()),
                     List.of()
             );
         } catch (Exception e) {
             log.error("Error converting email message", e);
             return null;
         }
+    }
+
+    /**
+     * Trust inbound identity only when the receiving mail system reports aligned DMARC success.
+     * A plain From header is attacker-controlled and is never enough to invoke an agent.
+     */
+    boolean authenticatedSender(
+            Message msg, String fromEmail, String trustedAuthenticationServer)
+            throws MessagingException {
+        int at = fromEmail == null ? -1 : fromEmail.lastIndexOf('@');
+        if (at < 0 || at == fromEmail.length() - 1) {
+            return false;
+        }
+        String domain = fromEmail.substring(at + 1).trim().toLowerCase(java.util.Locale.ROOT);
+        String[] results = msg.getHeader("Authentication-Results");
+        if (results == null || results.length == 0
+                || trustedAuthenticationServer == null || trustedAuthenticationServer.isBlank()) {
+            return false;
+        }
+        String result = results[0]; // receiving MTAs prepend their own result ahead of supplied headers
+        java.util.regex.Pattern trustedServer = java.util.regex.Pattern.compile(
+                "^\\s*" + java.util.regex.Pattern.quote(trustedAuthenticationServer.trim())
+                        + "(?:\\s+[0-9]+)?\\s*;",
+                java.util.regex.Pattern.CASE_INSENSITIVE);
+        if (result == null || !trustedServer.matcher(result).find()) {
+            return false;
+        }
+        java.util.regex.Pattern alignedFrom = java.util.regex.Pattern.compile(
+                "(?:^|\\s)header\\.from\\s*=\\s*"
+                        + java.util.regex.Pattern.quote(domain)
+                        + "(?:\\s|$)",
+                java.util.regex.Pattern.CASE_INSENSITIVE);
+        java.util.regex.Pattern dmarcPass = java.util.regex.Pattern.compile(
+                "(?:^|\\s)dmarc\\s*=\\s*pass(?:\\s|$|\\()",
+                java.util.regex.Pattern.CASE_INSENSITIVE);
+        // Each semicolon-delimited auth method owns its own result properties. Never combine a
+        // passing DMARC method with header.from from a different (possibly failing) clause.
+        for (String clause : result.split(";")) {
+            if (dmarcPass.matcher(clause).find() && alignedFrom.matcher(clause).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String extractBody(Message msg) throws Exception {

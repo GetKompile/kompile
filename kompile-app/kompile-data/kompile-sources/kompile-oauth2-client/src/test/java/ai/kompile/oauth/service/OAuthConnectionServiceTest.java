@@ -42,7 +42,7 @@ class OAuthConnectionServiceTest {
     private OAuthConnectionService service;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         when(googleHandler.getProviderId()).thenReturn("google");
         when(googleHandler.getDisplayName()).thenReturn("Google");
         when(googleHandler.getIcon()).thenReturn("google");
@@ -51,6 +51,67 @@ class OAuthConnectionServiceTest {
         List<OAuthProviderHandler> handlers = List.of(googleHandler);
         service = new OAuthConnectionService(
                 connectionRepository, stateRepository, encryptionService, handlers);
+        when(stateRepository.consume(anyString(), anyString(), anyString()))
+                .thenReturn(1);
+        java.lang.reflect.Field owner = OAuthConnectionService.class
+                .getDeclaredField("applicationName");
+        owner.setAccessible(true);
+        owner.set(service, "kompile-app-crawl-manager");
+    }
+
+    @Test
+    void exposesConnectedProviderMetadataWithoutDecryptingTokens() {
+        OAuthConnection connection = OAuthConnection.builder()
+                .providerId("atlassian")
+                .status(ConnectionStatus.CONNECTED)
+                .providerData("[{\"id\":\"cloud-1\"}]")
+                .build();
+        when(connectionRepository.findById("atlassian")).thenReturn(Optional.of(connection));
+
+        assertEquals("[{\"id\":\"cloud-1\"}]", service.getProviderData("atlassian"));
+        verify(encryptionService, never()).decrypt(anyString());
+    }
+
+    @Test
+    void connectionReadinessRequiresAValidOrRefreshableToken() {
+        OAuthConnection expiredWithoutRefresh = OAuthConnection.builder()
+                .providerId("google")
+                .status(ConnectionStatus.CONNECTED)
+                .tokenExpiresAt(Instant.now().minusSeconds(60))
+                .build();
+        when(connectionRepository.findById("google"))
+                .thenReturn(Optional.of(expiredWithoutRefresh));
+        assertFalse(service.isConnectionUsable("google"));
+
+        expiredWithoutRefresh.setRefreshTokenEncrypted("encrypted-refresh");
+        assertTrue(service.isConnectionUsable("google"));
+        expiredWithoutRefresh.setTokenExpiresAt(Instant.now().plusSeconds(3_600));
+        expiredWithoutRefresh.setRefreshTokenEncrypted(null);
+        assertTrue(service.isConnectionUsable("google"));
+    }
+
+    @Test
+    void refreshFailureIsPersistedOutsideTheRollingBackCallerTransaction() {
+        OAuthConnection connection = OAuthConnection.builder()
+                .providerId("google")
+                .status(ConnectionStatus.CONNECTED)
+                .accessTokenEncrypted("enc-access")
+                .refreshTokenEncrypted("enc-refresh")
+                .tokenExpiresAt(Instant.now().minusSeconds(60))
+                .build();
+        when(connectionRepository.findByProviderIdForUpdate("google"))
+                .thenReturn(Optional.of(connection));
+        when(encryptionService.decrypt("enc-access")).thenReturn("access");
+        when(encryptionService.decrypt("enc-refresh")).thenReturn("refresh");
+        when(googleHandler.refreshAccessToken("refresh")).thenReturn(
+                OAuthTokenResponse.builder().error("invalid_grant")
+                        .errorDescription("refresh revoked").build());
+
+        assertThrows(RuntimeException.class, () -> service.refreshConnection("google"));
+
+        assertEquals(ConnectionStatus.ERROR, connection.getStatus());
+        assertEquals("Token refresh failed: refresh revoked", connection.getLastError());
+        verify(connectionRepository).save(connection);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -102,6 +163,24 @@ class OAuthConnectionServiceTest {
         }
 
         @Test
+        @DisplayName("configured public base is bound into OAuth state")
+        void configuredPublicBaseIsBound() throws Exception {
+            java.lang.reflect.Field redirectBase = OAuthConnectionService.class
+                    .getDeclaredField("redirectBaseUrl");
+            redirectBase.setAccessible(true);
+            redirectBase.set(service, "https://public.example/");
+            when(googleHandler.buildAuthorizationUrl(anyString(), anyString()))
+                    .thenReturn("https://accounts.google.com/authorize");
+
+            service.initiateAuthorization("google", null);
+
+            ArgumentCaptor<PendingOAuthState> captor = ArgumentCaptor.forClass(PendingOAuthState.class);
+            verify(stateRepository).save(captor.capture());
+            assertEquals("https://public.example/api/oauth/google/callback",
+                    captor.getValue().getRedirectUri());
+        }
+
+        @Test
         @DisplayName("should generate cryptographically unique state per call")
         void uniqueStates() {
             when(googleHandler.buildAuthorizationUrl(anyString(), anyString()))
@@ -130,6 +209,21 @@ class OAuthConnectionServiceTest {
             Instant expectedMax = Instant.now().plusSeconds(610);
             assertTrue(saved.getExpiresAt().isAfter(expectedMin));
             assertTrue(saved.getExpiresAt().isBefore(expectedMax));
+        }
+
+        @Test
+        @DisplayName("should pass only fixed supported authorization purposes to providers")
+        void purposeProfile() {
+            when(googleHandler.buildAuthorizationUrl(anyString(), anyString(), eq("channel")))
+                    .thenReturn("https://accounts.google.com/authorize?scope=channel");
+
+            AuthorizationUrlResponse response = service.initiateAuthorization(
+                    "google", "http://localhost/callback", "channel");
+
+            assertTrue(response.getAuthorizationUrl().contains("scope=channel"));
+            verify(googleHandler).buildAuthorizationUrl(anyString(), anyString(), eq("channel"));
+            assertThrows(IllegalArgumentException.class, () -> service.initiateAuthorization(
+                    "google", "http://localhost/callback", "arbitrary"));
         }
     }
 
@@ -182,7 +276,7 @@ class OAuthConnectionServiceTest {
             assertThrows(SecurityException.class, () ->
                     service.completeAuthorization("google", "code", "expired-state", "http://localhost/callback"));
 
-            verify(stateRepository).delete(state);
+            verify(stateRepository).deleteStateClaim("expired-state");
         }
 
         @Test
@@ -194,7 +288,33 @@ class OAuthConnectionServiceTest {
 
             service.completeAuthorization("google", "auth-code", "one-time-state", "http://localhost/callback");
 
-            verify(stateRepository).delete(state);
+            verify(stateRepository).consume(
+                    "one-time-state", "google", "http://localhost/callback");
+        }
+
+        @Test
+        @DisplayName("callback token exchange reuses redirect URI bound into state")
+        void storedRedirectUriDrivesTokenExchange() {
+            PendingOAuthState state = validState("stored-redirect-state");
+            when(stateRepository.findById("stored-redirect-state")).thenReturn(Optional.of(state));
+            mockSuccessfulTokenExchange();
+
+            service.completeAuthorization("google", "auth-code", "stored-redirect-state");
+
+            verify(googleHandler).exchangeCodeForTokens("auth-code", "http://localhost/callback");
+        }
+
+        @Test
+        @DisplayName("a concurrently consumed state cannot exchange a second token")
+        void atomicClaimRejectsReplay() {
+            PendingOAuthState state = validState("raced-state");
+            when(stateRepository.findById("raced-state")).thenReturn(Optional.of(state));
+            when(stateRepository.consume("raced-state", "google", "http://localhost/callback"))
+                    .thenReturn(0);
+
+            assertThrows(SecurityException.class,
+                    () -> service.completeAuthorization("google", "code", "raced-state"));
+            verify(googleHandler, never()).exchangeCodeForTokens(anyString(), anyString());
         }
     }
 
@@ -230,6 +350,30 @@ class OAuthConnectionServiceTest {
             assertEquals("enc-access", saved.getAccessTokenEncrypted());
             assertEquals("enc-refresh", saved.getRefreshTokenEncrypted());
             assertEquals(ConnectionStatus.CONNECTED, saved.getStatus());
+        }
+
+        @Test
+        @DisplayName("reauthorization preserves provider metadata when enrichment is temporarily unavailable")
+        void preservesProviderDataOnReauthorization() {
+            PendingOAuthState state = validState("provider-data-state");
+            when(stateRepository.findById("provider-data-state")).thenReturn(Optional.of(state));
+            OAuthTokenResponse tokenResponse = OAuthTokenResponse.builder()
+                    .accessToken("new-access").refreshToken("new-refresh").expiresIn(3600L)
+                    .providerData(null).build();
+            when(googleHandler.exchangeCodeForTokens("code", "http://localhost/callback"))
+                    .thenReturn(tokenResponse);
+            when(googleHandler.getUserInfo("new-access")).thenReturn(null);
+            when(encryptionService.encrypt(anyString())).thenReturn("encrypted");
+            OAuthConnection existing = OAuthConnection.builder()
+                    .providerId("google")
+                    .providerData("[{\"id\":\"cloud-existing\"}]")
+                    .build();
+            when(connectionRepository.findById("google")).thenReturn(Optional.of(existing));
+            when(connectionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            service.completeAuthorization("google", "code", "provider-data-state");
+
+            assertEquals("[{\"id\":\"cloud-existing\"}]", existing.getProviderData());
         }
 
         @Test
@@ -376,8 +520,55 @@ class OAuthConnectionServiceTest {
 
             service.getValidAccessToken("google");
 
-            assertNotNull(conn.getLastUsedAt());
-            verify(connectionRepository).save(conn);
+            verify(connectionRepository).updateLastUsedAt(eq("google"), any(Instant.class));
+        }
+
+        @Test
+        @DisplayName("current token read does not refresh or mutate OAuth lifecycle state")
+        void currentTokenIsReadOnlyAndScopesAreCanonical() {
+            OAuthConnection conn = OAuthConnection.builder()
+                    .providerId("google")
+                    .status(ConnectionStatus.CONNECTED)
+                    .accessTokenEncrypted("encrypted")
+                    .scope("chat:write,channels:read users:read")
+                    .tokenExpiresAt(Instant.now().plusSeconds(3600))
+                    .createdAt(Instant.now())
+                    .build();
+            when(connectionRepository.findById("google")).thenReturn(Optional.of(conn));
+            when(encryptionService.decrypt("encrypted")).thenReturn("token");
+
+            assertEquals("token", service.getCurrentAccessToken("google"));
+            assertEquals(List.of("chat:write", "channels:read", "users:read"),
+                    service.getGrantedScopes("google"));
+            verify(connectionRepository, never()).updateLastUsedAt(anyString(), any());
+            verify(googleHandler, never()).refreshAccessToken(anyString());
+        }
+
+        @Test
+        @DisplayName("automatic refresh rechecks expiry after acquiring the provider lock")
+        void refreshRechecksExpiryAfterLock() {
+            OAuthConnection stale = OAuthConnection.builder()
+                    .providerId("google").status(ConnectionStatus.CONNECTED)
+                    .accessTokenEncrypted("old-access").refreshTokenEncrypted("old-refresh")
+                    .tokenExpiresAt(Instant.now().minusSeconds(60)).build();
+            OAuthConnection alreadyRefreshed = OAuthConnection.builder()
+                    .providerId("google").status(ConnectionStatus.CONNECTED)
+                    .accessTokenEncrypted("new-access").refreshTokenEncrypted("new-refresh")
+                    .tokenExpiresAt(Instant.now().plusSeconds(3600)).build();
+            when(connectionRepository.findById("google"))
+                    .thenReturn(Optional.of(stale), Optional.of(alreadyRefreshed),
+                            Optional.of(alreadyRefreshed));
+            when(connectionRepository.findByProviderIdForUpdate("google"))
+                    .thenReturn(Optional.of(alreadyRefreshed));
+            when(encryptionService.decrypt("old-access")).thenReturn("old-token");
+            when(encryptionService.decrypt("old-refresh")).thenReturn("old-refresh-token");
+            when(encryptionService.decrypt("new-access")).thenReturn("new-token");
+            when(encryptionService.decrypt("new-refresh")).thenReturn("new-refresh-token");
+            when(connectionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            assertEquals("new-token", service.getValidAccessToken("google"));
+
+            verify(googleHandler, never()).refreshAccessToken(anyString());
         }
     }
 
@@ -399,9 +590,11 @@ class OAuthConnectionServiceTest {
                     .status(ConnectionStatus.CONNECTED)
                     .createdAt(Instant.now())
                     .build();
-            when(connectionRepository.findById("google")).thenReturn(Optional.of(conn));
+            when(connectionRepository.findByProviderIdForUpdate("google"))
+                    .thenReturn(Optional.of(conn));
             when(encryptionService.decrypt("enc-access")).thenReturn("access-token");
             when(encryptionService.decrypt("enc-refresh")).thenReturn("refresh-token");
+            when(googleHandler.revokeToken("access-token", "refresh-token")).thenReturn(true);
 
             assertTrue(service.disconnect("google"));
 
@@ -412,8 +605,32 @@ class OAuthConnectionServiceTest {
         @Test
         @DisplayName("should succeed for already-disconnected provider")
         void alreadyDisconnected() {
-            when(connectionRepository.findById("google")).thenReturn(Optional.empty());
+            when(connectionRepository.findByProviderIdForUpdate("google"))
+                    .thenReturn(Optional.empty());
             assertTrue(service.disconnect("google"));
+            verify(connectionRepository, never()).delete(any());
+        }
+
+        @Test
+        @DisplayName("failed provider revocation retains retryable encrypted credentials")
+        void failedRevocationRetainsConnection() {
+            OAuthConnection conn = OAuthConnection.builder()
+                    .providerId("google")
+                    .accessTokenEncrypted("enc-access")
+                    .refreshTokenEncrypted("enc-refresh")
+                    .status(ConnectionStatus.CONNECTED)
+                    .build();
+            when(connectionRepository.findByProviderIdForUpdate("google"))
+                    .thenReturn(Optional.of(conn));
+            when(encryptionService.decrypt("enc-access")).thenReturn("access-token");
+            when(encryptionService.decrypt("enc-refresh")).thenReturn("refresh-token");
+            when(googleHandler.revokeToken("access-token", "refresh-token")).thenReturn(false);
+
+            assertFalse(service.disconnect("google"));
+
+            assertEquals(ConnectionStatus.ERROR, conn.getStatus());
+            assertNotNull(conn.getRefreshTokenEncrypted());
+            verify(connectionRepository).save(conn);
             verify(connectionRepository, never()).delete(any());
         }
     }

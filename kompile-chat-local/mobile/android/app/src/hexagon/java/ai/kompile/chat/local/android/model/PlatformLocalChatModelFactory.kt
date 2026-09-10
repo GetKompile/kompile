@@ -5,6 +5,10 @@ import android.content.Context
 /** Qualcomm Hexagon/HTP implementation. No backend or host fallback is exposed. */
 internal object PlatformLocalChatModelFactory {
 
+    fun prepareStorageMutation(context: Context) {
+        SdxPlatformChatSession.prepareStorageMutation(context)
+    }
+
     @Suppress("UNUSED_PARAMETER")
     fun open(
         context: Context,

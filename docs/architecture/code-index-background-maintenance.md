@@ -51,8 +51,8 @@ Now, per code project:
   `Mode: background job idx-N` line.
 - If the job is still running (big first-time builds), the call returns
   immediately with the job id; poll with `action='index_status'` (all jobs, or
-  one project's maintenance state with `project_id`). Searches during the
-  build see the index as it fills.
+  one project's maintenance state with `project_id`). Database readers see the
+  previous committed generation until the indexing transaction commits.
 - `background=false` forces the legacy fully-synchronous behavior;
   `wait_seconds=0` returns a handle immediately.
 - Jobs are deduplicated per project: submitting while one is queued/running
@@ -61,6 +61,52 @@ Now, per code project:
 
 `stats` and `list` show maintenance state per project (`watching`,
 `indexing in background`, last background pass age).
+
+## SQLite integrity and recovery
+
+Each indexing pass, including the periodic backstop on unchanged source trees,
+runs throttled database maintenance under the project writer lock:
+
+- `PRAGMA quick_check(1)` checks storage, then FTS5 `integrity-check` with
+  `rank=1` compares postings against `entities_meta` (row counts cannot do this).
+- If storage passes but FTS reports corruption, maintenance attempts an in-place
+  FTS `rebuild` and validates it before committing. Entities, relations and the
+  committed generation are preserved. Failure rolls back the repair.
+- A missing database or interrupted publication triggers a full source reindex,
+  restoring relations as well as entities. JSON shards alone cannot restore relations.
+- Physical corruption is **not** fixed by deleting/replacing a live database.
+  Maintenance reports failure and leaves database/WAL/SHM files in place.
+  BUSY, I/O, disk-full and schema errors are not treated as corruption.
+
+Manual retry (synchronous, bypasses the integrity throttle):
+
+```json
+{"action":"repair","project_id":"my-project"}
+```
+
+Use this with `local_code_index`; `action="index_status"` reports the last
+in-process maintenance result. If source reindexing is requested, run
+`action="index", force_reindex=true`. For physical corruption, stop **all**
+index clients first, preserve the database and sidecars together, then perform
+offline SQLite recovery or move the damaged cache aside and index from source.
+Do not delete WAL/SHM while any client is running. Automatic physical salvage is
+not implemented.
+
+Transaction/lifecycle protections:
+
+- Any failed SQL/file publication aborts the update rather than committing a
+  partially applied entity batch without corresponding FTS postings.
+- `update.pending` survives until SQLite and fingerprint/metadata publication
+  complete; the next pass rebuilds from source after an interrupted update.
+- Parse workers are read-only; only the locked writer publishes shards.
+- Schema migrations and shard rebuilds are transactional. Missing/unreadable
+  shard input aborts a shard rebuild without clearing the existing index.
+- Rollback invalidates interned-ID caches; failed rollback closes the connection.
+  Failed opens release JDBC/file/JVM locks. Tool/LSP readers own short-lived,
+  read-only connections rather than sharing one mutable cached connection.
+
+These fixes address concrete logical inconsistency risks; they do not establish
+that every reported physical SQLite corruption has the same cause.
 
 ## Tunables
 
@@ -73,6 +119,11 @@ System property first, environment variable fallback:
 | `KOMPILE_CODE_INDEX_MAX_WATCHERS` | `8` | Watcher cap (LRU-evicted). |
 | `KOMPILE_CODE_INDEX_READ_WAIT_MS` | `2000` | Freshness-join budget on read actions. |
 | `KOMPILE_CODE_INDEX_BACKSTOP_SECONDS` | `300` | Backstop sweep period (`0` disables). |
+
+The JVM system property `kompile.codeIndex.integrityIntervalMs` controls the
+integrity-check throttle (default `300000`, per process/project). Failed checks
+are throttled too; manual `repair` bypasses this delay. Integrity scans hold the
+SQLite writer reservation, so tune the interval for large indexes.
 
 ## Notes
 

@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class SdxRawGgufContractTest {
 
@@ -16,7 +17,7 @@ class SdxRawGgufContractTest {
         assertTrue(SdxGgufModelImporter.supports("retained.ggml"))
         assertFalse(SdxGgufModelImporter.supports("cache/v1/sources/abc/model.sdz"))
 
-        val viewModel = java.io.File(
+        val viewModel = File(
             "src/main/java/ai/kompile/chat/local/android/viewmodel/ChatViewModel.kt"
         ).readText()
         assertTrue(viewModel.contains("activateCachedOptimizedModel"))
@@ -51,14 +52,32 @@ class SdxRawGgufContractTest {
         assertTrue(ModelDiagnosticMode.OP_SANITY.nativeOpSanity)
         assertTrue(ModelDiagnosticMode.OP_SANITY.capturesDspTrace)
         assertFalse(ModelDiagnosticMode.DSP_DIAGNOSTICS.nativeOpSanity)
+        ModelDiagnosticMode.entries.forEach { selected ->
+            assertEquals(
+                selected,
+                ModelPreparationOptions.fromWire(
+                    null, null, 4, true, selected.name
+                ).diagnosticMode,
+            )
+            assertEquals(
+                selected,
+                ModelPreparationOptions.fromWire(
+                    null, null, 4, true, selected.wireValue
+                ).diagnosticMode,
+            )
+        }
+        assertEquals(
+            ModelDiagnosticMode.DSP_DIAGNOSTICS,
+            ModelPreparationOptions.fromWire(null, null, 4, true, "DSP").diagnosticMode,
+        )
         val restored = ModelPreparationOptions.fromWire(null, null, 4, true, "OP_SANITY")
         assertEquals(ModelDiagnosticMode.OP_SANITY, restored.diagnosticMode)
-        assertEquals(true, restored.optionsJson(null, null).contains("\"diagnosticMode\":\"op_sanity\""))
+        assertTrue(restored.optionsJson(null, null).contains("\"diagnosticMode\":\"op_sanity\""))
     }
 
     @Test
     fun preparedProofSchemaSeparatesRawCanonicalAndOptimizationIdentity() {
-        assertEquals("sdx-prepared-text-model-v5", SdxRawGgufContract.PREPARED_SCHEMA)
+        assertEquals("sdx-prepared-text-model-v6", SdxRawGgufContract.PREPARED_SCHEMA)
         assertEquals("sourceSha256", SdxRawGgufContract.SOURCE_SHA256_FIELD)
         assertEquals("sourceBytes", SdxRawGgufContract.SOURCE_BYTES_FIELD)
         assertEquals(
@@ -88,7 +107,7 @@ class SdxRawGgufContractTest {
         )
 
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v7\"," +
+            "{\"graphImportAbi\":\"ggml-fixed-plan-rolling-context-q4-linears-v9\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
@@ -101,7 +120,7 @@ class SdxRawGgufContractTest {
             )
         )
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v7\"," +
+            "{\"graphImportAbi\":\"ggml-fixed-plan-rolling-context-q4-linears-v9\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +

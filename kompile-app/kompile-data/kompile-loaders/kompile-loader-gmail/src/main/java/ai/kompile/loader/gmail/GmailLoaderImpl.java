@@ -20,10 +20,12 @@ import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -50,6 +52,16 @@ import java.util.function.Consumer;
 public class GmailLoaderImpl implements DocumentLoader {
 
     private final GmailMessageParser messageParser = new GmailMessageParser();
+    private final OAuthConnectionService oauthService;
+
+    public GmailLoaderImpl() {
+        this(null);
+    }
+
+    @Autowired
+    public GmailLoaderImpl(@Autowired(required = false) OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -69,14 +81,16 @@ public class GmailLoaderImpl implements DocumentLoader {
     @Override
     public List<Document> load(DocumentSourceDescriptor descriptor,
                                Consumer<LoaderProgress> progressCallback) throws Exception {
-        Map<String, Object> meta = descriptor.getMetadata();
-        if (meta == null) {
-            throw new IllegalArgumentException("Gmail loader requires metadata with at least 'accessToken'");
-        }
+        Map<String, Object> meta = descriptor.getMetadata() == null
+                ? Map.of() : descriptor.getMetadata();
 
         String accessToken = (String) meta.get("accessToken");
         if (accessToken == null || accessToken.isBlank()) {
-            throw new IllegalArgumentException("Gmail loader requires 'accessToken' in metadata");
+            accessToken = oauthService == null ? null : oauthService.getValidAccessToken("google");
+        }
+        if (accessToken == null || accessToken.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Gmail requires a connected Google OAuth account or metadata.accessToken");
         }
 
         String gmailQuery = (String) meta.getOrDefault("gmailQuery", "");

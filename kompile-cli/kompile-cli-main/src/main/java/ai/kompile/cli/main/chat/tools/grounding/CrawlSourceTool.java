@@ -66,10 +66,11 @@ public class CrawlSourceTool implements CliTool {
                 + "can run the full distributed pipeline and persist extracted entities and relations. Poll crawl_control "
                 + "operation=status with the returned jobId, then call crawl_result when terminal=true. "
                 + "Use dryRun=true for a synchronous LLM-extraction preview with ZERO persistence. "
-                + "The steps parameter selects which pipeline stages execute "
-                + "(PREPROCESSING, GRAPH_EXTRACTION, ENTITY_RESOLUTION, EDGE_COMPUTATION, "
-                + "VECTOR_INDEXING, ENTITY_PARTITIONS, ENRICHMENT); loading, conversion, and "
-                + "chunking always run. "
+                + "Project-local selectable steps are LOADING, MARKDOWN_EXTRACTION, CHUNKING, "
+                + "LEXICAL_INDEX, GRAPH_EXTRACTION, VECTOR_INDEXING, ENTITY_RESOLUTION, "
+                + "ENRICHMENT, and LEARNING. Managed backends may advertise additional stages; "
+                + "call crawl_discover for the selected backend. Loading, conversion, and chunking "
+                + "always run when required. "
                 + "Server-side dependency resolution ensures required predecessor stages are always "
                 + "included for distributed runs. Default remote wait is 900 s; behind a reverse "
                 + "proxy the timeoutSeconds value must stay under the proxy read timeout. "
@@ -115,16 +116,43 @@ public class CrawlSourceTool implements CliTool {
         stepsNode.put("type", "array");
         stepsNode.putObject("items").put("type", "string");
         stepsNode.put("description",
-                "Pipeline stages to run. Selectable: PREPROCESSING, GRAPH_EXTRACTION, "
-                + "ENTITY_RESOLUTION, EDGE_COMPUTATION, VECTOR_INDEXING, ENTITY_PARTITIONS, "
-                + "ENRICHMENT. "
-                + "Dependencies are auto-added server-side. Omit to run all stages.");
+                "Pipeline stages to run. Project-local selectable steps: LOADING, "
+                + "MARKDOWN_EXTRACTION, CHUNKING, LEXICAL_INDEX, GRAPH_EXTRACTION, "
+                + "VECTOR_INDEXING, ENTITY_RESOLUTION, ENRICHMENT, LEARNING. Managed backends "
+                + "may advertise additional stages through crawl_discover. Dependencies are "
+                + "resolved by the selected backend. Omit to run all stages.");
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy fact-sheet selector. Omit locally to use the current folder's knowledge base.");
         props.putObject("model")
                 .put("type", "string")
                 .put("description", "Override the extraction model name.");
+        props.putObject("provider").put("type", "string")
+                .put("description", "Graph extraction provider: chat or chat:<provider> selects native text chat "
+                        + "with configured credentials and no CLI/tools; bare codex/claude remain legacy CLI aliases. "
+                        + "Forwarded as graphExtraction.llmProvider locally or llmProvider to the manager.");
+        props.putObject("thinking").put("type", "string")
+                .put("description", "Optional request-scoped provider-native thinking/effort value for native CHAT_MODEL; omission inherits host chat policy.");
+        ObjectNode graphExtraction = props.putObject("graphExtraction");
+        graphExtraction.put("type", "object")
+                .put("description", "Production graph extraction configuration, as in crawl_documents; provider/model shorthands override llmProvider/modelName.");
+        ObjectNode graphProperties = graphExtraction.putObject("properties");
+        graphProperties.putObject("llmProvider").put("type", "string");
+        graphProperties.putObject("modelName").put("type", "string");
+        graphProperties.putObject("thinking").put("type", "string");
+        ObjectNode processingRoute = props.putObject("processingRoute");
+        processingRoute.put("type", "object")
+                .put("description", "Host-local explicit graph backend chain, as in crawl_documents; CHAT_MODEL accepts provider/modelName/thinking, never apiKey/endpointUrl.");
+        ObjectNode routeProperties = processingRoute.putObject("properties");
+        ObjectNode backends = routeProperties.putObject("backends");
+        backends.put("type", "array");
+        ObjectNode backend = backends.putObject("items");
+        backend.put("type", "object");
+        ObjectNode backendProperties = backend.putObject("properties");
+        backendProperties.putObject("type").put("type", "string");
+        backendProperties.putObject("provider").put("type", "string");
+        backendProperties.putObject("modelName").put("type", "string");
+        backendProperties.putObject("thinking").put("type", "string");
         props.putObject("deriveOntology")
                 .put("type", "boolean")
                 .put("description", "Whether to derive ontology types during the crawl (default true). "
@@ -160,7 +188,9 @@ public class CrawlSourceTool implements CliTool {
             return ToolResult.error("Provide only one of: path, url, or text.");
         }
 
-        if (!client.isAvailable()) {
+        if (LocalProjectGraphBackend.usesNativeChat(params)
+                || params.hasNonNull("graphExtraction") || params.hasNonNull("processingRoute")
+                || !client.isAvailable()) {
             return localBackend.crawlSource(params, context);
         }
 
@@ -208,6 +238,10 @@ public class CrawlSourceTool implements CliTool {
             String model = params.path("model").asText(null);
             if (model != null && !model.isBlank()) {
                 body.put("modelName", model);
+            }
+            String provider = params.path("provider").asText(null);
+            if (provider != null && !provider.isBlank()) {
+                body.put("llmProvider", provider);
             }
 
             // Optional deriveOntology (default true — omit to let server use its default)

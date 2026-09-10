@@ -26,6 +26,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -151,12 +152,71 @@ class CrawlStepPlanTest {
     }
 
     @Test
-    void unknownEnabledStep_fallsBackToLegacyMode() {
-        // An unknown id contributes nothing to the selection, so the plan stays in legacy mode.
-        CrawlStepPlan plan = CrawlStepPlan.from(
-                UnifiedCrawlRequest.builder().enabledSteps(List.of("BOGUS_STEP")).build());
-        assertEquals(Action.RUN, plan.forStep("CHUNKING"));
+    void unknownEnabledStep_isRejectedInsteadOfFallingBackToLegacyMode() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                        .enabledSteps(List.of("BOGUS_STEP")).build()));
+
+        assertTrue(error.getMessage().contains("BOGUS_STEP"));
+        assertTrue(error.getMessage().contains("LOADING"), "Error should list valid step IDs");
+    }
+
+    @Test
+    void mixedValidAndUnknownEnabledSteps_areRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                        .enabledSteps(List.of("VECTOR_INDEXING", "BOGUS_STEP")).build()));
+
+        assertTrue(error.getMessage().contains("BOGUS_STEP"));
+        assertTrue(error.getMessage().contains("VECTOR_INDEXING"),
+                "Error should include the valid step set for correction");
+    }
+
+    @Test
+    void unknownArchivedStep_isRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                        .archivedSteps(List.of("BOGUS_STEP")).build()));
+
+        assertTrue(error.getMessage().contains("BOGUS_STEP"));
+        assertTrue(error.getMessage().contains("archivedSteps"));
+    }
+
+    @Test
+    void normalizedKnownStepIds_areAccepted() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .enabledSteps(List.of(" graph_extraction "))
+                .archivedSteps(List.of(" vector_indexing "))
+                .build());
+
         assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.ARCHIVE, plan.forStep("VECTOR_INDEXING"));
+        assertDoesNotThrow(plan::validate);
+    }
+
+    @Test
+    void nullAndBlankStepIds_areRejectedExplicitly() {
+        IllegalArgumentException blank = assertThrows(IllegalArgumentException.class, () ->
+                CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                        .enabledSteps(List.of("   ")).build()));
+        assertTrue(blank.getMessage().contains("<blank>"));
+
+        IllegalArgumentException nullId = assertThrows(IllegalArgumentException.class, () ->
+                CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                        .archivedSteps(java.util.Collections.singletonList(null)).build()));
+        assertTrue(nullId.getMessage().contains("<null>"));
+    }
+
+    @Test
+    void emptySelections_keepLegacyDefaults() {
+        CrawlStepPlan plan = CrawlStepPlan.from(UnifiedCrawlRequest.builder()
+                .enabledSteps(List.of())
+                .archivedSteps(List.of())
+                .build());
+
+        assertEquals(Action.RUN, plan.forStep("GRAPH_EXTRACTION"));
+        assertEquals(Action.SKIP, plan.forStep("VECTOR_INDEXING"));
+        assertDoesNotThrow(plan::validate);
     }
 
     // -----------------------------------------------------------------------

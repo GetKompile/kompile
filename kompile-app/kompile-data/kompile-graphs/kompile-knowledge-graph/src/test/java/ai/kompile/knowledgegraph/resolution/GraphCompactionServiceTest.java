@@ -369,7 +369,7 @@ class GraphCompactionServiceTest {
     }
 
     @Test
-    void preview_skipsFpnaStructuralArtifacts() {
+    void preview_skipsPlanningStructuralArtifacts() {
         GraphNode h1 = entityNodeWithMetadata("h1", "Channel",
                 "{\"entity_type\":\"HEADER_CELL\",\"cell_reference\":\"Assumptions!B2\"}");
         GraphNode h2 = entityNodeWithMetadata("h2", "Channel",
@@ -1394,7 +1394,7 @@ class GraphCompactionServiceTest {
     }
 
     @Test
-    void extractProperties_readsFpnaStableIdentityAttributes() {
+    void extractProperties_readsPlanningStableIdentityAttributes() {
         GraphNode node = GraphNode.builder()
                 .nodeId("n1").nodeType(NodeLevel.ENTITY).externalId("ext-n1")
                 .title("Hydrate Daily Set")
@@ -1437,7 +1437,7 @@ class GraphCompactionServiceTest {
     }
 
     @Test
-    void compact_mergesViaFpnaStableIdentityAttribute() {
+    void compact_mergesViaPlanningStableIdentityAttribute() {
         GraphNode n1 = entityNodeWithMetadata("n1", "Hydrate Daily Set",
                 "{\"entity_type\":\"SKU_MASTER\",\"sku_id\":\"HYD-101\"}");
         GraphNode n2 = entityNodeWithMetadata("n2", "HYD-101 Hydrate Daily Set",

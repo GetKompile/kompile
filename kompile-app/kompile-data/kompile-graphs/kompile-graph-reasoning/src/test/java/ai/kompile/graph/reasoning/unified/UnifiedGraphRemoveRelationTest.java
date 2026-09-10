@@ -73,6 +73,7 @@ class UnifiedGraphRemoveRelationTest {
         assertEquals(2, g.relationCount());
         Set<String> ids = g.relations().stream().map(GraphRelation::id).collect(Collectors.toSet());
         assertFalse(ids.contains("r1"), "r1 should be removed");
+        assertTrue(g.relation("r1").isEmpty(), "relation id index must drop r1");
         assertTrue(ids.contains("r2"),  "r2 must remain");
         assertTrue(ids.contains("r3"),  "r3 must remain");
     }
@@ -223,5 +224,52 @@ class UnifiedGraphRemoveRelationTest {
                                .removeRelationById("r3");
         assertSame(g, result, "removeRelation must return this");
         assertEquals(1, g.relationCount(), "only bob->acme WORKS_AT remains");
+    }
+
+    @Test
+    void removeEntityAlsoRetractsIncidentRelationsAndScopedVectorRows() {
+        UnifiedGraph g = buildGraph()
+                .putEntityVector("entity-extra", "alice", new double[] {1.0, 2.0})
+                .putRelationVector("relation-extra", "r1", new double[] {3.0, 4.0});
+
+        g.removeEntityById("alice");
+
+        assertFalse(g.containsEntity("alice"));
+        assertEquals(Set.of("r2"), g.relations().stream()
+                .map(GraphRelation::id)
+                .collect(Collectors.toSet()));
+        assertFalse(g.vectorLayer("entity-extra").contains("alice"));
+        assertFalse(g.vectorLayer("relation-extra").contains("r1"));
+    }
+
+    @Test
+    void relationIdsAreUniqueAndReplacementClearsStaleAnalysis() {
+        UnifiedGraph g = buildGraph()
+                .putRelationVector("relation-extra", "r1", new double[] {3.0, 4.0});
+        g.putRelationOpinion("r1", ai.kompile.graph.reasoning.confidence.Opinion.fromSoftTruth(0.8, 5));
+
+        g.addRelation("r1", "bob", "acme", "OWNS", 0.7);
+
+        assertEquals(3, g.relationCount());
+        GraphRelation replacement = g.relations().stream()
+                .filter(relation -> "r1".equals(relation.id()))
+                .findFirst().orElseThrow();
+        assertEquals("bob", replacement.sourceId());
+        assertEquals("OWNS", replacement.type());
+        assertFalse(g.vectorLayer("relation-extra").contains("r1"));
+        assertNull(g.relationOpinion("r1"));
+    }
+
+    @Test
+    void entityReplacementClearsStaleAnalysisWithoutRemovingRelations() {
+        UnifiedGraph g = buildGraph()
+                .putEntityVector("entity-extra", "alice", new double[] {1.0, 2.0});
+        g.putEntityOpinion("alice", ai.kompile.graph.reasoning.confidence.Opinion.fromSoftTruth(0.9, 5));
+
+        g.addEntity("alice", "PERSON", "Alice Updated");
+
+        assertEquals(3, g.relationCount());
+        assertFalse(g.vectorLayer("entity-extra").contains("alice"));
+        assertNull(g.entityOpinion("alice"));
     }
 }

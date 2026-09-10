@@ -30,6 +30,21 @@ class CrawlDocumentsToolSchemaTest {
                 .path("properties").path("modelBindings")
                 .path("additionalProperties").path("type").asText());
         assertTrue(properties.path("modelRuntime").path("description").asText()
-                .contains("pipelineRegistry.models[].runtime"));
+                .contains("model_runtime"));
+        JsonNode runtimeProperties = properties.path("modelRuntime").path("properties");
+        assertEquals("boolean", runtimeProperties.path("prefixCacheEnabled")
+                .path("type").asText());
+        assertEquals(0, runtimeProperties.path("prefixCacheMaxBytes")
+                .path("minimum").asInt());
+        assertEquals(0, runtimeProperties.path("prefixCacheBlockSize")
+                .path("minimum").asInt());
+        assertEquals("boolean", runtimeProperties.path("optimizerEnabled").path("type").asText());
+        assertEquals("boolean", runtimeProperties.path("optimizerFp16").path("type").asText());
+        JsonNode deviceLimits = runtimeProperties.path("deviceMemoryLimitsBytes");
+        assertEquals("array", deviceLimits.path("type").asText());
+        assertEquals(1, deviceLimits.path("minItems").asInt());
+        assertEquals("integer", deviceLimits.path("items").path("type").asText());
+        assertEquals(1, deviceLimits.path("items").path("minimum").asInt());
+        assertEquals(Long.MAX_VALUE, deviceLimits.path("items").path("maximum").asLong());
     }
 }

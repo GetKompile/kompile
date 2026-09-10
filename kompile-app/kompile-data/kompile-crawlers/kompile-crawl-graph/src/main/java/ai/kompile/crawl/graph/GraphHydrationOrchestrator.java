@@ -22,6 +22,7 @@ import ai.kompile.crawl.graph.ontology.OntologyConformanceTagger;
 import ai.kompile.graph.reasoning.confidence.StrengthBand;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.confidence.KbConfigManager;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
 import ai.kompile.knowledgegraph.maintenance.HealthSetpoints;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactOrchestrator;
 import ai.kompile.knowledgegraph.maintenance.PruneCompactResult;
@@ -217,6 +218,15 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
 
         if (config == null) config = HydrationConfig.defaults();
 
+        // A dry-run is a plan-only operation.  Do not call even collaborators that accept a
+        // dryRun flag: PruneCompactOrchestrator still computes/updates its health lifecycle and
+        // persists the post-health snapshot, while the other collaborators perform writes or
+        // expensive model work outright.  The normal progress callback is also suppressed because
+        // crawl callers use it to update pipeline state and append history events.
+        if (config.dryRun()) {
+            return dryRunPreview(factSheetId, config);
+        }
+
         // Accumulated result counters
         int relationsDerived        = 0;
         int retractedAtomCount      = 0;
@@ -296,7 +306,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                             t.setDaemon(true);
                             return t;
                         });
-                        Future<RegroundResult> future = exec.submit(
+                        Future<RegroundResult> future = GraphGenerationContext.submit(exec,
                                 () -> reasoningOrchestrator.runFullReground(factSheetId));
                         exec.shutdown();
                         try {
@@ -638,6 +648,43 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
         } catch (Exception e) {
             log.debug("[Hydration] Progress callback threw for stage {}: {}", stageId, e.getMessage());
         }
+    }
+
+    /**
+     * Log a truthful stage plan without invoking any collaborator or external progress sink.
+     *
+     * <p>The existing {@link HydrationResult} has no planned-stage representation, so a preview
+     * returns its zero-result sentinel.  In particular, {@code stagesRun} remains zero and no
+     * learning, scoring, pruning, tagging, health, or lifecycle counts are reported as completed.</p>
+     */
+    private HydrationResult dryRunPreview(long factSheetId, HydrationConfig config) {
+        log.info("[Hydration factSheet={}] DRY_RUN preview: no hydration stage will execute; "
+                + "progress callback suppressed to keep the preview non-mutating", factSheetId);
+
+        if (config.stageEnabled(STAGE_DERIVATION)) {
+            log.info("[Hydration factSheet={}] DERIVATION planned [DRY_RUN]: skipped; "
+                    + "no re-grounding, MEBN registration, learning, or materialization", factSheetId);
+            log.info("[Hydration factSheet={}] WEIGHT_LEARNING skipped [DRY_RUN]: no model work", factSheetId);
+            log.info("[Hydration factSheet={}] LEARNING_METRICS skipped [DRY_RUN]: derivation not executed",
+                    factSheetId);
+        }
+        if (config.stageEnabled(STAGE_PRUNE_COMPACT)) {
+            log.info("[Hydration factSheet={}] PRUNE_COMPACT planned [DRY_RUN]: skipped; "
+                    + "no pruning, compaction, graph persistence, or health snapshot", factSheetId);
+        }
+        if (config.stageEnabled(STAGE_GNN_SCORING)) {
+            log.info("[Hydration factSheet={}] GNN_SCORING planned [DRY_RUN]: skipped; "
+                    + "no training, scoring, or metadata writeback", factSheetId);
+        }
+        if (config.stageEnabled(STAGE_ONTOLOGY_CONFORMANCE)) {
+            log.info("[Hydration factSheet={}] ONTOLOGY_CONFORMANCE planned [DRY_RUN]: skipped; "
+                    + "no ontology tags written", factSheetId);
+        }
+        if (config.stageEnabled(STAGE_HEALTH)) {
+            log.info("[Hydration factSheet={}] HEALTH planned [DRY_RUN]: skipped; "
+                    + "no health snapshot persisted", factSheetId);
+        }
+        return HydrationResult.empty();
     }
 
     // ── Single-stage re-run entry points (P3 per-step resumability) ───────────────

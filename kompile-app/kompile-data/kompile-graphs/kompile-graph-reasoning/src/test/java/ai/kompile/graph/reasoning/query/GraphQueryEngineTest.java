@@ -9,21 +9,26 @@ import ai.kompile.graph.reasoning.confidence.Opinion;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
+import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.unified.Dtype;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.graph.reasoning.unified.VectorLayer;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GraphQueryEngineTest {
@@ -67,6 +72,87 @@ class GraphQueryEngineTest {
     }
 
     @Test
+    void searchesWithRetrievalOnlyScoresAndDeterministicPriority() {
+        ReasoningGraph graph = retrievalOnlyGraph(
+                GraphEntity.builder("alpha").type("PACKAGE").label("Package Alpha")
+                        .weight(0.2).confidence(0.5).build(),
+                GraphEntity.builder("gamma").type("PACKAGE").label("Package Gamma")
+                        .weight(0.5).confidence(1.0).build(),
+                GraphEntity.builder("beta").type("PACKAGE").label("Package Beta")
+                        .weight(1.0).confidence(1.0).build());
+
+        GraphQueryEngine.Result ranked = engine.query(graph, new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.SEARCH, null, null, null, List.of(), null, 2,
+                null, null, "package"));
+        GraphQueryEngine.Result noMatch = engine.query(graph, GraphQueryEngine.Query.search("missing"));
+        GraphQueryEngine.Result exactId = engine.query(graph, GraphQueryEngine.Query.search("beta"));
+        GraphQueryEngine.Result exactName = engine.query(graph, GraphQueryEngine.Query.search("Package Beta"));
+
+        assertEquals(List.of("beta", "gamma"), ranked.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+        assertEquals(2, ranked.entities().size());
+        assertEquals("lexical + stored entity prior", ranked.data().get("scoreBasis"));
+        assertEquals("clamp01(weight * confidence)", ranked.data().get("storedPrior"));
+        assertEquals(false, ranked.data().get("inferenceInvoked"));
+        assertTrue(ranked.summary().contains("retrieval-only"));
+        assertTrue(ranked.trace().steps().stream()
+                .anyMatch(step -> "lexical_entity_search".equals(step.operation())));
+        assertTrue(ranked.trace().steps().stream()
+                .noneMatch(step -> step.kind() == ai.kompile.graph.reasoning.explain.ReasoningTrace.StepKind.INFERENCE));
+
+        assertTrue(noMatch.entities().isEmpty());
+        assertEquals(List.of("beta"), exactId.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+        assertEquals(1.0, exactId.entities().get(0).score());
+        assertEquals(List.of("beta", "gamma", "alpha"), exactName.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+        assertTrue(exactName.entities().get(0).score() >= 0.98);
+
+        ReasoningGraph tied = retrievalOnlyGraph(
+                GraphEntity.builder("z-id").type("NODE").label("same label").build(),
+                GraphEntity.builder("a-id").type("NODE").label("same label").build());
+        GraphQueryEngine.Result deterministic = engine.query(tied, GraphQueryEngine.Query.search("same label"));
+        assertEquals(List.of("a-id", "z-id"), deterministic.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+    }
+
+    @Test
+    void naturalNameResolutionUsesOnlyEntityEvidenceWithoutGlobalRelations() {
+        ReasoningGraph graph = retrievalOnlyGraph(
+                GraphEntity.builder("beta").type("PACKAGE").label("Package Beta").build());
+
+        GraphQueryEngine.Result result = engine.query(
+                graph, GraphQueryEngine.Query.describe("Package Beta"));
+
+        assertEquals(GraphQueryEngine.Status.OK, result.status());
+        assertEquals(List.of("beta"), result.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+        assertTrue(result.relations().isEmpty());
+        assertEquals("false", result.trace().steps().stream()
+                .filter(step -> "automatic_entity_resolution".equals(step.operation()))
+                .findFirst().orElseThrow().meta().get("inferenceInvoked"));
+        assertTrue(result.trace().steps().stream()
+                .filter(step -> "automatic_entity_resolution".equals(step.operation()))
+                .findFirst().orElseThrow().meta().get("scoreBasis").contains("stored entity prior"));
+    }
+
+    @Test
+    void retrievalLoopsPropagateCancellationWithoutClearingInterruptFlag() {
+        boolean wasInterrupted = Thread.currentThread().isInterrupted();
+        try {
+            Thread.currentThread().interrupt();
+            assertThrows(CancellationException.class, () -> engine.query(
+                    retrievalOnlyGraph(GraphEntity.builder("one").type("NODE").label("one").build()),
+                    GraphQueryEngine.Query.search("one")));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            if (!wasInterrupted) {
+                Thread.interrupted();
+            }
+        }
+    }
+
+    @Test
     void describesEntitiesWithReadableRelationEvidence() {
         MutableReasoningGraph graph = sampleGraph();
 
@@ -106,6 +192,31 @@ class GraphQueryEngineTest {
     }
 
     @Test
+    void undirectedRelationsAreTraversableFromEitherEndpointInBothDirections() {
+        MutableReasoningGraph graph = new MutableReasoningGraph()
+                .addEntity("a", "NODE", "A")
+                .addEntity("b", "NODE", "B")
+                .addRelation(GraphRelation.builder("a-b", "a", "b")
+                        .type("LINKED").directed(false).build());
+        GraphQueryEngine.Query outgoingFromTarget = new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.NEIGHBORS, "b", null,
+                GraphQueryEngine.Direction.OUTGOING, List.of(), null, 10,
+                null, null, null);
+        GraphQueryEngine.Query incomingToSource = new GraphQueryEngine.Query(
+                GraphQueryEngine.Intent.NEIGHBORS, "a", null,
+                GraphQueryEngine.Direction.INCOMING, List.of(), null, 10,
+                null, null, null);
+
+        GraphQueryEngine.Result outgoing = engine.query(graph, outgoingFromTarget);
+        GraphQueryEngine.Result incoming = engine.query(graph, incomingToSource);
+
+        assertEquals(List.of("a"), outgoing.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+        assertEquals(List.of("b"), incoming.entities().stream()
+                .map(GraphQueryEngine.EntityView::id).toList());
+    }
+
+    @Test
     void findsShortestEvidencePath() {
         MutableReasoningGraph graph = sampleGraph();
 
@@ -133,6 +244,29 @@ class GraphQueryEngineTest {
         assertTrue(verified.summary().contains("SUPPORTED"));
         assertEquals(List.of("person-email"),
                 explained.relations().stream().map(GraphQueryEngine.RelationView::id).toList());
+    }
+
+    @Test
+    void claimVerificationUsesIndexedOutgoingAdjacencyWithoutScanningAllRelations() {
+        MutableReasoningGraph delegate = sampleGraph();
+        ReasoningGraph storageBacked = new ReasoningGraph() {
+            @Override public Collection<GraphEntity> entities() { return delegate.entities(); }
+            @Override public Collection<GraphRelation> relations() {
+                throw new AssertionError("claim verification must not request the full relation collection");
+            }
+            @Override public Optional<GraphEntity> entity(String id) { return delegate.entity(id); }
+            @Override public List<GraphRelation> outgoing(String id) { return delegate.outgoing(id); }
+            @Override public List<GraphRelation> incoming(String id) { return delegate.incoming(id); }
+            @Override public List<GraphRelation> relationsOf(String id) { return delegate.relationsOf(id); }
+        };
+
+        GraphQueryEngine.Result result = engine.query(storageBacked,
+                GraphQueryEngine.Query.claim(
+                        GraphQueryEngine.Intent.VERIFY, "person", "SENT", "email"));
+
+        assertEquals(GraphQueryEngine.Status.SUPPORTED, result.status());
+        assertEquals(List.of("person-email"),
+                result.relations().stream().map(GraphQueryEngine.RelationView::id).toList());
     }
 
     @Test
@@ -350,6 +484,44 @@ class GraphQueryEngineTest {
         assertEquals(1, result.data().get("semanticVectorHops"));
         assertTrue(result.entities().stream().anyMatch(entity -> entity.semanticScore() > 0.99));
         assertNotNull(result.trace());
+    }
+
+    private static ReasoningGraph retrievalOnlyGraph(GraphEntity... entities) {
+        List<GraphEntity> values = List.of(entities);
+        return new ReasoningGraph() {
+            @Override
+            public Collection<GraphEntity> entities() {
+                return values;
+            }
+
+            @Override
+            public Collection<GraphRelation> relations() {
+                throw new AssertionError("retrieval-only query must not access global relations");
+            }
+
+            @Override
+            public Optional<GraphEntity> entity(String id) {
+                if (id == null) {
+                    return Optional.empty();
+                }
+                return values.stream().filter(entity -> entity.id().equals(id)).findFirst();
+            }
+
+            @Override
+            public List<GraphRelation> outgoing(String id) {
+                return List.of();
+            }
+
+            @Override
+            public List<GraphRelation> incoming(String id) {
+                return List.of();
+            }
+
+            @Override
+            public List<GraphRelation> relationsOf(String id) {
+                return List.of();
+            }
+        };
     }
 
     private static MutableReasoningGraph sampleGraph() {

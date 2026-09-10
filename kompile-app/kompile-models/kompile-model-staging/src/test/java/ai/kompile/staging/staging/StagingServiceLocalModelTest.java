@@ -5,6 +5,7 @@ import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.modelmanager.registry.*;
 import ai.kompile.staging.conversion.ConversionArtifact;
 import ai.kompile.staging.conversion.ConversionResult;
+import ai.kompile.staging.download.StagingCancellation;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.DownloadService;
 import ai.kompile.staging.download.LocalDownloader;
@@ -71,7 +72,7 @@ class StagingServiceLocalModelTest {
         Files.write(ggufFile, new byte[]{1, 2, 3, 4, 5});
 
         // Mock conversion to write sharded output files in the pending dir
-        when(conversionService.convert(any(), any(), eq("gguf"), any()))
+        when(conversionService.convert(any(), any(), eq("gguf"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     assertTrue(outputPath.toString().endsWith("model.sdz"),
@@ -109,7 +110,7 @@ class StagingServiceLocalModelTest {
         Files.writeString(sourceDir.resolve("tokenizer.json"),
                 "{\"type\": \"BPE\", \"model\": {\"vocab\": {}}}" + "x".repeat(100));
 
-        when(conversionService.convert(any(), any(), eq("gguf"), any()))
+        when(conversionService.convert(any(), any(), eq("gguf"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     Files.write(outputPath, new byte[100]);
@@ -159,7 +160,7 @@ class StagingServiceLocalModelTest {
         String tokenizerContent = "{\"type\": \"BPE\", \"model\": {}}" + "x".repeat(100);
         Files.writeString(sourceDir.resolve("tokenizer.json"), tokenizerContent);
 
-        when(conversionService.convert(any(), any(), eq("gguf"), any()))
+        when(conversionService.convert(any(), any(), eq("gguf"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     Files.write(outputPath, new byte[100]);
@@ -190,7 +191,7 @@ class StagingServiceLocalModelTest {
         Path onnxFile = sourceDir.resolve("model.onnx");
         Files.write(onnxFile, new byte[]{1, 2, 3});
 
-        when(conversionService.convert(any(), any(), eq("onnx"), any()))
+        when(conversionService.convert(any(), any(), eq("onnx"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     assertTrue(outputPath.toString().endsWith("model.sdz"),
@@ -222,7 +223,7 @@ class StagingServiceLocalModelTest {
         Path modelFile = sourceDir.resolve("model.safetensors");
         Files.write(modelFile, new byte[]{1, 2, 3});
 
-        when(conversionService.convert(any(), any(), eq("safetensors"), any()))
+        when(conversionService.convert(any(), any(), eq("safetensors"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     assertTrue(outputPath.toString().endsWith("model.sdz"),
@@ -242,7 +243,7 @@ class StagingServiceLocalModelTest {
         ModelEntry model = registryService.getModel(modelId).orElseThrow();
         assertEquals(ModelType.DENSE_ENCODER, model.getType());
         assertEquals("model.sdz", model.getModelFile());
-        verify(conversionService).convert(any(), any(), eq("safetensors"), any());
+        verify(conversionService).convert(any(), any(), eq("safetensors"), any(StagingCancellation.class));
     }
 
     @Test
@@ -257,7 +258,7 @@ class StagingServiceLocalModelTest {
         ModelEntry model = registryService.getModel(modelId).orElseThrow();
         assertEquals(ModelType.VLM_PIPELINE, model.getType());
         assertEquals("pipeline.json", model.getModelFile());
-        verify(conversionService, never()).convert(any(), any(), any(), any());
+        verify(conversionService, never()).convert(any(), any(), any(), any(StagingCancellation.class));
         verify(conversionService, never()).convertVlmOnnx(any(), any(), any());
         verify(conversionService, never()).validate(any());
     }
@@ -316,7 +317,7 @@ class StagingServiceLocalModelTest {
         Files.write(staleFile, new byte[]{(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF});
 
         // When conversion runs the pending directory must be clean — no stale file.
-        when(conversionService.convert(any(), any(), eq("onnx"), any()))
+        when(conversionService.convert(any(), any(), eq("onnx"), any(StagingCancellation.class)))
                 .thenAnswer(invocation -> {
                     Path outputPath = invocation.getArgument(1);
                     Path pendingDir = outputPath.getParent();

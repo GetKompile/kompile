@@ -20,7 +20,7 @@ import ai.kompile.graph.reasoning.bayesian.GraphBayesianNetworkBuilder;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.graph.reasoning.embedding.Embeddings;
 import ai.kompile.graph.reasoning.embedding.GraphEmbeddingResolver;
-import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
+import ai.kompile.graph.reasoning.lifecycle.IncrementalGraphPslInference;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.GraphPslProgramBuilder;
@@ -41,7 +41,8 @@ import java.util.Map;
  * <ul>
  *   <li><b>Structural</b> score: collective inference over the graph structure — either PSL/HL-MRF
  *       soft-truth activation ({@code State(entity)}) or a Bayesian posterior {@code P(entity)} via
- *       exact variable elimination. This uses each entity's {@link GraphEntity#weight()} as its
+ *       exact variable elimination. PSL propagation rules may couple the source and target states;
+ *       this uses each entity's {@link GraphEntity#weight()} as its
  *       prior and each relation's {@link ai.kompile.graph.reasoning.model.GraphRelation#weight()} as
  *       its causal strength, so it is purely structural/probabilistic.</li>
  *   <li><b>Semantic</b> score: cosine similarity of each entity's {@link GraphEntity#embedding()} to
@@ -151,12 +152,16 @@ public class HybridReasoner {
     }
 
     private Map<String, Double> pslActivations(ReasoningGraph graph) {
+        if (graph instanceof UnifiedGraph unifiedGraph) {
+            // The graph-owned result also records NON_CONVERGED status/count in graph metadata; the
+            // ranking API continues to return the best available scores for this invocation.
+            IncrementalGraphPslInference.Result result = IncrementalGraphPslInference.infer(unifiedGraph);
+            return result.scores();
+        }
+        // Keep the ordinary full-program path for non-UnifiedGraph adapters. The persisted
+        // component cache is intentionally scoped to the portable UnifiedGraph lifecycle.
         GraphPslProgramBuilder builder = new GraphPslProgramBuilder();
         PslProgram program = builder.build(graph);
-        if (graph instanceof UnifiedGraph unifiedGraph) {
-            program = UnifiedGraphReasoningLifecycle.applyLearnedPslWeights(
-                    unifiedGraph, program);
-        }
         HlMrfMapInference.Result res = HlMrfMapInference.solve(program);
         Map<String, Double> out = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : builder.entityIdToConstant().entrySet()) {

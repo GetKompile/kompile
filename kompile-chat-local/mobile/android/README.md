@@ -46,11 +46,12 @@ streaming before atomic publication. The exact downloaded file must pass GGUF/GG
 protocol, and finally an explicit plain completion transcript. Merely parsing or loading a
 GGUF is not activation.
 
-Activation is transactional: the candidate session performs that real decode first, the
-canonical SDZ path is persisted, and only then is a fresh canonical-SDZ session published to
-`ChatEngine`; persistence and the candidate are rolled back if publication fails. The previous
-runtime stays active on any preparation or decode failure. Engine startup opens the persisted SDZ
-through the ordinary provider path without repeating the import-time smoke decode. A failed
+Activation is transactional: the selection is staged durably, the previous runtime is detached
+before opening the candidate to avoid keeping two model sessions resident, and the candidate
+performs a real decode before publication to `ChatEngine`. The pending canonical SDZ selection
+is promoted only after publication. Failure closes the candidate and attempts to restore the
+previous selection/runtime, retaining any rollback failures in the diagnostic. Engine startup
+opens the persisted SDZ through the ordinary provider path without repeating the import-time smoke decode. A failed
 commit-pinned candidate remains cached so a newer APK can retry it without another download; a
 failed unpinned download is removed. Kompile
 staging receives only the target profile and prepared artifact kind and never participates
@@ -61,7 +62,7 @@ in the Hugging Face path.
 The application layer depends only on `ChatModel` and
 `AcceleratedChatModelAndroid`. Every `PlatformLocalChatSession` receives canonical SDZ:
 
-- Raw `.gguf`/`.ggml` is accepted only by `SdxGgufModelImporter`, a JNA ingestion adapter
+- Raw `.gguf`/`.ggml` is accepted only by `SdxGgufModelImporter`, a direct JNI ingestion adapter
   over the stable `libsdx_llm` ABI-v2 surface. The disposable Graal process imports directly
   to sharded canonical SDZ, populates the shared `SdxModelCompiler` cache, destroys its runtime,
   and is observed dead before the application opens a session. It never renders prompts or runs
@@ -78,10 +79,36 @@ The ART-facing `libjnisdx_llm.so` transport is consumer code owned and compiled 
 `sdx_llm_c.h`/`libsdx_llm.so` contract. The DL4J SDX SDK does not contain Kompile package
 names, graph APIs, this JNI bridge, or any other application-specific artifact.
 
-JNA and `libjnidispatch` are intentionally packaged only for the one-time GGUF/GGML
-ingestion ABI; remote and legacy chat transports remain excluded, and
-`verify-offline-apk.sh` rejects their DEX classes. Streaming, stop tokens, cancellation,
-reset, and ownership all stay at the canonical provider session seams.
+The ART-facing ingestion transport uses `SdxAndroidLlmAbi` and the Kompile-owned
+`libjnisdx_llm.so`. JNA, `libjnidispatch`, and remote/legacy chat transports are excluded;
+`verify-offline-apk.sh` rejects their DEX classes. JavaCPP inside the Graal importer
+stays separate from the accelerator runtime's JavaCPP state. Streaming, stop tokens,
+cancellation, reset, and ownership stay at the canonical provider session seams.
+
+The importer runs in `:sdx_model_import` under an important service binding and must be
+observed dead before the canonical runtime opens. Vulkan, Hexagon, and Tensor G3 also
+isolate model execution in `:sdx_model_runtime`; the UI process supervises it and retains
+process-exit diagnostics. JavaCPP native-memory limits are installed before native class
+initialization in each process, independently of ART's smaller heap limit. Preparation records
+memory immediately, without a fixed RAM/swap wait or veto before cache lookup or conversion.
+The historical 3.5 GB available RAM / 2 GB free swap references are advisory observations, not
+a model-fit budget; logical zram/swap headroom is not an independent physical RAM reserve.
+Controlled device qualification retains its separate 2.5 GB / 2 GB environment criteria and
+strict cold/warm cache, identity, route, and decode gates. Failure of those environment criteria
+does not establish that the model cannot load.
+
+For a data-preserving functional check, target
+`TensorG3QualificationTest#functionalQwenDecodeUsesRequestedPrecision` in the installed
+instrumentation APK. Supply the same required build/provenance/model identity arguments as the
+qualifier and an explicit `-e weight_optimization BF16` (or another exact `WeightOptimization`
+enum name). Stage its inputs under `files/functional/model.gguf` with adjacent tokenizer sidecars,
+separate from `files/qualification/`; it does not clear
+data, records the requested conversion profile plus resolved cache/profile/context and phase
+memory snapshots, and attempts the real packaged runtime regardless of the reference floors.
+Missing/invalid precision is an error; the controlled cold/warm qualifier remains pinned to Q4_K.
+BF16 preparation of a Q4 source uses BF16 storage but cannot restore the original source precision.
+`FUNCTIONAL_DECODE_PASS` is not a qualification receipt and cannot promote an APK. The canonical
+qualification script clears app data: do not use it as the functional check.
 
 The bundled `fixture.kgraph` is checksum-verified on every launch. Imports run off the UI
 thread and move transactionally into app-owned storage. Graphs are opened once for format
@@ -115,6 +142,62 @@ The graph AOT SDK is no longer a manually supplied prerequisite. Maven builds
 `kompile-graph-reasoning-local` with its Android profile, invokes the retained
 `build-android-ndk.sh`, and attaches the result as the `android-arm64` ZIP
 classifier. The mobile module consumes that classifier from the reactor.
+
+### Publication-only recovery of a retained Tensor G3 APK
+
+`tools/publish-retained-tensor-g3.sh` publishes **exact retained bytes**, without
+Gradle, producer builds, JNI regeneration, version allocation, current-source
+inference, candidate pruning, or stable promotion. This is distinct from the
+source-build wrapper's `--resume-publish`, which still prepares staging and runs
+Gradle. Do not use that wrapper to recover the sole retained APK.
+
+Supply the original identity and independently recorded SHA-256 values, not
+newly invented build metadata. The retained directory basename must be
+`.kompile-android-app-build.<original-build-id>.<six-character-suffix>`; it must
+contain the app APK, instrumentation APK, and exact normalized Tensor G3 AAR in
+the original Gradle layout. Source AAR receipt is the adjacent `.build-receipt`;
+AOT receipt is `metadata/build-receipt` inside the explicitly selected SDK.
+The AOT `current` alias is frozen to its canonical target at entry. Other selected
+paths (including retained children and receipts) must not traverse symlinks.
+The receipt binds the original AAR path/hash and NDK revision. The shared full
+host verifier checks APK build ID/version, provenance, native closure, and all
+normal gates against the retained normalized AAR and selected AOT SDK.
+
+Example from `mobile/android` (substitute the original recorded values and
+existing, disjoint output/staging/SDK directories):
+
+```bash
+bash tools/publish-retained-tensor-g3.sh \
+  --retained-root /exact/apk-stage/.kompile-android-app-build.v123.ABCdef \
+  --build-id v123 --version-code 123 \
+  --expected-apk-sha256 "$ORIGINAL_APK_SHA256" \
+  --tensor-g3-aar /exact/producer/dist/sdx-runtime-android-arm64-tensor-g3.aar \
+  --expected-aar-sha256 "$ORIGINAL_AAR_SHA256" \
+  --expected-aar-receipt-sha256 "$ORIGINAL_AAR_RECEIPT_SHA256" \
+  --sdx-llm-sdk /exact/aot-sdk/current \
+  --expected-aot-receipt-sha256 "$ORIGINAL_AOT_RECEIPT_SHA256" \
+  --android-sdk "$ANDROID_SDK" --android-ndk "$ANDROID_NDK" \
+  --output /existing/recovery-candidates --staging-root /existing/recovery-staging
+```
+
+Run without concurrent writers to the retained inputs or destination. Recovery
+refuses pre-existing files for the same candidate generation; use a fresh output
+directory after a partially published attempt. All inputs remain intact on success
+and failure; cleanup is restricted to temporary files/directories created by this
+invocation. Existing candidates and stable aliases are untouched. File fsync,
+stream-copy, digest and ZIP failures remain fatal: this path does **not** mask an
+ongoing filesystem EIO. A successful run writes the normal format-3 candidate
+manifest through the shared publisher, not a hand-created receipt. Stable promotion
+remains separately device-receipt-gated.
+
+Fast regression checks (synthetic fixtures only; no device/build/publication):
+
+```bash
+python3 tools/test_apk_publication.py
+bash -n tools/apk-publication.sh
+bash -n tools/publish-retained-tensor-g3.sh
+bash -n tools/build-offline-accelerators.sh
+```
 
 ### 1. Install the selected DL4J SDX AAR
 
@@ -249,14 +332,24 @@ interfaces populate these stable inputs:
 ```
 
 The checked-in Tensor G3 entry point owns both producers, builds the Kompile graph
-and generic Native Image support closure first, passes those inputs explicitly to
-the SDX producer, then builds, host-verifies, and publishes the APK. Keep this as one command: the
+and generic Native Image support closure first, refreshes the chat-core JAR in the same
+Maven reactor, passes the native support inputs explicitly to the SDX producer, then builds,
+host-verifies, and publishes the APK. A normal build refreshes graph AOT from source even
+when its output already exists; only explicit `--resume-publish` may reuse that output. Keep this as one command: the
 managed process runner gives separate commands separate `/tmp` namespaces, so a
 producer started independently may not be visible to a later packaging process.
 
 ```bash
-android/build-tensor-g3-offline-apk.sh
+android/build-tensor-g3-offline-apk.sh                  # 12 native/Graal jobs
+android/build-tensor-g3-offline-apk.sh --jobs 12        # explicit override
+BUILD_JOBS=8 android/build-tensor-g3-offline-apk.sh     # environment override
 ```
+
+Parallelism precedence is `--jobs N` (or `--jobs=N`) > `BUILD_JOBS` > **12**.
+An unset or empty environment value uses the default. Invalid job counts are
+rejected before any builder or cleanup runs. The same positive integer is passed
+to graph AOT, SDX native/Graal, and accelerator builds; choose it to fit available
+memory and coordinate with other agents before starting a build.
 
 The wrapper discovers the sibling deeplearning4j checkout and uses the stable
 `mobile/android/build/sdx-android-build` project-volume root. The checked-in entry point has no
@@ -288,7 +381,8 @@ artifact mode, and layout options.
 
 `--work-root` derives disjoint `apk-stage`, `apk-jni/arm64-v8a`, and
 `apk-output` paths, enables isolated Gradle output, and discovers both producer
-artifacts. It cannot be combined with `--jni-output` or `--output`. Advanced
+artifacts. It cannot be combined with `--jni-output`; `--output` may select a separate final
+publication directory, as the Tensor G3 wrapper does. Advanced
 explicit layouts remain supported, but the helper rejects any overlap between
 the Gradle build root, JNI source root, RAM staging root, and final output.
 
@@ -357,8 +451,8 @@ Before and after assembly the build:
 9. proves that every AArch64 `DT_NEEDED` dependency is bundled or an explicitly allowed
    Android/vendor system library;
 10. compares provider runtime libraries byte-for-byte with the selected AAR;
-11. verifies the JavaCPP and JNA/raw-SDX loader classes in final DEX while rejecting remote
-    and legacy transports;
+11. verifies the JavaCPP provider and direct JNI/raw-SDX loader classes in final DEX while
+    rejecting JNA, remote, and legacy transports;
 12. requires extracted native packaging for filesystem-discovered native side libraries;
 13. rejects OpenBLAS, host libraries, other accelerators, and undeclared ABIs; only the
     audited provider-independent SDX raw CPU library set is exempt from provider fallback
@@ -368,8 +462,8 @@ The machine-readable contract is `accelerators.json`. APK auditing is a fail-clo
 entry point with a CMake JSON validator. The final ZIP embeds that contract and re-runs the
 same verifier against every packaged APK and its exact packaged AAR before accepting the
 bundle. There is no host Java tools module and no Python in the supported build, audit, APK,
-or runtime path. On-device code is Kotlin/Java plus JavaCPP for prepared providers, JNA for
-the ABI-v2 raw SDX image, and the packaged native runtimes.
+or runtime path. On-device code is Kotlin/Java plus JavaCPP for prepared providers, direct
+JNI for the ABI-v2 raw SDX image, and the packaged native runtimes.
 
 ## Install and use
 

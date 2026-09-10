@@ -322,6 +322,41 @@ class RotatELearnerTest {
                 + "true=" + dTrue2 + " corrupt=" + dCorrupt2);
     }
 
+    /**
+     * Zero-step runs still build the graph, parameter roots, and Adam state; repeated runs cover
+     * deterministic teardown when no execution session has produced borrowed outputs or grads.
+     */
+    @Test
+    void repeatedSmallTrainingReleasesResultsAndPreservesNumericParity() {
+        RotatELearner.resetExecutionResultCloseCountForTests();
+        RotatEConfig cfg = new RotatEConfig(4, 2.0, 2, 3, 0.01, 0.1, 17L, 2);
+
+        RotatELearner.TrainedRotatE first = new RotatELearner(cfg).train(buildKg(), cfg);
+        RotatELearner.TrainedRotatE second = new RotatELearner(cfg).train(buildKg(), cfg);
+
+        double firstTrue = first.score(ALICE, KNOWS, BOB);
+        double secondTrue = second.score(ALICE, KNOWS, BOB);
+        assertFiniteAndNonNegative(firstTrue, "first small-training score");
+        assertFiniteAndNonNegative(secondTrue, "second small-training score");
+        assertEquals(firstTrue, secondTrue, 1e-8,
+                "released per-step results must preserve repeated-training numeric parity");
+        assertTrue(RotatELearner.executionResultCloseCountForTests() >= 18,
+                "repeated small training must release caller-owned loss/gradient results");
+    }
+
+    @Test
+    void zeroEpochRunsReleaseGraphAndStateRoots() {
+        MutableReasoningGraph kg = buildKg();
+        RotatEConfig cfg = new RotatEConfig(4, 2.0, 1, 0, 0.01, 0.1, 17L, 2);
+        for (int run = 0; run < 3; run++) {
+            RotatELearner.TrainedRotatE model = new RotatELearner(cfg).train(kg, cfg);
+            assertEquals(5, model.numEntities(), "zero-epoch model must retain entity mapping");
+            assertEquals(2, model.numRelations(), "zero-epoch model must retain relation mapping");
+            assertFiniteAndNonNegative(model.score(ALICE, KNOWS, BOB),
+                    "zero-epoch true-triple distance");
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────

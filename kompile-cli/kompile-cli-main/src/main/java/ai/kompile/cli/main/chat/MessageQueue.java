@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -132,13 +133,28 @@ public class MessageQueue {
      * Adds a message to the end of the queue.
      *
      * @param content the message content
-     * @return the queued message
+     * @return the queued message, or null when identical content is already queued
      */
     public synchronized QueuedMessage enqueue(String content) {
+        if (containsContent(content)) return null;
         QueuedMessage message = new QueuedMessage(content);
         queue.add(message);
         saveQueue();
         return message;
+    }
+
+    private boolean containsContent(String content) {
+        return queue.stream().anyMatch(message -> Objects.equals(message.getContent(), content));
+    }
+
+    /** Restore a previously claimed message to the head without changing its identity or order. */
+    public synchronized void requeueFirst(QueuedMessage message) {
+        if (message == null || queue.contains(message)) return;
+        // A duplicate may arrive while this entry is claimed. The original
+        // claim owns the head position and identity when dispatch rolls back.
+        queue.removeIf(queued -> Objects.equals(queued.getContent(), message.getContent()));
+        queue.add(0, message);
+        saveQueue();
     }
 
     /**
@@ -157,6 +173,7 @@ public class MessageQueue {
 
     /**
      * Replaces the content of a queued message while preserving its ID and status.
+     * If another entry already has that content, silently removes the edited duplicate.
      *
      * @param id the message ID
      * @param content the new message content
@@ -167,6 +184,12 @@ public class MessageQueue {
         for (int i = 0; i < queue.size(); i++) {
             QueuedMessage existing = queue.get(i);
             if (existing.getId().equals(id)) {
+                if (queue.stream().anyMatch(message -> !message.getId().equals(id)
+                        && Objects.equals(message.getContent(), content))) {
+                    queue.remove(i);
+                    saveQueue();
+                    return true;
+                }
                 QueuedMessage.QueuedMessageStatus nextStatus =
                         existing.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING
                                 ? QueuedMessage.QueuedMessageStatus.PENDING
@@ -357,6 +380,7 @@ public class MessageQueue {
             String json = Files.readString(queueFile);
             List<QueuedMessage> loaded = objectMapper.readValue(json, new TypeReference<List<QueuedMessage>>() {});
             for (QueuedMessage message : loaded) {
+                if (containsContent(message.getContent())) continue;
                 // EDITING is an in-memory lease. A process exit must never leave
                 // a persisted queue permanently blocked on its next launch.
                 if (message.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING) {

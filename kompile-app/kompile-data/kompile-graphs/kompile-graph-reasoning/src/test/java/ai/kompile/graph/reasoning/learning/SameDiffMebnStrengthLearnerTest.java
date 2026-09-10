@@ -22,9 +22,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -103,13 +105,13 @@ class SameDiffMebnStrengthLearnerTest {
         double javaGrad = oracle.analyticGradient(edge, s, posteriors, observations);
 
         // SameDiff gradient (the production path).
-        SameDiffMebnStrengthLearner.TensorBatch batch =
-                SameDiffMebnStrengthLearner.buildTensorBatch(edges, posteriors, observations);
-        assertTrue(batch.rowCount() > 0, "tensor batch must be non-empty");
+        try (SameDiffMebnStrengthLearner.TensorBatch batch =
+                     SameDiffMebnStrengthLearner.buildTensorBatch(edges, posteriors, observations)) {
+            assertTrue(batch.rowCount() > 0, "tensor batch must be non-empty");
 
-        double[] sdGrads = SameDiffMebnStrengthLearner.sdGradient(new double[]{s}, batch);
-        assertEquals(1, sdGrads.length);
-        double sdGrad = sdGrads[0];
+            double[] sdGrads = SameDiffMebnStrengthLearner.sdGradient(new double[]{s}, batch);
+            assertEquals(1, sdGrads.length);
+            double sdGrad = sdGrads[0];
 
         // The SameDiff forward graph now implements the true noisy-OR:
         //   predicted = 1 − (1 − leak) · (1 − s · pParent)
@@ -118,21 +120,111 @@ class SameDiffMebnStrengthLearnerTest {
         // When pChild from inference equals predicted_noisy_or, the (1−p_c)/(1−s·pPar+ε)
         // factor collapses exactly to (1−leak), so both formulas give the same gradient to
         // floating-point (autodiff) precision.  Tolerance target: 1e-6 relative error.
-        assertFalse(Double.isNaN(sdGrad), "SameDiff gradient must be finite");
-        assertFalse(Double.isNaN(javaGrad), "Java analytic gradient must be finite");
-        // Both must be negative (fitting effect=1.0 must increase s, so gradient is negative
-        // in the descent convention).
-        assertTrue(javaGrad < 0,
-                "Java analytic gradient must be negative (need to raise s), got " + javaGrad);
-        assertTrue(sdGrad < 0,
-                "SameDiff gradient must be negative (need to raise s), got " + sdGrad);
-        // Tight tolerance: the noisy-OR SameDiff graph must match the analytic oracle to autodiff
-        // precision (1e-6 relative error).  Any larger divergence indicates the forward graph
-        // still uses the wrong (linear) approximation.
-        double relErr = Math.abs(sdGrad - javaGrad) / (Math.abs(javaGrad) + 1e-9);
-        assertTrue(relErr < 1e-6,
-                "SameDiff gradient " + sdGrad + " must match Java oracle " + javaGrad
-                        + " within 1e-6 relative error (got " + String.format("%.2e", relErr) + ")");
+            assertFalse(Double.isNaN(sdGrad), "SameDiff gradient must be finite");
+            assertFalse(Double.isNaN(javaGrad), "Java analytic gradient must be finite");
+            // Both must be negative (fitting effect=1.0 must increase s, so gradient is negative
+            // in the descent convention).
+            assertTrue(javaGrad < 0,
+                    "Java analytic gradient must be negative (need to raise s), got " + javaGrad);
+            assertTrue(sdGrad < 0,
+                    "SameDiff gradient must be negative (need to raise s), got " + sdGrad);
+            // Tight tolerance: the noisy-OR SameDiff graph must match the analytic oracle to autodiff
+            // precision (1e-6 relative error).  Any larger divergence indicates the forward graph
+            // still uses the wrong (linear) approximation.
+            double relErr = Math.abs(sdGrad - javaGrad) / (Math.abs(javaGrad) + 1e-9);
+            assertTrue(relErr < 1e-6,
+                    "SameDiff gradient " + sdGrad + " must match Java oracle " + javaGrad
+                            + " within 1e-6 relative error (got " + String.format("%.2e", relErr) + ")");
+        }
+    }
+
+    @Test
+    void sdGradient_repeatedCalls_releaseResultsAndPreserveBorrowedBatch() {
+        SameDiffMebnStrengthLearner.resetExecutionResultCloseCountForTests();
+        ReasoningGraph graph = people();
+        MTheory theory = MebnInferenceService.buildCausalTheory(graph, "Person", "cause", "effect", 0.3);
+        MebnInferenceService svc = new MebnInferenceService();
+        Map<String, Double> posteriors = svc.infer(graph, theory, Map.of());
+        Map<String, Double> observations = new LinkedHashMap<>();
+        posteriors.keySet().stream()
+                .filter(k -> k.startsWith("effect"))
+                .forEach(k -> observations.put(k, 1.0));
+        List<MebnWeightLearner.Edge> edges = SameDiffMebnStrengthLearner.collectEdges(theory);
+
+        try (SameDiffMebnStrengthLearner.TensorBatch batch =
+                     SameDiffMebnStrengthLearner.buildTensorBatch(edges, posteriors, observations)) {
+            double[] first = SameDiffMebnStrengthLearner.sdGradient(new double[]{0.3}, batch);
+            for (int i = 0; i < 16; i++) {
+                double[] repeated = SameDiffMebnStrengthLearner.sdGradient(new double[]{0.3}, batch);
+                assertEquals(first.length, repeated.length);
+                for (int j = 0; j < first.length; j++) {
+                    assertEquals(first[j], repeated[j], 1e-12,
+                            "repeated SameDiff gradients must remain numerically stable");
+                }
+            }
+            assertFalse(batch.pParent().wasClosed(),
+                    "sdGradient must not close the caller-owned parent tensor");
+            assertFalse(batch.target().wasClosed(),
+                    "sdGradient must not close the caller-owned target tensor");
+        }
+        assertTrue(SameDiffMebnStrengthLearner.executionResultCloseCountForTests() >= 34,
+                "repeated gradients must release their caller-owned loss/gradient results");
+    }
+
+    @Test
+    void sdGradient_closesGradientBeforeParent_andPropagatesCleanupFailure() {
+        ReasoningGraph graph = people();
+        MTheory theory = MebnInferenceService.buildCausalTheory(graph, "Person", "cause", "effect", 0.3);
+        MebnInferenceService svc = new MebnInferenceService();
+        Map<String, Double> posteriors = svc.infer(graph, theory, Map.of());
+        Map<String, Double> observations = new LinkedHashMap<>();
+        posteriors.keySet().stream()
+                .filter(k -> k.startsWith("effect"))
+                .forEach(k -> observations.put(k, 1.0));
+        List<MebnWeightLearner.Edge> edges = SameDiffMebnStrengthLearner.collectEdges(theory);
+        RuntimeException gradientFailure = new RuntimeException("gradient close failure");
+        AtomicInteger closeCalls = new AtomicInteger();
+        SameDiffMebnStrengthLearner.setSameDiffCloseHookForTests(sd -> {
+            if (closeCalls.getAndIncrement() == 0) {
+                throw gradientFailure;
+            }
+            sd.close();
+        });
+        try (SameDiffMebnStrengthLearner.TensorBatch batch =
+                     SameDiffMebnStrengthLearner.buildTensorBatch(edges, posteriors, observations)) {
+            RuntimeException thrown = org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class,
+                    () -> SameDiffMebnStrengthLearner.sdGradient(new double[]{0.3}, batch));
+            assertSame(gradientFailure, thrown,
+                    "cleanup failure must propagate when the gradient operation itself succeeds");
+        } finally {
+            SameDiffMebnStrengthLearner.resetSameDiffCloseHookForTests();
+        }
+        assertEquals(2, closeCalls.get(),
+                "gradient graph must be attempted before the parent, and parent cleanup must still run");
+    }
+
+    @Test
+    void learn_repeatedTraining_isDeterministicAndKeepsStrengthInUnitInterval() {
+        ReasoningGraph graph = people();
+        MTheory firstTheory = MebnInferenceService.buildCausalTheory(
+                graph, "Person", "cause", "effect", 0.1);
+        MTheory secondTheory = MebnInferenceService.buildCausalTheory(
+                graph, "Person", "cause", "effect", 0.1);
+        MebnInferenceService svc = new MebnInferenceService();
+        Map<String, Double> observations = new LinkedHashMap<>();
+        svc.infer(graph, firstTheory, Map.of()).keySet().stream()
+                .filter(k -> k.startsWith("effect"))
+                .forEach(k -> observations.put(k, 1.0));
+
+        SameDiffMebnStrengthLearner.learn(firstTheory, graph, observations, 12, 0.2, 1234L);
+        SameDiffMebnStrengthLearner.learn(secondTheory, graph, observations, 12, 0.2, 1234L);
+
+        double first = edgeStrength(firstTheory, "cause", "effect");
+        double second = edgeStrength(secondTheory, "cause", "effect");
+        assertEquals(first, second, 1e-12,
+                "repeated training runs must preserve the previous numerical behavior");
+        assertTrue(first >= 0.0 && first <= 1.0,
+                "projected edge strength must remain in [0,1] (got " + first + ")");
     }
 
     // ─── Test 2: Learning direction ────────────────────────────────────────────

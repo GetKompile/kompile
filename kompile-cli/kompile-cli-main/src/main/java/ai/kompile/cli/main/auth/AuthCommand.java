@@ -6,6 +6,9 @@
 package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.main.auth.channel.ChannelAuthCommand;
+import ai.kompile.cli.main.auth.source.AuthSourceCommand;
+import ai.kompile.cli.main.auth.oauth.OAuthClientSettings;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
@@ -30,10 +33,13 @@ import java.util.concurrent.Callable;
         description = "Manage provider credentials for the Kompile CLI.",
         subcommands = {
                 CommandLine.HelpCommand.class,
+                ChannelAuthCommand.class,
+                AuthSourceCommand.class,
                 AuthCommand.LoginCommand.class,
                 AuthCommand.SwitchCommand.class,
                 AuthCommand.LogoutCommand.class,
-                AuthCommand.ListCommand.class
+                AuthCommand.ListCommand.class,
+                AuthCommand.ClientCommand.class
         })
 public class AuthCommand implements Callable<Integer> {
     @Override
@@ -143,6 +149,11 @@ public class AuthCommand implements Callable<Integer> {
                 }
             }
 
+            if (useOAuth) {
+                providerId = oauthCredentialProviderId(registry, providerId);
+                ensureClientRegistration(registry, providerId);
+            }
+
             try {
                 if (nativeAuth) {
                     return NativeCliAuth.login(providerId);
@@ -154,6 +165,131 @@ public class AuthCommand implements Callable<Integer> {
                 if (wizard != null) {
                     wizard.close();
                 }
+            }
+        }
+
+        static String oauthCredentialProviderId(
+                OAuthProviderRegistry registry,
+                String requestedProviderId) {
+            return registry.oauthProviderForVendor(requestedProviderId)
+                    .orElse(requestedProviderId);
+        }
+
+        /**
+         * Interactive, no-environment-variable path for app registrations: when a flow
+         * needs a client id/secret and neither the local store nor the environment has
+         * one, prompt once on a console (secret masked) and persist to the
+         * oauth-clients store so subsequent logins and local crawls resolve silently.
+         */
+        private static void ensureClientRegistration(
+                OAuthProviderRegistry registry, String providerId) {
+            OAuthProviderFlow flow = registry.find(providerId).orElse(null);
+            if (flow == null) {
+                return;
+            }
+            ClientRequirement requirement = ClientRequirement.forProvider(providerId);
+            if (requirement == ClientRequirement.NONE || requirement.satisfied(providerId)) {
+                return;
+            }
+            Console console = System.console();
+            if (console == null) {
+                return; // non-interactive: keep the flow's own actionable error
+            }
+            try {
+                OAuthClientSettings settings = OAuthClientSettings.create();
+                System.out.println("Provider '" + providerId + "' needs its OAuth application "
+                        + "registration once. " + requirement.setupHint());
+                String clientId = requirement.clientId()
+                        ? readLine(console, "Client id: ") : null;
+                String clientSecret = requirement.clientSecret()
+                        ? new String(console.readPassword("Client secret: ")) : null;
+                String tenantId = requirement.tenantId()
+                        ? readLine(console, "Tenant id [common]: ") : null;
+                if ((clientId == null || clientId.isBlank())
+                        && (clientSecret == null || clientSecret.isBlank())) {
+                    return; // nothing supplied: the flow will report exactly what is missing
+                }
+                settings.put(providerId, new OAuthClientSettings.ClientCredentials(
+                        clientId, clientSecret, tenantId));
+                System.out.println("Saved client registration for " + providerId
+                        + " to " + settings.getSettingsPath());
+            } catch (IOException persisted) {
+                System.err.println("Could not persist the client registration: "
+                        + persisted.getMessage());
+            }
+        }
+
+        private static String readLine(Console console, String prompt) {
+            String value = console.readLine(prompt);
+            return value == null ? null : value.trim();
+        }
+
+        /** Which registration fields each provider needs, plus setup guidance. */
+        private enum ClientRequirement {
+            NONE,
+            CLIENT_ID,
+            CLIENT_ID_SECRET,
+            CLIENT_ID_SECRET_TENANT;
+
+            static ClientRequirement forProvider(String providerId) {
+                return switch (providerId) {
+                    case "google" -> CLIENT_ID;
+                    case "microsoft" -> CLIENT_ID_SECRET_TENANT;
+                    case "notion", "reddit", "atlassian" -> CLIENT_ID_SECRET;
+                    default -> NONE;
+                };
+            }
+
+            boolean clientId() {
+                return this != NONE;
+            }
+
+            boolean clientSecret() {
+                return this == CLIENT_ID_SECRET
+                        || this == CLIENT_ID_SECRET_TENANT;
+            }
+
+            boolean tenantId() {
+                return this == CLIENT_ID_SECRET_TENANT;
+            }
+
+            boolean satisfied(String providerId) {
+                try {
+                    OAuthClientSettings.ClientCredentials stored =
+                            OAuthClientSettings.create().read(providerId);
+                    if (stored != null
+                            && ((clientId() && stored.clientId() != null)
+                            || (clientSecret() && stored.clientSecret() != null))) {
+                        return true;
+                    }
+                } catch (IOException unreadable) {
+                    return false;
+                }
+                return switch (providerId) {
+                    case "google" -> envSet("KOMPILE_GOOGLE_CLIENT_ID");
+                    case "microsoft" -> envSet("KOMPILE_MICROSOFT_CLIENT_ID");
+                    case "notion" -> envSet("KOMPILE_NOTION_CLIENT_ID");
+                    case "reddit" -> envSet("KOMPILE_REDDIT_CLIENT_ID");
+                    case "atlassian" -> envSet("KOMPILE_ATLASSIAN_CLIENT_ID");
+                    default -> true;
+                };
+            }
+
+            String setupHint() {
+                return switch (this) {
+                    case CLIENT_ID -> "Create a Google Cloud 'Desktop app' OAuth client."
+                            + " Docs: https://developers.google.com/identity/protocols/oauth2";
+                    case CLIENT_ID_SECRET -> "Create the provider's OAuth app/integration"
+                            + " with redirect http://127.0.0.1.";
+                    case CLIENT_ID_SECRET_TENANT -> "Register an Azure 'Public client/native'"
+                            + " app; enable 'Allow public client flows'.";
+                    default -> "";
+                };
+            }
+
+            private static boolean envSet(String name) {
+                String value = System.getenv(name);
+                return value != null && !value.isBlank();
             }
         }
 
@@ -178,10 +314,7 @@ public class AuthCommand implements Callable<Integer> {
                         activate,
                         options,
                         interaction);
-                String savedName = store.activeCredentialName(providerId);
-                if (credentialName != null && !credentialName.isBlank()) {
-                    savedName = credentialName.trim().toLowerCase(java.util.Locale.ROOT);
-                }
+                String savedName = store.credentialName(providerId, credential);
                 boolean active = savedName.equals(store.activeCredentialName(providerId));
                 System.out.println("Saved " + credential.getType() + " credential for "
                         + providerId + " as '" + savedName + "'"
@@ -266,6 +399,114 @@ public class AuthCommand implements Callable<Integer> {
             System.out.println("Saved API key for " + providerId + " as '" + savedName + "'"
                     + (active ? " (active)" : "") + " to " + store.getAuthPath());
             return 0;
+        }
+    }
+
+    @Command(name = "client", mixinStandardHelpOptions = true,
+            description = "Manage stored OAuth application registrations (client id/secret) so logins need no environment variables.")
+    static class ClientCommand implements Callable<Integer> {
+
+        @Override
+        public Integer call() {
+            new CommandLine(this).usage(System.out);
+            return 0;
+        }
+
+        @Command(name = "set", mixinStandardHelpOptions = true,
+                description = "Store a provider's client registration. Values prompt on a console when omitted.")
+        static class SetCommand implements Callable<Integer> {
+            @Parameters(index = "0", paramLabel = "PROVIDER")
+            String providerId;
+
+            @Option(names = "--client-id", paramLabel = "ID")
+            String clientId;
+
+            @Option(names = "--client-secret-stdin", description = "Read the client secret from stdin.")
+            boolean secretStdin;
+
+            @Option(names = "--tenant-id", paramLabel = "TENANT",
+                    description = "Azure tenant id or domain (microsoft only; default common).")
+            String tenantId;
+
+            @Override
+            public Integer call() throws Exception {
+                Console console = System.console();
+                if (clientId == null || clientId.isBlank()) {
+                    if (console == null) {
+                        System.err.println("No interactive console. Use --client-id.");
+                        return 1;
+                    }
+                    clientId = console.readLine("Client id: ").trim();
+                }
+                String clientSecret = null;
+                if (secretStdin) {
+                    clientSecret = new BufferedReader(
+                            new InputStreamReader(System.in, StandardCharsets.UTF_8)).readLine();
+                } else if (console != null
+                        && ("microsoft".equalsIgnoreCase(providerId)
+                        || "notion".equalsIgnoreCase(providerId)
+                        || "reddit".equalsIgnoreCase(providerId)
+                        || "atlassian".equalsIgnoreCase(providerId))) {
+                    char[] secret = console.readPassword("Client secret: ");
+                    clientSecret = secret == null ? null : new String(secret);
+                    if (secret != null) {
+                        java.util.Arrays.fill(secret, '\0');
+                    }
+                }
+                OAuthClientSettings settings = OAuthClientSettings.create();
+                settings.put(providerId, new OAuthClientSettings.ClientCredentials(
+                        clientId, clientSecret, tenantId));
+                System.out.println("Saved client registration for " + providerId
+                        + " to " + settings.getSettingsPath());
+                return 0;
+            }
+        }
+
+        @Command(name = "list", mixinStandardHelpOptions = true,
+                description = "List stored client registrations without exposing secrets.")
+        static class ListCommand implements Callable<Integer> {
+            @Override
+            public Integer call() throws Exception {
+                OAuthClientSettings settings = OAuthClientSettings.create();
+                var providers = settings.listProviders();
+                if (providers.isEmpty()) {
+                    System.out.println("No stored client registrations.");
+                    return 0;
+                }
+                System.out.printf("%-14s %-12s %-14s %s%n",
+                        "PROVIDER", "CLIENT ID", "SECRET", "TENANT");
+                for (String provider : providers) {
+                    OAuthClientSettings.ClientCredentials credentials = settings.read(provider);
+                    System.out.printf("%-14s %-12s %-14s %s%n",
+                            provider,
+                            mask(credentials.clientId(), 6),
+                            credentials.clientSecret() == null ? "-" : "********",
+                            credentials.tenantId() == null ? "-" : credentials.tenantId());
+                }
+                return 0;
+            }
+
+            private static String mask(String value, int keep) {
+                if (value == null) return "-";
+                return value.length() <= keep ? value
+                        : value.substring(0, keep) + "…";
+            }
+        }
+
+        @Command(name = "remove", mixinStandardHelpOptions = true,
+                description = "Remove a provider's stored client registration.")
+        static class RemoveCommand implements Callable<Integer> {
+            @Parameters(index = "0", paramLabel = "PROVIDER")
+            String providerId;
+
+            @Override
+            public Integer call() throws Exception {
+                boolean removed = OAuthClientSettings.create().remove(providerId);
+                System.out.println(removed
+                        ? "Removed client registration for " + providerId + "."
+                        : "No client registration stored for " + providerId + ".");
+                return removed ? 0 : 1;
+            }
         }
     }
 
@@ -480,13 +721,14 @@ public class AuthCommand implements Callable<Integer> {
                 return 0;
             }
             System.out.printf("%-22s %-20s %-10s %s%n",
-                    "PROVIDER", "CREDENTIAL", "TYPE", "STATUS");
+                    "PROVIDER", "CREDENTIAL", "TYPE", "IDENTITY / STATUS");
             for (CredentialStore.CredentialInfo credential : credentials) {
                 System.out.printf("%-22s %-20s %-10s %s%n",
                         credential.providerId(),
                         credential.credentialName(),
                         credential.type(),
-                        credential.active() ? "active" : "");
+                        (credential.identity() == null ? "" : credential.identity() + " / ")
+                                + credential.status());
             }
             return 0;
         }

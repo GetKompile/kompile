@@ -127,11 +127,14 @@ public class SessionMetricsService {
         long providerOutput = providerUsage.stream().mapToLong(p -> p.outputTokens).sum();
         long providerCacheRead = providerUsage.stream().mapToLong(p -> p.cacheReadTokens).sum();
         long providerCacheCreation = providerUsage.stream().mapToLong(p -> p.cacheCreationTokens).sum();
+        long providerTotal = providerUsage.stream()
+                .mapToLong(SessionMetricsService::totalTokens).sum();
 
         Map<String, Object> tokens = new LinkedHashMap<>();
         tokens.put("totalInput", totalInput + providerInput);
         tokens.put("totalOutput", totalOutput + providerOutput);
-        tokens.put("total", totalInput + totalOutput + providerInput + providerOutput);
+        tokens.put("total", totalInput + totalOutput + totalCacheRead + totalCacheCreation
+                + providerTotal);
         tokens.put("cacheRead", totalCacheRead + providerCacheRead);
         tokens.put("cacheCreation", totalCacheCreation + providerCacheCreation);
         stats.put("tokens", tokens);
@@ -152,24 +155,24 @@ public class SessionMetricsService {
         // By provider — merge kompile metrics + provider transcript data
         Map<String, Long> byProvider = new LinkedHashMap<>();
         all.stream().filter(s -> s.provider != null)
-                .forEach(s -> byProvider.merge(s.provider, s.inputTokens + s.outputTokens, Long::sum));
+                .forEach(s -> byProvider.merge(s.provider, totalTokens(s), Long::sum));
         providerUsage.stream().filter(p -> p.provider != null)
-                .forEach(p -> byProvider.merge(p.provider, p.inputTokens + p.outputTokens, Long::sum));
+                .forEach(p -> byProvider.merge(p.provider, totalTokens(p), Long::sum));
         stats.put("tokensByProvider", sortDesc(byProvider));
 
         // By model — merge
         Map<String, Long> byModel = new LinkedHashMap<>();
         all.stream().filter(s -> s.model != null)
-                .forEach(s -> byModel.merge(s.model, s.inputTokens + s.outputTokens, Long::sum));
+                .forEach(s -> byModel.merge(s.model, totalTokens(s), Long::sum));
         providerUsage.stream().filter(p -> p.model != null)
-                .forEach(p -> byModel.merge(p.model, p.inputTokens + p.outputTokens, Long::sum));
+                .forEach(p -> byModel.merge(p.model, totalTokens(p), Long::sum));
         stats.put("tokensByModel", sortDesc(byModel));
 
         // By agent — from kompile metrics only
         Map<String, Long> byAgent = all.stream()
                 .filter(s -> s.agent != null)
                 .collect(Collectors.groupingBy(s -> s.agent,
-                        Collectors.summingLong(s -> s.inputTokens + s.outputTokens)));
+                        Collectors.summingLong(SessionMetricsService::totalTokens)));
         stats.put("tokensByAgent", sortDesc(byAgent));
 
         // Tool breakdown across all sessions
@@ -200,7 +203,12 @@ public class SessionMetricsService {
         result.put("totalSessions", entries.size());
         result.put("totalInputTokens", entries.stream().mapToLong(e -> e.inputTokens).sum());
         result.put("totalOutputTokens", entries.stream().mapToLong(e -> e.outputTokens).sum());
-        result.put("totalTokens", entries.stream().mapToLong(e -> e.inputTokens + e.outputTokens).sum());
+        result.put("totalTokens", entries.stream()
+                .mapToLong(SessionMetricsService::totalTokens).sum());
+        result.put("totalCacheReadTokens", entries.stream()
+                .mapToLong(e -> e.cacheReadTokens).sum());
+        result.put("totalCacheCreationTokens", entries.stream()
+                .mapToLong(e -> e.cacheCreationTokens).sum());
 
         // By provider
         Map<String, Map<String, Object>> byProvider = new LinkedHashMap<>();
@@ -214,7 +222,8 @@ public class SessionMetricsService {
             providerStats.put("sessionCount", sessions.size());
             providerStats.put("inputTokens", sessions.stream().mapToLong(s -> s.inputTokens).sum());
             providerStats.put("outputTokens", sessions.stream().mapToLong(s -> s.outputTokens).sum());
-            providerStats.put("totalTokens", sessions.stream().mapToLong(s -> s.inputTokens + s.outputTokens).sum());
+            providerStats.put("totalTokens", sessions.stream()
+                    .mapToLong(SessionMetricsService::totalTokens).sum());
             providerStats.put("cacheReadTokens", sessions.stream().mapToLong(s -> s.cacheReadTokens).sum());
             providerStats.put("cacheCreationTokens", sessions.stream().mapToLong(s -> s.cacheCreationTokens).sum());
             providerStats.put("thinkingTokens", sessions.stream().mapToLong(s -> s.thinkingTokens).sum());
@@ -224,14 +233,14 @@ public class SessionMetricsService {
             Map<String, Long> models = sessions.stream()
                     .filter(s -> s.model != null)
                     .collect(Collectors.groupingBy(s -> s.model,
-                            Collectors.summingLong(s -> s.inputTokens + s.outputTokens)));
+                            Collectors.summingLong(SessionMetricsService::totalTokens)));
             providerStats.put("byModel", sortDesc(models));
 
             // Projects in this provider
             Map<String, Long> projects = sessions.stream()
                     .filter(s -> s.projectDirectory != null)
                     .collect(Collectors.groupingBy(s -> s.projectDirectory,
-                            Collectors.summingLong(s -> s.inputTokens + s.outputTokens)));
+                            Collectors.summingLong(SessionMetricsService::totalTokens)));
             providerStats.put("byProject", sortDesc(projects));
 
             providerStats.put("sessions", sessions);
@@ -268,13 +277,15 @@ public class SessionMetricsService {
             long inputTokens = sessions.stream().mapToLong(s -> s.inputTokens).sum();
             long outputTokens = sessions.stream().mapToLong(s -> s.outputTokens).sum();
             long cacheRead = sessions.stream().mapToLong(s -> s.cacheReadTokens).sum();
+            long cacheCreation = sessions.stream().mapToLong(s -> s.cacheCreationTokens).sum();
             long toolCalls = sessions.stream().mapToLong(s -> s.totalToolCalls).sum();
 
             Map<String, Object> tokenSummary = new LinkedHashMap<>();
             tokenSummary.put("input", inputTokens);
             tokenSummary.put("output", outputTokens);
-            tokenSummary.put("total", inputTokens + outputTokens);
+            tokenSummary.put("total", inputTokens + outputTokens + cacheRead + cacheCreation);
             tokenSummary.put("cacheRead", cacheRead);
+            tokenSummary.put("cacheCreation", cacheCreation);
             projectStats.put("tokens", tokenSummary);
             projectStats.put("toolCalls", toolCalls);
             projectStats.put("sessions", sessions);
@@ -383,6 +394,21 @@ public class SessionMetricsService {
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
                         (a, b) -> a, LinkedHashMap::new));
+    }
+
+    static long totalTokens(SessionMetricsSummary session) {
+        // Kompile-owned session metrics normalize uncached input, cache reads,
+        // and cache creation into disjoint counters.
+        return session.inputTokens + session.outputTokens
+                + session.cacheReadTokens + session.cacheCreationTokens;
+    }
+
+    static long totalTokens(ProviderUsageEntry usage) {
+        // Imported provider transcripts retain native usage semantics: cache
+        // counters are a breakdown of inputTokens rather than additive totals.
+        return usage.totalTokens > 0
+                ? usage.totalTokens
+                : usage.inputTokens + usage.outputTokens;
     }
 
     /**

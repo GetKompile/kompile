@@ -25,9 +25,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -104,6 +107,13 @@ public class McpToolInjection {
         }
 
         String agent = agentName != null ? agentName.toLowerCase(Locale.ROOT) : "qwen";
+        if (agent.contains("claude")
+                && !new McpConfigStore(normalizedWd).effectiveServers(true).isEmpty()) {
+            // Claude owns portable project .mcp.json entries directly. Keep the
+            // Kompile connection on stdio so user-scoped custom servers remain
+            // available through the gateway without requiring the app backend.
+            sseUrl = null;
+        }
         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
 
         // For stdio mode, resolve the CLI launcher. Codex also requires this
@@ -159,9 +169,8 @@ public class McpToolInjection {
     }
 
     /**
-     * Remove injected kompile MCP tools by restoring the original settings file.
-     * If a backup exists, it replaces the settings file. If no backup exists
-     * (settings file was created fresh), the settings file is deleted.
+     * Remove injected kompile MCP tools while preserving unrelated changes made
+     * during the session. When nothing else changed, the verbatim backup is restored.
      *
      * @param settingsFile the path returned by {@link #injectTools}
      */
@@ -174,8 +183,7 @@ public class McpToolInjection {
         try {
             Path backup = settingsFile.resolveSibling(settingsFile.getFileName() + BACKUP_SUFFIX);
             if (Files.exists(backup)) {
-                Files.move(backup, settingsFile, StandardCopyOption.REPLACE_EXISTING);
-                System.err.println("[MCP] Restored original settings: " + settingsFile);
+                restoreOriginalKompileEntry(settingsFile, backup);
             } else if (preExisted) {
                 // The file existed before injection (e.g. created by "kompile init")
                 // but no backup was needed because injection overwrote it in place.
@@ -190,6 +198,121 @@ public class McpToolInjection {
         } catch (IOException e) {
             System.err.println("[MCP] Warning: Could not restore settings: " + e.getMessage());
         }
+    }
+
+    private static void restoreOriginalKompileEntry(Path settingsFile, Path backup)
+            throws IOException {
+        if (settingsFile.getFileName().toString().equals(McpConfigStore.PROJECT_CONFIG_FILE)) {
+            Path lockPath = McpConfigStore.projectLockPath(settingsFile.getParent());
+            Files.createDirectories(lockPath.getParent());
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                restoreOriginalKompileEntryUnlocked(settingsFile, backup);
+            }
+        } else {
+            restoreOriginalKompileEntryUnlocked(settingsFile, backup);
+        }
+    }
+
+    private static void restoreOriginalKompileEntryUnlocked(Path settingsFile, Path backup)
+            throws IOException {
+        if (!Files.exists(settingsFile)) {
+            Files.move(backup, settingsFile, StandardCopyOption.REPLACE_EXISTING);
+            return;
+        }
+        if (settingsFile.getFileName().toString().endsWith(".toml")) {
+            restoreTomlKompileEntry(settingsFile, backup);
+        } else {
+            restoreJsonKompileEntry(settingsFile, backup);
+        }
+        Files.deleteIfExists(backup);
+        System.err.println("[MCP] Restored original Kompile entry while preserving current settings: "
+                + settingsFile);
+    }
+
+    private static void restoreJsonKompileEntry(Path settingsFile, Path backup)
+            throws IOException {
+        ObjectNode current = requireJsonObject(settingsFile);
+        ObjectNode original = requireJsonObject(backup);
+        if (withoutKompile(current).equals(withoutKompile(original))) {
+            Files.move(backup, settingsFile, StandardCopyOption.REPLACE_EXISTING);
+            return;
+        }
+        restoreJsonContainerEntry(current, original, "mcpServers");
+        restoreJsonContainerEntry(current, original, "mcp");
+        if (current.isEmpty()) Files.deleteIfExists(settingsFile);
+        else Files.writeString(settingsFile,
+                OM.writerWithDefaultPrettyPrinter().writeValueAsString(current));
+    }
+
+    private static ObjectNode requireJsonObject(Path file) throws IOException {
+        JsonNode parsed = OM.readTree(Files.readString(file));
+        if (parsed == null || !parsed.isObject()) {
+            throw new IOException("MCP settings are not a JSON object: " + file);
+        }
+        return (ObjectNode) parsed;
+    }
+
+    private static ObjectNode withoutKompile(ObjectNode source) {
+        ObjectNode copy = source.deepCopy();
+        for (String containerName : List.of("mcpServers", "mcp")) {
+            JsonNode container = copy.get(containerName);
+            if (container != null && container.isObject()) {
+                ((ObjectNode) container).remove("kompile");
+                if (container.isEmpty()) copy.remove(containerName);
+            }
+        }
+        return copy;
+    }
+
+    private static void restoreJsonContainerEntry(
+            ObjectNode current, ObjectNode original, String containerName) {
+        JsonNode originalContainer = original.get(containerName);
+        JsonNode originalEntry = originalContainer != null && originalContainer.isObject()
+                ? originalContainer.get("kompile") : null;
+        JsonNode currentContainer = current.get(containerName);
+        ObjectNode target = currentContainer != null && currentContainer.isObject()
+                ? (ObjectNode) currentContainer : null;
+        if (originalEntry != null) {
+            if (target == null) target = current.putObject(containerName);
+            target.set("kompile", originalEntry.deepCopy());
+        } else if (target != null) {
+            target.remove("kompile");
+            if (target.isEmpty()) current.remove(containerName);
+        }
+    }
+
+    private static void restoreTomlKompileEntry(Path settingsFile, Path backup)
+            throws IOException {
+        String current = Files.readString(settingsFile);
+        String original = Files.readString(backup);
+        String currentWithout = removeKompileTomlSection(current);
+        String originalWithout = removeKompileTomlSection(original);
+        if (currentWithout.trim().equals(originalWithout.trim())) {
+            Files.move(backup, settingsFile, StandardCopyOption.REPLACE_EXISTING);
+            return;
+        }
+        String originalSection = extractKompileTomlSection(original);
+        String restored = currentWithout.trim();
+        if (!originalSection.isBlank()) {
+            restored = restored.isBlank() ? originalSection.trim()
+                    : restored + "\n\n" + originalSection.trim();
+        }
+        if (restored.isBlank()) Files.deleteIfExists(settingsFile);
+        else Files.writeString(settingsFile, restored + "\n");
+    }
+
+    private static String removeKompileTomlSection(String content) {
+        return content.replaceAll(
+                "(?ms)^\\[mcp_servers\\.kompile\\].*?(?=\\n\\[[^.]|\\z)", "").trim();
+    }
+
+    private static String extractKompileTomlSection(String content) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?ms)^\\[mcp_servers\\.kompile\\].*?(?=\\n\\[[^.]|\\z)")
+                .matcher(content);
+        return matcher.find() ? matcher.group() : "";
     }
 
     /**
@@ -430,8 +553,21 @@ public class McpToolInjection {
                                          String sseUrl) throws IOException {
         Path settingsFile = workingDir.resolve(".mcp.json");
         Path written = writeConfig(settingsFile, workingDir, launcher, sseUrl);
+        if (sseUrl == null || sseUrl.isBlank()) {
+            markClaudeAsProjectMcpOwner(written);
+        }
         ensureHooksPreConfigured(workingDir);
         return written;
+    }
+
+    private static void markClaudeAsProjectMcpOwner(Path settingsFile) throws IOException {
+        ObjectNode root = (ObjectNode) OM.readTree(Files.readString(settingsFile));
+        ObjectNode kompile = (ObjectNode) root.path("mcpServers").path("kompile");
+        ObjectNode environment = kompile.has("env") && kompile.get("env").isObject()
+                ? (ObjectNode) kompile.get("env") : kompile.putObject("env");
+        environment.put(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV, "true");
+        Files.writeString(settingsFile,
+                OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
     }
 
     // ── Qwen Code ──────────────────────────────────────────────────────────
@@ -899,8 +1035,9 @@ public class McpToolInjection {
                 if (Files.exists(candidate) && isContaminated(candidate)) {
                     Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
                     if (Files.exists(backup) && !isContaminated(backup)) {
-                        // Restore clean backup — a prior injection crashed before cleanup
-                        Files.move(backup, candidate, StandardCopyOption.REPLACE_EXISTING);
+                        // Restore only Kompile's original entry so edits made after
+                        // the crashed injection are not discarded.
+                        restoreOriginalKompileEntry(candidate, backup);
                         System.err.println("[MCP] Restored clean backup for: " + candidate);
                     } else if (Files.exists(backup)) {
                         // Backup is also contaminated — both got the kompile entry somehow.

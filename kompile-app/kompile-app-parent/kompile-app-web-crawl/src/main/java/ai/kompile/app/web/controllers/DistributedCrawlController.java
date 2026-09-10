@@ -35,6 +35,9 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.stream.Collectors;
 
 /**
@@ -90,7 +93,9 @@ public class DistributedCrawlController {
      */
     @PostMapping("/start")
     public ResponseEntity<Map<String, Object>> startDistributed(
-            @RequestBody UnifiedCrawlRequest request) {
+            @RequestBody UnifiedCrawlRequest request,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
         try {
             if (request.getDistribution() == null) {
                 return ResponseEntity.badRequest().body(Map.of(
@@ -112,7 +117,9 @@ public class DistributedCrawlController {
      * List all distributed crawl sessions.
      */
     @GetMapping("/sessions")
-    public ResponseEntity<List<Map<String, Object>>> listSessions() {
+    public ResponseEntity<List<Map<String, Object>>> listSessions(
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).build();
         return ResponseEntity.ok(
                 coordinator.getAllSessions().stream()
                         .map(DistributedCrawlSession::toSnapshot)
@@ -124,7 +131,9 @@ public class DistributedCrawlController {
      */
     @GetMapping("/sessions/{sessionId}")
     public ResponseEntity<Object> getSession(@PathVariable String sessionId,
-                                             @RequestParam(defaultValue = "false") boolean aggregate) {
+                                             @RequestParam(defaultValue = "false") boolean aggregate,
+                                             @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).build();
         // aggregate=true → the merged per-worker ProgressSnapshot the unified step monitor renders;
         // otherwise the lightweight session summary (per-worker terminal status).
         return coordinator.getSession(sessionId)
@@ -137,11 +146,24 @@ public class DistributedCrawlController {
      * Cancel a distributed crawl session (cancels all workers).
      */
     @PostMapping("/sessions/{sessionId}/cancel")
-    public ResponseEntity<Map<String, Object>> cancelSession(@PathVariable String sessionId) {
+    public ResponseEntity<Map<String, Object>> cancelSession(
+            @PathVariable String sessionId,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
         if (coordinator.cancelSession(sessionId)) {
             return ResponseEntity.ok(Map.of("message", "Session cancelled", "sessionId", sessionId));
         }
         return ResponseEntity.notFound().build();
+    }
+
+    @PostMapping("/sessions/{sessionId}/retry")
+    public ResponseEntity<Map<String, Object>> retrySession(
+            @PathVariable String sessionId,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
+        return coordinator.retrySession(sessionId)
+                .map(session -> ResponseEntity.ok(session.toSnapshot()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
@@ -164,11 +186,16 @@ public class DistributedCrawlController {
      */
     @PostMapping("/callback")
     public ResponseEntity<Map<String, Object>> workerCallback(
-            @RequestBody WorkerCallbackRequest callback) {
+            @RequestBody WorkerCallbackRequest callback,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
         try {
             coordinator.handleWorkerCallback(
                     callback.sessionId(),
                     callback.workerId(),
+                    callback.attempt(),
                     callback.success(),
                     callback.message(),
                     callback.resultData()
@@ -193,8 +220,33 @@ public class DistributedCrawlController {
         if (!authorized(auth)) {
             return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
         }
-        coordinator.handleWorkerProgress(progress.sessionId(), progress.workerId(), progress.snapshot());
+        coordinator.handleWorkerProgress(
+                progress.sessionId(), progress.workerId(), progress.attempt(), progress.snapshot());
         return ResponseEntity.ok(Map.of("acknowledged", true));
+    }
+
+    @PostMapping("/barrier")
+    public ResponseEntity<Map<String, Object>> partitionBarrier(
+            @RequestBody WorkerBarrierRequest request,
+            @RequestHeader(value = "Authorization", required = false) String auth,
+            @RequestHeader(value = DistributedGraphAuthorityController.LEASE_HEADER,
+                    required = false) String lease) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
+        DistributedCrawlCoordinator.WriterLeaseVerdict verdict = coordinator.validateWriterLease(
+                request.sessionId(), request.workerId(), request.attempt(), lease, false);
+        if (verdict != DistributedCrawlCoordinator.WriterLeaseVerdict.VALID) {
+            return ResponseEntity.status(verdict == DistributedCrawlCoordinator.WriterLeaseVerdict.EXPIRED
+                    ? 410 : 409).body(Map.of("ok", false, "error", verdict.name()));
+        }
+        Optional<ai.kompile.core.crawl.graph.DistributedCrawlPartitionBarrier.Decision> decision =
+                coordinator.handlePartitionBarrier(
+                        request.sessionId(), request.workerId(), request.attempt(), request.snapshot());
+        if (decision.isEmpty()) {
+            return ResponseEntity.status(202).body(Map.of("ok", true, "decision", "WAIT"));
+        }
+        return ResponseEntity.ok(Map.of("ok", true, "decision", decision.get().name()));
     }
 
     /**
@@ -212,6 +264,7 @@ public class DistributedCrawlController {
         int stored = 0;
         if (jobLogService != null && jobLogService.isEnabled()
                 && req.sessionId() != null && coordinator.getSession(req.sessionId()).isPresent()
+                && coordinator.isCurrentWorkerAttempt(req.sessionId(), req.workerId(), req.attempt())
                 && req.entries() != null) {
             String taskId = "crawl-distributed-" + req.sessionId();
             int idx = DistributedCrawlAggregator.workerIndex(req.workerId());
@@ -269,7 +322,9 @@ public class DistributedCrawlController {
      * Remove completed/failed/cancelled sessions.
      */
     @PostMapping("/cleanup")
-    public ResponseEntity<Map<String, Object>> cleanup() {
+    public ResponseEntity<Map<String, Object>> cleanup(
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).body(Map.of("error", "unauthorized"));
         int removed = coordinator.cleanupSessions();
         return ResponseEntity.ok(Map.of("removed", removed));
     }
@@ -279,30 +334,59 @@ public class DistributedCrawlController {
         String token = configService != null && configService.getConfiguration() != null
                 ? configService.getConfiguration().getExternalAuthToken() : null;
         if (token == null || token.isBlank()) {
-            return true;
+            return configService == null || configService.getConfiguration() == null
+                    || (!configService.getConfiguration().isClusterWorker()
+                    && !configService.getConfiguration().isClusterOrchestrator());
         }
-        return ("Bearer " + token).equals(authHeader);
+        byte[] expected = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
+        byte[] actual = authHeader == null ? new byte[0] : authHeader.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual);
     }
 
     public record WorkerCallbackRequest(
             String sessionId,
             String workerId,
+            int attempt,
             boolean success,
             String message,
             Map<String, Object> resultData
-    ) {}
+    ) {
+        public WorkerCallbackRequest(String sessionId, String workerId, boolean success,
+                                     String message, Map<String, Object> resultData) {
+            this(sessionId, workerId, 0, success, message, resultData);
+        }
+    }
 
     public record WorkerProgressRequest(
             String sessionId,
             String workerId,
+            int attempt,
+            UnifiedCrawlJob.ProgressSnapshot snapshot
+    ) {
+        public WorkerProgressRequest(String sessionId, String workerId,
+                                     UnifiedCrawlJob.ProgressSnapshot snapshot) {
+            this(sessionId, workerId, 0, snapshot);
+        }
+    }
+
+    public record WorkerBarrierRequest(
+            String sessionId,
+            String workerId,
+            int attempt,
             UnifiedCrawlJob.ProgressSnapshot snapshot
     ) {}
 
     public record WorkerTranscriptsRequest(
             String sessionId,
             String workerId,
+            int attempt,
             List<TranscriptEntry> entries
-    ) {}
+    ) {
+        public WorkerTranscriptsRequest(String sessionId, String workerId,
+                                        List<TranscriptEntry> entries) {
+            this(sessionId, workerId, 0, entries);
+        }
+    }
 
     public record TranscriptEntry(
             String timestamp,

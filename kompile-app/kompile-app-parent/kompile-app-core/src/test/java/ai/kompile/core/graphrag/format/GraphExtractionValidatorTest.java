@@ -425,24 +425,24 @@ class GraphExtractionValidatorTest {
         @Test
         void knownSourcePassageIsAttachedToEveryExtractedFact() {
             ExtractedEntity e1 = entity("e1", "M. Chen", "PERSON");
-            ExtractedEntity e2 = entity("e2", "VP FP&A", "ROLE");
+            ExtractedEntity e2 = entity("e2", "VP Planning", "ROLE");
             ExtractedRelation relation = new ExtractedRelation(
                     "e1", "e2", "HAS_ROLE", null, 0.8, Map.of());
             ExtractionResult result = ExtractionResult.of(
                     List.of(e1, e2), List.of(relation),
                     ExtractionMetadata.forChunk("chunk-1", "doc-1", "model"));
 
-            Graph graph = GraphExtractionValidator.toGraph(result, "M. Chen is VP, FP&A.");
+            Graph graph = GraphExtractionValidator.toGraph(result, "M. Chen is VP, Planning.");
 
             for (Entity entity : graph.getEntities()) {
                 assertEquals("chunk-1", entity.getMetadata().get("sourceChunkId"));
                 assertEquals("doc-1", entity.getMetadata().get("sourceDocumentId"));
-                assertEquals("M. Chen is VP, FP&A.", entity.getMetadata().get("evidenceQuote"));
+                assertEquals("M. Chen is VP, Planning.", entity.getMetadata().get("evidenceQuote"));
                 assertInstanceOf(List.class, entity.getMetadata().get("supportingEvidence"));
             }
             Relationship extracted = graph.getRelationships().get(0);
             assertEquals("chunk-1", extracted.getMetadata().get("sourceChunkId"));
-            assertEquals("M. Chen is VP, FP&A.", extracted.getMetadata().get("evidenceQuote"));
+            assertEquals("M. Chen is VP, Planning.", extracted.getMetadata().get("evidenceQuote"));
             assertInstanceOf(List.class, extracted.getMetadata().get("supportingEvidence"));
         }
     }
@@ -670,7 +670,7 @@ class GraphExtractionValidatorTest {
             ExtractionResult result = ExtractionResult.of(
                     List.of(
                             entity("person", "M. Chen", "PERSON"),
-                            entity("role", "VP, FP&A", "JOB_TITLE")),
+                            entity("role", "VP, Planning", "JOB_TITLE")),
                     List.of(new ExtractedRelation(
                             "person", "role", "OCCUPIES", "Role fact", 0.9, Map.of())),
                     null);
@@ -699,7 +699,7 @@ class GraphExtractionValidatorTest {
             ExtractionResult result = ExtractionResult.of(
                     List.of(
                             entity("person", "M. Chen", "PERSON"),
-                            entity("role", "VP, FP&A", "ROLE")),
+                            entity("role", "VP, Planning", "ROLE")),
                     List.of(new ExtractedRelation(
                             "person", "role", "SERVES_AS", "Role fact", 0.9, Map.of())),
                     null);
@@ -733,7 +733,7 @@ class GraphExtractionValidatorTest {
                     Map.of("primary", "sometimes"));
 
             ValidationResult validation = GraphExtractionValidator.validate(
-                    ExtractionResult.of(List.of(person, entity("role", "VP, FP&A", "ROLE")),
+                    ExtractionResult.of(List.of(person, entity("role", "VP, Planning", "ROLE")),
                             List.of(relation), null),
                     GraphExtractionValidationPolicy.defaults(), schema);
 
@@ -847,6 +847,33 @@ class GraphExtractionValidatorTest {
                     List.of(approval),
                     null);
             assertTrue(GraphExtractionValidator.validate(rightTarget, policy, null).valid());
+        }
+
+        @Test
+        void relationEndpointSignaturesAcceptDeclaredEntitySubtypes() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(DOCUMENT)"))
+                    .build();
+            GraphSchema schema = new GraphSchema(
+                    List.of(
+                            new NodeType("PERSON", "A person", null),
+                            new NodeType("EMPLOYEE", "An employee", null, "PERSON"),
+                            new NodeType("DOCUMENT", "A document", null),
+                            new NodeType("CONTRACT", "A contract", null, "DOCUMENT")),
+                    List.of(new RelationshipType(
+                            "APPROVED_BY", "Approval", null, List.of(), "PARTICIPATION")),
+                    List.of("(PERSON)-[:APPROVED_BY]->(DOCUMENT)"));
+            ExtractionResult subtypeEndpoints = ExtractionResult.of(
+                    List.of(
+                            entity("employee", "Finance Lead", "EMPLOYEE"),
+                            entity("contract", "Supply Agreement", "CONTRACT")),
+                    List.of(new ExtractedRelation(
+                            "employee", "contract", "APPROVED_BY",
+                            "The employee approved the contract", 0.95, Map.of())),
+                    null);
+
+            assertTrue(GraphExtractionValidator.validate(
+                    subtypeEndpoints, policy, schema).valid());
         }
 
         @Test

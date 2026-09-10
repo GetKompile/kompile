@@ -21,7 +21,7 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "python",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "python", description = "Remove the managed Python runtime.", mixinStandardHelpOptions = false)
 public class UnInstallPython implements Callable<Integer> {
     public UnInstallPython() {
     }

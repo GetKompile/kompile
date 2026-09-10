@@ -1,6 +1,7 @@
 package ai.kompile.chat.local.android.acquisition
 
 import ai.kompile.graph.reasoning.unified.MiniJson
+import ai.kompile.chat.local.android.model.SdxHashing
 import org.nd4j.dsp.model.HuggingFaceGgmlResolver
 import org.nd4j.dsp.model.ResumableModelDownloader
 import java.io.InputStreamReader
@@ -690,7 +691,7 @@ object HuggingFaceGgmlAcquisition {
         val size = Files.size(destination)
         if (size <= 0L || size > MAX_TOKENIZER_ASSET_BYTES) return false
         if (asset.size >= 0L && size != asset.size) return false
-        return asset.sha256?.let { sha256(destination) == it } ?: true
+        return asset.sha256?.let { SdxHashing.sha256Hex(destination) == it } ?: true
     }
 
     fun tokenizerAssetPathsForModel(modelPath: Path): List<Path> =
@@ -1248,7 +1249,7 @@ object HuggingFaceGgmlAcquisition {
         if (actualBytes !in 1..maxBytes) return null
         val expectedBytes = candidate.size.takeIf { it >= 0L }
         if (expectedBytes != null && actualBytes != expectedBytes) return null
-        val actualSha256 = sha256(published)
+        val actualSha256 = SdxHashing.sha256Hex(published)
         if (actualSha256 != expectedSha256) return null
         return DownloadMetadata(
             candidate = candidate,
@@ -1260,19 +1261,8 @@ object HuggingFaceGgmlAcquisition {
         )
     }
 
-    private fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).use { input ->
-            val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        return digest.digest().toHex()
-    }
 
+    /** Lowercase hex for an already-computed digest, matching SdxHashing's output format. */
     private fun ByteArray.toHex(): String =
         joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 

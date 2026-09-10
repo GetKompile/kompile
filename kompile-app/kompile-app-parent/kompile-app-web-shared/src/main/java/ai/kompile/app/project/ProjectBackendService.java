@@ -131,9 +131,6 @@ public class ProjectBackendService {
         Path root = requireProjectRoot();
         // Never overwrite portable catalogs with the current runtime before the project is open.
         store.openProject(root);
-        if (projectGraphPortabilityService != null) {
-            projectGraphPortabilityService.importAllGraphs(root);
-        }
         return new ProjectResponse(store.load(root), store.status(root));
     }
 
@@ -263,6 +260,57 @@ public class ProjectBackendService {
                 refreshProjection.run();
             }
         }
+        return new ProjectResponse(manifest, store.status(root));
+    }
+
+    /**
+     * Crawl-only hard barrier: persist the fact-sheet binding, prune any prior scope, and finish a
+     * strict synchronous structural projection before returning.
+     */
+    public synchronized ProjectResponse bindCodingProjectFactSheetAndProject(
+            String codingProjectId, Long factSheetId) {
+        if (factSheetId == null || factSheetId < 0) {
+            throw new IllegalArgumentException("factSheetId must be zero or greater");
+        }
+        Path root = requireProjectRoot();
+        KompileProjectManifest manifest = store.load(root);
+        KompileCodingProject codingProject = manifest.getCodingProjects().stream()
+                .filter(project -> codingProjectId.equals(project.getId())
+                        || codingProjectId.equals(project.getCodeProjectId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Unknown coding project: " + codingProjectId));
+        Long previousFactSheetId = codingProject.getFactSheetId();
+        codingProject.setFactSheetId(factSheetId);
+        registerWithCodeIndexer(codingProject);
+        codeProjectRepository.flush();
+
+        CodebaseIndexer.IndexingStatus status;
+        try {
+            status = codebaseIndexer.projectDirectoryToFactSheet(
+                    codingProject.getCodeProjectId(), codingProject.getRootPath(), factSheetId, true);
+        } catch (RuntimeException failure) {
+            // Preserve the portable/repository binding and previous graph when target projection fails.
+            codingProject.setFactSheetId(previousFactSheetId);
+            registerWithCodeIndexer(codingProject);
+            codeProjectRepository.flush();
+            throw failure;
+        }
+        if (status == null || !status.completed().get() || status.errorMessage() != null
+                || status.errors().get() > 0) {
+            codingProject.setFactSheetId(previousFactSheetId);
+            registerWithCodeIndexer(codingProject);
+            codeProjectRepository.flush();
+            throw new IllegalStateException("Structural projection did not complete for "
+                    + codingProject.getCodeProjectId());
+        }
+
+        // From this point the target graph is complete. Old-scope cleanup and manifest commit are
+        // recoverable post-projection operations; never restore a binding to a graph already pruned.
+        if (previousFactSheetId != null && !Objects.equals(previousFactSheetId, factSheetId)) {
+            codebaseIndexer.pruneProjectGraph(codingProject.getCodeProjectId(), previousFactSheetId);
+        }
+        manifest = store.registerCodingProject(root, codingProject);
         return new ProjectResponse(manifest, store.status(root));
     }
 
@@ -444,9 +492,7 @@ public class ProjectBackendService {
         project.setAutoIndex(codingProject.isAutoIndex());
         project.setIncludePatterns(codingProject.getIncludePatterns());
         project.setExcludePatterns(codingProject.getExcludePatterns());
-        if (codingProject.getFactSheetId() != null) {
-            project.setFactSheetId(codingProject.getFactSheetId());
-        }
+        project.setFactSheetId(codingProject.getFactSheetId());
         codeProjectRepository.save(project);
 
         codebaseIndexer.addDirectory(
@@ -471,8 +517,10 @@ public class ProjectBackendService {
                 List<FactSheet> sheets = factSheetService.getAllSheets();
                 List<KompileProjectFactSheet> exported = new ArrayList<>();
                 for (FactSheet sheet : sheets) {
+                    sheet = factSheetService.ensurePortableId(sheet);
                     KompileProjectFactSheet pfs = new KompileProjectFactSheet();
                     pfs.setId(sheet.getId());
+                    pfs.setPortableId(sheet.getPortableId());
                     pfs.setName(sheet.getName());
                     pfs.setDescription(sheet.getDescription());
                     pfs.setActive(Boolean.TRUE.equals(sheet.getIsActive()));
@@ -495,7 +543,7 @@ public class ProjectBackendService {
                 }
                 store.writeFactSheetCatalog(root, exported);
             } catch (Exception e) {
-                log.warn("Failed to export fact sheet catalog: {}", e.getMessage(), e);
+                throw new IllegalStateException("Failed to export portable fact sheet catalog", e);
             }
         }
 

@@ -81,14 +81,16 @@ public class ProcessingRouteConfig {
         /** CLI agent subprocess (Claude Code, Codex, Gemini CLI) — moderate cost, uses local compute for agent but API for model */
         CLI_AGENT,
         /** API endpoint (OpenAI, Anthropic, etc.) — highest cost but virtually unlimited capacity */
-        API_AGENT
+        API_AGENT,
+        /** Host-owned native chat client; text only, no CLI subprocess or request credentials. */
+        CHAT_MODEL
     }
 
     /** How to route PDFs between text and VLM pipelines. Default: AUTO */
     @Builder.Default
     private PdfRoutingMode pdfRoutingMode = PdfRoutingMode.AUTO;
 
-    /** Whether capacity-based fallback routing is enabled */
+    /** Whether alternative backends may be tried. False pins the first enabled capable backend. */
     @Builder.Default
     private boolean fallbackEnabled = true;
 
@@ -163,20 +165,26 @@ public class ProcessingRouteConfig {
          *  the serving subprocess isn't running with a model loaded. */
         private String agentName;
 
+        /** For CHAT_MODEL: native chat provider; null selects the host's configured provider. */
+        private String provider;
+
         /** For API_AGENT: endpoint URL */
         private String endpointUrl;
 
         /** For API_AGENT: API key (masked in responses) */
         private String apiKey;
 
-        /** For API_AGENT: model name (e.g., "gpt-4o") */
+        /** Request-scoped model name for API_AGENT, CLI_AGENT, LOCAL_MODEL, or CHAT_MODEL. */
         private String modelName;
+
+        /** Request-scoped provider-native thinking/effort value for CHAT_MODEL; null/blank inherits host policy. */
+        private String thinking;
 
         /** Whether this backend is currently enabled */
         @Builder.Default
         private boolean enabled = true;
 
-        /** Task types this backend can handle (empty = all). Values: "vlm", "llm", "embedding" */
+        /** Task types (empty = all for legacy backends, text/llm ONLY for CHAT_MODEL). */
         @Builder.Default
         private List<String> capabilities = new ArrayList<>();
 
@@ -208,6 +216,51 @@ public class ProcessingRouteConfig {
          *  rerouting. 0 = no token cap (only the time-window and request-cap gates apply). */
         @Builder.Default
         private long maxTokensPerQuotaWindow = 0;
+
+        /** Validate the native text boundary even when a caller bypasses the tool schema. */
+        public void validateChatModel() {
+            if (type != ProcessingBackendType.CHAT_MODEL) return;
+            if (maxConcurrent != 0 || requestsPerMinute != 0) {
+                throw new IllegalArgumentException("CHAT_MODEL per-backend concurrency/rate limits are not implemented; "
+                        + "use crawl runtime graphExtractionRemoteParallelism to bound workers");
+            }
+            if (apiKey != null || endpointUrl != null) {
+                throw new IllegalArgumentException("CHAT_MODEL rejects apiKey/endpointUrl; "
+                        + "credentials and endpoints come from the host chat configuration");
+            }
+            if (capabilities != null && capabilities.stream().anyMatch(capability ->
+                    !"llm".equals(capability) && !"text".equals(capability))) {
+                throw new IllegalArgumentException("CHAT_MODEL supports text/llm only; "
+                        + "embedding, VLM, tools and required tool choice are not supported");
+            }
+        }
+    }
+
+    public static boolean isNativeChatProvider(String provider) {
+        if (provider == null) return false;
+        String value = provider.trim().toLowerCase(java.util.Locale.ROOT);
+        return value.equals("chat") || value.startsWith("chat:");
+    }
+
+    /** Convert the explicit chat:<provider> shorthand without interpreting legacy CLI aliases. */
+    public static ProcessingRouteConfig nativeChatRoute(String provider, String model) {
+        return nativeChatRoute(provider, model, null);
+    }
+
+    public static ProcessingRouteConfig nativeChatRoute(String provider, String model, String thinking) {
+        if (!isNativeChatProvider(provider)) {
+            throw new IllegalArgumentException("Native chat selection requires chat or chat:<provider>");
+        }
+        String value = provider.trim();
+        String selected = value.equalsIgnoreCase("chat") ? null : value.substring(5).trim();
+        if (selected != null && selected.isEmpty()) {
+            throw new IllegalArgumentException("chat: requires a provider; use chat for the configured provider");
+        }
+        return ProcessingRouteConfig.builder().fallbackEnabled(false).servingLaneEnabled(false)
+                .backends(List.of(ProcessingBackend.builder()
+                        .id("native-chat").displayName("Native chat text extraction")
+                        .type(ProcessingBackendType.CHAT_MODEL).provider(selected).modelName(model)
+                        .thinking(thinking).priority(1).capabilities(List.of("llm")).build())).build();
     }
 
     /**

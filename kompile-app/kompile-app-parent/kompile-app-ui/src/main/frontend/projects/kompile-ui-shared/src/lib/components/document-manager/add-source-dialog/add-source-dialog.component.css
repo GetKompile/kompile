@@ -222,6 +222,32 @@
   color: #0052CC;
 }
 
+/* Jira - Atlassian blue */
+.source-type-card.jira:hover:not(.disabled),
+.source-type-card.jira.selected {
+  border-color: #1868DB;
+  background: linear-gradient(135deg, #f0f6ff 0%, #d9e9ff 100%);
+}
+
+.source-type-card.jira:hover:not(.disabled) .source-icon,
+.source-type-card.jira.selected .source-icon,
+.source-type-card.jira.selected .check-icon {
+  color: #1868DB;
+}
+
+/* Reddit - brand orange */
+.source-type-card.reddit:hover:not(.disabled),
+.source-type-card.reddit.selected {
+  border-color: #FF4500;
+  background: linear-gradient(135deg, #fff6f2 0%, #ffe1d6 100%);
+}
+
+.source-type-card.reddit:hover:not(.disabled) .source-icon,
+.source-type-card.reddit.selected .source-icon,
+.source-type-card.reddit.selected .check-icon {
+  color: #FF4500;
+}
+
 /* Responsive adjustments for source type grid */
 @media (max-width: 600px) {
   .source-type-grid {

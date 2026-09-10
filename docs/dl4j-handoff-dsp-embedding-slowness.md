@@ -1,7 +1,7 @@
 # dl4j handoff — DSP executor ~10s per cached [32×512] bge-base forward pass (100× too slow)
 
 **Owner:** dl4j (ND4J `DynamicShapePlanExecutor`). NOT a kompile issue — ruled out below.
-**Severity:** dominates FP&A crawl wall-clock. 22 files → ~9189 entity embeddings × (10s / 32-batch) ≈ tens of minutes of pure dispatch overhead. A healthy forward pass would make this seconds.
+**Severity:** dominates domain-planning crawl wall-clock. 22 files → ~9189 entity embeddings × (10s / 32-batch) ≈ tens of minutes of pure dispatch overhead. A healthy forward pass would make this seconds.
 **Date:** 2026-07-05. Box: RTX 3070 Ti (GPU0) + RTX 4090 (GPU1), 125GB RAM, 32 cores.
 
 ## Symptom
@@ -50,6 +50,6 @@ A thread dump showed the ~28-37s of the batch cycle was NOT dl4j: `GenericDenseS
 
 **Correct fix (verified):** `DataBuffer.asFloat()`. `BaseCudaDataBuffer.asFloat()` does `lazyAllocateHostPointer()` + **one** `allocator.synchronizeHostData(this)` for the whole buffer, then `super.asFloat()` which reads via `getFloatUnsynced` (no per-element sync). kompile's `safeToFloatVector` now does: compact to c-order with `dup('c')` only if the array is a view, then `data().asFloat()`. This is the established kompile bulk idiom (AnseriniVectorStoreImpl / VlmExecutionService / TransEModel / INDArrayConverter all use `data().asFloat()`).
 
-**Measured impact (fpna-v11, 22 docs, backfill of ~5836 nodes):** distinct-batch CREATE→CREATE dropped from ~38s (exec 10s + ~28s getFloat commits) to **~10.3s (≈ exec only)** — the per-element commit gap is eliminated. exec stayed FLAT at ~10.3-10.6s across the whole backfill (el=104s→965s) with no progressive degradation (the earlier 10→60→300s→lane-death climb is gone).
+**Measured impact (planning-v11, 22 docs, backfill of ~5836 nodes):** distinct-batch CREATE→CREATE dropped from ~38s (exec 10s + ~28s getFloat commits) to **~10.3s (≈ exec only)** — the per-element commit gap is eliminated. exec stayed FLAT at ~10.3-10.6s across the whole backfill (el=104s→965s) with no progressive degradation (the earlier 10→60→300s→lane-death climb is gone).
 
 **dl4j item (still open):** `DynamicShapePlanExecutor.exec` is the remaining ~10s at ~1% GPU util on a cached shape-frozen `[32×512]` plan — the numbers in the Symptom section. Separately, **dl4j's own `INDArray.toFloatVector()` should delegate to `data().asFloat()`** (or use `getFloatUnsynced` after `ensureLocation`) instead of looping synced `getFloat` — it is a latent O(n)-GPU-sync footgun for every CUDA caller, not just this encoder.

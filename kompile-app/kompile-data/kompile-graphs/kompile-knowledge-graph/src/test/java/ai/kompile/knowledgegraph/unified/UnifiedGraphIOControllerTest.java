@@ -14,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -23,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -39,10 +41,14 @@ class UnifiedGraphIOControllerTest {
     private UnifiedGraphBridge bridge;
 
     private MockMvc mockMvc;
+    private UnifiedGraphIOController controller;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new UnifiedGraphIOController(bridge)).build();
+        controller = new UnifiedGraphIOController(bridge);
+        lenient().when(bridge.hasDurableImportJournal()).thenReturn(true);
+        ReflectionTestUtils.setField(controller, "importProfile", "MANAGED");
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
     @Test
@@ -75,9 +81,47 @@ class UnifiedGraphIOControllerTest {
                 .andExpect(jsonPath("$.edges").value(2))
                 .andExpect(jsonPath("$.embeddings").value(7))
                 .andExpect(jsonPath("$.atoms").value(4))
-                .andExpect(jsonPath("$.graphBuildEventPublished").value(true));
+                .andExpect(jsonPath("$.graphBuildEventPublished").value(true))
+                .andExpect(jsonPath("$.profile").value("MANAGED"))
+                .andExpect(jsonPath("$.durability").value("COMPENSATING"));
 
         verify(bridge).importBytes(any(byte[].class), isNull());
+    }
+
+    @Test
+    void importCapabilitiesExposeConfiguredBoundary() throws Exception {
+        mockMvc.perform(get(UnifiedGraphIOController.BASE_PATH + "/import-capabilities"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile").value("MANAGED"))
+                .andExpect(jsonPath("$.managedCompleteness").value(true))
+                .andExpect(jsonPath("$.durability").value("COMPENSATING"))
+                .andExpect(jsonPath("$.projectBatchImport").value(false));
+    }
+
+    @Test
+    void managedRequirementFailsClosedOnEphemeralService() throws Exception {
+        ReflectionTestUtils.setField(controller, "importProfile", "EPHEMERAL");
+        byte[] payload = new byte[]{0x4b, 0x47, 0x52, 0x46};
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "sample.kgraph", MediaType.APPLICATION_OCTET_STREAM_VALUE, payload);
+
+        mockMvc.perform(multipart(UnifiedGraphIOController.BASE_PATH + "/import")
+                        .file(file)
+                        .param("requireManaged", "true"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.profile").value("EPHEMERAL"));
+
+        verify(bridge, never()).importBytes(any(byte[].class), any());
+    }
+
+    @Test
+    void managedProfileDowngradesWhenRecoveryJournalIsUnavailable() throws Exception {
+        when(bridge.hasDurableImportJournal()).thenReturn(false);
+
+        mockMvc.perform(get(UnifiedGraphIOController.BASE_PATH + "/import-capabilities"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile").value("COMPATIBILITY"))
+                .andExpect(jsonPath("$.managedCompleteness").value(false));
     }
 
     @Test

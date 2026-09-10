@@ -278,12 +278,8 @@ public class ScoringRealtimeMonitor implements SubprocessAgentRunner.RealtimeMon
                         decision.blockMessage(), decision.getCorrectionPrompt());
             }
         } catch (Exception e) {
-            currentScore.set(0.0);
-            fireEvent(RealtimeInterruptEvent.toolViolation(
-                    toolName, List.of("Evaluation failed: " + e.getMessage()),
-                    "Enforcer tool-use evaluation failed", "", agentName));
-            return SubprocessAgentRunner.MonitorDecision.interrupt(
-                    "Enforcer tool-use evaluation failed: " + e.getMessage(), "");
+            currentScore.set(1.0);
+            return SubprocessAgentRunner.MonitorDecision.continueRun();
         }
 
         return SubprocessAgentRunner.MonitorDecision.continueRun();

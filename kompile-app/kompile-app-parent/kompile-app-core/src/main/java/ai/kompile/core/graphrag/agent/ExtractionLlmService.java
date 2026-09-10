@@ -54,6 +54,16 @@ public interface ExtractionLlmService {
     boolean isAvailable();
 
     /**
+     * Bind an exact model for one request without changing provider defaults or pools.
+     * Implementations must opt in: an accepted model flag is not a model capability probe.
+     */
+    default ExtractionLlmService forModel(String model) {
+        if (model == null || model.isBlank()) return this;
+        throw new ExtractionLlmException("Provider '" + getId()
+                + "' does not support request-scoped model selection; use the native CHAT_MODEL host route");
+    }
+
+    /**
      * Override the model used by this provider at runtime.
      * Default implementation is a no-op for providers that don't support model switching.
      *

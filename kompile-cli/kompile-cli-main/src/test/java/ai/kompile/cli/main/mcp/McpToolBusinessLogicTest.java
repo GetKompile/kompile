@@ -14,6 +14,7 @@ import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraphArchive;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
@@ -160,11 +161,22 @@ class McpToolBusinessLogicTest {
                             .put("source", "McpToolBusinessLogicTest"));
             assertSucceeded(asserted, "ask_graph_assert");
             byte[] afterAssertion = Files.readAllBytes(graphPath);
-            assertFalse(Arrays.equals(beforeAssertion, afterAssertion),
-                    "ask_graph_assert did not persist a graph mutation");
-            assertTrue(UnifiedGraph.load(graphPath).relations().stream()
+            // Compact-archive contract: an assert may durably land in the base
+            // .kgraph (legacy) OR in the mutation-journal sidecar (base stays
+            // immutable between compactions; readers replay the journal on open).
+            boolean baseChanged = !Arrays.equals(beforeAssertion, afterAssertion);
+            boolean journaled;
+            try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+                journaled = archive.hasJournalMutations()
+                        && archive.journalSnapshot().relationStates().values().stream()
+                                .anyMatch(state -> state.current() != null
+                                        && "jvmMcpBusinessFact".equals(state.current().type()));
+            }
+            assertTrue(baseChanged || journaled,
+                    "ask_graph_assert persisted neither base archive nor journal");
+            assertTrue(journaled || UnifiedGraph.load(graphPath).relations().stream()
                             .anyMatch(relation -> "jvmMcpBusinessFact".equals(relation.type())),
-                    "ask_graph_assert did not add the asserted relation");
+                    "ask_graph_assert did not make the asserted relation visible");
 
             ToolResult facts = harness.call("graph_reasoning_query",
                     mapper.createObjectNode()
@@ -182,7 +194,22 @@ class McpToolBusinessLogicTest {
                             .put("mode", "revise"));
             assertSucceeded(retracted, "ask_graph_retract");
             assertEquals(1, number(retracted, "removed"));
-            assertTrue(UnifiedGraph.load(graphPath).relations().stream()
+            // Mirror of the assert contract: the removal is durable in the base
+            // archive or the journal sidecar, and no replaying reader sees the
+            // jvmMcpBusinessFact relation anymore.
+            boolean baseCleared;
+            try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+                boolean baseStillHasRelation = archive.journalSnapshot().relationStates().values().stream()
+                        .anyMatch(state -> state.basePresent()
+                                && state.baseLink() != null
+                                && "jvmMcpBusinessFact".equals(state.baseLink().type())
+                                && state.current() == null);
+                boolean journalHasRelation = archive.journalSnapshot().relationStates().values().stream()
+                        .anyMatch(state -> state.current() != null
+                                && "jvmMcpBusinessFact".equals(state.current().type()));
+                baseCleared = !baseStillHasRelation && !journalHasRelation;
+            }
+            assertTrue(baseCleared || UnifiedGraph.load(graphPath).relations().stream()
                             .noneMatch(relation -> "jvmMcpBusinessFact".equals(relation.type())),
                     "ask_graph_retract did not remove the asserted relation");
     }

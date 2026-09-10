@@ -95,7 +95,7 @@ public final class RealtimeEnforcementTap implements AutoCloseable {
         if (rules == null || rules.isBlank()) {
             return inactive();
         }
-        EnforcerJudge judge = new EnforcerJudge(HarnessConfig.load(mapper), mapper);
+        EnforcerJudge judge = new EnforcerJudge(HarnessConfig.load(mapper), mapper, workingDir);
         if (!judge.isAvailable()) {
             judge.close();
             return inactive();

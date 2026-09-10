@@ -209,7 +209,7 @@ public class ProcessEngineTool {
     @Tool(name = "process_create_ontology",
           description = "Creates a new ontology schema with the given name and optional template ID. " +
                   "Returns the created schema with a server-assigned ID at version 1. " +
-                  "name: a human-readable name for the ontology (e.g. 'FP&A CPG Channel'). " +
+                  "name: a human-readable name for the ontology (e.g. 'Operations Knowledge Model'). " +
                   "templateId: optional cross-customer template this schema derives from.")
     public Map<String, Object> createOntology(CreateOntologyInput input) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -555,7 +555,7 @@ public class ProcessEngineTool {
     @Tool(name = "process_create_definition",
           description = "Creates a new process definition in DRAFT status. " +
                   "The definition can later be reviewed and approved before workflow runs can be started. " +
-                  "name: a human-readable name for the process (e.g. 'Monthly FP&A Close'). " +
+                  "name: a human-readable name for the process (e.g. 'Monthly Operations Review'). " +
                   "ontologySchemaId: the ontology schema this process is bound to. " +
                   "ontologyVersion: the version of the ontology to bind to.")
     public Map<String, Object> createDefinition(CreateDefinitionInput input) {

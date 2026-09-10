@@ -50,6 +50,7 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.ModelCapability;
 import ai.kompile.core.llm.ModelContextWindows;
@@ -57,6 +58,7 @@ import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
 import ai.kompile.crawl.graph.passes.CrawlExtractionToolBackend;
 import ai.kompile.crawl.graph.passes.ExtractionAdmissionComparator;
 import ai.kompile.crawl.graph.passes.DecomposedExtractionExecutor;
@@ -376,15 +378,54 @@ class GraphExtractionOrchestrator {
                                    Graph targetGraph,
                                    UnifiedCrawlJob job,
                                    ExecutorService extractionPool) {
+        extractGraphFromDocuments(documents, config, targetGraph, job, extractionPool, null);
+    }
+
+    /**
+     * Extract with an implicit schema seed loaded from a prior local graph archive. The seed is
+     * deliberately not installed on {@code config}: caller-owned configuration remains immutable
+     * from the caller's perspective, while explicit configured schemas retain precedence.
+     */
+    void extractGraphFromDocuments(List<Document> documents,
+                                   GraphExtractionConfig config,
+                                   Graph targetGraph,
+                                   UnifiedCrawlJob job,
+                                   ExecutorService extractionPool,
+                                   GraphSchema persistedSchemaSeed) {
         CrawlCorpusSnapshot corpus = activateExtractionCorpus(job, documents, null);
-        GraphSchema derivedCorpusSchema = deriveCorpusSchema(job, corpus, config, targetGraph);
-        CrawlOntology crawlOntology = activateExtractionOntology(
-                job, buildGraphSchema(config, derivedCorpusSchema));
+        CrawlOntology crawlOntology = null;
         try {
+            GraphSchema frozenSchema = job == null ? null : job.getFrozenGraphSchema();
+            boolean legacyOpenSchema = frozenSchema == null && persistedSchemaSeed == null
+                    && usesLegacyOpenSchemaValidation(config);
+            GraphSchema derivedCorpusSchema = frozenSchema != null
+                    ? frozenSchema : deriveCorpusSchema(
+                            job, corpus, config, targetGraph, persistedSchemaSeed);
+            // A legacy one-shot crawl without configured or structured vocabulary still runs the
+            // corpus pre-pass, but must keep its historical open semantic validation contract. The
+            // unavailable-backend pre-pass returns the domain-neutral baseline so configured and
+            // decomposed extraction remain frozen; do not apply that baseline as an allow-list to
+            // this compatibility path.
+            boolean legacyOpenExtraction = legacyOpenSchema && frozenSchema == null;
+            boolean strictSchema = !legacyOpenExtraction
+                    && (frozenSchema != null || derivedCorpusSchema != null);
+            GraphSchema effectiveSchema = legacyOpenExtraction
+                    ? null
+                    : CrawlOntology.canonicalize(frozenSchema != null
+                            ? frozenSchema : buildGraphSchema(config, derivedCorpusSchema));
+            String schemaFingerprint = GraphSchemaMetadataProjector.schemaFingerprint(effectiveSchema);
+            if (job != null) {
+                job.setFrozenGraphSchema(effectiveSchema);
+            }
+            GraphSchemaMetadataProjector.project(targetGraph, effectiveSchema, schemaFingerprint);
+            crawlOntology = activateExtractionOntology(job, effectiveSchema);
             extractGraphFromDocumentsWithActiveCorpus(
-                    documents, config, targetGraph, job, extractionPool, derivedCorpusSchema);
+                    documents, config, targetGraph, job, extractionPool,
+                    effectiveSchema, schemaFingerprint, strictSchema);
         } finally {
-            deactivateExtractionOntology(job, crawlOntology);
+            if (crawlOntology != null) {
+                deactivateExtractionOntology(job, crawlOntology);
+            }
             deactivateExtractionCorpus(job, corpus);
         }
     }
@@ -395,7 +436,9 @@ class GraphExtractionOrchestrator {
             Graph targetGraph,
             UnifiedCrawlJob job,
             ExecutorService extractionPool,
-            GraphSchema corpusSchemaOverride) {
+            GraphSchema effectiveSchema,
+            String schemaFingerprint,
+            boolean strictSchema) {
         // Configure the graph constructor if available
         if (graphConstructor != null) {
             graphConstructor.configure(new GraphConstructor.ExtractionModelConfig(
@@ -420,9 +463,9 @@ class GraphExtractionOrchestrator {
         // only extracts and returns semantic entities/relationships.
         List<Document> pending = graphConstructor != null
                 ? extractGraphViaConstructor(documents, config, targetGraph, job, extractionPool,
-                        corpusSchemaOverride)
+                        effectiveSchema, schemaFingerprint, strictSchema)
                 : extractGraphViaLlm(documents, config, targetGraph, job, extractionPool,
-                        corpusSchemaOverride);
+                        effectiveSchema, schemaFingerprint);
 
         // Passes 1..N: re-accumulate the failures and retry them PER CHUNK. Chunks are independent by
         // this step, so isolating one bad chunk from its (good) neighbours is safe. Backoff +
@@ -442,8 +485,8 @@ class GraphExtractionOrchestrator {
             // NOTE: schema pre-pass already happened at run start and is not re-derived
             // per-retry to keep in-run behavior consistent.
             pending = extractGraphChunksIndividually(pending, config, targetGraph, job,
-                    corpusSchemaOverride);
-                pass++;
+                    effectiveSchema, schemaFingerprint, strictSchema);
+            pass++;
             if (pending.size() >= before) {
                 // No chunk recovered this pass — likely a sustained outage; stop hammering in-phase
                 // and let the deferred resumer retry later when the condition has cleared.
@@ -469,8 +512,16 @@ class GraphExtractionOrchestrator {
                 if (uncountedPermanentFailures > 0) {
                     job.getErrorCount().addAndGet(uncountedPermanentFailures);
                 }
+                for (Document failedDocument : pending) {
+                    String chunk = failedDocument == null || failedDocument.getId() == null
+                            ? "unknown" : failedDocument.getId();
+                    job.getErrors().add("Graph extraction exhausted all in-phase retries for chunk "
+                            + chunk);
+                }
             }
-            String archiveDir = crawlStepArchiveService != null
+            boolean replacementGeneration = job.getGraphGeneration() != null
+                    && job.getGraphActivation() == null;
+            String archiveDir = crawlStepArchiveService != null && !replacementGeneration
                     ? crawlStepArchiveService.archive(job, "GRAPH_EXTRACTION", new ArrayList<>(pending), config)
                     : null;
             if (archiveDir != null) {
@@ -482,9 +533,18 @@ class GraphExtractionOrchestrator {
             } else {
                 documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
                         "Graph chunks failed all in-phase retries",
-                        pending.size() + " chunk(s) failed all in-phase retries (durable archive not yet available)");
-                log.warn("[Job {}] {} graph chunk(s) failed all in-phase retries; durable archive unavailable",
-                        job.getJobId(), pending.size());
+                        pending.size() + " chunk(s) failed all in-phase retries ("
+                                + (replacementGeneration ? "full replacement retry required"
+                                : "durable archive not yet available") + ")");
+                log.warn("[Job {}] {} graph chunk(s) failed all in-phase retries; {}",
+                        job.getJobId(), pending.size(), replacementGeneration
+                                ? "hidden generation will be aborted and fully retried"
+                                : "durable archive unavailable");
+            }
+            if (replacementGeneration) {
+                throw new IllegalStateException(
+                        "Replacement graph extraction left " + pending.size()
+                                + " failed chunk(s); hidden generation must be aborted");
             }
         }
     }
@@ -688,6 +748,14 @@ class GraphExtractionOrchestrator {
                                          CrawlCorpusSnapshot corpus,
                                          GraphExtractionConfig config,
                                          Graph deterministicGraph) {
+        return deriveCorpusSchema(job, corpus, config, deterministicGraph, null);
+    }
+
+    GraphSchema deriveCorpusSchema(UnifiedCrawlJob job,
+                                         CrawlCorpusSnapshot corpus,
+                                         GraphExtractionConfig config,
+                                         Graph deterministicGraph,
+                                         GraphSchema persistedSchemaSeed) {
         if (!shouldDeriveCorpusSchema(config)) {
             log.debug("[Job {}] Unified-corpus schema pre-pass skipped: a strict configured "
                             + "schema is already authoritative",
@@ -706,21 +774,11 @@ class GraphExtractionOrchestrator {
                 .filter(CrawlCorpusPassage::completeText)
                 .filter(passage -> hasText(passage.content()))
                 .sorted(Comparator.comparingInt((CrawlCorpusPassage p) -> p.chunkIndex())
-                        .thenComparing(p -> p.chunkId() == null ? "" : p.chunkId()))
+                        .thenComparing(GraphExtractionOrchestrator::passageKeyBase)
+                        .thenComparing(p -> sha256Hex(p.content()))
+                        .thenComparing(CrawlCorpusPassage::content))
                 .toList();
-        Map<String, String> passageTexts = orderedPassages.stream()
-                .map(passage -> {
-                    String content = passage.content();
-                    String chunkId = hasText(passage.chunkId())
-                            ? passage.chunkId()
-                            : "chunk-" + sha256Hex(content);
-                    return Map.entry(chunkId, content);
-                })
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (existing, ignored) -> existing,
-                        LinkedHashMap::new));
+        Map<String, String> passageTexts = collisionSafePassageTexts(orderedPassages);
 
         if (passageTexts.isEmpty()) {
             log.debug("[Job {}] Unified-corpus schema pre-pass skipped: no extractable passage text",
@@ -730,21 +788,35 @@ class GraphExtractionOrchestrator {
 
         String jobId = job == null ? "?" : job.getJobId();
         try {
+            GraphSchema configuredSchema = parseConfiguredSchema(config);
+            GraphSchema establishedSeed = configuredSchema != null
+                    ? configuredSchema : CrawlOntology.canonicalize(persistedSchemaSeed);
+            if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
+                GraphSchema fallback = CrawlOntology.merge(
+                        SchemaHierarchyVocabulary.withBaseline(establishedSeed),
+                        DeterministicGraphSchemaInferencer.infer(deterministicGraph));
+                log.warn("[Job {}] Structured schema induction unavailable; retaining a frozen "
+                                + "configured/deterministic baseline while legacy one-shot validation "
+                                + "remains open when no vocabulary was configured",
+                        jobId);
+                return fallback;
+            }
             if (corpusSchemaUnifier == null) {
                 throw new IllegalStateException(
                         "Unified-corpus ontology pre-pass requires CorpusSchemaUnifier");
             }
+
             CorpusTopicEvidence topicEvidence = corpusTopicModel == null
                     ? CorpusTopicEvidence.empty()
-                    : corpusTopicModel.analyze(orderedPassages, job);
+                    : corpusTopicModel.analyzeAndReleaseRuntimeModel(orderedPassages, job);
+            if (job != null) {
+                // Persist the unbound census immediately so a failed/timeout schema call remains auditable.
+                job.setCorpusTopicEvidence(topicEvidence.persistenceView());
+            }
+            emitCorpusTopicEvidenceTrace(job, topicEvidence);
             log.info("[Job {}] Corpus topic evidence: topics={}, outliers={}, embeddingModel={}",
                     jobId, topicEvidence.topics().size(), topicEvidence.outlierCount(),
                     topicEvidence.embeddingModelId());
-
-            if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
-                throw new IllegalStateException(
-                        "Unified-corpus ontology pre-pass requires a structured-chat model backend");
-            }
 
             CorpusSchemaCandidates.Inventory candidates =
                     new CorpusSchemaCandidates.Inventory(List.of(), List.of());
@@ -770,22 +842,28 @@ class GraphExtractionOrchestrator {
                         jobId);
             }
 
-            GraphSchema configuredSchema = parseConfiguredSchema(config);
             GraphSchema deterministicGraphSchema =
                     DeterministicGraphSchemaInferencer.infer(deterministicGraph);
-            GraphSchema unified = corpusSchemaUnifier.unify(
+            CorpusSchemaUnifier.UnificationResult unification =
+                    corpusSchemaUnifier.unifyWithTopicBindings(
                     passageTexts,
                     candidates,
-                    configuredSchema,
+                    establishedSeed,
                     deterministicGraphSchema,
                     topicEvidence,
                     job,
                     corpus.snapshotId(),
                     llmDispatcher);
+            if (job != null) {
+                job.setCorpusTopicEvidence(unification.topicEvidence().persistenceView());
+            }
+            emitCorpusTopicEvidenceTrace(job, unification.topicEvidence());
             log.info("[Job {}] Derived and froze the corpus ontology through the dedicated "
-                            + "type-only schema pre-pass",
+                            + "topic-to-hierarchy schema pre-pass",
                     jobId);
-            return unified;
+            return establishedSeed == null
+                    ? unification.schema()
+                    : CrawlOntology.merge(establishedSeed, unification.schema());
         } catch (RuntimeException e) {
             String schemaError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             markSchemaPrepassFailure(job, schemaError);
@@ -794,10 +872,61 @@ class GraphExtractionOrchestrator {
         }
     }
 
+    /**
+     * Keeps every complete passage in the schema-prepass map even when upstream chunk ids collide.
+     * The unsuffixed key remains the original id for topic evidence; additional occurrences use a
+     * deterministic content-hash suffix, which the unifier maps back through its {@code id#...}
+     * prefix handling without changing source ids or persisted provenance.
+     */
+    static Map<String, String> collisionSafePassageTexts(List<CrawlCorpusPassage> passages) {
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        Map<String, Integer> occurrences = new HashMap<>();
+        List<CrawlCorpusPassage> ordered = (passages == null ? List.<CrawlCorpusPassage>of() : passages)
+                .stream()
+                .filter(Objects::nonNull)
+                .filter(CrawlCorpusPassage::completeText)
+                .filter(passage -> hasText(passage.content()))
+                .sorted(Comparator.comparingInt((CrawlCorpusPassage p) -> p.chunkIndex())
+                        .thenComparing(GraphExtractionOrchestrator::passageKeyBase)
+                        .thenComparing(p -> sha256Hex(p.content()))
+                        .thenComparing(CrawlCorpusPassage::content))
+                .toList();
+        for (CrawlCorpusPassage passage : ordered) {
+            String base = passageKeyBase(passage);
+            int occurrence = occurrences.merge(base, 1, Integer::sum);
+            String key = base;
+            if (occurrence > 1 || result.containsKey(key)) {
+                String contentHash = sha256Hex(passage.content());
+                key = base + "#" + contentHash;
+                int collision = 2;
+                while (result.containsKey(key)) {
+                    key = base + "#" + contentHash + "#" + collision++;
+                }
+            }
+            result.put(key, passage.content());
+        }
+        return result;
+    }
+
+    private static String passageKeyBase(CrawlCorpusPassage passage) {
+        if (passage != null && hasText(passage.chunkId())) {
+            return passage.chunkId();
+        }
+        return "chunk-" + sha256Hex(passage == null ? "" : passage.content());
+    }
+
     boolean shouldDeriveCorpusSchema(GraphExtractionConfig config) {
         return config == null
                 || config.getSchemaMode() != SchemaEnforcementMode.STRICT
                 || parseConfiguredSchema(config) == null;
+    }
+
+    private boolean usesLegacyOpenSchemaValidation(GraphExtractionConfig config) {
+        return graphConstructor == null
+                && (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend())
+                && (config == null || config.getExtractionMode() == ExtractionMode.SINGLE_PASS)
+                && (config == null || config.getSchemaMode() != SchemaEnforcementMode.STRICT)
+                && parseConfiguredSchema(config) == null;
     }
 
     private static void markSchemaPrepassFailure(UnifiedCrawlJob job, String reason) {
@@ -857,10 +986,12 @@ class GraphExtractionOrchestrator {
      */
     private List<Document> extractGraphChunksIndividually(List<Document> docs, GraphExtractionConfig config,
                                                           Graph targetGraph, UnifiedCrawlJob job,
-                                                          GraphSchema corpusSchemaOverride) {
+                                                          GraphSchema effectiveSchema,
+                                                          String schemaFingerprint,
+                                                          boolean strictSchema) {
         List<Document> stillFailing = new ArrayList<>();
         String extractionPrompt = graphConstructor == null
-                ? buildExtractionPrompt(config, buildGraphSchema(config, corpusSchemaOverride))
+                ? buildExtractionPrompt(config, effectiveSchema)
                 : null;
         for (Document doc : docs) {
             if (isCancelled(job)) {
@@ -871,11 +1002,11 @@ class GraphExtractionOrchestrator {
             boolean failed;
             if (graphConstructor != null) {
                 failed = !extractSingleChunkViaConstructor(
-                        doc, config, targetGraph, job, corpusSchemaOverride);
+                        doc, config, targetGraph, job, effectiveSchema, schemaFingerprint, strictSchema);
             } else {
                 InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                         doc, 0, docs.size(), extractionPrompt, config,
-                        targetGraph, job, corpusSchemaOverride, new ConcurrentHashMap<>(),
+                        targetGraph, job, effectiveSchema, schemaFingerprint, new ConcurrentHashMap<>(),
                         new ConcurrentHashMap<>(), jobFactSheetId(job));
                 failed = outcome.retryable();
             }
@@ -894,15 +1025,17 @@ class GraphExtractionOrchestrator {
             GraphExtractionConfig config,
             Graph targetGraph,
             UnifiedCrawlJob job,
-            GraphSchema corpusSchemaOverride) {
+            GraphSchema effectiveSchema,
+            String schemaFingerprint,
+            boolean strictSchema) {
         // Guard: a blank chunk cannot yield entities and would throw in toRetrievedDoc.
         if (!hasExtractableText(doc)) {
             log.debug("[Job {}] Per-chunk constructor: skipping blank/empty chunk id={}",
                     job.getJobId(), doc != null ? doc.getId() : "(null)");
             return false;
         }
-        GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
-        SchemaEnforcementMode mode = effectiveSchemaMode(config, corpusSchemaOverride);
+        GraphSchema schema = schemaForExtraction(config, effectiveSchema);
+        SchemaEnforcementMode mode = effectiveSchemaMode(config, effectiveSchema, strictSchema);
         List<RetrievedDoc> single = List.of(toRetrievedDoc(doc));
         AgentCallContext.setJobId(job.getJobId());
         try {
@@ -919,6 +1052,7 @@ class GraphExtractionOrchestrator {
                 recordEmptyConstructorChunk(job, doc, "GraphConstructor returned empty graph");
                 return false;
             }
+            GraphSchemaMetadataProjector.project(graph, schema, schemaFingerprint);
             GraphPersistenceHelper.GraphPersistResult persisted =
                     graphPersistenceHelper.persistConstructedGraphBatch(job, graph, single, config);
             recordGraphExtractionCheckpoint(job, config, single, persisted);
@@ -980,13 +1114,16 @@ class GraphExtractionOrchestrator {
         }
 
         ExtractionTaskContext contextualTask = contextualize(taskContext, graphContext);
+        GraphSchema frozenSchema = job == null ? null
+                : CrawlOntology.canonicalize(job.getFrozenGraphSchema());
+        String schemaFingerprint = GraphSchemaMetadataProjector.schemaFingerprint(frozenSchema);
         if (DecomposedExtractionExecutor.isEnabled(config)) {
             if (llmDispatcher == null) {
                 throw new IllegalStateException("decomposed partition extraction is configured but "
                         + "no LLM dispatcher is available");
             }
             String response = extractViaDecomposedPasses(doc.getText(), doc, config,
-                    null, graphContext, job, contextualTask);
+                    frozenSchema, graphContext, job, contextualTask);
             if (!isUsableLlmResponse(response)) {
                 throw new IllegalStateException(badLlmResponseMessage(
                         "decomposed partition extraction", response));
@@ -998,8 +1135,10 @@ class GraphExtractionOrchestrator {
                 }
                 GraphExtractionSchema.ExtractionResult result =
                         GraphExtractionValidator.fromJson(json);
+                GraphSchema schema = frozenSchema != null
+                        ? frozenSchema : buildGraphSchema(config);
                 var validation = GraphExtractionValidator.validate(result,
-                        effectiveValidationPolicy(config), buildGraphSchema(config),
+                        effectiveValidationPolicy(config), schema,
                         knownEntityTypes(graphContext, job, config));
                 traceValidation(result, validation);
                 if (!validation.valid()) {
@@ -1007,7 +1146,9 @@ class GraphExtractionOrchestrator {
                             + "failed: " + validationFeedback(validation.errors(),
                             effectiveValidationPolicy(config)));
                 }
-                return GraphExtractionValidator.toGraph(result, doc.getText());
+                Graph graph = GraphExtractionValidator.toGraph(result, doc.getText());
+                GraphSchemaMetadataProjector.project(graph, schema, schemaFingerprint);
+                return graph;
             } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 throw new IllegalArgumentException("decomposed partition extraction returned "
                         + "malformed JSON: " + e.getOriginalMessage(), e);
@@ -1018,14 +1159,15 @@ class GraphExtractionOrchestrator {
             throw new IllegalStateException("no GraphConstructor is configured; this deployment "
                     + "cannot extract a partition's chunks");
         }
-        GraphSchema schema = buildGraphSchema(config);
-        SchemaEnforcementMode mode = config.getSchemaMode() != null
-                ? config.getSchemaMode() : SchemaEnforcementMode.LENIENT;
+        GraphSchema schema = frozenSchema != null ? frozenSchema : buildGraphSchema(config);
+        SchemaEnforcementMode mode = effectiveSchemaMode(config, frozenSchema);
         AgentCallContext.setJobId(job == null ? null : job.getJobId());
         try {
-            return graphConstructor.constructGraphFromDocs(List.of(toRetrievedDoc(doc)), schema,
+            Graph graph = graphConstructor.constructGraphFromDocs(List.of(toRetrievedDoc(doc)), schema,
                     mode, graphConstructorSkipEmbedding, !graphConstructorPersistMatrixGraph, null,
                     contextualTask);
+            GraphSchemaMetadataProjector.project(graph, schema, schemaFingerprint);
+            return graph;
         } finally {
             AgentCallContext.setJobId(null);
         }
@@ -1033,6 +1175,11 @@ class GraphExtractionOrchestrator {
 
     /** Adds newly extracted output to the in-run graph state used by later small-model tasks. */
     void mergeIntoContext(Graph produced, Graph context, GraphExtractionConfig config) {
+        mergeIntoContext(produced, context, config, null);
+    }
+
+    void mergeIntoContext(
+            Graph produced, Graph context, GraphExtractionConfig config, UnifiedCrawlJob job) {
         if (produced == null || context == null || config == null) {
             return;
         }
@@ -1044,6 +1191,11 @@ class GraphExtractionOrchestrator {
                 context.setRelationships(new ArrayList<>());
             }
             mergeGraphInto(produced, context, config);
+            GraphSchema frozenSchema = job == null ? null
+                    : CrawlOntology.canonicalize(job.getFrozenGraphSchema());
+            String schemaFingerprint = GraphSchemaMetadataProjector.schemaFingerprint(frozenSchema);
+            GraphSchemaMetadataProjector.project(context,
+                    frozenSchema != null ? frozenSchema : buildGraphSchema(config), schemaFingerprint);
         }
     }
 
@@ -1171,9 +1323,11 @@ class GraphExtractionOrchestrator {
                                              Graph targetGraph,
                                              UnifiedCrawlJob job,
                                              ExecutorService extractExec,
-                                             GraphSchema corpusSchemaOverride) {
-        GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
-        SchemaEnforcementMode mode = effectiveSchemaMode(config, corpusSchemaOverride);
+                                             GraphSchema effectiveSchema,
+                                             String schemaFingerprint,
+                                             boolean strictSchema) {
+        GraphSchema schema = schemaForExtraction(config, effectiveSchema);
+        SchemaEnforcementMode mode = effectiveSchemaMode(config, effectiveSchema, strictSchema);
 
         // Chunks that fail all batch retries this pass are returned for re-accumulation. docById maps
         // a failed RetrievedDoc back to its source Document (they share ids — see toRetrievedDoc).
@@ -1390,7 +1544,7 @@ class GraphExtractionOrchestrator {
                         Thread.currentThread().interrupt();
                         return failed;
                     }
-                    futures.add(extractExec.submit(() -> {
+                    futures.add(GraphGenerationContext.submit(extractExec, () -> {
                         long batchStartTime = System.currentTimeMillis();
                         UnifiedCrawlJob.PipelineStepProgress step = pipelineStepTracker.ensurePipelineStep(job, "GRAPH_EXTRACTION");
                         step.getActiveTasks().incrementAndGet();
@@ -1450,6 +1604,7 @@ class GraphExtractionOrchestrator {
                                         + " (" + batch.items().size() + " chunk(s), cost=" + batch.cost() + ")");
                             }
 
+                            GraphSchemaMetadataProjector.project(graph, schema, schemaFingerprint);
                             GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, batch.items(), config);
                             recordGraphExtractionCheckpoint(job, config, batch.items(), persisted);
                             if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
@@ -1520,7 +1675,6 @@ class GraphExtractionOrchestrator {
                             }
                             batchDocsById.clear();
                             terminalDocIds.clear();
-                            batch.items().clear();
 
                             return new GraphBatchResult(batch, null, null);
                         } finally {
@@ -1553,18 +1707,23 @@ class GraphExtractionOrchestrator {
                         long timeoutMin = batchTimeout / 60;
                         log.warn("[Job {}] Graph extraction batch {}/{} timed out after {}s ({}min)",
                                 job.getJobId(), plannedBatch.index(), totalBatches, batchTimeout, timeoutMin);
-                        job.getErrors().add("Graph extraction batch " + plannedBatch.index() + "/" + totalBatches
-                                + " timed out after " + timeoutMin + "min");
-                        job.getErrorCount().incrementAndGet();
                         for (RetrievedDoc item : plannedBatch.items()) {
-                            documentTracker.recordDocumentProgress(job, item, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
-                                    "Graph extraction batch timed out",
+                            documentTracker.recordDocumentProgress(job, item, "GRAPH_EXTRACTION", "RUNNING", 0, 0, 0,
+                                    "Graph extraction batch timed out; queued for isolated retry",
                                     "Timed out after " + batchTimeout + "s",
-                                    EXTRACTORS_GRAPH_CONSTRUCTOR, true);
+                                    EXTRACTORS_GRAPH_CONSTRUCTOR, false);
                         }
-                        documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "ERROR",
-                                "Graph extraction batch timed out",
+                        documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
+                                "Graph extraction batch timed out; queued for isolated retry",
                                 "batch=" + plannedBatch.index() + "/" + totalBatches);
+                        if (job.getGraphGeneration() != null && job.getGraphActivation() == null) {
+                            throw new IllegalStateException(
+                                    "Replacement graph extraction timed out; hidden generation must be aborted", te);
+                        }
+                        for (RetrievedDoc item : plannedBatch.items()) {
+                            Document source = item.getId() == null ? null : docById.get(item.getId());
+                            if (source != null) failed.add(source);
+                        }
                         continue;
                     } catch (ExecutionException ee) {
                         Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
@@ -1605,7 +1764,7 @@ class GraphExtractionOrchestrator {
                                     return failed;
                                 }
                                 final CostBatch<RetrievedDoc> retryBatch = plannedBatch;
-                                futures.set(i, extractExec.submit(() -> {
+                                futures.set(i, GraphGenerationContext.submit(extractExec, () -> {
                                     long batchStartTime = System.currentTimeMillis();
                                     UnifiedCrawlJob.PipelineStepProgress step = pipelineStepTracker.ensurePipelineStep(job, "GRAPH_EXTRACTION");
                                     step.getActiveTasks().incrementAndGet();
@@ -1626,6 +1785,12 @@ class GraphExtractionOrchestrator {
                                         } finally {
                                             AgentCallContext.setJobId(null);
                                         }
+                                        if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
+                                            if (graph != null) releaseInMemoryGraph(graph);
+                                            recordCancelledGraphBatch(job, retryBatch,
+                                                    "Graph extraction retry cancelled after model response");
+                                            return new GraphBatchResult(retryBatch, null, null);
+                                        }
                                         if (graph == null) {
                                             throw new IllegalStateException("GraphConstructor returned null graph for retry batch "
                                                     + retryBatch.index() + "/" + totalBatches);
@@ -1638,6 +1803,7 @@ class GraphExtractionOrchestrator {
                                                     + retryBatch.index() + "/" + totalBatches
                                                     + " (" + retryBatch.items().size() + " chunk(s), cost=" + retryBatch.cost() + ")");
                                         }
+                                        GraphSchemaMetadataProjector.project(graph, schema, schemaFingerprint);
                                         GraphPersistenceHelper.GraphPersistResult persisted = graphPersistenceHelper.persistConstructedGraphBatch(job, graph, retryBatch.items(), config);
                                         recordGraphExtractionCheckpoint(job, config, retryBatch.items(), persisted);
                                         if (retainResultGraph) {
@@ -1674,7 +1840,6 @@ class GraphExtractionOrchestrator {
                                 // its (good) neighbours on the next pass is safe.
                                 log.warn("[Job {}] Graph batch {}/{} exhausted batch retries; re-accumulating {} chunk(s)",
                                         job.getJobId(), plannedBatch.index(), totalBatches, plannedBatch.items().size());
-                                job.getErrorCount().incrementAndGet();
                                 for (RetrievedDoc item : plannedBatch.items()) {
                                     Document src = item.getId() != null ? docById.get(item.getId()) : null;
                                     if (src != null) {
@@ -1694,7 +1859,6 @@ class GraphExtractionOrchestrator {
                                         processed, totalDocs, step.getFailedItems().get(),
                                         done, totalBatches, 0, null,
                                         "Re-accumulated graph batch " + plannedBatch.index() + "/" + totalBatches);
-                                plannedBatch.items().clear();
                                 continue;
                             }
                             case ABORT:
@@ -1776,7 +1940,8 @@ class GraphExtractionOrchestrator {
             log.error("[Job {}] Graph extraction failed: {}", job.getJobId(), errorDetail, e);
             job.getErrors().add("Graph extraction failed: " + errorDetail);
             job.getErrorCount().incrementAndGet();
-            if (isFatalLlmUnavailable(e)) {
+            if (isFatalLlmUnavailable(e)
+                    || (job.getGraphGeneration() != null && job.getGraphActivation() == null)) {
                 throw new RuntimeException("Graph extraction failed: " + errorDetail, e);
             }
         }
@@ -1796,8 +1961,9 @@ class GraphExtractionOrchestrator {
                                      Graph targetGraph,
                                      UnifiedCrawlJob job,
                                      ExecutorService llmExec,
-                                     GraphSchema corpusSchemaOverride) {
-        GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
+                                     GraphSchema effectiveSchema,
+                                     String schemaFingerprint) {
+        GraphSchema schema = schemaForExtraction(config, effectiveSchema);
         String extractionPrompt = buildExtractionPrompt(config, schema);
 
         // Resolve the model budget before planning batches. Oversized source documents are split
@@ -1873,7 +2039,7 @@ class GraphExtractionOrchestrator {
                     InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                             effectiveDocuments.get(docIndex), docIndex,
                             effectiveDocuments.size(), extractionPrompt, config, targetGraph, job,
-                            corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
+                            effectiveSchema, schemaFingerprint, parentDocCache, entityNodeCache, factSheetId);
                     if (outcome.retryable()) {
                         failed.add(effectiveDocuments.get(docIndex));
                     }
@@ -1903,9 +2069,9 @@ class GraphExtractionOrchestrator {
                         combinedChars += tLen;
                     }
                     int groupEndExcl = docIndex + group.size();
-                    List<Document> failedInGroup = extractGraphViaLlmChunkGroup(
+                            List<Document> failedInGroup = extractGraphViaLlmChunkGroup(
                             group, docIndex, effectiveDocuments.size(),
-                            config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                            config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                             entityNodeCache, factSheetId);
                     failed.addAll(failedInGroup);
                     for (int gi = docIndex; gi < groupEndExcl; gi++) {
@@ -1929,7 +2095,7 @@ class GraphExtractionOrchestrator {
             AtomicInteger offset = new AtomicInteger(0);
             for (CostBatch<Document> batch : batches) {
                 int baseIndex = offset.getAndAdd(batch.items().size());
-                futures.add(llmExec.submit(() -> {
+                futures.add(GraphGenerationContext.submit(llmExec, () -> {
                     memoryMonitor.waitForMemoryCapacity(job, "GRAPH_EXTRACTION");
                     job.getCurrentBatchSize().set(batch.items().size());
                     job.getCurrentBatchStep().set("LLM_BATCH " + batch.index() + "/" + batches.size());
@@ -1940,7 +2106,7 @@ class GraphExtractionOrchestrator {
                             InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                                     batch.items().get(i), baseIndex + i,
                                     effectiveDocuments.size(), extractionPrompt, config, targetGraph, job,
-                                    corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
+                                    effectiveSchema, schemaFingerprint, parentDocCache, entityNodeCache, factSheetId);
                             if (outcome.retryable()) {
                                 failed.add(batch.items().get(i));
                             }
@@ -1976,7 +2142,7 @@ class GraphExtractionOrchestrator {
                             int groupEndExcl = groupStart + group.size();
                             List<Document> failedInGroup = extractGraphViaLlmChunkGroup(
                                     group, baseIndex + groupStart, effectiveDocuments.size(),
-                                    config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                                    config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                                     entityNodeCache, factSheetId);
                             failed.addAll(failedInGroup);
                             for (int gi = groupStart; gi < groupEndExcl; gi++) {
@@ -2003,26 +2169,25 @@ class GraphExtractionOrchestrator {
                 try {
                     future.get(graphExtractionBatchTimeoutSeconds, TimeUnit.SECONDS);
                 } catch (TimeoutException e) {
-                    future.cancel(false);
+                    future.cancel(job.getGraphGeneration() != null);
                     int batchTimeout = graphExtractionBatchTimeoutSeconds;
                     log.warn("[Job {}] Inline LLM extraction batch {}/{} timed out after {}s — adding {} chunk(s) to failed for rebatch/retry",
                             job.getJobId(), timedOutBatch.index(), batches.size(), batchTimeout, timedOutBatch.items().size());
-                    job.getErrors().add("Inline LLM extraction batch " + timedOutBatch.index() + "/" + batches.size()
-                            + " timed out after " + (batchTimeout / 60) + "min");
-                    job.getErrorCount().incrementAndGet();
-                    documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "ERROR",
-                            "Inline LLM extraction batch timed out",
+                    documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "WARN",
+                            "Inline LLM extraction batch timed out; queued for isolated retry",
                             "batch=" + timedOutBatch.index() + "/" + batches.size()
                                     + ", chunks=" + timedOutBatch.items().size() + " queued for rebatch/retry");
                     // Add all timed-out docs to failed so the re-accumulation loop can retry them
                     // per-chunk (splitting down to size-1 via the rebatch path).
                     failed.addAll(timedOutBatch.items());
+                    if (job.getGraphGeneration() != null && job.getGraphActivation() == null) {
+                        throw new IllegalStateException(
+                                "Replacement inline graph extraction timed out; hidden generation must be aborted", e);
+                    }
                 } catch (ExecutionException e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     log.warn("[Job {}] Inline LLM extraction batch {}/{} failed: {}",
                             job.getJobId(), timedOutBatch.index(), batches.size(), cause.getMessage());
-                    job.getErrors().add("Inline LLM extraction batch failed: " + cause.getMessage());
-                    job.getErrorCount().incrementAndGet();
                     // Add all docs from the failed batch to failed for rebatch/retry
                     failed.addAll(timedOutBatch.items());
                 }
@@ -2044,7 +2209,8 @@ class GraphExtractionOrchestrator {
                                             GraphExtractionConfig config,
                                             Graph targetGraph,
                                             UnifiedCrawlJob job,
-                                            GraphSchema corpusSchemaOverride,
+                                            GraphSchema effectiveSchema,
+                                            String schemaFingerprint,
                                             ConcurrentHashMap<String, Optional<GraphNode>> parentDocCache,
                                             ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
                                             Long factSheetId) {
@@ -2061,6 +2227,7 @@ class GraphExtractionOrchestrator {
         boolean recordedResult = false;
         boolean failed = false;
         boolean retryableFailure = false;
+        String failureReason = null;
         boolean decomposed = DecomposedExtractionExecutor.isEnabled(config);
         try {
             String text = doc.getText();
@@ -2115,7 +2282,7 @@ class GraphExtractionOrchestrator {
                 String response;
                 if (decomposed) {
                     DecomposedPassOutcome outcome = extractViaDecomposedPassesOutcome(
-                            text, doc, config, corpusSchemaOverride, targetGraph, job, null,
+                            text, doc, config, effectiveSchema, targetGraph, job, null,
                             compactProposalAnalysis(text, doc, config));
                     response = outcome.json();
                     retryableFailure |= outcome.retryable();
@@ -2153,11 +2320,16 @@ class GraphExtractionOrchestrator {
                                     lastValidationErrors, EXTRACTORS_INLINE_LLM, true);
                             recordedResult = true;
                             failed = true;
+                            failureReason = lastValidationErrors;
                         }
                         continue;
                     }
-                var validation = GraphExtractionValidator.validate(
-                            result, effectiveValidationPolicy(config), buildGraphSchema(config, corpusSchemaOverride),
+                    GraphSchema validationSchema = schemaForExtraction(config, effectiveSchema);
+                    GraphSchema projectionSchema = projectionSchema(job, validationSchema);
+                    String projectionFingerprint = schemaFingerprint != null
+                            ? schemaFingerprint : GraphSchemaMetadataProjector.schemaFingerprint(projectionSchema);
+                    var validation = GraphExtractionValidator.validate(
+                            result, effectiveValidationPolicy(config), validationSchema,
                             DecomposedExtractionExecutor.isEnabled(config)
                                     ? knownEntityTypes(targetGraph, job, config) : Map.of());
                     traceValidation(result, validation);
@@ -2165,6 +2337,7 @@ class GraphExtractionOrchestrator {
                         logValidationWarnings(jobId, "single-document", validation.warnings());
                         extractionSucceeded = true;
                         Graph chunkGraph = GraphExtractionValidator.toGraph(result, text);
+                        GraphSchemaMetadataProjector.project(chunkGraph, projectionSchema, projectionFingerprint);
                         if (retainResultGraph) {
                             synchronized (targetGraph) {
                                 mergeGraphInto(chunkGraph, targetGraph, config);
@@ -2220,6 +2393,8 @@ class GraphExtractionOrchestrator {
                                     if (entity.properties() != null) entityMeta.putAll(entity.properties());
                                     // Re-assert after properties merge so LLM can't overwrite with a junk value.
                                     entityMeta.put("entity_type", entityType);
+                                    GraphSchemaMetadataProjector.applyEntityMetadata(
+                                            entityMeta, projectionSchema, entityType, projectionFingerprint);
                                     // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
                                     entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
@@ -2296,6 +2471,8 @@ class GraphExtractionOrchestrator {
                                         // a missing confidence is seeded from sourceTrust, not hardcoded.
                                         Map<String, Object> relPropertiesMeta = new LinkedHashMap<>();
                                         if (rel.properties() != null) relPropertiesMeta.putAll(rel.properties());
+                                        GraphSchemaMetadataProjector.applyRelationshipMetadata(
+                                                relPropertiesMeta, projectionSchema, rel.type(), projectionFingerprint);
                                         double relWeight;
                                         if (confidenceStamper != null) {
                                             relWeight = confidenceStamper.stampEdgeConfidence(
@@ -2332,6 +2509,7 @@ class GraphExtractionOrchestrator {
                                     EXTRACTORS_INLINE_LLM, true);
                             recordedResult = true;
                             failed = true;
+                            failureReason = lastValidationErrors;
                         } else {
                             log.debug("Validation failed (attempt {}/{}), retrying: {}",
                                     valAttempt + 1, maxValRetries + 1, validation.errors());
@@ -2347,15 +2525,13 @@ class GraphExtractionOrchestrator {
 
             if (!recordedResult) {
                 // LLM returned null or empty — this is a failure, not a quiet success. Keep a bounded
-                // job-level diagnostic as well as the numeric count so loose corpus tests can explain
-                // an empty graph without scraping native/model logs.
-                job.getErrorCount().incrementAndGet();
+                // diagnostic in the document event. Retryable attempts are promoted to a permanent
+                // job error only if every in-phase retry is exhausted; otherwise a recovered model or
+                // runtime hiccup must not leave the completed crawl in FAILED state.
                 failed = true;
-                String failureReason = lastValidationErrors == null
+                failureReason = lastValidationErrors == null
                         ? "LLM returned null/empty — check LLM configuration"
                         : lastValidationErrors;
-                job.getErrors().add("LLM graph extraction returned no result for chunk "
-                        + (doc.getId() == null ? docIndex : doc.getId()) + ": " + failureReason);
                 log.warn("[Job {}] LLM graph extraction produced no usable result for chunk {}: {}",
                         job.getJobId(), doc.getId() == null ? docIndex : doc.getId(), failureReason);
                 documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
@@ -2369,8 +2545,7 @@ class GraphExtractionOrchestrator {
             String errorDetail = e.getMessage() != null ? e.getMessage()
                     : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
             log.warn("[Job {}] Graph extraction failed for document: {}", job.getJobId(), errorDetail, e);
-            job.getErrors().add("Graph extraction failed: " + errorDetail);
-            job.getErrorCount().incrementAndGet();
+            failureReason = errorDetail;
             failed = true;
             documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
                     "Graph extraction failed", errorDetail, EXTRACTORS_INLINE_LLM, true);
@@ -2386,6 +2561,13 @@ class GraphExtractionOrchestrator {
         // distinguish deterministic semantic exhaustion from transient model/runtime failure.
         if (!decomposed) {
             retryableFailure = true;
+        }
+        if (!retryableFailure) {
+            String chunk = doc.getId() == null ? Integer.toString(docIndex) : doc.getId();
+            String detail = failureReason == null || failureReason.isBlank()
+                    ? "Graph extraction produced no usable result" : failureReason;
+            job.getErrors().add("LLM graph extraction failed for chunk " + chunk + ": " + detail);
+            job.getErrorCount().incrementAndGet();
         }
         return retryableFailure
                 ? InlineLlmExtractionOutcome.retryableFailure()
@@ -2418,13 +2600,14 @@ class GraphExtractionOrchestrator {
             GraphExtractionConfig config,
             Graph targetGraph,
             UnifiedCrawlJob job,
-            GraphSchema corpusSchemaOverride,
+            GraphSchema effectiveSchema,
+            String schemaFingerprint,
             ConcurrentHashMap<String, Optional<GraphNode>> parentDocCache,
             ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
             Long factSheetId) {
         // Public entry: start recursive rebatch at depth 0.
         return extractGraphViaLlmChunkGroup(group, baseDocIndex, totalDocuments, config,
-                targetGraph, job, corpusSchemaOverride, parentDocCache,
+                targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                 entityNodeCache, factSheetId, 0);
     }
 
@@ -2444,7 +2627,8 @@ class GraphExtractionOrchestrator {
             GraphExtractionConfig config,
             Graph targetGraph,
             UnifiedCrawlJob job,
-            GraphSchema corpusSchemaOverride,
+            GraphSchema effectiveSchema,
+            String schemaFingerprint,
             ConcurrentHashMap<String, Optional<GraphNode>> parentDocCache,
             ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
             Long factSheetId,
@@ -2455,13 +2639,13 @@ class GraphExtractionOrchestrator {
             return failed;
         }
         if (requiresAtomicOrderedDispatch(config)) {
-            String extractionPrompt = buildExtractionPrompt(config, buildGraphSchema(config, corpusSchemaOverride));
+            String extractionPrompt = buildExtractionPrompt(config, effectiveSchema);
             for (int index = 0; index < group.size(); index++) {
                 Document document = group.get(index);
                 InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                         document, baseDocIndex + index,
                         totalDocuments, extractionPrompt, config, targetGraph, job,
-                        corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
+                        effectiveSchema, schemaFingerprint, parentDocCache, entityNodeCache, factSheetId);
                 if (outcome.retryable()) {
                     failed.add(document);
                 }
@@ -2471,10 +2655,10 @@ class GraphExtractionOrchestrator {
         // Single-chunk group: delegate to the original per-document path for byte-identical behaviour.
         if (group.size() == 1) {
             String extractionPrompt = buildExtractionPrompt(config,
-                    buildGraphSchema(config, corpusSchemaOverride));
+                    effectiveSchema);
             InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                     group.get(0), baseDocIndex, totalDocuments, extractionPrompt,
-                    config, targetGraph, job, corpusSchemaOverride,
+                    config, targetGraph, job, effectiveSchema, schemaFingerprint,
                     parentDocCache, entityNodeCache, factSheetId);
             if (outcome.retryable()) failed.add(group.get(0));
             return failed;
@@ -2503,7 +2687,7 @@ class GraphExtractionOrchestrator {
         // Assemble the multi-chunk prompt.
         StringBuilder promptBuilder = new StringBuilder();
         promptBuilder.append(GraphExtractionValidator.getMultiChunkExtractionPromptInstructions(
-                effectiveValidationPolicy(config), buildGraphSchema(config, corpusSchemaOverride)));
+                effectiveValidationPolicy(config), effectiveSchema));
         if (config.getEntityTypes() != null && !config.getEntityTypes().isEmpty()) {
             promptBuilder.append("\n\nFocus on extracting these entity types: ");
             promptBuilder.append(String.join(", ", config.getEntityTypes()));
@@ -2593,9 +2777,12 @@ class GraphExtractionOrchestrator {
                             jobId, valAttempt + 1, maxValRetries + 1, parseMessage);
                     continue;
                 }
+                GraphSchema validationSchema = schemaForExtraction(config, effectiveSchema);
+                GraphSchema projectionSchema = projectionSchema(job, validationSchema);
+                String projectionFingerprint = schemaFingerprint != null
+                        ? schemaFingerprint : GraphSchemaMetadataProjector.schemaFingerprint(projectionSchema);
                 var validation = GraphExtractionValidator.validate(
-                        result, effectiveValidationPolicy(config),
-                        buildGraphSchema(config, corpusSchemaOverride));
+                        result, effectiveValidationPolicy(config), validationSchema);
                 traceValidation(result, validation);
                 if (!validation.valid()) {
                     lastValidationErrors = validationFeedback(validation.errors(), effectiveValidationPolicy(config));
@@ -2652,6 +2839,7 @@ class GraphExtractionOrchestrator {
                             GraphExtractionSchema.ExtractionMetadata.forChunk(cid, cid, "inline_llm_multi"));
 
                     Graph chunkGraph = GraphExtractionValidator.toGraph(perDoc, doc.getText());
+                    GraphSchemaMetadataProjector.project(chunkGraph, projectionSchema, projectionFingerprint);
                     if (retainResultGraph) {
                         synchronized (targetGraph) {
                             mergeGraphInto(chunkGraph, targetGraph, config);
@@ -2701,6 +2889,8 @@ class GraphExtractionOrchestrator {
                                 if (entity.properties() != null) entityMeta.putAll(entity.properties());
                                 // Re-assert after properties merge so LLM can't overwrite with a junk value.
                                 entityMeta.put("entity_type", entityType);
+                                GraphSchemaMetadataProjector.applyEntityMetadata(
+                                        entityMeta, projectionSchema, entityType, projectionFingerprint);
                                 // Provenance under the reserved keys (read by /nodes/{id}/provenance, travels via export).
                                 entityMeta.putAll(GraphProvenanceKeys.crawl(jobId, sourcePath, doc.getId(), config.getModelName()));
 
@@ -2761,6 +2951,8 @@ class GraphExtractionOrchestrator {
                                 // Never default a missing LLM confidence to 1.0 (pins PSL gradient).
                                 Map<String, Object> multiRelMeta = new LinkedHashMap<>();
                                 if (rel.properties() != null) multiRelMeta.putAll(rel.properties());
+                                GraphSchemaMetadataProjector.applyRelationshipMetadata(
+                                        multiRelMeta, projectionSchema, rel.type(), projectionFingerprint);
                                 double multiRelWeight;
                                 if (confidenceStamper != null) {
                                     multiRelWeight = confidenceStamper.stampEdgeConfidence(
@@ -2806,11 +2998,11 @@ class GraphExtractionOrchestrator {
                     // Recurse each half; failures bubble up from the sub-calls.
                     List<Document> firstFailed = extractGraphViaLlmChunkGroup(
                             new ArrayList<>(firstHalf), baseDocIndex, totalDocuments,
-                            config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                            config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                             entityNodeCache, factSheetId, rebatchDepth + 1);
                     List<Document> secondFailed = extractGraphViaLlmChunkGroup(
                             new ArrayList<>(secondHalf), baseDocIndex + half, totalDocuments,
-                            config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                            config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                             entityNodeCache, factSheetId, rebatchDepth + 1);
                     for (Document d : firstFailed)  { if (!failed.contains(d)) failed.add(d); }
                     for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
@@ -2851,11 +3043,11 @@ class GraphExtractionOrchestrator {
                                 + ", error=" + errorDetail);
                 List<Document> firstFailed = extractGraphViaLlmChunkGroup(
                         new ArrayList<>(group.subList(0, half)), baseDocIndex, totalDocuments,
-                        config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                        config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                         entityNodeCache, factSheetId, rebatchDepth + 1);
                 List<Document> secondFailed = extractGraphViaLlmChunkGroup(
                         new ArrayList<>(group.subList(half, group.size())), baseDocIndex + half, totalDocuments,
-                        config, targetGraph, job, corpusSchemaOverride, parentDocCache,
+                        config, targetGraph, job, effectiveSchema, schemaFingerprint, parentDocCache,
                         entityNodeCache, factSheetId, rebatchDepth + 1);
                 for (Document d : firstFailed)  { if (!failed.contains(d)) failed.add(d); }
                 for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
@@ -3512,7 +3704,7 @@ class GraphExtractionOrchestrator {
                     : jobFactSheetId(job) == null ? "in-run" : "factsheet_" + jobFactSheetId(job);
             String parentGraphId = targetGraph == null ? null : targetGraph.getParentGraphId();
 
-            GraphSchema effectiveSchema = buildGraphSchema(config, corpusSchema);
+            GraphSchema effectiveSchema = schemaForExtraction(config, corpusSchema);
             CrawlOntology crawlOntology = extractionOntology(job, effectiveSchema);
             CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
                     chunkId,
@@ -3532,6 +3724,10 @@ class GraphExtractionOrchestrator {
                             : config.getExtractionTarget(),
                     crawlOntology,
                     ontologyUpdatesAllowed(config, effectiveSchema));
+            if (config != null && config.getSchemaMode() == SchemaEnforcementMode.STRICT) {
+                backend.configureStrictExtractionTypes(
+                        config.getEntityTypes(), config.getRelationshipTypes());
+            }
             if (config != null && config.isDecomposedBoundNativeProposalArrays()) {
                 if (compactProposalAnalysis != null) {
                     backend.configureCompactProposalCardinality(
@@ -3757,6 +3953,23 @@ class GraphExtractionOrchestrator {
         }
     }
 
+    private void emitCorpusTopicEvidenceTrace(
+            UnifiedCrawlJob job, CorpusTopicEvidence topicEvidence) {
+        Consumer<Map<String, Object>> sink = extractionTraceSink;
+        if (sink == null || topicEvidence == null) return;
+        Map<String, Object> trace = new LinkedHashMap<>();
+        trace.put("eventType", "CORPUS_TOPIC_EVIDENCE");
+        trace.put("crawlJobId", job == null ? null : job.getJobId());
+        trace.put("phase", "SCHEMA_PREPASS");
+        trace.put("payload", topicEvidence.persistenceView());
+        try {
+            sink.accept(trace);
+        } catch (RuntimeException e) {
+            log.debug("[Job {}] Corpus topic trace sink failed: {}",
+                    job == null ? "?" : job.getJobId(), e.getMessage());
+        }
+    }
+
     private static ToolDrivenExtractionExecutor.Result combinePhasedResults(
             ToolDrivenExtractionExecutor.Result entities,
             ToolDrivenExtractionExecutor.Result relations) {
@@ -3783,12 +3996,34 @@ class GraphExtractionOrchestrator {
 
     static SchemaEnforcementMode effectiveSchemaMode(
             GraphExtractionConfig config, GraphSchema corpusSchemaOverride) {
-        if (corpusSchemaOverride != null) {
+        // The top-level extraction call installs its canonical frozen schema on the config before
+        // dispatching batches. Treat that exact snapshot as the configured contract so LENIENT/WARN
+        // semantics remain unchanged when no corpus overlay was derived. Standalone callers that pass
+        // an independent corpus schema retain the historical STRICT prepass behavior.
+        if (corpusSchemaOverride != null
+                && (config == null || config.getStandardizedSchema() != corpusSchemaOverride)) {
             return SchemaEnforcementMode.STRICT;
         }
         return config != null && config.getSchemaMode() != null
                 ? config.getSchemaMode()
                 : SchemaEnforcementMode.LENIENT;
+    }
+
+    private static SchemaEnforcementMode effectiveSchemaMode(
+            GraphExtractionConfig config, GraphSchema effectiveSchema, boolean strictSchema) {
+        return strictSchema ? SchemaEnforcementMode.STRICT
+                : effectiveSchemaMode(config, effectiveSchema);
+    }
+
+    private GraphSchema schemaForExtraction(
+            GraphExtractionConfig config, GraphSchema frozenSchema) {
+        return frozenSchema != null ? frozenSchema : buildGraphSchema(config);
+    }
+
+    private static GraphSchema projectionSchema(
+            UnifiedCrawlJob job, GraphSchema validationSchema) {
+        return validationSchema != null || job == null
+                ? validationSchema : job.getFrozenGraphSchema();
     }
 
     static StructuredChatLanguageModel.Request toStructuredChatRequest(
@@ -3805,7 +4040,7 @@ class GraphExtractionOrchestrator {
                 messages,
                 tools,
                 true,
-                StructuredChatLanguageModel.ToolDefinitionFormat.FLAT,
+                StructuredChatLanguageModel.ToolDefinitionFormat.STANDARD,
                 StructuredChatLanguageModel.ToolCallFormat.MODEL,
                 StructuredChatLanguageModel.ToolChoice.REQUIRED);
     }
@@ -4218,7 +4453,7 @@ class GraphExtractionOrchestrator {
     private String buildExtractionPrompt(GraphExtractionConfig config, GraphSchema schemaOverride) {
         StringBuilder sb = new StringBuilder();
         sb.append(GraphExtractionValidator.getExtractionPromptInstructions(
-                effectiveValidationPolicy(config), buildGraphSchema(config, schemaOverride)));
+                effectiveValidationPolicy(config), schemaForExtraction(config, schemaOverride)));
 
         if (config.getEntityTypes() != null && !config.getEntityTypes().isEmpty()) {
             sb.append("\n\nFocus on extracting these entity types: ");
@@ -4527,6 +4762,8 @@ class GraphExtractionOrchestrator {
                 LinkedHashSet<Object> combined = new LinkedHashSet<>(currentValues);
                 combined.addAll(incomingValues);
                 target.put(entry.getKey(), List.copyOf(combined));
+            } else if (GraphSchemaMetadataProjector.isReservedKey(entry.getKey())) {
+                target.put(entry.getKey(), entry.getValue());
             } else {
                 target.putIfAbsent(entry.getKey(), entry.getValue());
             }
@@ -4680,9 +4917,14 @@ class GraphExtractionOrchestrator {
      * Builds schema with an optional corpus-derived overlay.
      */
     GraphSchema buildGraphSchema(GraphExtractionConfig config, GraphSchema corpusSchemaOverride) {
-        GraphSchema configured = parseConfiguredSchema(config);
-        if (configured == null) {
-            return corpusSchemaOverride;
+        GraphSchema configuredSeed = parseConfiguredSchema(config);
+        if (corpusSchemaOverride == null && usesLegacyOpenSchemaValidation(config)) {
+            return null;
+        }
+        GraphSchema configured = SchemaHierarchyVocabulary.withBaseline(configuredSeed);
+        if (config != null && config.getSchemaMode() == SchemaEnforcementMode.STRICT
+                && configured.getRelationshipTypes() == null) {
+            configured.setRelationshipTypes(List.of());
         }
         if (corpusSchemaOverride == null) {
             return configured;
@@ -4712,7 +4954,7 @@ class GraphExtractionOrchestrator {
 
         return new GraphSchema(
                 nodeTypes == null || nodeTypes.isEmpty() ? null : nodeTypes,
-                relationTypes == null || relationTypes.isEmpty() ? null : relationTypes,
+                relationTypes == null ? null : relationTypes,
                 patterns.isEmpty() ? null : List.copyOf(patterns));
     }
 
@@ -4739,22 +4981,6 @@ class GraphExtractionOrchestrator {
             }
         }
 
-        List<String> requestedEntities = normalizedSchemaTypes(config.getEntityTypes());
-        List<NodeType> nodeTypes = requestedEntities.isEmpty()
-                ? (definedEntities.isEmpty() ? null : List.copyOf(definedEntities.values()))
-                : requestedEntities.stream()
-                        .map(type -> definedEntities.getOrDefault(
-                                schemaTypeKey(type), new NodeType(type, null, null)))
-                        .toList();
-
-        List<String> requestedRelations = normalizedSchemaTypes(config.getRelationshipTypes());
-        List<RelationshipType> relationTypes = requestedRelations.isEmpty()
-                ? (definedRelations.isEmpty() ? null : List.copyOf(definedRelations.values()))
-                : requestedRelations.stream()
-                        .map(type -> definedRelations.getOrDefault(
-                                schemaTypeKey(type), new RelationshipType(type, null, null)))
-                        .toList();
-
         Set<String> patterns = new LinkedHashSet<>();
         if (standardized != null && standardized.getPatterns() != null) {
             standardized.getPatterns().stream()
@@ -4763,6 +4989,42 @@ class GraphExtractionOrchestrator {
                     .forEach(patterns::add);
         }
         patterns.addAll(effectiveValidationPolicy(config).effectiveRelationPatterns());
+        for (String pattern : patterns) {
+            GraphExtractionValidator.parseRelationPattern(pattern).ifPresent(signature -> {
+                definedEntities.putIfAbsent(schemaTypeKey(signature.sourceType()),
+                        new NodeType(signature.sourceType(), null, null,
+                                SchemaHierarchyVocabulary.parentForGeneratedType(
+                                        signature.sourceType())));
+                definedEntities.putIfAbsent(schemaTypeKey(signature.targetType()),
+                        new NodeType(signature.targetType(), null, null,
+                                SchemaHierarchyVocabulary.parentForGeneratedType(
+                                        signature.targetType())));
+                definedRelations.putIfAbsent(schemaTypeKey(signature.relationType()),
+                        new RelationshipType(signature.relationType(), null, null, List.of(),
+                                SchemaHierarchyVocabulary.connectionFamilyForPredicate(
+                                        signature.relationType())));
+            });
+        }
+
+        List<String> requestedEntities = normalizedSchemaTypes(config.getEntityTypes());
+        if (standardized == null || standardized.getNodeTypes() == null) {
+            requestedEntities.forEach(type -> definedEntities.putIfAbsent(
+                    schemaTypeKey(type), new NodeType(type, null, null,
+                            SchemaHierarchyVocabulary.parentForGeneratedType(type))));
+        }
+        List<NodeType> nodeTypes = definedEntities.isEmpty()
+                ? null : List.copyOf(definedEntities.values());
+
+        List<String> requestedRelations = normalizedSchemaTypes(config.getRelationshipTypes());
+        if (standardized == null || standardized.getRelationshipTypes() == null) {
+            requestedRelations.forEach(type -> definedRelations.putIfAbsent(
+                    schemaTypeKey(type), new RelationshipType(type, null, null, List.of(),
+                            SchemaHierarchyVocabulary.connectionFamilyForPredicate(type))));
+        }
+        List<RelationshipType> relationTypes = definedRelations.isEmpty()
+                ? (standardized != null && standardized.getRelationshipTypes() != null
+                        ? List.of() : null)
+                : List.copyOf(definedRelations.values());
 
         if (nodeTypes == null && relationTypes == null && patterns.isEmpty()) {
             return null;
@@ -4824,19 +5086,22 @@ class GraphExtractionOrchestrator {
 
     private static NodeType copyNodeType(NodeType source) {
         return new NodeType(source.getLabel(), source.getDescription(),
-                copyProperties(source.getProperties()));
+                copyProperties(source.getProperties()), source.getParentType());
     }
 
     private static NodeType mergeNodeType(NodeType configured, NodeType derived) {
         String description = hasText(configured.getDescription())
                 ? configured.getDescription() : derived.getDescription();
         return new NodeType(configured.getLabel(), description,
-                mergeProperties(configured.getProperties(), derived.getProperties()));
+                mergeProperties(configured.getProperties(), derived.getProperties()),
+                hasText(configured.getParentType())
+                        ? configured.getParentType() : derived.getParentType());
     }
 
     private static RelationshipType copyRelationshipType(RelationshipType source) {
         return new RelationshipType(source.getType(), source.getDescription(),
-                copyProperties(source.getProperties()), copyTextValues(source.getAliases()));
+                copyProperties(source.getProperties()), copyTextValues(source.getAliases()),
+                source.getConnectionFamily());
     }
 
     private static RelationshipType mergeRelationshipType(RelationshipType configured,
@@ -4845,7 +5110,9 @@ class GraphExtractionOrchestrator {
                 ? configured.getDescription() : derived.getDescription();
         return new RelationshipType(configured.getType(), description,
                 mergeProperties(configured.getProperties(), derived.getProperties()),
-                mergeTextValues(configured.getAliases(), derived.getAliases()));
+                mergeTextValues(configured.getAliases(), derived.getAliases()),
+                hasText(configured.getConnectionFamily())
+                        ? configured.getConnectionFamily() : derived.getConnectionFamily());
     }
 
     private static List<PropertyType> copyProperties(List<PropertyType> values) {
@@ -4857,7 +5124,9 @@ class GraphExtractionOrchestrator {
         LinkedHashMap<String, PropertyType> merged = new LinkedHashMap<>();
         addProperties(merged, configured);
         addProperties(merged, derived);
-        return merged.isEmpty() ? null : List.copyOf(merged.values());
+        return merged.isEmpty()
+                ? (configured != null || derived != null ? List.of() : null)
+                : List.copyOf(merged.values());
     }
 
     private static void addProperties(Map<String, PropertyType> target, List<PropertyType> values) {

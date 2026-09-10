@@ -76,6 +76,14 @@ public class ConceptExtractorImpl implements ConceptExtractor {
             + "(?:(?:\\s*,\\s*|\\s+)" + UPPERCASE_TOKEN + "){1,2}"
             + "(?![\\p{L}\\p{N}])"
     );
+    private static final String TITLE_CASE_TOKEN =
+        "\\p{Lu}[\\p{Ll}\\p{M}'’\\-]+";
+    private static final Pattern UPPERCASE_TITLE_COMPOUND = Pattern.compile(
+        "(?<![\\p{L}\\p{N}])" + UPPERCASE_TOKEN
+            + "\\s*,\\s*" + TITLE_CASE_TOKEN
+            + "(?:\\s+" + TITLE_CASE_TOKEN + "){0,2}"
+            + "(?![\\p{L}\\p{N}])"
+    );
 
     @Override
     public ExtractionResult extractConcepts(String text, ExtractionConfig config) {
@@ -317,6 +325,14 @@ public class ConceptExtractorImpl implements ConceptExtractor {
             String term = phraseMatcher.group();
             termCounts.merge(term, 1, Integer::sum);
             firstPositions.putIfAbsent(term, phraseMatcher.start());
+            compoundTerms.add(term);
+        }
+
+        Matcher titleCompoundMatcher = UPPERCASE_TITLE_COMPOUND.matcher(text);
+        while (titleCompoundMatcher.find()) {
+            String term = titleCompoundMatcher.group();
+            termCounts.merge(term, 1, Integer::sum);
+            firstPositions.putIfAbsent(term, titleCompoundMatcher.start());
             compoundTerms.add(term);
         }
 

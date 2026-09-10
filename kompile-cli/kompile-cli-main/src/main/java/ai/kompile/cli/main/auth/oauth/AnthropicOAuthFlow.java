@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.auth.oauth;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.main.auth.OAuthCredentialIdentity;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.IOException;
@@ -26,7 +27,6 @@ public final class AnthropicOAuthFlow implements OAuthProviderFlow {
     private static final String SCOPES =
             "org:create_api_key user:profile user:inference user:sessions:claude_code "
                     + "user:mcp_servers user:file_upload";
-    private static final long REFRESH_SKEW_MILLIS = 5 * 60 * 1000L;
 
     private final OAuthSupport.HttpTransport http;
 
@@ -155,18 +155,18 @@ public final class AnthropicOAuthFlow implements OAuthProviderFlow {
                         "grant_type", "refresh_token",
                         "client_id", CLIENT_ID,
                         "refresh_token", credential.getRefresh()))));
-        return parseToken(response, "Anthropic token refresh", credential.getRefresh());
+        return parseToken(response, "Anthropic token refresh", credential);
     }
 
     private ManagedCredential parseToken(
             OAuthSupport.Response response,
             String context,
-            String previousRefreshToken) throws IOException {
+            ManagedCredential previous) throws IOException {
         OAuthSupport.requireSuccess(response, context);
         JsonNode body = OAuthSupport.json(response, context);
         String refresh = OAuthSupport.optionalText(body, "refresh_token");
         if (refresh == null) {
-            refresh = previousRefreshToken;
+            refresh = previous == null ? null : previous.getRefresh();
         }
         if (refresh == null || refresh.isBlank()) {
             throw new IOException(context + " is missing 'refresh_token'");
@@ -176,7 +176,8 @@ public final class AnthropicOAuthFlow implements OAuthProviderFlow {
                 refresh,
                 OAuthSupport.expiryFromNow(
                         OAuthSupport.requiredPositiveLong(body, "expires_in", context),
-                        REFRESH_SKEW_MILLIS));
+                        0L),
+                OAuthCredentialIdentity.tokenMetadata(PROVIDER_ID, body, previous));
     }
 
     @Override

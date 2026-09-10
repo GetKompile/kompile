@@ -92,6 +92,9 @@ public class AgentTaskService {
                 .model(req.getModel())
                 .channel(req.getChannel())
                 .channelTarget(req.getChannelTarget())
+                .deliveryStatus(req.getChannel() == null || req.getChannel().isBlank()
+                        ? AgentTask.DeliveryStatus.NOT_REQUESTED
+                        : AgentTask.DeliveryStatus.PENDING)
                 .status(AgentTask.Status.PENDING)
                 .createdAt(System.currentTimeMillis())
                 .build();
@@ -155,6 +158,9 @@ public class AgentTaskService {
     private void fail(AgentTask task, String error) {
         task.setStatus(AgentTask.Status.FAILED);
         task.setError(error);
+        if (task.getDeliveryStatus() == AgentTask.DeliveryStatus.PENDING) {
+            deliveryFailed(task, "Task failed before channel delivery");
+        }
         task.setFinishedAt(System.currentTimeMillis());
         writeArtifact(task);
         store.save(task);
@@ -187,23 +193,48 @@ public class AgentTaskService {
 
     /** Deliver the result to a channel (Discord/Slack/...) when requested and available. */
     private void deliverToChannel(AgentTask task) {
-        if (channelManager == null || task.getChannel() == null || task.getChannel().isBlank()) {
+        if (task.getChannel() == null || task.getChannel().isBlank()) {
+            task.setDeliveryStatus(AgentTask.DeliveryStatus.NOT_REQUESTED);
+            return;
+        }
+        if (channelManager == null) {
+            deliveryFailed(task, "Channel runtime is unavailable");
             return;
         }
         if (task.getChannelTarget() == null || task.getChannelTarget().isBlank()) {
             log.warn("Task {} has channel '{}' but no channelTarget; skipping delivery",
                     task.getId(), task.getChannel());
+            deliveryFailed(task, "Channel target is required");
             return;
         }
         channelManager.getAdapter(task.getChannel()).ifPresentOrElse(
                 adapter -> {
                     try {
-                        adapter.send(task.getChannelTarget(), task.getOutput() != null ? task.getOutput() : "");
+                        var delivery = adapter.send(
+                                task.getChannelTarget(),
+                                task.getOutput() != null ? task.getOutput() : "");
+                        if (!delivery.accepted()) {
+                            log.warn("Channel delivery rejected for task {}: {}",
+                                    task.getId(), delivery.message());
+                            deliveryFailed(task, delivery.message());
+                        } else {
+                            task.setDeliveryStatus(AgentTask.DeliveryStatus.ACCEPTED);
+                            task.setDeliveryError(null);
+                        }
                     } catch (Exception e) {
                         log.warn("Channel delivery failed for task {}: {}", task.getId(), e.getMessage());
+                        deliveryFailed(task, e.getMessage());
                     }
                 },
-                () -> log.warn("No channel adapter '{}' for task {}", task.getChannel(), task.getId()));
+                () -> {
+                    log.warn("No channel adapter '{}' for task {}", task.getChannel(), task.getId());
+                    deliveryFailed(task, "Channel connection is not running: " + task.getChannel());
+                });
+    }
+
+    private static void deliveryFailed(AgentTask task, String error) {
+        task.setDeliveryStatus(AgentTask.DeliveryStatus.FAILED);
+        task.setDeliveryError(error == null || error.isBlank() ? "Channel delivery failed" : error);
     }
 
     public Optional<AgentTask> get(String id) {

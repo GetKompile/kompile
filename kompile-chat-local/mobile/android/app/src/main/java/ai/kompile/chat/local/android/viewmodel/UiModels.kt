@@ -89,7 +89,9 @@ enum class ImportOperationKind {
     MODEL_ARCHIVE,
     PROJECT_ARCHIVE,
     GRAPH,
-    MODEL_UNLOAD
+    MODEL_UNLOAD,
+    DSP_CACHE_CLEAR,
+    MODEL_STORAGE_CLEAR
 }
 
 internal val ImportOperationKind.isBusy: Boolean
@@ -186,6 +188,10 @@ internal fun modelStatusUi(
 /** Artifact changes require an explicit unload so one proven runtime remains authoritative. */
 internal val ImportOperationKind.requiresUnloadedModel: Boolean
     get() = this != ImportOperationKind.NONE && this != ImportOperationKind.MODEL_UNLOAD
+
+/** Model unload cancels first, then waits on the engine lease while generation drains. */
+internal val ImportOperationKind.permitsGenerationDrain: Boolean
+    get() = this == ImportOperationKind.MODEL_UNLOAD
 
 /** One-shot destinations emitted only after a lifecycle transaction has committed. */
 sealed interface AppNavigationEvent {

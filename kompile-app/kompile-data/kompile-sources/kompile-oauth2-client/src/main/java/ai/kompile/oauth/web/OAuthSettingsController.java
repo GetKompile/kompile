@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ import java.util.Map;
  * Allows configuring OAuth provider credentials from the UI.
  */
 @RestController
+@ConditionalOnExpression("'${spring.application.name:}' == 'kompile-app-crawl-manager'")
 @RequestMapping("/api/oauth/settings")
 public class OAuthSettingsController {
 
@@ -140,7 +142,10 @@ public class OAuthSettingsController {
                                 "Add authorized redirect URI"
                         ),
                         "/api/oauth/google/callback",
-                        List.of("https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/gmail.readonly", "email", "profile")
+                        List.of("https://www.googleapis.com/auth/drive.readonly",
+                                "https://www.googleapis.com/auth/gmail.readonly",
+                                "https://www.googleapis.com/auth/documents.readonly",
+                                "https://www.googleapis.com/auth/calendar.readonly", "email", "profile")
                 ),
                 new ProviderSetupInfo(
                         "microsoft",
@@ -153,26 +158,27 @@ public class OAuthSettingsController {
                                 "Set supported account types (usually 'Any Azure AD directory')",
                                 "Add redirect URI as 'Web' platform",
                                 "Go to 'Certificates & secrets' > 'New client secret'",
-                                "Go to 'API permissions' > Add: Files.Read, User.Read"
+                                "Go to 'API permissions' > Add: Files.Read, Sites.Read.All, User.Read"
                         ),
                         "/api/oauth/microsoft/callback",
-                        List.of("Files.Read", "User.Read", "offline_access")
+                        List.of("Files.Read", "Sites.Read.All", "User.Read", "offline_access")
                 ),
                 new ProviderSetupInfo(
                         "atlassian",
                         "Atlassian",
-                        "Connect to Jira and Confluence",
+                        "Connect to Confluence and Jira Cloud",
                         "https://developer.atlassian.com/console/myapps/",
                         List.of(
                                 "Go to Atlassian Developer Console",
                                 "Create a new OAuth 2.0 app",
                                 "Set app name and agree to terms",
-                                "Go to 'Permissions' and add Jira/Confluence scopes",
+                                "Go to 'Permissions' and add Confluence and Jira scopes",
                                 "Go to 'Authorization' > 'Add' OAuth 2.0",
                                 "Set callback URL"
                         ),
                         "/api/oauth/atlassian/callback",
-                        List.of("read:confluence-content.all", "read:jira-work", "read:jira-user", "offline_access")
+                        List.of("read:confluence-content.all", "read:confluence-space.summary",
+                                "read:jira-work", "read:jira-user", "offline_access")
                 ),
                 new ProviderSetupInfo(
                         "notion",
@@ -205,6 +211,36 @@ public class OAuthSettingsController {
                         ),
                         "/api/oauth/slack/callback",
                         List.of("channels:history", "channels:read", "users:read")
+                ),
+                new ProviderSetupInfo(
+                        "discord",
+                        "Discord",
+                        "Connect a Discord account for source discovery metadata",
+                        "https://discord.com/developers/applications",
+                        List.of(
+                                "Create or select a Discord application",
+                                "Open OAuth2 settings",
+                                "Add the Kompile callback URL",
+                                "Enable identify and guilds scopes",
+                                "Use a separate bot token for conversational channels and history crawling"
+                        ),
+                        "/api/oauth/discord/callback",
+                        List.of("identify", "guilds")
+                ),
+                new ProviderSetupInfo(
+                        "reddit",
+                        "Reddit",
+                        "Connect Reddit for subreddit post and comment ingestion",
+                        "https://www.reddit.com/prefs/apps",
+                        List.of(
+                                "Create a Reddit 'web app' application",
+                                "Set the redirect URI to the Kompile Reddit callback URL",
+                                "Copy the client ID shown below the app name",
+                                "Copy the application secret",
+                                "Configure identity and read scopes"
+                        ),
+                        "/api/oauth/reddit/callback",
+                        List.of("identity", "read")
                 )
         );
 

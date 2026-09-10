@@ -162,7 +162,7 @@ class ConceptExtractorImplTest {
 
     @Test
     void extractConcepts_preservesShortAndCompoundUppercaseTerms() {
-        String text = "The CFO reviewed KPI targets with a VP, FP&A counterpart for Q3.";
+        String text = "The CFO reviewed KPI targets with a VP, Planning counterpart for Q3.";
         ExtractionResult result = extractor.extractConcepts(text, defaultConfig());
 
         List<String> names = result.concepts().stream()
@@ -171,8 +171,9 @@ class ConceptExtractorImplTest {
         assertTrue(names.contains("CFO"), "Expected CFO in " + names);
         assertTrue(names.contains("KPI"), "Expected KPI in " + names);
         assertTrue(names.contains("VP"), "Expected VP in " + names);
-        assertTrue(names.contains("FP&A"), "Expected FP&A in " + names);
-        assertTrue(names.contains("VP, FP&A"), "Expected compound VP, FP&A in " + names);
+        assertTrue(names.stream().anyMatch("Planning"::equalsIgnoreCase),
+                "Expected Planning in " + names);
+        assertTrue(names.contains("VP, Planning"), "Expected compound VP, Planning in " + names);
         assertTrue(names.contains("Q3"), "Expected Q3 in " + names);
     }
 

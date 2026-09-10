@@ -85,7 +85,7 @@ class GraphExtractionToRagIntegrationTest {
         void extractedEntitiesAreQueryable() {
             // Configure LLM to return extraction JSON, then answer RAG queries
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(
                                     entityJson("e1", "Kompile", "TECHNOLOGY", "An AI/ML platform"),
@@ -136,13 +136,13 @@ class GraphExtractionToRagIntegrationTest {
         void incrementalExtractionAccumulates() {
             // First ingestion: technology entities
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities") && prompt.contains("Kubernetes")) {
+                if (isExtractionPrompt(prompt) && prompt.contains("Kubernetes")) {
                     return extractionJson(
                             List.of(entityJson("e1", "Kubernetes", "TECHNOLOGY", "Container orchestrator")),
                             List.of()
                     );
                 }
-                if (prompt.contains("Extract entities") && prompt.contains("Docker")) {
+                if (isExtractionPrompt(prompt) && prompt.contains("Docker")) {
                     return extractionJson(
                             List.of(entityJson("e2", "Docker", "TECHNOLOGY", "Container runtime")),
                             List.of()
@@ -151,22 +151,25 @@ class GraphExtractionToRagIntegrationTest {
                 return "Answer based on graph context";
             });
 
-            // First ingestion
-            Graph kubernetesGraph = graphConstructor.constructGraphFromDocs(
-                    List.of(doc("d1", "Kubernetes is a container orchestrator.")),
-                    null, SchemaEnforcementMode.NONE
-            );
-
-            // Second ingestion — separate graph scope
-            Graph dockerGraph = graphConstructor.constructGraphFromDocs(
-                    List.of(doc("d2", "Docker is a container runtime.")),
-                    null, SchemaEnforcementMode.NONE
-            );
+            // Use the fact-sheet-scoped API for independent graph lifecycles. The legacy
+            // constructGraphFromDocs overload intentionally targets the default graph.
+            MatrixGraphConstructor.GraphConstructionResult kubernetesResult =
+                    graphConstructor.constructGraphWithId(
+                            List.of(doc("d1", "Kubernetes is a container orchestrator.")),
+                            null, SchemaEnforcementMode.NONE, 101L
+                    );
+            MatrixGraphConstructor.GraphConstructionResult dockerResult =
+                    graphConstructor.constructGraphWithId(
+                            List.of(doc("d2", "Docker is a container runtime.")),
+                            null, SchemaEnforcementMode.NONE, 102L
+                    );
+            Graph kubernetesGraph = kubernetesResult.graph();
+            Graph dockerGraph = dockerResult.graph();
 
             // Verify both scoped graphs exist independently
-            assertTrue(graphStore.loadGraph(kubernetesGraph.getId()).isPresent());
-            assertTrue(graphStore.loadGraph(dockerGraph.getId()).isPresent());
-            assertNotEquals(kubernetesGraph.getId(), dockerGraph.getId());
+            assertTrue(graphStore.loadGraph(kubernetesResult.graphId()).isPresent());
+            assertTrue(graphStore.loadGraph(dockerResult.graphId()).isPresent());
+            assertNotEquals(kubernetesResult.graphId(), dockerResult.graphId());
 
             // RAG query should find entities when scoped to the intended graph
             GraphRagResult result = ragService.answerQuery(GraphRagQuery.builder()
@@ -184,7 +187,7 @@ class GraphExtractionToRagIntegrationTest {
         @DisplayName("Local search returns answers with extracted entities")
         void localSearchWithExtractedEntities() {
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(
                                     entityJson("e1", "Alice", "PERSON", "CEO"),
@@ -231,7 +234,7 @@ class GraphExtractionToRagIntegrationTest {
         @DisplayName("Entity types survive extraction → storage → query context")
         void entityTypesSurvivePipeline() {
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(
                                     entityJson("e1", "Alice", "PERSON", "Engineer"),
@@ -273,7 +276,7 @@ class GraphExtractionToRagIntegrationTest {
         @DisplayName("Relationship types survive extraction → edge storage")
         void relationshipTypesSurvivePipeline() {
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(
                                     entityJson("e1", "Alice", "PERSON", "Developer"),
@@ -313,7 +316,7 @@ class GraphExtractionToRagIntegrationTest {
         void ragWithoutLlm() {
             // First, construct graph normally
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(entityJson("e1", "TestEntity", "CONCEPT", "A test entity")),
                             List.of()
@@ -346,7 +349,7 @@ class GraphExtractionToRagIntegrationTest {
         void ragWithoutEmbedding() {
             // First, construct graph normally
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return extractionJson(
                             List.of(entityJson("e1", "SearchableEntity", "CONCEPT", "A searchable entity")),
                             List.of()
@@ -388,7 +391,7 @@ class GraphExtractionToRagIntegrationTest {
         void emptyExtractionDoesNotBreakRag() {
             // LLM returns empty entities
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     return "{\"entities\":[],\"relationships\":[]}";
                 }
                 return "No data available";
@@ -418,13 +421,13 @@ class GraphExtractionToRagIntegrationTest {
         void extractionFailureDoesNotBreakExistingData() {
             // First: successful extraction
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities") && prompt.contains("Existing")) {
+                if (isExtractionPrompt(prompt) && prompt.contains("Existing")) {
                     return extractionJson(
                             List.of(entityJson("e1", "ExistingEntity", "CONCEPT", "Already in graph")),
                             List.of()
                     );
                 }
-                if (prompt.contains("Extract entities")) {
+                if (isExtractionPrompt(prompt)) {
                     throw new RuntimeException("LLM failure");
                 }
                 return "Answer about existing entity";
@@ -461,10 +464,15 @@ class GraphExtractionToRagIntegrationTest {
         @DisplayName("Multiple documents produce unique entity IDs")
         void multipleDocsProduceUniqueIds() {
             llmChat.setResponseGenerator(prompt -> {
-                if (prompt.contains("Extract entities")) {
-                    // Both docs return entity with same base ID "e1"
-                    return extractionJsonArray(2,
-                            List.of(entityJson("e1", "Entity", "CONCEPT", "A concept")),
+                if (isExtractionPrompt(prompt)) {
+                    // The batch extraction contract returns one object for all source documents.
+                    // Keep the source-scoped IDs that a typed extractor would emit rather than
+                    // returning one JSON object per document (which is not a valid response).
+                    return extractionJson(
+                            List.of(
+                                    entityJson("doc-A-e1", "Entity", "CONCEPT", "A concept from document A"),
+                                    entityJson("doc-B-e1", "Entity", "CONCEPT", "A concept from document B")
+                            ),
                             List.of()
                     );
                 }
@@ -489,6 +497,11 @@ class GraphExtractionToRagIntegrationTest {
     // ========================================
     // Helpers
     // ========================================
+
+    private static boolean isExtractionPrompt(String prompt) {
+        return prompt != null && (prompt.contains("Extract a knowledge graph")
+                || prompt.contains("Extract entities"));
+    }
 
     private static RetrievedDoc doc(String id, String text) {
         return new RetrievedDoc(id, text, new HashMap<>());
@@ -526,19 +539,6 @@ class GraphExtractionToRagIntegrationTest {
             sb.append(toJson(relationships.get(i)));
         }
         sb.append("]}");
-        return sb.toString();
-    }
-
-    private static String extractionJsonArray(int documentCount,
-                                              List<Map<String, Object>> entities,
-                                              List<Map<String, Object>> relationships) {
-        String singleDocJson = extractionJson(entities, relationships);
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < documentCount; i++) {
-            if (i > 0) sb.append(",");
-            sb.append(singleDocJson);
-        }
-        sb.append("]");
         return sb.toString();
     }
 

@@ -80,6 +80,20 @@ public interface KnowledgeGraphBuilder {
             Consumer<BuildProgress> progressCallback
     );
 
+    /** Apply a request configuration and execute as one operation, never configure a shared builder ahead of queuing. */
+    default List<ProposedTriple> buildFromChunks(List<RetrievedDoc> chunks, GraphBuildContext context,
+                                                BuilderConfig requestConfig, Consumer<BuildProgress> progressCallback) {
+        synchronized (this) {
+            BuilderConfig previous = getConfig();
+            try {
+                configure(requestConfig);
+                return buildFromChunks(chunks, context, progressCallback);
+            } finally {
+                configure(previous);
+            }
+        }
+    }
+
     /**
      * Get extraction logs for a job (for LLM builders with full transparency).
      *

@@ -50,7 +50,7 @@ class ProjectCommandVlmOcrPresetTest {
                 "--source", "data/input_documents/uploads",
                 "--pdf-routing", "FORCE_VLM",
                 "--vlm-model", "smoldocling-256m",
-                "--schema-preset", "fpna-cpg-channel-v1"));
+                "--schema-preset", "example-schema-v1"));
 
         String manifest = Files.readString(projectRoot.resolve("kompile.project.json"), StandardCharsets.UTF_8);
         String openState = Files.readString(projectRoot.resolve(".kompile/project/open.json"), StandardCharsets.UTF_8);
@@ -67,7 +67,7 @@ class ProjectCommandVlmOcrPresetTest {
         assertTrue(manifest.contains("\"id\" : \"vlm-ocr-docs\""));
         assertTrue(manifest.contains("\"multimodal\" : true"));
         assertTrue(manifest.contains("\"vlmModel\" : \"smoldocling-256m\""));
-        assertTrue(manifest.contains("\"schemaPresetId\" : \"fpna-cpg-channel-v1\""));
+        assertTrue(manifest.contains("\"schemaPresetId\" : \"example-schema-v1\""));
         assertTrue(manifest.contains("\"id\" : \"vlm-ocr-ingest\""));
         assertTrue(manifest.contains("\"id\" : \"run-vlm-ocr\""));
 

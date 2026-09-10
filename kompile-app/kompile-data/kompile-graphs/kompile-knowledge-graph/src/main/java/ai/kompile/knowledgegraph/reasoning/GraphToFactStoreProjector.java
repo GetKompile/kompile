@@ -23,14 +23,17 @@ import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.grounding.KbGroundingService;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.graph.reasoning.tms.BeliefReviser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Projects a crawled fact-sheet graph into the PSL {@link FactStore} so the
@@ -115,7 +118,7 @@ public class GraphToFactStoreProjector {
             return 0;
         }
 
-        FactStore factStore = kbGroundingService.getState(factSheetId).factStore();
+        List<Fact> projectedFacts = new ArrayList<>();
         int asserted = 0;
 
         // Atom cap: read from KbConfig.derivationMaxAtoms (default 5000, configurable via
@@ -138,7 +141,7 @@ public class GraphToFactStoreProjector {
                 continue;
             }
             String atomKey = atomKeyForNode(node);
-            factStore.assertFact(Fact.observed(atomKey, SOURCE_ID));
+            projectedFacts.add(Fact.observed(atomKey, SOURCE_ID));
             asserted++;
         }
 
@@ -186,11 +189,40 @@ public class GraphToFactStoreProjector {
 
             String atomKey = predicate + "(" + srcId + ", " + tgtId + ")";
             if (value >= 0.99) {
-                factStore.assertFact(Fact.observed(atomKey, SOURCE_ID));
+                projectedFacts.add(Fact.observed(atomKey, SOURCE_ID));
             } else {
-                factStore.assertFact(Fact.soft(atomKey, value, SOURCE_ID));
+                projectedFacts.add(Fact.soft(atomKey, value, SOURCE_ID));
             }
             asserted++;
+        }
+
+        var state = kbGroundingService.getState(factSheetId);
+        var writeLock = state.lock().writeLock();
+        FactStore factStore = state.factStore();
+        int retracted;
+        writeLock.lock();
+        try {
+            Set<String> oldProjectionKeys = factStore.allSourceFacts().stream()
+                    .filter(fact -> SOURCE_ID.equals(fact.sourceId()))
+                    .map(Fact::atomKey)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            retracted = factStore.replaceSourceFacts(SOURCE_ID, projectedFacts);
+            Set<String> replacementKeys = projectedFacts.stream().map(Fact::atomKey)
+                    .collect(java.util.stream.Collectors.toSet());
+            for (String removedKey : oldProjectionKeys) {
+                if (!replacementKeys.contains(removedKey) && factStore.factFor(removedKey).isEmpty()) {
+                    BeliefReviser.retractAndPurge(removedKey, factStore,
+                            state.justificationIndex(), state.inferredFactStore());
+                }
+            }
+            state.concurrentFactStore().markMutation();
+            kbGroundingService.markStale(factSheetId);
+        } finally {
+            writeLock.unlock();
+        }
+        if (retracted > 0) {
+            log.debug("GraphToFactStoreProjector: replaced {} stale graph-projection atoms for factSheet={}",
+                    retracted, factSheetId);
         }
 
         // Compute hard vs soft breakdown so operators can see whether the graph produces

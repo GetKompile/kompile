@@ -290,6 +290,7 @@ public class LlmModelController {
         response.put("dspFrozenCount", languageModel.getDspFrozenCount());
         response.put("dspPlanReport", languageModel.getDspPlanReport());
         response.put("dspCompilationStats", languageModel.getDspCompilationStats());
+        response.put("prefixCacheStats", languageModel.getPrefixCacheStats());
         response.put("stagingUrl", defaultStagingUrl());
         response.put("cacheDir", cacheDir.toString());
         return ResponseEntity.ok(response);

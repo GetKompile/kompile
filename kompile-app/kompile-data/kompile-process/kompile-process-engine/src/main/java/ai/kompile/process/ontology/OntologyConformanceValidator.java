@@ -100,9 +100,9 @@ public final class OntologyConformanceValidator {
             return new RelationshipConformance(true, null, null);
         }
         for (RelationshipTypeDefinition rel : schema.getRelationshipTypes()) {
-            if (eq(rel.getType(), relationshipType)
-                    && wildcardOrEq(rel.getSourceEntityType(), sourceType)
-                    && wildcardOrEq(rel.getTargetEntityType(), targetType)) {
+            if (relationshipTypeMatches(rel, relationshipType)
+                    && entityTypeMatches(schema, rel.getSourceEntityType(), sourceType)
+                    && entityTypeMatches(schema, rel.getTargetEntityType(), targetType)) {
                 return new RelationshipConformance(true, rel.getCardinality(), null);
             }
         }
@@ -216,15 +216,41 @@ public final class OntologyConformanceValidator {
         if (schema.getEntityTypes() == null) return null;
         for (EntityTypeDefinition def : schema.getEntityTypes()) {
             if (eq(def.getName(), entityType)) return def;
+            if (def.getAliases() != null && def.getAliases().stream()
+                    .anyMatch(alias -> eq(alias, entityType))) return def;
         }
         return null;
+    }
+
+    private static boolean relationshipTypeMatches(
+            RelationshipTypeDefinition definition, String actual) {
+        if (definition == null) return false;
+        if (eq(definition.getType(), actual) || eq(definition.getCanonicalType(), actual)) return true;
+        return definition.getObservedTypes() != null && definition.getObservedTypes().stream()
+                .anyMatch(alias -> eq(alias, actual));
+    }
+
+    private static boolean entityTypeMatches(
+            OntologySchema schema, String definitionType, String actual) {
+        if (definitionType == null || definitionType.isBlank()) return true;
+        EntityTypeDefinition definition = findEntityType(schema, definitionType);
+        EntityTypeDefinition observed = findEntityType(schema, actual);
+        if (definition != null && observed != null) {
+            String expectedName = definition.getName();
+            EntityTypeDefinition current = observed;
+            java.util.LinkedHashSet<String> visited = new java.util.LinkedHashSet<>();
+            while (current != null && current.getName() != null
+                    && visited.add(current.getName().trim().toLowerCase(java.util.Locale.ROOT))) {
+                if (eq(expectedName, current.getName())) return true;
+                current = findEntityType(schema, current.getParentType());
+            }
+            return false;
+        }
+        return eq(definitionType, actual);
     }
 
     private static boolean eq(String a, String b) {
         return a != null && b != null && a.trim().equalsIgnoreCase(b.trim());
     }
 
-    private static boolean wildcardOrEq(String definitionType, String actual) {
-        return definitionType == null || definitionType.isBlank() || eq(definitionType, actual);
-    }
 }

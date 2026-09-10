@@ -284,6 +284,62 @@ Key fields:
 | `autoRollbackOnViolation` | Revert file changes when a violation is detected |
 | `maxCorrections` | How many retry rounds before stopping |
 
+#### Direction Monitoring (goal-drift judge)
+
+Long agentic conversations go off the rails: circular work, re-litigating settled decisions,
+scope runaway, or quietly abandoning development guidelines. Direction monitoring is an
+**opt-in** judge that watches the *direction* of the conversation relative to the user's
+goal — not per-turn rule compliance — and **interrupts and redirects** the agent when it
+drifts.
+
+It is strictly non-default and non-overridable:
+
+- `directionMonitoring` defaults to `false`; a config on disk never activates it by itself —
+  the user confirms per session (same opt-in contract as the enforcer), and non-interactive
+  sessions never activate it.
+- The one-shot `/judge override` (report-only turn) governs compliance judges only. An
+  active direction monitor is deliberately **not** subject to it.
+- The judge is fail-open by construction: an unavailable backend, a malformed verdict, a
+  low-confidence flag, or any judge bug is logged and ignored. Only a clear, confident,
+  well-formed drift verdict can redirect or halt a turn.
+
+Setup:
+
+```bash
+kompile enforcer init --direction-monitoring \
+  --direction-goal "Ship the parser fix; do not refactor unrelated modules" \
+  --direction-check-every 3 --direction-max-redirects 2 \
+  --direction-confidence-threshold 0.6 --direction-cross-turn-limit 3
+```
+
+Config fields (in `.kompile/enforcer-config.json`):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `directionMonitoring` | `false` | Master switch; direction monitoring never runs without it |
+| `directionGoal` | *(per-turn user message)* | Session goal the judge checks drift against |
+| `directionCheckEvery` | `3` | Check every N model iterations and always the final response (min 1) |
+| `directionMaxRedirects` | `2` | In-place redirects per turn before the judge halts the turn (0–4) |
+| `directionConfidenceThreshold` | `0.6` | Minimum verdict confidence allowed to redirect or halt (0.0–1.0) |
+| `directionCrossTurnDriftLimit` | `3` | Consecutive drift-affected turns before immediate escalation; `0` disables |
+| `directionReportOnly` | `false` | Observe-only: report drift, never redirect or halt |
+
+In-session control: `/direction status|goal <text>|on|off|reset|reload|help`.
+
+How a drift verdict is handled: the first redirects are applied **in place** — the agent
+keeps its full conversation context and receives the judge's `redirect_prompt` as its next
+message, so course-correction does not lose work. Once the redirect budget is spent, the
+turn is **halted** and handed back through the supervisor feedback lane (`[direction-judge
+feedback]`) with the drift reason and a suggested redirection. Superseded tool calls never
+execute. Every verdict is recorded to the session judgement log (`/judge judgements`,
+phase `JUDGE_DIRECTION`). Cross-turn state is stored at
+`~/.kompile/sessions/<sessionId>/direction-state.json`, survives session resume/reload,
+increments once per confidently drift-affected turn, resets after a clean confidently
+assessed turn, and is unchanged by low-confidence, failed, unassessed, or cancelled turns.
+When the configured streak limit is reached, the current turn is halted immediately rather
+than receiving another ordinary redirect. Report-only mode records the same streak without
+ever redirecting or halting.
+
 #### Presets
 
 Three built-in presets for quick setup (`kompile enforcer quick`):

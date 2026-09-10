@@ -300,8 +300,10 @@ public class DistributedCrawlAggregator {
             return UnifiedCrawlJob.Status.PENDING;
         }
         return switch (s) {
-            case DISPATCHING -> UnifiedCrawlJob.Status.PENDING;
+            case PREPARING, DISPATCHING -> UnifiedCrawlJob.Status.PENDING;
             case RUNNING -> UnifiedCrawlJob.Status.RUNNING;
+            case SEALING -> UnifiedCrawlJob.Status.ACTIVATING;
+            case ABORTING, CANCELLING -> UnifiedCrawlJob.Status.CANCELLING;
             case COMPLETED, PARTIALLY_COMPLETED -> UnifiedCrawlJob.Status.COMPLETED;
             case FAILED -> UnifiedCrawlJob.Status.FAILED;
             case CANCELLED -> UnifiedCrawlJob.Status.CANCELLED;

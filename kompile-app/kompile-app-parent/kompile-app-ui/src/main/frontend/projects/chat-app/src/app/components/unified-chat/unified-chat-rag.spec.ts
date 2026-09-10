@@ -78,7 +78,8 @@ function createTestBed() {
     'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
-    'getAllAgents', 'getAvailableAgents', 'getKompileLocalStatus'
+    'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
+    'refreshChatHarnessAgents', 'getKompileLocalStatus'
   ], { agents$: new Subject<AgentProvider[]>().asObservable() });
   const chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
     'getSessions', 'saveSession', 'deleteSession', 'getSession'
@@ -143,6 +144,8 @@ function createTestBed() {
   );
   agentServiceSpy.getAllAgents.and.returnValue(of([]));
   agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
+  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
+  agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
   agentServiceSpy.getKompileLocalStatus.and.returnValue(of({
     connected: false, modelLoaded: false, stagingUrl: null
   } as any));
@@ -261,6 +264,22 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
   // ─────────────────────────────────────────────────────────────────────────────
 
   describe('RAG configuration defaults', () => {
+    it('renders only harness-owned retrieval controls and the attachment input', () => {
+      component.showSettings = true;
+      component.ragEnabled = true;
+      component.selectedAgent = mockAgent({ agentType: 'HARNESS', supportsVision: true });
+      fixture.detectChanges();
+
+      const text = fixture.nativeElement.textContent;
+      expect(text).toContain('Document Lookup (RAG)');
+      expect(text).toContain('Maximum Results');
+      expect(text).not.toContain('Semantic Results (K)');
+      expect(text).not.toContain('Enable Reranking');
+      expect(text).not.toContain('Model Staging Connection');
+      expect(fixture.nativeElement.querySelector('[data-testid="attachment-input"]')).not.toBeNull();
+      expect(fixture.nativeElement.querySelector('[data-testid="attach-btn"]')).not.toBeNull();
+    });
+
     it('should initialize with default search parameters', () => {
       expect(component.searchType).toBe('hybrid');
       expect(component.semanticK).toBe(DEFAULT_RAG_OPTIONS.semanticK || 5);
@@ -303,7 +322,7 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
 
     it('should have expected timeout options', () => {
       expect(component.timeoutOptions.length).toBe(7);
-      expect(component.timeoutOptions[0].value).toBe(0);   // No timeout
+      expect(component.timeoutOptions[0].value).toBe(0);   // Server-owned safety default
       expect(component.timeoutOptions[3].value).toBe(300);  // 5 min default
       expect(component.timeoutOptions[6].value).toBe(1800); // 30 min max
     });
@@ -754,6 +773,22 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
       expect(options.ragSimilarityThreshold).toBe(0.3);
     });
 
+    it('should pass the stable browser session and system prompt to the CLI harness', () => {
+      component.currentSession = {
+        id: 'browser-session-123', name: 'Harness chat', messages: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      } as any;
+      component.systemPrompt = 'Follow the browser-selected policy.';
+      component.userInput = 'Run the workflow';
+
+      component.sendMessage();
+
+      const options = spies.agentChatServiceSpy.sendMessage.calls.mostRecent().args[3];
+      expect(options.sessionId).toBe('browser-session-123');
+      expect(options.enableMemory).toBeTrue();
+      expect(options.systemPromptOverride).toBe('Follow the browser-selected policy.');
+    });
+
     it('should pass RAG disabled when ragEnabled is false', () => {
       component.ragEnabled = false;
       component.userInput = 'Hello';
@@ -810,6 +845,51 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
 
       const options = spies.agentChatServiceSpy.sendMessage.calls.mostRecent().args[3];
       expect(options.folderId).toBe('folder-123');
+    });
+
+    it('passes bounded pending attachments and keeps them on the user message', () => {
+      const attachment = {
+        filename: 'evidence.txt', mimeType: 'text/plain',
+        textContent: 'grounded evidence', isImage: false, size: 17
+      };
+      component.pendingAttachments = [attachment];
+      component.userInput = 'Read the evidence';
+
+      component.sendMessage();
+
+      const options = spies.agentChatServiceSpy.sendMessage.calls.mostRecent().args[3];
+      expect(options.attachments).toEqual([attachment]);
+      expect((component.messages[0] as any).attachments).toEqual([attachment]);
+      expect(component.pendingAttachments).toEqual([]);
+    });
+  });
+
+  describe('harness session identity', () => {
+    it('clearing a conversation starts a fresh CLI transcript identity', () => {
+      fixture.detectChanges();
+      component.selectedAgent = mockAgent({ name: 'crawler', agentType: 'HARNESS' });
+      const original = {
+        id: 'browser-session-old', name: 'Old chat',
+        messages: [{ id: 'u1', role: 'user', content: 'old', timestamp: new Date() }],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        conversationId: 'legacy-rag-id'
+      } as any;
+      component.sessions = [original];
+      component.currentSession = original;
+      component.messages = [...original.messages];
+      component.currentConversationId = 'legacy-rag-id';
+      (component as any).agentSession = { id: 'old-agent-session' };
+      spies.dialogSpy.open.and.returnValue({ afterClosed: () => of(true) } as any);
+
+      component.clearConversation();
+
+      expect(component.currentSession).not.toBeNull();
+      expect(component.currentSession!.id).not.toBe('browser-session-old');
+      expect(component.currentSession!.name).toBe('New Chat');
+      expect(component.sessions.map(session => session.id)).toEqual([component.currentSession!.id]);
+      expect(component.messages).toEqual([]);
+      expect(component.currentConversationId).toBeNull();
+      expect((component as any).agentSession).toBeNull();
     });
   });
 

@@ -600,15 +600,15 @@ class DecomposedExtractionPipelineTest {
 
     @Test
     void graphFacetCategoryDoesNotTriggerJavaSemanticRepair() {
-        String source = "M. Chen is VP, FP&A.";
+        String source = "M. Chen is VP, Planning.";
         PassContext context = PassContext.forChunk("chunk-frame-boundary", "doc-frame-boundary", source)
                 .withConceptHints(List.of(
                         new ConceptHint("M. Chen", "PERSON", "unified-corpus", null),
-                        new ConceptHint("VP FP&A", "ROLE", "deterministic-prepass", null)));
+                        new ConceptHint("VP Planning", "ROLE", "deterministic-prepass", null)));
         ScriptedCaller caller = new ScriptedCaller().on(
                 ExtractionPassPrompts.PASS_PROPOSITIONS,
                 "{\"proposition\":{\"subject\":\"M. Chen\",\"predicate\":\"is VP\","
-                        + "\"object\":\"FP&A\",\"polarity\":\"AFFIRMED\","
+                        + "\"object\":\"Planning\",\"polarity\":\"AFFIRMED\","
                         + "\"modality\":\"FACTUAL\"}}"
         );
         DecomposedExtractionPipeline pipeline = new DecomposedExtractionPipeline(
@@ -621,19 +621,19 @@ class DecomposedExtractionPipelineTest {
         assertEquals(1, caller.calls(ExtractionPassPrompts.PASS_PROPOSITIONS));
         assertFalse(outcome.notes().stream().anyMatch(note -> note.contains("deterministically repaired")));
         assertEquals("is VP", outcome.bundle().propositions().get(0).predicate());
-        assertEquals("FP&A", outcome.bundle().propositions().get(0).object());
+        assertEquals("Planning", outcome.bundle().propositions().get(0).object());
     }
 
     @Test
     void arbitraryFacetCategoryDoesNotSilentlyRejectAModelFrame() {
-        String source = "M. Chen manages FP&A operations.";
+        String source = "M. Chen manages Planning operations.";
         PassContext context = PassContext.forChunk("chunk-frame-purity", "doc-frame-purity", source)
                 .withConceptHints(List.of(
                         new ConceptHint("M Chen", "PERSON", "unified-corpus", null),
-                        new ConceptHint("FP&A operations", "BUSINESS_UNIT",
+                        new ConceptHint("Planning operations", "BUSINESS_UNIT",
                                 "deterministic-prepass", null)));
         String split = "{\"proposition\":{\"subject\":\"M. Chen\","
-                + "\"predicate\":\"manages FP&A\",\"object\":\"operations\","
+                + "\"predicate\":\"manages Planning\",\"object\":\"operations\","
                 + "\"polarity\":\"AFFIRMED\","
                 + "\"modality\":\"FACTUAL\"}}";
         ScriptedCaller caller = new ScriptedCaller().on(
@@ -647,7 +647,7 @@ class DecomposedExtractionPipelineTest {
 
         assertEquals(1, caller.calls(ExtractionPassPrompts.PASS_PROPOSITIONS));
         assertEquals(1, outcome.bundle().propositions().size());
-        assertEquals("manages FP&A", outcome.bundle().propositions().get(0).predicate());
+        assertEquals("manages Planning", outcome.bundle().propositions().get(0).predicate());
         assertFalse(outcome.notes().stream().anyMatch(note -> note.contains("deterministically repaired")));
     }
 
@@ -696,13 +696,13 @@ class DecomposedExtractionPipelineTest {
 
     @Test
     void conceptFacetCategoriesDoNotActAsJavaArgumentRoleRules() {
-        String roleFocus = "M. Chen is VP, FP&A.";
+        String roleFocus = "M. Chen is VP, Planning.";
         PassContext roleContext = PassContext.forChunk("chunk-role-purity", "doc-role-purity", roleFocus)
                 .withConceptHints(List.of(
                         new ConceptHint("M Chen", "PERSON", "unified-corpus", null),
-                        new ConceptHint("VP FP&A", "ROLE", "deterministic-prepass", null)));
+                        new ConceptHint("VP Planning", "ROLE", "deterministic-prepass", null)));
         PropositionProposal swallowed = new PropositionProposal("p1", roleFocus,
-                "M. Chen", "is VP, FP&A", null, Polarity.AFFIRMED, Modality.FACTUAL,
+                "M. Chen", "is VP, Planning", null, Polarity.AFFIRMED, Modality.FACTUAL,
                 null, null, null, EvidenceSpan.ofQuote("chunk-role-purity", roleFocus));
         assertEquals(null, DecomposedExtractionPipeline.propositionValidationError(
                 swallowed, roleContext, roleFocus));
@@ -841,16 +841,16 @@ class DecomposedExtractionPipelineTest {
 
     @Test
     void copiedTypeTemplateIsCorrectedThroughSourceGroundedTypeBallotsBeforeProjection() {
-        String source = "The inventory identifies M. Chen as VP, FP&A.";
+        String source = "The inventory identifies M. Chen as VP, Planning.";
         PassContext context = PassContext.forChunk("chunk-type-repair", "doc-type-repair", source)
                 .withConceptHints(List.of(
                         new ConceptHint("M Chen", "PERSON", "deterministic-prepass", null),
-                        new ConceptHint("VP FP&A", "ROLE", "deterministic-prepass", null)));
+                        new ConceptHint("VP Planning", "ROLE", "deterministic-prepass", null)));
         String proposition = """
-                {"propositions":[{"id":"p1","text":"M. Chen is VP, FP&A",
-                  "subject":"M. Chen","predicate":"is","object":"VP, FP&A",
+                {"propositions":[{"id":"p1","text":"M. Chen is VP, Planning",
+                  "subject":"M. Chen","predicate":"is","object":"VP, Planning",
                   "polarity":"AFFIRMED","modality":"FACTUAL",
-                  "evidence":{"quote":"M. Chen as VP, FP&A","role":"DIRECT_SUPPORT"}}]}
+                  "evidence":{"quote":"M. Chen as VP, Planning","role":"DIRECT_SUPPORT"}}]}
                 """;
         String copiedTemplate = """
                 {"mention":{"decision":"CREATE_PROVISIONAL",

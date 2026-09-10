@@ -45,6 +45,35 @@ export interface AgentModelInfo {
   modelSource?: string;
 }
 
+export interface ChatHarnessPersona {
+  name: string;
+  displayName: string;
+  description: string;
+  selectorType: 'agent' | 'role';
+  selectorValue: string;
+  defaultPersona: boolean;
+  custom: boolean;
+  available: boolean;
+}
+
+export interface ChatHarnessCapabilities {
+  engine: string;
+  available: boolean;
+  status: string;
+  provider: string;
+  model: string;
+  chatMode: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  inputBudgetTokens: number;
+  compactTriggerRatio: number;
+  memoryEnabled: boolean;
+  ragEnabled: boolean;
+  workflowEnabled: boolean;
+  attachmentsSupported: boolean;
+  personas: ChatHarnessPersona[];
+}
+
 /**
  * Service for managing local AI agents (Claude Code, Codex, Gemini CLI).
  *
@@ -113,6 +142,59 @@ export class AgentService extends BaseService {
         throw err;
       })
     );
+  }
+
+  /**
+   * Load the authoritative kompile-cli-main personas/roles used by the Chat SPA.
+   * Provider/model configuration stays inside the CLI harness rather than becoming
+   * a second web-owned agent registry.
+   */
+  getChatHarnessAgents(refresh: boolean = false,
+                       workingDirectory?: string): Observable<AgentProvider[]> {
+    this.loadingSubject.next(true);
+    const params: { [key: string]: string } = { refresh: String(refresh) };
+    if (workingDirectory) params['workingDirectory'] = workingDirectory;
+    return this.http.get<ChatHarnessCapabilities>(
+      `${this.backendUrl}/agents/chat/capabilities`, { params }).pipe(
+      map(capabilities => (capabilities.personas || []).map(persona => ({
+        name: persona.name,
+        displayName: persona.displayName,
+        command: 'kompile chat',
+        skipPermissionsFlag: '--dangerously-skip-permissions',
+        skipPermissions: false,
+        args: [],
+        environment: {},
+        available: capabilities.available && persona.available,
+        isDefault: persona.defaultPersona,
+        description: persona.description,
+        agentType: 'HARNESS' as const,
+        modelName: capabilities.model,
+        maxTokens: capabilities.maxOutputTokens,
+        supportsVision: capabilities.attachmentsSupported
+      }))),
+      tap(agents => {
+        this.agentsSubject.next(agents);
+        this.loadingSubject.next(false);
+        this.errorSubject.next(null);
+        const current = this.selectedAgentSubject.value;
+        const selected = current
+          ? agents.find(agent => agent.name === current.name && agent.available)
+          : undefined;
+        this.selectedAgentSubject.next(selected
+          || agents.find(agent => agent.isDefault && agent.available)
+          || agents.find(agent => agent.available)
+          || null);
+      }),
+      catchError(err => {
+        this.loadingSubject.next(false);
+        this.errorSubject.next(err.message || 'Failed to load Kompile chat harness');
+        throw err;
+      })
+    );
+  }
+
+  refreshChatHarnessAgents(workingDirectory?: string): Observable<AgentProvider[]> {
+    return this.getChatHarnessAgents(true, workingDirectory);
   }
 
   /**

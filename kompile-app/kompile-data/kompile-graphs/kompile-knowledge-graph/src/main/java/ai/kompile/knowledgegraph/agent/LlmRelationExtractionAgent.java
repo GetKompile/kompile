@@ -97,8 +97,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
         // Resolve the LLM provider from config options
         ExtractionLlmService llmService = resolveLlmService(effectiveConfig);
         if (llmService == null) {
-            log.warn("LlmRelationExtractionAgent: no LLM provider available, returning empty graph");
-            return emptyResult(0, System.currentTimeMillis() - startTime);
+            throw new ExtractionLlmService.ExtractionLlmException("No LLM provider available for extraction");
         }
         log.info("LlmRelationExtractionAgent: using provider '{}' for {} chunks",
                 llmService.getId(), chunks.size());
@@ -108,8 +107,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
 
         for (RetrievedDoc chunk : chunks) {
             if (Thread.currentThread().isInterrupted()) {
-                log.info("LlmRelationExtractionAgent interrupted, stopping early");
-                break;
+                throw new java.util.concurrent.CancellationException("Graph extraction cancelled");
             }
             if (!chunk.isText() || chunk.getText() == null || chunk.getText().isBlank()) {
                 continue;
@@ -181,7 +179,8 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             }
         }
 
-        return llmServiceRegistry.getOrFallback(requestedProvider);
+        String requestedModel = config.options() != null && config.options().get("modelName") instanceof String s ? s : null;
+        return llmServiceRegistry.select(requestedProvider, requestedModel);
     }
 
     private void processChunk(
@@ -218,8 +217,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             String response = llmService.complete(prompt);
 
             if (response == null || response.isBlank()) {
-                log.debug("LlmRelationExtractionAgent: empty response for chunk {}", chunk.getId());
-                return;
+                throw new IllegalArgumentException("Extraction returned an empty response");
             }
 
             // For local models, the prompt ends with "{" so the response continues
@@ -233,14 +231,13 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
                     response.substring(0, Math.min(300, response.length())));
 
             GraphExtractionSchema.ExtractionResult parsed = parseResponse(response);
-            if (parsed != null) {
-                entityAccum.addAll(parsed.entities());
-                relationAccum.addAll(parsed.relations());
-            }
+            if (parsed == null) throw new IllegalArgumentException("Extraction returned an invalid graph response");
+            entityAccum.addAll(parsed.entities());
+            relationAccum.addAll(parsed.relations());
 
         } catch (Exception e) {
-            log.warn("LlmRelationExtractionAgent: failed to process chunk {}: {}",
-                    chunk.getId(), e.getMessage());
+            throw new ExtractionLlmService.ExtractionLlmException(
+                    "Extraction failed for chunk " + chunk.getId() + " using " + llmService.getId(), e);
         }
     }
 

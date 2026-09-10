@@ -54,10 +54,43 @@ class ProcessingRouteConfigTest {
     @Test
     void testProcessingBackendTypeValues() {
         ProcessingBackendType[] types = ProcessingBackendType.values();
-        assertEquals(3, types.length);
+        assertEquals(4, types.length);
         assertEquals(ProcessingBackendType.LOCAL_MODEL, ProcessingBackendType.valueOf("LOCAL_MODEL"));
         assertEquals(ProcessingBackendType.CLI_AGENT, ProcessingBackendType.valueOf("CLI_AGENT"));
         assertEquals(ProcessingBackendType.API_AGENT, ProcessingBackendType.valueOf("API_AGENT"));
+        assertEquals(ProcessingBackendType.CHAT_MODEL, ProcessingBackendType.valueOf("CHAT_MODEL"));
+    }
+
+    @Test
+    void nativeChatSelectionIsAdditiveAndTextOnly() throws Exception {
+        ProcessingRouteConfig route = ProcessingRouteConfig.nativeChatRoute("chat:codex", "exact-model");
+        ObjectMapper mapper = new ObjectMapper();
+        ProcessingRouteConfig restored = mapper.readValue(mapper.writeValueAsString(route), ProcessingRouteConfig.class);
+        ProcessingBackend backend = restored.getBackends().get(0);
+        assertEquals(ProcessingBackendType.CHAT_MODEL, backend.getType());
+        assertEquals("codex", backend.getProvider());
+        assertEquals("exact-model", backend.getModelName());
+        assertFalse(restored.isFallbackEnabled());
+        assertFalse(restored.isServingLaneEnabled());
+        assertDoesNotThrow(backend::validateChatModel);
+        assertFalse(ProcessingRouteConfig.isNativeChatProvider("codex"));
+        assertFalse(ProcessingRouteConfig.isNativeChatProvider("claude-cli"));
+        assertNull(ProcessingRouteConfig.nativeChatRoute("chat", null).getBackends().get(0).getProvider());
+        assertThrows(IllegalArgumentException.class, () -> ProcessingRouteConfig.nativeChatRoute("chat:", null));
+        backend.setCapabilities(List.of("embedding"));
+        assertThrows(IllegalArgumentException.class, backend::validateChatModel);
+        backend.setCapabilities(List.of("text"));
+        backend.setApiKey("not-allowed");
+        assertThrows(IllegalArgumentException.class, backend::validateChatModel);
+        backend.setApiKey(null);
+        backend.setEndpointUrl("http://127.0.0.1/ignored");
+        assertThrows(IllegalArgumentException.class, backend::validateChatModel);
+        backend.setEndpointUrl(null);
+        backend.setMaxConcurrent(1);
+        assertThrows(IllegalArgumentException.class, backend::validateChatModel);
+        backend.setMaxConcurrent(0);
+        backend.setRequestsPerMinute(1);
+        assertThrows(IllegalArgumentException.class, backend::validateChatModel);
     }
 
     @Test

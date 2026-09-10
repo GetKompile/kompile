@@ -43,7 +43,7 @@ public class NoteSyncConfig {
 
     /** Public base URL of this Kompile instance (for webhook registration). */
     @Builder.Default
-    private String notionCallbackBaseUrl = "http://localhost:8080";
+    private String notionCallbackBaseUrl = "http://localhost:8082";
 
     /** Master enable/disable for the Obsidian sync adapter. */
     @Builder.Default

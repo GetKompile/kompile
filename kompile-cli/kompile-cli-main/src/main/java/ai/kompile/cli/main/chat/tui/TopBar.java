@@ -150,9 +150,9 @@ public class TopBar {
             sb.append("  ").append(CYAN).append("[plan]").append(RESET);
         }
 
-        // Enforcer
+        // Judge
         if (enforcerActive) {
-            sb.append("  ").append(MAGENTA).append("[enforcer]").append(RESET);
+            sb.append("  ").append(MAGENTA).append("[judge]").append(RESET);
         }
 
         // Right-aligned help hint

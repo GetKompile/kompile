@@ -35,6 +35,8 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
     protected final AgentExecutor agentExecutor;
     protected final Map<String, AdapterConfig> channelConfigs = new ConcurrentHashMap<>();
     protected volatile boolean running = false;
+    protected volatile boolean ready = false;
+    protected volatile String lastError;
 
     /**
      * Optional publisher for {@link ChannelMessageReceivedEvent}. Set by the wiring layer
@@ -57,9 +59,22 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
             log.warn("{} adapter already running", getChannelName());
             return;
         }
-        running = true;
-        doStart();
-        log.info("{} adapter started", getChannelName());
+        try {
+            lastError = null;
+            ready = false;
+            doStart();
+            running = true;
+            log.info("{} adapter started", getChannelName());
+        } catch (RuntimeException e) {
+            running = false;
+            recordError(e);
+            try {
+                doStop();
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+            }
+            throw e;
+        }
     }
 
     @Override
@@ -68,6 +83,7 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
             return;
         }
         running = false;
+        ready = false;
         doStop();
         log.info("{} adapter stopped", getChannelName());
     }
@@ -75,6 +91,33 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
     @Override
     public boolean isRunning() {
         return running;
+    }
+
+    @Override
+    public boolean isReady() {
+        return running && ready;
+    }
+
+    @Override
+    public String getLastError() {
+        return lastError;
+    }
+
+    protected void recordError(Throwable error) {
+        ready = false;
+        String message = error == null ? null : error.getMessage();
+        lastError = message == null || message.isBlank()
+                ? error == null ? "Unknown channel error" : error.getClass().getSimpleName()
+                : message.length() <= 300 ? message : message.substring(0, 300);
+    }
+
+    protected void clearError() {
+        lastError = null;
+    }
+
+    protected void markReady() {
+        ready = true;
+        clearError();
     }
 
     @Override
@@ -93,6 +136,9 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
             // is configured for this channel) — independent of whether an agent responds.
             publishReceived(message);
             AdapterConfig config = channelConfigs.get(message.channelId());
+            if (config == null) {
+                config = channelConfigs.get("*");
+            }
             if (config == null || !config.enabled()) {
                 log.warn("No config or disabled for channel: {}", message.channelId());
                 return;
@@ -147,7 +193,13 @@ public abstract class BaseChannelAdapter implements ChannelAdapter {
         if (prefix == null || prefix.isEmpty()) {
             prefix = config.channelId() + ":";
         }
-        return prefix + message.userId();
+        Object canonical = message.metadata() == null
+                ? null : message.metadata().get("conversation_key");
+        String conversation = canonical != null && !canonical.toString().isBlank()
+                ? canonical.toString()
+                : message.channelId() == null || message.channelId().isBlank()
+                        ? "direct" : message.channelId();
+        return prefix + conversation + ":" + message.userId();
     }
 
     protected String truncateMessage(String content, int maxLength) {

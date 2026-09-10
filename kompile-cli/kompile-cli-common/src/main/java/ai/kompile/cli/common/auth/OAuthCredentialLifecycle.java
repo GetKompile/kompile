@@ -6,6 +6,7 @@
 package ai.kompile.cli.common.auth;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 
 /**
  * Provider-neutral OAuth credential lifecycle shared by Kompile credential managers.
@@ -20,8 +21,8 @@ public final class OAuthCredentialLifecycle {
 
     /**
      * Refresh an OAuth credential when it falls inside the requested validity
-     * window. Credentials without a refresh token remain usable by the caller;
-     * this supports non-expiring OAuth-minted provider keys.
+     * window. Non-expiring OAuth-minted keys remain usable without a refresh
+     * token, but an expired non-refreshable credential requires another login.
      */
     public static ManagedCredential resolve(
             ManagedCredential current,
@@ -29,11 +30,14 @@ public final class OAuthCredentialLifecycle {
             long nowMillis,
             OAuthRefresher refresher) throws IOException {
         requireOAuth(current);
-        if (!current.expiresWithin(minimumValidityMillis, nowMillis)
-                || !current.hasRefreshToken()) {
+        if (!current.expiresWithin(minimumValidityMillis, nowMillis)) return current;
+        if (!current.hasRefreshToken()) {
+            requireUnexpired(current, nowMillis);
             return current;
         }
-        return refresh(current, refresher);
+        ManagedCredential refreshed = refresh(current, refresher);
+        requireUnexpired(refreshed, nowMillis);
+        return refreshed;
     }
 
     /** Force a refresh and validate the provider result. */
@@ -45,14 +49,25 @@ public final class OAuthCredentialLifecycle {
             throw new IllegalArgumentException("refresher must not be null");
         }
         if (!current.hasRefreshToken()) {
-            throw new IOException("OAuth credential cannot be refreshed without a refresh token");
+            throw new ReauthenticationRequiredException("OAuth credential cannot be refreshed without a refresh token");
         }
 
         ManagedCredential refreshed = refresher.refresh(current);
         if (refreshed == null || !refreshed.isOAuth()) {
             throw new IOException("OAuth refresher must return an OAuth credential");
         }
-        return refreshed;
+        var metadata = new LinkedHashMap<>(current.getMetadata());
+        metadata.putAll(refreshed.getMetadata());
+        return ManagedCredential.oauth(refreshed.getAccess(),
+                refreshed.hasRefreshToken() ? refreshed.getRefresh() : current.getRefresh(),
+                refreshed.getExpires(), metadata);
+    }
+
+    public static void requireUnexpired(ManagedCredential credential, long nowMillis) throws IOException {
+        requireOAuth(credential);
+        if (credential.expiresWithin(0L, nowMillis)) {
+            throw new ReauthenticationRequiredException("OAuth credential has expired; sign in again if it cannot be refreshed");
+        }
     }
 
     /**
@@ -74,6 +89,13 @@ public final class OAuthCredentialLifecycle {
     private static void requireOAuth(ManagedCredential credential) {
         if (credential == null || !credential.isOAuth()) {
             throw new IllegalArgumentException("OAuth credential is required");
+        }
+    }
+
+    /** A locally known unusable credential, distinct from I/O or token-endpoint outages. */
+    public static final class ReauthenticationRequiredException extends IOException {
+        public ReauthenticationRequiredException(String message) {
+            super(message);
         }
     }
 

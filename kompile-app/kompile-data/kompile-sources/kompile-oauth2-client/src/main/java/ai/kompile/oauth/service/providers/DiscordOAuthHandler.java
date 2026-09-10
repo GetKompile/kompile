@@ -43,7 +43,7 @@ public class DiscordOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String TOKEN_ENDPOINT = "https://discord.com/api/oauth2/token";
     private static final String REVOKE_ENDPOINT = "https://discord.com/api/oauth2/token/revoke";
     private static final String USER_INFO_ENDPOINT = "https://discord.com/api/users/@me";
-    private static final String DEFAULT_SCOPES = "identify guilds guilds.members.read messages.read";
+    private static final String DEFAULT_SCOPES = "identify guilds";
 
     private OAuthSettingsService settingsService;
 
@@ -107,7 +107,7 @@ public class DiscordOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public String getDescription() {
-        return "Connect to Discord servers for message and file ingestion";
+        return "Connect a Discord account for identity and guild discovery";
     }
 
     @Override
@@ -127,7 +127,7 @@ public class DiscordOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public List<String> getRelatedSources() {
-        return List.of("discord", "discord-history");
+        return List.of();
     }
 
     @Override

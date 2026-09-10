@@ -319,7 +319,7 @@ final class AuthWizard implements AutoCloseable {
     }
 
     private static String credentialLabel(CredentialStore.CredentialInfo info) {
-        return info.credentialName() + " — " + info.type() + (info.active() ? " (active)" : "");
+        return info.displayLabel();
     }
 
     private static String defaultEnvironmentName(String providerId) {
@@ -377,7 +377,7 @@ final class AuthWizard implements AutoCloseable {
         }
     }
 
-    private static final class TerminalPrompter implements Prompter {
+    static final class TerminalPrompter implements Prompter {
         private static final String RESET = "\033[0m";
         private static final String BOLD = "\033[1m";
         private static final String DIM = "\033[2m";
@@ -393,29 +393,88 @@ final class AuthWizard implements AutoCloseable {
             reader = LineReaderBuilder.builder().terminal(terminal).build();
         }
 
+        TerminalPrompter(Terminal terminal, LineReader reader) {
+            this.terminal = terminal;
+            this.reader = reader;
+        }
+
+        private static String terminalSafe(String value) {
+            if (value == null || value.isEmpty()) {
+                return "";
+            }
+            StringBuilder safe = new StringBuilder(value.length());
+            value.codePoints().forEach(codePoint -> {
+                if (codePoint == '\n' || codePoint == '\r' || codePoint == '\t') {
+                    safe.append(' ');
+                } else if (!Character.isISOControl(codePoint)) {
+                    safe.appendCodePoint(codePoint);
+                }
+            });
+            return safe.toString();
+        }
+
+        private void printMenuLine(String text) {
+            int width = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
+            var line = org.jline.utils.AttributedString.fromAnsi(
+                    text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' '));
+            terminal.writer().println(line.columnSubSequence(0, Math.max(1, width - 1)).toAnsi());
+        }
+
+        private int menuCapacity() {
+            int height = terminal.getHeight() > 0 ? terminal.getHeight() : 24;
+            return Math.max(1, height - 6);
+        }
+
         @Override
         public void header(String title, String subtitle) {
             System.out.println();
             System.out.println(BOLD + CYAN + "  ╭──────────────────────────────────────╮" + RESET);
-            System.out.printf(BOLD + CYAN + "  │  %-36s│%n" + RESET, title);
+            System.out.printf(BOLD + CYAN + "  │  %-36s│%n" + RESET, terminalSafe(title));
             System.out.println(BOLD + CYAN + "  ╰──────────────────────────────────────╯" + RESET);
-            System.out.println("  " + DIM + subtitle + RESET);
+            System.out.println("  " + DIM + terminalSafe(subtitle) + RESET);
             System.out.println();
         }
 
         @Override
         public int select(String title, List<String> items) {
-            System.out.println(BOLD + "  " + title + RESET);
-            System.out.println();
-            for (int i = 0; i < items.size(); i++) {
-                System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%n", i + 1, items.get(i));
+            // Resume/chat can leave a scroll region, mouse reporting, or bracketed
+            // paste active. Reset them even when there is nothing to select.
+            terminal.writer().print("\033[r\033[?9l\033[?1000l\033[?1001l\033[?1002l"
+                    + "\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1007l"
+                    + "\033[?1015l\033[?1016l\033[?2004l");
+            terminal.writer().flush();
+            if (items.isEmpty()) {
+                return -1;
             }
-            System.out.println();
+            int first = 0;
+            int pageEndLimit = items.size();
+            String status = "";
             while (true) {
+                int height = terminal.getHeight() > 0 ? terminal.getHeight() : 24;
+                int capacity = menuCapacity();
+                first = Math.min(first, items.size() - 1);
+                int end = Math.min(first + capacity, Math.min(pageEndLimit, items.size()));
+                terminal.writer().print("\033[2J\033[H");
+                if (height >= 5) {
+                    printMenuLine(BOLD + terminalSafe(title) + RESET);
+                }
+                for (int i = first; i < end; i++) {
+                    printMenuLine(CYAN + String.format("%2d", i + 1) + RESET
+                            + "  " + terminalSafe(items.get(i)));
+                }
+                if (height >= 6) {
+                    printMenuLine(DIM + "Showing " + (first + 1) + "-" + end + " of " + items.size() + RESET);
+                }
+                if (height >= 4) {
+                    printMenuLine("number/name | n next | p prev | q cancel");
+                }
+                if (height >= 7) {
+                    printMenuLine(YELLOW + status + RESET);
+                }
+                terminal.writer().flush();
                 String input;
                 try {
-                    input = reader.readLine("  Choice (1-" + items.size()
-                            + ", or Ctrl+C to cancel): ");
+                    input = reader.readLine("> ");
                 } catch (RuntimeException e) {
                     return -1;
                 }
@@ -428,21 +487,52 @@ final class AuthWizard implements AutoCloseable {
                         || trimmed.equalsIgnoreCase("cancel")) {
                     return -1;
                 }
-                try {
-                    int selected = Integer.parseInt(trimmed);
-                    if (selected >= 1 && selected <= items.size()) {
-                        return selected - 1;
+                if (trimmed.equalsIgnoreCase("n") || trimmed.equalsIgnoreCase("next")) {
+                    if (end < items.size()) {
+                        first = end;
+                        pageEndLimit = items.size();
                     }
-                } catch (NumberFormatException ignored) {
+                    status = "";
+                    continue;
                 }
-                for (int i = 0; i < items.size(); i++) {
-                    if (items.get(i).toLowerCase(Locale.ROOT)
-                            .contains(trimmed.toLowerCase(Locale.ROOT))) {
-                        return i;
+                if (trimmed.equalsIgnoreCase("p") || trimmed.equalsIgnoreCase("prev")) {
+                    int previousEnd = first;
+                    if (previousEnd > 0) {
+                        first = Math.max(0, previousEnd - menuCapacity());
+                        pageEndLimit = previousEnd;
                     }
+                    status = "";
+                    continue;
                 }
-                System.out.println("  " + YELLOW + "Please enter 1-" + items.size()
-                        + " or type part of the name." + RESET);
+                if (!trimmed.isEmpty()) {
+                    try {
+                        int selected = Integer.parseInt(trimmed);
+                        if (selected >= 1 && selected <= items.size()) {
+                            return selected - 1;
+                        }
+                        status = "Choose a number from 1 to " + items.size() + ".";
+                        continue;
+                    } catch (NumberFormatException ignored) {
+                    }
+                    int match = -1;
+                    int matches = 0;
+                    for (int i = 0; i < items.size(); i++) {
+                        if (items.get(i).equalsIgnoreCase(trimmed)) {
+                            return i;
+                        }
+                        if (items.get(i).toLowerCase(Locale.ROOT).contains(trimmed.toLowerCase(Locale.ROOT))) {
+                            match = i;
+                            matches++;
+                        }
+                    }
+                    if (matches == 1) {
+                        return match;
+                    }
+                    status = matches > 1 ? "Name matches several choices; enter a number or more of the name."
+                            : "No matching choice. Enter a number or part of the name.";
+                } else {
+                    status = "Enter a choice, n for next, or q to cancel.";
+                }
             }
         }
 
@@ -450,9 +540,9 @@ final class AuthWizard implements AutoCloseable {
         public String text(String label, String defaultValue) {
             String suffix = defaultValue == null || defaultValue.isBlank()
                     ? " "
-                    : " [" + defaultValue + "] ";
+                    : " [" + terminalSafe(defaultValue) + "] ";
             try {
-                String value = reader.readLine("  " + label + suffix);
+                String value = reader.readLine("  " + terminalSafe(label) + suffix);
                 if ((value == null || value.isBlank()) && defaultValue != null) {
                     return defaultValue;
                 }
@@ -465,7 +555,7 @@ final class AuthWizard implements AutoCloseable {
         @Override
         public String secret(String label) {
             try {
-                return reader.readLine("  " + label + " ", '*');
+                return reader.readLine("  " + terminalSafe(label) + " ", '*');
             } catch (RuntimeException e) {
                 return null;
             }
@@ -475,7 +565,7 @@ final class AuthWizard implements AutoCloseable {
         public boolean confirm(String question, boolean defaultYes) {
             String suffix = defaultYes ? " [Y/n] " : " [y/N] ";
             try {
-                String answer = reader.readLine("  " + question + suffix);
+                String answer = reader.readLine("  " + terminalSafe(question) + suffix);
                 if (answer == null || answer.isBlank()) {
                     return defaultYes;
                 }
@@ -487,7 +577,7 @@ final class AuthWizard implements AutoCloseable {
 
         @Override
         public void message(String message) {
-            System.out.println("  " + GREEN + message + RESET);
+            System.out.println("  " + GREEN + terminalSafe(message) + RESET);
         }
 
         @Override

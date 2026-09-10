@@ -39,7 +39,10 @@ public final class PersonaSurfaces {
             "/api/agents/passthrough",
             "/api/agents/runtime",
             "/api/chat",
+            "/api/chat/channel",
+            "/api/chat/channel/status",
             "/api/chat-sessions",
+            "/api/chat-sessions/{sessionId}/context",
             "/api/explain",
             "/api/graph-rag",
             "/api/grounding",
@@ -68,12 +71,22 @@ public final class PersonaSurfaces {
             "/api/graph/partitions",
             "/api/indexer",
             "/api/indexing",
+            "/api/indexing/history",
+            "/api/indexing/jobs",
             "/api/ingest/events",
             "/api/ingest/resume",
+            "/api/internal/distributed-graph",
             "/api/internal/ingest",
             "/api/schedules",
+            "/api/source-providers",
+            "/api/sync",
+            "/api/sync/config",
+            "/api/sync/webhook/notion",
             "/api/unified-crawl",
             "/api/vector-population");
+
+    /** Owned by {@code kompile-app-web-graph}, which is mounted by Chat and Crawl only. */
+    public static final Set<String> GRAPH = Set.of("/api/graph");
 
     /**
      * Reachable on {@code :8080} and nowhere else.
@@ -100,6 +113,7 @@ public final class PersonaSurfaces {
             "/api/backup",
             "/api/benchmark",
             "/api/build",
+            "/api/channel-integrations",
             "/api/config-archives",
             "/api/config/logs",
             "/api/config/mcp-optimization",
@@ -129,6 +143,8 @@ public final class PersonaSurfaces {
             "/api/kb-config",
             "/api/kb/verify",
             "/api/kb/weights",
+            "/api/kclaw/instances",
+            "/api/kclaw/runtime",
             "/api/lifecycle",
             "/api/llm/config",
             "/api/mcp",
@@ -183,7 +199,8 @@ public final class PersonaSurfaces {
             "/api/weight-cache");
 
     /**
-     * Paths that a <i>library</i> module also mounts, and which therefore cannot fence a persona.
+     * Paths nested beneath another persona family, and which therefore cannot fence a persona at
+     * class-level base-path granularity.
      *
      * <p>Not every controller lives in a web module. {@code kompile-knowledge-graph},
      * {@code kompile-data-enrichment} and the process modules carry their own
@@ -193,8 +210,11 @@ public final class PersonaSurfaces {
      * :8082 alike).</p>
      *
      * <p>Usually that is invisible here, because library paths do not collide with persona ones.
-     * These two do, in the two different ways a collision can happen:</p>
+     * Three paths currently do:</p>
      * <ul>
+     *   <li><b>Deliberate shared child.</b> The portable browser-session exchange is shared beneath
+     *       the admin-owned {@code /api/channel-integrations} lifecycle family. The child carries no
+     *       channel CRUD/runtime controller and is protected by the shared integration filter.</li>
      *   <li><b>Nesting.</b> {@code KbGroundingController} in {@code kompile-app-web-chat} owns
      *       {@code /api/kb-grounding}; {@code KbGroundingAuditController} and
      *       {@code KbOpinionBrowserController} in {@code kompile-knowledge-graph} own
@@ -208,11 +228,12 @@ public final class PersonaSurfaces {
      *       half onto its own base path is the only thing that would change that.</li>
      * </ul>
      *
-     * <p>Adding an entry here is a real decision: it says the path is on all three ports and that
-     * this is intended. If a genuinely persona-scoped controller ever ends up in a library module,
-     * the fix is to move the controller, not to widen this set.</p>
+     * <p>Adding an entry here is a real decision: it says the overlap is intentional. If a genuinely
+     * persona-scoped controller ever ends up in a shared or library module, the fix is to move the
+     * controller, not to widen this set.</p>
      */
     public static final Set<String> LIBRARY_OVERLAPS = Set.of(
+            "/api/channel-integrations/browser-sessions",
             "/api/kb-grounding/{factSheetId}",
             "/api/enrichment");
 
@@ -276,7 +297,6 @@ public final class PersonaSurfaces {
             "/api/graph/rules",
             "/api/kclaw",
             "/api/kclaw/channels",
-            "/api/kclaw/oauth",
             "/api/kclaw/tasks",
             "/api/knowledge-graph",
             "/api/knowledge-graph/builder",
@@ -322,6 +342,7 @@ public final class PersonaSurfaces {
      * poms and in {@code docs/architecture/app-persona-boundary.md}.</p>
      */
     public static final Set<String> SHARED = Set.of(
+            "/api/channel-integrations/browser-sessions",
             "/api/config",
             "/api/config/k-app",
             "/api/documents",
@@ -342,11 +363,7 @@ public final class PersonaSurfaces {
             "/api/service-endpoints",
             "/api/services",
             "/api/setup",
-            "/api/source-providers",
             "/api/sources",
-            "/api/sync",
-            "/api/sync/config",
-            "/api/sync/webhook/notion",
             "/api/system",
             "/api/tables");
 }

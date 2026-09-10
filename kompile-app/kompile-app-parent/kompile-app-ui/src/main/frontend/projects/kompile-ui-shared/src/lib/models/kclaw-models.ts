@@ -79,74 +79,118 @@ export interface ToolCall {
   arguments: Record<string, any>;
 }
 
-// Channel Configuration
-export interface ChannelConfig {
-  channelId: string;
-  channelType: string;
+export type ChannelChatEngine = 'REACT' | 'KOMPILE_CLI' | 'WEB_CHAT';
+export type ChannelRuntimeState = 'DISABLED' | 'STARTING' | 'RUNNING' | 'ERROR';
+export type ChannelFieldType = 'STRING' | 'INTEGER' | 'BOOLEAN' | 'STRING_LIST' | 'LONG_LIST';
+
+export interface ChannelFieldDescriptor {
+  name: string;
+  label: string;
+  type: ChannelFieldType;
+  required: boolean;
+  defaultValue?: unknown;
+  description: string;
+  environmentHint?: string;
+}
+
+export interface ChannelProviderDescriptor {
+  id: string;
+  displayName: string;
+  description: string;
+  capabilities: string[];
+  settings: ChannelFieldDescriptor[];
+  secrets: ChannelFieldDescriptor[];
+}
+
+export interface ChannelEngineDescriptor {
+  engine: ChannelChatEngine;
+  displayName: string;
+  description: string;
+  supportsAgent: boolean;
+  supportsModel: boolean;
+  available: boolean;
+  status: string;
+}
+
+export interface ChannelConnectionView {
+  id: string;
+  name: string;
+  providerId: string;
+  engine: ChannelChatEngine;
   agentId: string;
+  model?: string;
   enabled: boolean;
-  adapterConfig?: AdapterConfig;
-  telegram?: TelegramChannelConfig;
-  discord?: DiscordChannelConfig;
-  slack?: SlackChannelConfig;
-  whatsapp?: WhatsAppChannelConfig;
-  email?: EmailChannelConfig;
+  runtimeState: ChannelRuntimeState;
+  settings: Record<string, unknown>;
+  configuredSecrets: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastError?: string;
 }
 
-export interface AdapterConfig {
-  channelId: string;
-  agentId: string;
-  enabled: boolean;
-  sessionKeyPrefix: string;
-  maxMessageLength: number;
-  allowFileUploads: boolean;
-  allowVoiceMessages: boolean;
+export interface ChannelConnectionWrite {
+  name?: string;
+  providerId?: string;
+  engine?: ChannelChatEngine;
+  agentId?: string;
+  model?: string;
+  settings: Record<string, unknown>;
+  secrets: Record<string, string>;
+  enabled?: boolean;
 }
 
-export interface TelegramChannelConfig {
-  botToken?: string;
-  allowedChatIds: number[];
+export interface ChannelBrowserSession {
+  csrfToken: string;
+  expiresAt: string;
 }
 
-export interface DiscordChannelConfig {
-  botToken?: string;
-  allowedChannelIds: string[];
-  allowedGuildIds: string[];
+export interface TelegramPairingStart {
+  pairingId: string;
+  code: string;
+  command: string;
+  expiresAt: string;
 }
 
-export interface SlackChannelConfig {
-  botToken?: string;
-  appToken?: string;
-  allowedChannelIds: string[];
-  respondToAllMessages: boolean;
+export interface TelegramPairing {
+  pairingId: string;
+  status: 'WAITING' | 'CANDIDATE' | 'APPROVED' | 'EXPIRED' | 'CANCELLED';
+  expiresAt: string;
+  candidate?: {
+    chatId: number;
+    chatType: string;
+    chatTitle?: string;
+    userId: number;
+    username?: string;
+    displayName: string;
+    observedAt: string;
+    authorizesEntireChat: boolean;
+  };
 }
 
-export interface WhatsAppChannelConfig {
-  accessToken?: string;
-  phoneNumberId?: string;
-  verifyToken?: string;
-  allowedPhoneNumbers: string[];
+export interface TelegramDiagnostics {
+  connectionName: string;
+  botId?: number;
+  botUsername?: string;
+  pollerAlive: boolean;
+  ready: boolean;
+  nextOffset: number;
+  checkpointAt?: string;
+  lastSuccessfulPoll?: string;
+  lastUpdateAt?: string;
+  consecutiveFailures: number;
+  lastErrorCode?: number;
+  lastError?: string;
+  webhookConfigured: boolean;
+  webhookHost?: string;
+  pendingUpdateCount: number;
+  activePairings: number;
 }
 
-export interface EmailChannelConfig {
-  imapHost: string;
-  imapPort: number;
-  username: string;
-  password?: string;
-  useSsl: boolean;
-  smtpHost: string;
-  smtpPort: number;
-  fromAddress: string;
-  fromName: string;
-  pollIntervalSeconds: number;
-  allowedSenders: string[];
-}
-
-// Channel Status
-export interface ChannelStatus {
-  channelName: string;
-  running: boolean;
-  config?: AdapterConfig;
+export interface TelegramWebhookInfo {
+  configured: boolean;
+  host?: string;
+  pendingUpdateCount: number;
+  lastError?: string;
 }
 
 // Heartbeat

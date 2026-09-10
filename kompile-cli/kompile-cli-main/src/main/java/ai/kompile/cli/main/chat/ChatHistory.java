@@ -399,6 +399,7 @@ public class ChatHistory {
                 String agent = "";
                 String recordedDirectory = null;
                 boolean metadataWindow = true;
+                boolean insideReminderBlock = false;
                 while ((line = reader.readLine()) != null) {
                     if (line.startsWith("[harvested:") && line.endsWith("]")) {
                         harvested.add(line.substring(11, line.length() - 1));
@@ -418,6 +419,18 @@ public class ChatHistory {
                             continue;
                         }
                         String candidate = line.substring(2).trim();
+                        // Reminder decoration wraps the outbound prompt; skip the whole
+                        // block so titles reflect the real user request, not the wrapper.
+                        if (ReminderManager.opensReminderBlock(candidate)) {
+                            insideReminderBlock = true;
+                            continue;
+                        }
+                        if (insideReminderBlock) {
+                            if (ReminderManager.closesReminderBlock(candidate)) {
+                                insideReminderBlock = false;
+                            }
+                            continue;
+                        }
                         // Skip Claude Code internal command messages — not real user content
                         if (candidate.startsWith("<local-command-") || candidate.startsWith("<command-")) {
                             continue;
@@ -435,6 +448,7 @@ public class ChatHistory {
                     }
                     if (line.startsWith("< ") || line.startsWith("[agent:")) {
                         metadataWindow = false;
+                        insideReminderBlock = false;
                     } else if (metadataWindow && line.startsWith("Started:")) {
                         started = line.substring(8).trim();
                     } else if (metadataWindow && line.startsWith("Agent:")) {

@@ -18,6 +18,7 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.facts.domain.Fact;
 import ai.kompile.app.facts.repository.FactRepository;
+import ai.kompile.core.crawl.graph.SourceCredentialRedactor;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.crawl.graph.CrawlFactRegistrationCallback;
 import org.slf4j.Logger;
@@ -76,7 +77,7 @@ public class CrawlFactRegistrationCallbackImpl implements CrawlFactRegistrationC
 
             try {
                 String fileName = buildFactFileName(source);
-                String sourceUrl = source.pathOrUrl();
+                String sourceUrl = SourceCredentialRedactor.redact(source.pathOrUrl());
 
                 // Deduplicate: skip if a fact with the same sourceUrl already exists in this sheet
                 if (sourceUrl != null && factRepository.existsByFactSheetIdAndSourceUrl(factSheetId, sourceUrl)) {
@@ -116,7 +117,7 @@ public class CrawlFactRegistrationCallbackImpl implements CrawlFactRegistrationC
 
             } catch (Exception e) {
                 log.warn("Failed to register crawled source '{}' as fact: {}",
-                        source.label(), e.getMessage());
+                        source.label(), SourceCredentialRedactor.redact(e.getMessage()));
             }
         }
 
@@ -154,7 +155,7 @@ public class CrawlFactRegistrationCallbackImpl implements CrawlFactRegistrationC
         return switch (sourceType) {
             case "URL", "WEB_CRAWL", "CONFLUENCE", "SLACK", "SLACK_HISTORY",
                  "DISCORD", "DISCORD_HISTORY", "GMAIL", "GDOCS", "GDRIVE",
-                 "GOOGLE_WORKSPACE" -> true;
+                 "GOOGLE_WORKSPACE", "JIRA", "REDDIT" -> true;
             default -> false;
         };
     }

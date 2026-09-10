@@ -32,6 +32,8 @@ import lombok.NoArgsConstructor;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KompileProjectFactSheet {
     private Long id;
+    /** Stable machine-independent identity; {@code id} remains a legacy source-database hint. */
+    private String portableId;
     private String name;
     private String description;
     private boolean active;

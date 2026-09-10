@@ -98,7 +98,8 @@ class UnifiedGraphLibraryIntegrationTest {
         assertTrue(summary.enabled());
         assertTrue(summary.mebnLearned());
         assertEquals(6, summary.observedTargetCount());
-        assertNotNull(graph.model(UnifiedGraphReasoningLifecycle.MEBN_THEORY_ARTIFACT));
+        assertNotNull(graph.artifactText(UnifiedGraphReasoningLifecycle.MEBN_THEORY_JSON_ARTIFACT));
+        assertNotNull(UnifiedGraphReasoningLifecycle.learnedMTheory(graph));
     }
 
     @Test

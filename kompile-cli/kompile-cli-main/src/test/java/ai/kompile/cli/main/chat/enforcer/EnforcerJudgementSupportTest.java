@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -31,13 +32,67 @@ class EnforcerJudgementSupportTest {
 
     @Test
     void fallbackPolicyParse() {
-        assertEquals(EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD, EnforcerFallbackPolicy.parse(null));
-        assertEquals(EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD, EnforcerFallbackPolicy.parse(""));
+        assertEquals(EnforcerFallbackPolicy.FAIL_OPEN, EnforcerFallbackPolicy.parse(null));
+        assertEquals(EnforcerFallbackPolicy.FAIL_OPEN, EnforcerFallbackPolicy.parse(""));
         assertEquals(EnforcerFallbackPolicy.FAIL_OPEN, EnforcerFallbackPolicy.parse("fail_open"));
         assertEquals(EnforcerFallbackPolicy.FAIL_OPEN, EnforcerFallbackPolicy.parse("FAIL-OPEN"));
         assertEquals(EnforcerFallbackPolicy.FAIL_CLOSED, EnforcerFallbackPolicy.parse("closed"));
         assertEquals(EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD, EnforcerFallbackPolicy.parse("keyword"));
-        assertEquals(EnforcerFallbackPolicy.DEGRADE_TO_KEYWORD, EnforcerFallbackPolicy.parse("nonsense"));
+        assertEquals(EnforcerFallbackPolicy.FAIL_OPEN, EnforcerFallbackPolicy.parse("nonsense"));
+        assertEquals("fail_open", new EnforcerConfig().getJudgeFallbackPolicy());
+    }
+
+    @Test
+    void invalidTurnJudgeJsonFailsOpen() {
+        EnforcerDecision decision = EnforcerDecision.parse(new ObjectMapper(), "looks good");
+
+        assertTrue(decision.isCompliant());
+        assertFalse(decision.isStop());
+    }
+
+    @Test
+    void malformedTurnJudgeJsonFailsOpen() {
+        EnforcerDecision decision = EnforcerDecision.parse(
+                new ObjectMapper(), "{\"compliant\":false");
+
+        assertTrue(decision.isCompliant());
+        assertFalse(decision.isStop());
+    }
+
+    @Test
+    void vagueNoncompliantVerdictWithoutSpecificViolationFailsOpen() {
+        EnforcerDecision decision = EnforcerDecision.parse(new ObjectMapper(), """
+                {"compliant":false,"stop":false,"severity":"error","violations":[],
+                 "correction_prompt":"Do something else","reasoning":"This seems unnecessary"}
+                """);
+
+        assertTrue(decision.isCompliant());
+        assertTrue(decision.getReasoning().contains("specific rule violation"));
+    }
+
+    @Test
+    void repairableVerdictWithoutCorrectionFailsOpen() {
+        EnforcerDecision decision = EnforcerDecision.parse(new ObjectMapper(), """
+                {"compliant":false,"stop":false,"severity":"error",
+                 "violations":["Rule X was violated"],"correction_prompt":"",
+                 "reasoning":"Rule X was violated"}
+                """);
+
+        assertTrue(decision.isCompliant());
+        assertTrue(decision.getReasoning().contains("actionable correction"));
+    }
+
+    @Test
+    void noncriticalStopIsDowngradedAndMustStillBeActionable() {
+        EnforcerDecision decision = EnforcerDecision.parse(new ObjectMapper(), """
+                {"compliant":false,"stop":true,"severity":"error",
+                 "violations":["Repairable format mismatch"],"correction_prompt":"Use JSON",
+                 "reasoning":"The format is repairable"}
+                """);
+
+        assertFalse(decision.isCompliant());
+        assertFalse(decision.isStop());
+        assertEquals("Use JSON", decision.getCorrectionPrompt());
     }
 
     @Test
@@ -59,22 +114,20 @@ class EnforcerJudgementSupportTest {
     }
 
     @Test
-    void shouldActivateHonorsSessionOptOut() {
+    void shouldActivateUsesProjectConfigWithoutStartupPrompt() {
         EnforcerConfig projectActive = new EnforcerConfig();
         projectActive.setKeywordMode(true); // a project config that would otherwise enforce
 
-        // Enforcement is per-session OPT-IN: when the user was never asked this run
-        // (sessionChoice == null), a config on disk must NEVER activate by itself —
-        // callers prompt via EnforcerActivationPrompt first.
-        assertFalse(EnforcerConfig.shouldActivate(null, false, projectActive),
-                "a .kompile/enforcer-config.json alone must not activate enforcement");
+        // No startup prompt: an active project policy is enough unless this run has
+        // an explicit legacy opt-out from the setup wizard.
+        assertTrue(EnforcerConfig.shouldActivate(null, false, projectActive));
         assertTrue(EnforcerConfig.shouldActivate(Boolean.TRUE, false, projectActive));
 
         // An explicit session "N" must win over a project config on disk.
         assertFalse(EnforcerConfig.shouldActivate(Boolean.FALSE, false, projectActive),
                 "a stale .kompile/enforcer-config.json must not override the session opt-out");
 
-        // Explicit CLI rule flags (--rules/--rule-file) always activate, even after opt-out.
+        // Explicit CLI rule flags (--rules/--rule-file) remain authoritative.
         assertTrue(EnforcerConfig.shouldActivate(Boolean.FALSE, true, projectActive));
         assertTrue(EnforcerConfig.shouldActivate(null, true, null));
 

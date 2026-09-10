@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Persists and restores MEBN edge strengths for a given fact sheet.
@@ -37,6 +38,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class MebnWeightPersistenceAdapter {
+
+    public static final String THEORY_ARTIFACT_FILE = "mebn-theory.v1.json";
 
     @Value("${kompile.data.dir:}")
     private String dataDir;
@@ -112,6 +115,24 @@ public class MebnWeightPersistenceAdapter {
         }
         String json = Files.readString(source, StandardCharsets.UTF_8);
         return MebnWeightSerializer.parseStrengths(json);
+    }
+
+    public void persistTheoryArtifact(long factSheetId, String json) throws IOException {
+        Path target = reasoningDir(factSheetId).resolve(THEORY_ARTIFACT_FILE);
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, json, StandardCharsets.UTF_8);
+    }
+
+    public Optional<String> readTheoryArtifact(long factSheetId) throws IOException {
+        Path source = reasoningDir(factSheetId).resolve(THEORY_ARTIFACT_FILE);
+        return Files.isRegularFile(source)
+                ? Optional.of(Files.readString(source, StandardCharsets.UTF_8)) : Optional.empty();
+    }
+
+    public void clearTheoryArtifacts(long factSheetId) throws IOException {
+        Path directory = reasoningDir(factSheetId);
+        Files.deleteIfExists(directory.resolve(THEORY_ARTIFACT_FILE));
+        Files.deleteIfExists(directory.resolve("mebn-weights.json"));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

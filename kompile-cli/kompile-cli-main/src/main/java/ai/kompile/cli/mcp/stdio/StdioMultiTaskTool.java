@@ -4,6 +4,7 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -63,16 +64,28 @@ public class StdioMultiTaskTool {
     public String id() { return "multi_task"; }
 
     public String description() {
-        return "Split a complex task into distinct subtasks and run each on a separate agent in parallel. " +
-            "Unlike quorum_task (same prompt to all agents), multi_task gives each agent a DIFFERENT prompt " +
-            "representing a different part of the work.\n\n" +
-            "Each subtask runs on Codex, Claude, or OpenCode. Use 'agent_count' to spawn multiple independent instances " +
-            "for the same subtask prompt.\n\n" +
-            "Examples:\n" +
-            "  - {\"agent\": \"codex\"} → 1 Codex instance\n" +
-            "  - {\"agent\": \"claude\", \"agent_count\": 2} → 2 Claude instances\n\n" +
-            "All subtasks run concurrently. Returns a per-subtask summary; full output is written to a file.\n\n" +
-            "Available agents: codex (default), claude, opencode.";
+        return "Run 2+ independent subtasks in one parallel batch instead of serial task calls. " +
+            "Submit all ready, independent work together before waiting for results. " +
+            "This is the default for separate investigations, reviews of existing code, or edits to disjoint files; " +
+            "a task need not be complex to benefit from batching.\n\n" +
+            "Each subtask gets its own prompt and context. Include scope, required skills, evidence, and file ownership. " +
+            "Use edit_coordinator locks for concurrent edits. Do not batch work that depends on another subtask's output " +
+            "(such as reviewing a change that has not been made), edits to the same files, or resource-conflicting builds/tests. " +
+            "Run dependent phases sequentially, batching independent work within each phase. Use task for one delegation.\n\n" +
+            "Available agents: codex (default), claude, opencode. Subtasks may set their own agent, role, model, and thinking; " +
+            "different roles do not require serial dispatch. Top-level role/model/thinking provide defaults. " +
+            "agent_count defaults to 1 per subtask; increase it only to duplicate that subtask's prompt, not to enable parallelism. " +
+            "Unlike quorum_task (same prompt for independent judgments), multi_task assigns distinct work.\n\n" +
+            "Example:\n" +
+            "{\"description\":\"Inspect independent modules\",\"subtasks\":[" +
+            "{\"name\":\"api\",\"prompt\":\"Read-only: inspect API validation and report file:line findings.\"}," +
+            "{\"name\":\"ui\",\"prompt\":\"Read-only: inspect UI validation and report file:line findings.\"}]}\n\n" +
+            "All subtasks launch before results are collected. Returns per-subtask summaries; full output is written to a file.";
+    }
+
+    /** Preserve the batching contract when MCP parameter descriptions are stripped. */
+    public String compactHint() {
+        return "Run 2+ independent subtasks in parallel, not serial task calls. Send description + subtasks[{name,prompt,agent?,role?,model?,thinking?}]. agent_count defaults to 1; avoid file/resource conflicts.";
     }
 
     public JsonNode parameterSchema() {
@@ -86,7 +99,7 @@ public class StdioMultiTaskTool {
 
         var subtasks = props.putObject("subtasks");
         subtasks.put("type", "array");
-        subtasks.put("description", "Array of subtasks to run in parallel. Each gets a different prompt.");
+        subtasks.put("description", "Submit all ready independent subtasks together (at least 2). Each gets its own prompt; do not include dependencies between entries.");
         subtasks.put("minItems", 2);
 
         var items = subtasks.putObject("items");
@@ -159,8 +172,13 @@ public class StdioMultiTaskTool {
         return schema;
     }
 
-    @SuppressWarnings("unchecked")
     public ToolResult execute(Map<String, Object> arguments) {
+        return execute(arguments, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public ToolResult execute(Map<String, Object> arguments, ToolContext context) {
+        if (context != null && context.isAborted()) return ToolResult.error("Multi-task cancelled");
         String desc = (String) arguments.getOrDefault("description", "");
         Object subtasksObj = arguments.get("subtasks");
         String defaultRole = (String) arguments.get("role");
@@ -221,6 +239,7 @@ public class StdioMultiTaskTool {
         ExecutorService executor = Executors.newFixedThreadPool(totalInstances);
         List<SubtaskFuture> futures = new ArrayList<>();
 
+        try {
         for (int i = 0; i < subtasks.size(); i++) {
             Map<String, Object> st = subtasks.get(i);
             String name = (String) st.getOrDefault("name", "subtask-" + i);
@@ -258,7 +277,7 @@ public class StdioMultiTaskTool {
                     }
                     futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, totalPerSubtask, instanceIdx,
                         CompletableFuture.supplyAsync(() -> runSubtask(
-                                fName, fPrompt, fAgent, fRole, model, thinking), executor)));
+                                fName, fPrompt, fAgent, fRole, model, thinking, context), executor)));
                 }
             }
         }
@@ -319,7 +338,7 @@ public class StdioMultiTaskTool {
             }
         }
 
-        executor.shutdownNow();
+        if (context != null && context.isAborted()) return ToolResult.error("Multi-task cancelled");
 
         int incomplete = timedOut + failed;
         fullOutput.append("---\n\n");
@@ -370,6 +389,9 @@ public class StdioMultiTaskTool {
                    "failed", failed,
                    "resultFile", resultFile.toAbsolutePath().toString(),
                    "succeededSubtasks", String.join(",", succeededNames)));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     /**
@@ -460,7 +482,8 @@ public class StdioMultiTaskTool {
     }
 
     private SubtaskResult runSubtask(String name, String prompt, String requestedAgent, String roleName,
-                                       String model, String thinking) {
+                                       String model, String thinking, ToolContext context) {
+        if (context != null && context.isAborted()) return SubtaskResult.failed("Task cancelled");
         // A single-provider dispatch surfaces provider failures instead of silently cascading.
         List<String> agentsToTry = List.of(requestedAgent);
 
@@ -475,7 +498,8 @@ public class StdioMultiTaskTool {
                     .thinkingOverride(thinking)
                     .build();
 
-                String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);
+                String result = StdioTaskTool.runWithCancellation(
+                        subagentRunner.forkForSubagent(), agentConfig, prompt, context);
                 if (StdioTaskTool.isAgentMissing(result)) {
                     continue;
                 }

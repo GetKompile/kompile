@@ -162,15 +162,20 @@ class CrawlCommandTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // CRAWL COMMAND — BASE COMMAND PRINTS USAGE
+    // CRAWL COMMAND — BASE COMMAND LAUNCHES THE WIZARD
     // ═══════════════════════════════════════════════════════════════════════
 
     @Test
-    void testCrawlWithNoSubcommandReturnsZero() {
-        // CrawlCommand.call() prints usage to System.out (not picocli writer)
-        // and returns 0. Verify exit code instead of captured output.
+    void testCrawlWithNoSubcommandLaunchesWizard() {
+        // Bare `kompile app crawl` delegates to CrawlWizardCmd. Without a running
+        // kompile-app the wizard exits non-zero; the contract under test is that
+        // the wizard runs (its instance-connectivity diagnostic appears) instead
+        // of the old behavior of dumping group usage.
         int exitCode = cmd.execute("app", "crawl");
-        assertEquals(0, exitCode, "Base crawl command should return 0");
+        String output = outWriter.toString() + errWriter.toString();
+        assertNotEquals(0, exitCode, "wizard without an instance should fail, not print usage");
+        assertFalse(output.contains("kompile app crawl start"),
+                "bare crawl must not print the group usage listing");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

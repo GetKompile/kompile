@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Tracks the state of a distributed crawl job across multiple workers.
@@ -40,7 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class DistributedCrawlSession {
 
     public enum Status {
-        DISPATCHING, RUNNING, COMPLETED, PARTIALLY_COMPLETED, FAILED, CANCELLED
+        PREPARING, DISPATCHING, RUNNING, SEALING, ABORTING,
+        COMPLETED, PARTIALLY_COMPLETED, FAILED, CANCELLING, CANCELLED
     }
 
     public enum WorkerStatus {
@@ -53,6 +55,11 @@ public class DistributedCrawlSession {
     private int totalWorkers;
     private Instant startedAt;
     private volatile Instant completedAt;
+    private UnifiedCrawlJob.GraphGenerationSnapshot graphGeneration;
+    private UnifiedCrawlJob.GraphActivationSnapshot graphActivation;
+    private String finalizerWorkerId;
+    @Builder.Default
+    private AtomicLong persistenceRevision = new AtomicLong(0);
 
     @Builder.Default
     private AtomicInteger completedWorkers = new AtomicInteger(0);
@@ -70,21 +77,49 @@ public class DistributedCrawlSession {
      * Register a worker for this session.
      */
     public void addWorker(String workerId, List<UnifiedCrawlSource> sources) {
+        addWorker(workerId, sources, parsePartitionIndex(workerId));
+    }
+
+    public void addWorker(String workerId, List<UnifiedCrawlSource> sources, int partitionIndex) {
         workers.put(workerId, WorkerInfo.builder()
                 .workerId(workerId)
                 .sources(sources)
+                .partitionIndex(Math.max(0, partitionIndex))
                 .status(WorkerStatus.DISPATCHING)
+                .attempt(1)
+                .currentExternalJobId(workerId)
+                .partitionPhase("DISPATCHING")
                 .createdAt(Instant.now())
                 .build());
+    }
+
+    private static int parsePartitionIndex(String workerId) {
+        if (workerId == null) return 0;
+        int marker = workerId.lastIndexOf("-worker-");
+        if (marker < 0) return 0;
+        try {
+            return Integer.parseInt(workerId.substring(marker + "-worker-".length()));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     /**
      * Mark a worker as dispatched to the external scheduler.
      */
     public void workerDispatched(String workerId, String externalRef) {
+        WorkerInfo current = workers.get(workerId);
+        workerDispatched(workerId, externalRef,
+                current != null ? current.getCurrentExternalJobId() : workerId,
+                current != null ? current.getAttempt() : 1);
+    }
+
+    public void workerDispatched(String workerId, String externalRef,
+                                 String externalJobId, int attempt) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null) {
+        if (w != null && w.getAttempt() == attempt && !isTerminal(w.getStatus())) {
             w.setExternalRef(externalRef);
+            w.setCurrentExternalJobId(externalJobId);
             w.setStatus(WorkerStatus.RUNNING);
             w.setStartedAt(Instant.now());
             w.setLastProgressAt(Instant.now());
@@ -100,8 +135,14 @@ public class DistributedCrawlSession {
      * worker is actually running (flips DISPATCHING → RUNNING).
      */
     public void updateWorkerSnapshot(String workerId, UnifiedCrawlJob.ProgressSnapshot snapshot) {
+        WorkerInfo current = workers.get(workerId);
+        updateWorkerSnapshot(workerId, current != null ? current.getAttempt() : 1, snapshot);
+    }
+
+    public void updateWorkerSnapshot(String workerId, int attempt,
+                                     UnifiedCrawlJob.ProgressSnapshot snapshot) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null && snapshot != null) {
+        if (w != null && w.getAttempt() == normalizeAttempt(attempt, w) && snapshot != null) {
             w.setLatestSnapshot(snapshot);
             w.setLastProgressAt(Instant.now());
             if (w.getStatus() == WorkerStatus.DISPATCHING) {
@@ -114,8 +155,13 @@ public class DistributedCrawlSession {
      * Mark a worker as completed.
      */
     public void workerCompleted(String workerId, Map<String, Object> resultData) {
+        WorkerInfo current = workers.get(workerId);
+        workerCompleted(workerId, current != null ? current.getAttempt() : 1, resultData);
+    }
+
+    public void workerCompleted(String workerId, int attempt, Map<String, Object> resultData) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null && !isTerminal(w.getStatus())) { // idempotent: a revived/reassigned twin can't double-count
+        if (w != null && w.getAttempt() == normalizeAttempt(attempt, w) && !isTerminal(w.getStatus())) {
             w.setStatus(WorkerStatus.COMPLETED);
             w.setCompletedAt(Instant.now());
             w.setLastProgressAt(Instant.now());
@@ -128,8 +174,13 @@ public class DistributedCrawlSession {
      * Mark a worker as failed.
      */
     public void workerFailed(String workerId, String errorMessage) {
+        WorkerInfo current = workers.get(workerId);
+        workerFailed(workerId, current != null ? current.getAttempt() : 1, errorMessage);
+    }
+
+    public void workerFailed(String workerId, int attempt, String errorMessage) {
         WorkerInfo w = workers.get(workerId);
-        if (w != null && !isTerminal(w.getStatus())) { // idempotent: only the first terminal outcome counts
+        if (w != null && w.getAttempt() == normalizeAttempt(attempt, w) && !isTerminal(w.getStatus())) {
             w.setStatus(WorkerStatus.FAILED);
             w.setCompletedAt(Instant.now());
             w.setErrorMessage(errorMessage);
@@ -143,6 +194,41 @@ public class DistributedCrawlSession {
      */
     public boolean isAllWorkersFinished() {
         return completedWorkers.get() + failedWorkers.get() >= totalWorkers;
+    }
+
+    public boolean isCurrentAttempt(String workerId, int attempt) {
+        WorkerInfo worker = workers.get(workerId);
+        return worker != null && worker.getAttempt() == normalizeAttempt(attempt, worker);
+    }
+
+    public int currentAttempt(String workerId) {
+        WorkerInfo worker = workers.get(workerId);
+        return worker != null ? worker.getAttempt() : -1;
+    }
+
+    public void beginAttempt(String workerId, String externalJobId, int attempt) {
+        WorkerInfo worker = workers.get(workerId);
+        if (worker == null) throw new IllegalArgumentException("Unknown worker partition: " + workerId);
+        if (attempt <= worker.getAttempt()) {
+            throw new IllegalArgumentException("Attempt must advance for " + workerId);
+        }
+        worker.setAttempt(attempt);
+        worker.setCurrentExternalJobId(externalJobId);
+        worker.setReassignmentCount(attempt - 1);
+        worker.setExternalRef(null);
+        worker.setStatus(WorkerStatus.DISPATCHING);
+        worker.setErrorMessage(null);
+        worker.setCompletedAt(null);
+        worker.setLeaseTokenHash(null);
+        worker.setLeaseExpiresAt(null);
+        worker.setLeaseRevoked(false);
+        worker.setAcceptedGraphWrites(false);
+        worker.setPartitionPhase("DISPATCHING");
+        worker.setLastProgressAt(Instant.now());
+    }
+
+    private static int normalizeAttempt(int attempt, WorkerInfo worker) {
+        return attempt <= 0 && worker.getAttempt() == 1 ? 1 : attempt;
     }
 
     /**
@@ -167,6 +253,13 @@ public class DistributedCrawlSession {
             ws.put("workerId", w.getWorkerId());
             ws.put("status", w.getStatus().name());
             ws.put("externalRef", w.getExternalRef());
+            ws.put("currentExternalJobId", w.getCurrentExternalJobId());
+            ws.put("attempt", w.getAttempt());
+            ws.put("leaseExpiresAt", w.getLeaseExpiresAt() != null ? w.getLeaseExpiresAt().toString() : null);
+            ws.put("acceptedGraphWrites", w.isAcceptedGraphWrites());
+            ws.put("partitionPhase", w.getPartitionPhase());
+            ws.put("finalizer", w.isFinalizer());
+            ws.put("partitionIndex", w.getPartitionIndex());
             ws.put("sourceCount", w.getSources() != null ? w.getSources().size() : 0);
             ws.put("sourceLabels", w.getSources() != null
                     ? w.getSources().stream()
@@ -187,6 +280,9 @@ public class DistributedCrawlSession {
         if (originalRequest != null && originalRequest.getName() != null) {
             snap.put("name", originalRequest.getName());
         }
+        if (graphGeneration != null) snap.put("graphGeneration", graphGeneration);
+        if (graphActivation != null) snap.put("graphActivation", graphActivation);
+        if (finalizerWorkerId != null) snap.put("finalizerWorkerId", finalizerWorkerId);
 
         return snap;
     }
@@ -198,8 +294,18 @@ public class DistributedCrawlSession {
     public static class WorkerInfo {
         private String workerId;
         private List<UnifiedCrawlSource> sources;
+        private int partitionIndex;
         private WorkerStatus status;
         private String externalRef;
+        private String currentExternalJobId;
+        @Builder.Default
+        private int attempt = 1;
+        private String leaseTokenHash;
+        private Instant leaseExpiresAt;
+        private boolean leaseRevoked;
+        private boolean acceptedGraphWrites;
+        private String partitionPhase;
+        private boolean finalizer;
         private Instant createdAt;
         private Instant startedAt;
         private Instant completedAt;
@@ -267,8 +373,12 @@ public class DistributedCrawlSession {
         private int completedWorkers;
         private int failedWorkers;
         private UnifiedCrawlRequest originalRequest;
+        private UnifiedCrawlJob.GraphGenerationSnapshot graphGeneration;
+        private UnifiedCrawlJob.GraphActivationSnapshot graphActivation;
+        private String finalizerWorkerId;
         private List<String> errors;
         private List<WorkerManifest> workers;
+        private long persistenceRevision;
     }
 
     @Data
@@ -278,8 +388,17 @@ public class DistributedCrawlSession {
     public static class WorkerManifest {
         private String workerId;
         private List<UnifiedCrawlSource> sources;
+        private int partitionIndex;
         private WorkerStatus status;
         private String externalRef;
+        private String currentExternalJobId;
+        private int attempt;
+        private String leaseTokenHash;
+        private Instant leaseExpiresAt;
+        private boolean leaseRevoked;
+        private boolean acceptedGraphWrites;
+        private String partitionPhase;
+        private boolean finalizer;
         private Instant createdAt;
         private Instant startedAt;
         private Instant completedAt;
@@ -294,13 +413,23 @@ public class DistributedCrawlSession {
      * completed-source keys + {@code lastProgressAt} are kept (small, and enough for reconcile/reassign).
      */
     public Manifest toManifest() {
+        long revision = persistenceRevision.incrementAndGet();
         List<WorkerManifest> wms = new ArrayList<>();
         for (WorkerInfo w : workers.values()) {
             wms.add(WorkerManifest.builder()
                     .workerId(w.getWorkerId())
                     .sources(w.getSources())
+                    .partitionIndex(w.getPartitionIndex())
                     .status(w.getStatus())
                     .externalRef(w.getExternalRef())
+                    .currentExternalJobId(w.getCurrentExternalJobId())
+                    .attempt(w.getAttempt())
+                    .leaseTokenHash(w.getLeaseTokenHash())
+                    .leaseExpiresAt(w.getLeaseExpiresAt())
+                    .leaseRevoked(w.isLeaseRevoked())
+                    .acceptedGraphWrites(w.isAcceptedGraphWrites())
+                    .partitionPhase(w.getPartitionPhase())
+                    .finalizer(w.isFinalizer())
                     .createdAt(w.getCreatedAt())
                     .startedAt(w.getStartedAt())
                     .completedAt(w.getCompletedAt())
@@ -319,8 +448,12 @@ public class DistributedCrawlSession {
                 .completedWorkers(completedWorkers.get())
                 .failedWorkers(failedWorkers.get())
                 .originalRequest(originalRequest)
+                .graphGeneration(graphGeneration)
+                .graphActivation(graphActivation)
+                .finalizerWorkerId(finalizerWorkerId)
                 .errors(new ArrayList<>(errors))
                 .workers(wms)
+                .persistenceRevision(revision)
                 .build();
     }
 
@@ -333,9 +466,13 @@ public class DistributedCrawlSession {
                 .totalWorkers(m.getTotalWorkers())
                 .startedAt(m.getStartedAt())
                 .completedAt(m.getCompletedAt())
+                .graphGeneration(m.getGraphGeneration())
+                .graphActivation(m.getGraphActivation())
+                .finalizerWorkerId(m.getFinalizerWorkerId())
                 .build();
         s.getCompletedWorkers().set(m.getCompletedWorkers());
         s.getFailedWorkers().set(m.getFailedWorkers());
+        s.getPersistenceRevision().set(m.getPersistenceRevision());
         if (m.getErrors() != null) {
             s.getErrors().addAll(m.getErrors());
         }
@@ -344,8 +481,19 @@ public class DistributedCrawlSession {
                 WorkerInfo w = WorkerInfo.builder()
                         .workerId(wm.getWorkerId())
                         .sources(wm.getSources())
+                        .partitionIndex(wm.getPartitionIndex())
                         .status(wm.getStatus())
                         .externalRef(wm.getExternalRef())
+                        .currentExternalJobId(wm.getCurrentExternalJobId() != null
+                                ? wm.getCurrentExternalJobId() : wm.getWorkerId())
+                        .attempt(wm.getAttempt() > 0 ? wm.getAttempt()
+                                : Math.max(1, wm.getReassignmentCount() + 1))
+                        .leaseTokenHash(wm.getLeaseTokenHash())
+                        .leaseExpiresAt(wm.getLeaseExpiresAt())
+                        .leaseRevoked(wm.isLeaseRevoked())
+                        .acceptedGraphWrites(wm.isAcceptedGraphWrites())
+                        .partitionPhase(wm.getPartitionPhase())
+                        .finalizer(wm.isFinalizer())
                         .createdAt(wm.getCreatedAt())
                         .startedAt(wm.getStartedAt())
                         .completedAt(wm.getCompletedAt())

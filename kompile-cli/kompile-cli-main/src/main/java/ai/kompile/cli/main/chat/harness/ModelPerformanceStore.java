@@ -22,8 +22,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -38,6 +43,7 @@ public class ModelPerformanceStore {
 
     private static final Path STORE_FILE = Path.of(System.getProperty("user.home"),
             ".kompile", "perf-data.json");
+    private static final Object JVM_PERSISTENCE_LOCK = new Object();
 
     private final ObjectMapper mapper;
     private final List<ModelPerformanceRecord> records;
@@ -53,6 +59,8 @@ public class ModelPerformanceStore {
     private volatile boolean loaded;
     /** The file path to load from when deferred loading triggers. */
     private volatile Path deferredLoadPath;
+    /** Persistence target captured by loadFromFile; null selects an in-memory-only store. */
+    private volatile Path persistencePath = STORE_FILE;
 
     public ModelPerformanceStore(int maxRecordAge, int maxRecords) {
         this.mapper = JsonUtils.standardMapper();
@@ -93,7 +101,7 @@ public class ModelPerformanceStore {
     /**
      * Record a new performance observation.
      */
-    public void record(ModelPerformanceRecord rec) {
+    public synchronized void record(ModelPerformanceRecord rec) {
         ensureLoaded();
         records.add(rec);
         dirtyCount++;
@@ -115,12 +123,10 @@ public class ModelPerformanceStore {
     /**
      * Persist to disk if any records have been added since last flush.
      */
-    public void flush() {
-        if (dirtyCount > 0) {
-            ensureLoaded();
-            saveToFile();
-            dirtyCount = 0;
-        }
+    public synchronized void flush() {
+        if (dirtyCount <= 0 || persistencePath == null) return;
+        ensureLoaded();
+        if (persistMerged(persistencePath)) dirtyCount = 0;
     }
 
     /**
@@ -393,9 +399,22 @@ public class ModelPerformanceStore {
      * Mark that records should be loaded from the given file on first access.
      * Actual deserialization is deferred until data is needed.
      */
-    public void loadFromFile(Path file) {
-        this.deferredLoadPath = file;
+    public synchronized void loadFromFile(Path file) {
+        Path normalized = file == null ? STORE_FILE : file.toAbsolutePath().normalize();
+        this.deferredLoadPath = normalized;
+        this.persistencePath = normalized;
         this.loaded = false;
+    }
+
+    /** Select a fresh session-local store without reading or writing the shared file. */
+    synchronized void useInMemoryOnly() {
+        if (loaded || dirtyCount != 0 || !records.isEmpty()) {
+            throw new IllegalStateException("Persistence mode must be selected before store use");
+        }
+        deferredLoadPath = null;
+        persistencePath = null;
+        autoFlushInterval = 0;
+        loaded = true;
     }
 
     /**
@@ -405,6 +424,7 @@ public class ModelPerformanceStore {
     private void doLoadFromFile(Path file) {
         if (!Files.exists(file)) return;
         try {
+            if (Files.size(file) == 0L) return;
             StoreData data = mapper.readValue(file.toFile(), StoreData.class);
             if (data.records != null) {
                 records.addAll(data.records);
@@ -419,18 +439,110 @@ public class ModelPerformanceStore {
      * Save to disk.
      */
     public void saveToFile() {
-        saveToFile(STORE_FILE);
+        Path target = persistencePath != null ? persistencePath : STORE_FILE;
+        saveToFile(target);
     }
 
-    public void saveToFile(Path file) {
+    public synchronized void saveToFile(Path file) {
+        persistMerged(file == null ? STORE_FILE : file);
+    }
+
+    private boolean persistMerged(Path file) {
+        synchronized (JVM_PERSISTENCE_LOCK) {
+            return persistMergedLocked(file);
+        }
+    }
+
+    private boolean persistMergedLocked(Path file) {
+        Path target = file.toAbsolutePath().normalize();
+        Path parent = target.getParent();
+        if (parent == null) {
+            System.err.println("Warning: Failed to save performance data: path has no parent: "
+                    + target);
+            return false;
+        }
+        Path lockPath = target.resolveSibling(target.getFileName() + ".lock");
         try {
-            Files.createDirectories(file.getParent());
-            StoreData data = new StoreData();
-            data.records = new ArrayList<>(records);
-            data.savedAt = Instant.now().toString();
-            mapper.writerWithDefaultPrettyPrinter().writeValue(file.toFile(), data);
+            Files.createDirectories(parent);
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                List<ModelPerformanceRecord> merged = mergeWithCurrentFile(target);
+                StoreData data = new StoreData();
+                data.records = merged;
+                data.savedAt = Instant.now().toString();
+                Path temporary = Files.createTempFile(parent, ".perf-data-", ".tmp");
+                try {
+                    mapper.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), data);
+                    try {
+                        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
+                                StandardCopyOption.REPLACE_EXISTING);
+                    } catch (AtomicMoveNotSupportedException unsupported) {
+                        Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temporary);
+                }
+                records.clear();
+                records.addAll(merged);
+                return true;
+            }
         } catch (IOException e) {
             System.err.println("Warning: Failed to save performance data: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private List<ModelPerformanceRecord> mergeWithCurrentFile(Path file) {
+        LinkedHashMap<String, ModelPerformanceRecord> merged = new LinkedHashMap<>();
+        if (Files.isRegularFile(file)) {
+            try {
+                if (Files.size(file) > 0L) {
+                    StoreData current = mapper.readValue(file.toFile(), StoreData.class);
+                    if (current.records != null) {
+                        for (ModelPerformanceRecord record : current.records) {
+                            merged.put(recordKey(record), record);
+                        }
+                    }
+                }
+            } catch (IOException malformed) {
+                preserveMalformedStore(file);
+                System.err.println("Warning: Replacing unreadable performance data after preserving "
+                        + "a recovery copy: " + malformed.getMessage());
+            }
+        }
+        for (ModelPerformanceRecord record : records) {
+            merged.put(recordKey(record), record);
+        }
+        List<ModelPerformanceRecord> result = new ArrayList<>(merged.values());
+        Instant cutoff = Instant.now().minus(maxRecordAge, ChronoUnit.DAYS);
+        result.removeIf(record -> record.getTimestamp() != null
+                && record.getTimestamp().isBefore(cutoff));
+        while (result.size() > maxRecords) result.remove(0);
+        return result;
+    }
+
+    private String recordKey(ModelPerformanceRecord record) {
+        if (record.getTimestamp() != null) {
+            return Objects.toString(record.getSessionId(), "") + '\u0000'
+                    + Objects.toString(record.getAgentName(), "") + '\u0000'
+                    + Objects.toString(record.getModel(), "") + '\u0000'
+                    + record.getTimestamp();
+        }
+        try {
+            return "legacy\u0000" + mapper.writeValueAsString(record);
+        } catch (IOException impossible) {
+            return "legacy\u0000" + System.identityHashCode(record);
+        }
+    }
+
+    private static void preserveMalformedStore(Path file) {
+        try {
+            Path recovery = file.resolveSibling(file.getFileName()
+                    + ".corrupt-" + System.currentTimeMillis());
+            Files.copy(file, recovery, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ignored) {
+            // The following atomic replacement still restores a readable live store.
         }
     }
 

@@ -134,9 +134,9 @@ class ExtractionAdmissionComparatorTest {
                 new GraphExtractionSchema.ExtractionMetadata(
                         "chunk-policy", "doc-policy", "model", "now"));
         GraphOperationalPolicy policy = GraphOperationalPolicy.builder()
-                .rule("fpna.status.not-usable", OperationalDisposition.DENY, 100,
+                .rule("canonical.status.not-usable", OperationalDisposition.DENY, 100,
                         "The workbook must not be inserted.")
-                .rule("fpna.status.authoritative", OperationalDisposition.ALLOW, 10,
+                .rule("canonical.status.authoritative", OperationalDisposition.ALLOW, 10,
                         "The workbook is authoritative.")
                 .build();
         List<AdmissionComparison> emitted = new ArrayList<>();

@@ -61,6 +61,9 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
     /** type -> signatures declared for it. */
     private final Map<String, List<RelationSignature>> signatures = new LinkedHashMap<>();
 
+    /** Entity hierarchy used by both candidate routing and final validation. */
+    private final GraphSchema schema;
+
     public SchemaRelationCandidateProvider(GraphSchema schema,
                                            List<String> configuredTypes,
                                            List<String> patternExpressions) {
@@ -77,6 +80,7 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
                                            List<String> configuredTypes,
                                            List<String> patternExpressions,
                                            boolean enforceSignatures) {
+        this.schema = schema;
         if (schema != null && schema.getRelationshipTypes() != null) {
             for (RelationshipType type : schema.getRelationshipTypes()) {
                 if (type == null) {
@@ -158,8 +162,10 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
                 if (!ranges.contains(signature.targetType())) {
                     ranges.add(signature.targetType());
                 }
-                boolean sourceOk = source == null || source.equals(signature.sourceType());
-                boolean targetOk = target == null || target.equals(signature.targetType());
+                boolean sourceOk = source == null
+                        || nodeTypeMatches(source, signature.sourceType());
+                boolean targetOk = target == null
+                        || nodeTypeMatches(target, signature.targetType());
                 admits |= sourceOk && targetOk;
             }
             if (admits) {
@@ -174,6 +180,12 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
         return ordered.size() > limit
                 ? List.copyOf(ordered.subList(0, limit))
                 : List.copyOf(ordered);
+    }
+
+    private boolean nodeTypeMatches(String actualType, String expectedType) {
+        return schema == null
+                ? expectedType.equals(actualType)
+                : schema.isNodeTypeAssignableTo(actualType, expectedType);
     }
 
     private void put(String type, String description) {

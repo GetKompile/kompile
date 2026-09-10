@@ -21,6 +21,8 @@ CLASSIFIER="${PLATFORM}${PLATFORM_EXTENSION}"
 SHARED_RUNTIME_MANIFEST="shared-runtime-manifest.txt"
 SHARED_RUNTIME_FORMAT="# nd4j-shared-runtime-manifest-v1"
 RUNTIME_COUNT_PREFIX="# runtime-count="
+RESOURCE_COUNT_PREFIX="# resource-count="
+RESOURCE_ENTRY_PREFIX="# resource="
 JNI_ENTRYPOINT_MANIFEST="jni-entrypoint-manifest.txt"
 JNI_ENTRYPOINT_FORMAT="# kompile-jni-entrypoint-manifest-v1"
 
@@ -186,6 +188,7 @@ fi
 BACKEND_MANIFEST=""
 BACKEND_DIR=""
 MANIFEST_RUNTIME_NAMES=()
+MANIFEST_RESOURCE_NAMES=()
 if [ "${BACKEND_ARTIFACT}" != "none" ]; then
     BACKEND_MANIFEST="${BACKEND_MANIFESTS[0]}"
     BACKEND_DIR="$(dirname "${BACKEND_MANIFEST}")"
@@ -197,6 +200,10 @@ validate_backend_manifest() {
     local declared_count
     local runtime_name
     local actual_count=0
+    local declared_resource_count=""
+    local resource_name
+    local actual_resource_count=0
+    local existing_resource
 
     exec 3<"${BACKEND_MANIFEST}"
     IFS= read -r format <&3 || true
@@ -228,10 +235,58 @@ validate_backend_manifest() {
     while IFS= read -r runtime_name <&3 || [ -n "${runtime_name}" ]; do
         [ -n "${runtime_name}" ] || continue
         case "${runtime_name}" in
+            "${RESOURCE_COUNT_PREFIX}"*)
+                if [ -n "${declared_resource_count}" ]; then
+                    echo "ERROR: duplicate resource-count in ${BACKEND_MANIFEST}." >&2
+                    exec 3<&-
+                    exit 1
+                fi
+                declared_resource_count="${runtime_name#${RESOURCE_COUNT_PREFIX}}"
+                case "${declared_resource_count}" in
+                    ''|*[!0-9]*)
+                        echo "ERROR: invalid resource-count '${declared_resource_count}' in ${BACKEND_MANIFEST}." >&2
+                        exec 3<&-
+                        exit 1
+                        ;;
+                esac
+                continue
+                ;;
+            "${RESOURCE_ENTRY_PREFIX}"*)
+                resource_name="${runtime_name#${RESOURCE_ENTRY_PREFIX}}"
+                case "${resource_name}" in
+                    ''|/*|?:*|*\\*|*//*|.|..|./*|*/./*|*/.|../*|*/../*|*/..)
+                        echo "ERROR: unsafe runtime resource '${resource_name}' in ${BACKEND_MANIFEST}." >&2
+                        exec 3<&-
+                        exit 1
+                        ;;
+                esac
+                if [ ! -f "${BACKEND_DIR}/${resource_name}" ]; then
+                    echo "ERROR: manifest-declared runtime resource is missing: ${BACKEND_DIR}/${resource_name}" >&2
+                    exec 3<&-
+                    exit 1
+                fi
+                for existing_resource in "${MANIFEST_RESOURCE_NAMES[@]}"; do
+                    if [ "${existing_resource}" = "${resource_name}" ]; then
+                        echo "ERROR: duplicate runtime resource '${resource_name}' in ${BACKEND_MANIFEST}." >&2
+                        exec 3<&-
+                        exit 1
+                    fi
+                done
+                MANIFEST_RESOURCE_NAMES+=("${resource_name}")
+                actual_resource_count=$((actual_resource_count + 1))
+                continue
+                ;;
+        esac
+        case "${runtime_name}" in
             \#*|.|..|*/*|*\\*)
-                echo "ERROR: unsafe runtime entry '${runtime_name}' in ${BACKEND_MANIFEST}." >&2
-                exec 3<&-
-                exit 1
+                case "${runtime_name}" in
+                    \#*) continue ;;
+                    *)
+                        echo "ERROR: unsafe runtime entry '${runtime_name}' in ${BACKEND_MANIFEST}." >&2
+                        exec 3<&-
+                        exit 1
+                        ;;
+                esac
                 ;;
         esac
         if ! is_native_name "${runtime_name}"; then
@@ -263,10 +318,39 @@ validate_backend_manifest() {
         echo "       declared ${declared_count}, found ${actual_count} entries." >&2
         exit 1
     fi
+    if [ -z "${declared_resource_count}" ]; then
+        if [ "${actual_resource_count}" -ne 0 ]; then
+            echo "ERROR: shared-runtime manifest has resources but no resource-count in ${BACKEND_MANIFEST}." >&2
+            exit 1
+        fi
+        declared_resource_count=0
+    fi
+    if [ "${actual_resource_count}" -ne "${declared_resource_count}" ]; then
+        echo "ERROR: shared-runtime resource count mismatch in ${BACKEND_MANIFEST}:" >&2
+        echo "       declared ${declared_resource_count}, found ${actual_resource_count} entries." >&2
+        exit 1
+    fi
+}
+
+stage_backend_resources() {
+    local resource_name
+    local source_path
+    local destination_path
+    for resource_name in "${MANIFEST_RESOURCE_NAMES[@]}"; do
+        source_path="${BACKEND_DIR}/${resource_name}"
+        destination_path="${DEST_DIR}/${resource_name}"
+        if [ -e "${destination_path}" ] && ! cmp -s "${source_path}" "${destination_path}"; then
+            echo "ERROR: conflicting manifest-owned runtime resource: ${resource_name}" >&2
+            exit 1
+        fi
+        mkdir -p "$(dirname "${destination_path}")"
+        cp -p "${source_path}" "${destination_path}"
+    done
 }
 
 if [ "${BACKEND_ARTIFACT}" != "none" ]; then
     validate_backend_manifest
+    stage_backend_resources
 fi
 
 native_matches_base_platform() {

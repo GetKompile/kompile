@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -75,6 +76,25 @@ class LocalReasoningSessionQueryTest {
     // ── CAPABILITIES ─────────────────────────────────────────────────────────
 
     @Test
+    void bundledAndroidFixtureOpensThroughProductionSessionLoader() throws IOException {
+        Path repositoryRoot = Path.of("").toAbsolutePath();
+        while (repositoryRoot != null
+                && !Files.isDirectory(repositoryRoot.resolve("kompile-chat-local"))) {
+            repositoryRoot = repositoryRoot.getParent();
+        }
+        assertNotNull(repositoryRoot, "Could not locate the Kompile repository root");
+        Path fixture = repositoryRoot.resolve(
+                "kompile-chat-local/mobile/android/app/src/main/assets/graphs/fixture.kgraph");
+
+        assertTrue(Files.isRegularFile(fixture), "Bundled Android fixture is missing: " + fixture);
+        try (LocalReasoningSession fixtureSession = LocalReasoningSession.open(fixture)) {
+            assertEquals(2, fixtureSession.graph().entityCount());
+            assertEquals(1, fixtureSession.graph().relationCount());
+            assertNotNull(fixtureSession.graph().model("psl_prog"));
+        }
+    }
+
+    @Test
     void capabilitiesReturnsCapabilitiesList() {
         String json = dispatcher.dispatch(session, "graph_reasoning_query",
                 "{\"operation\":\"CAPABILITIES\"}");
@@ -83,7 +103,19 @@ class LocalReasoningSessionQueryTest {
         assertTrue(r.containsKey("capabilities"));
         @SuppressWarnings("unchecked")
         List<Object> caps = (List<Object>) r.get("capabilities");
-        assertFalse(caps.isEmpty(), "Should have at least one capability");
+        assertEquals(17, caps.size());
+        assertTrue(caps.stream().map(value -> (Map<?, ?>) value)
+                .noneMatch(capability -> "CALCULATE".equals(capability.get("intent"))));
+    }
+
+    @Test
+    void emptyRequestDefaultsToCapabilities() {
+        Map<String, Object> result = parseResult(
+                dispatcher.dispatch(session, "graph_reasoning_query", "{}"));
+
+        assertEquals("OK", result.get("status"));
+        assertEquals("CAPABILITIES", result.get("intent"));
+        assertFalse(((List<?>) result.get("capabilities")).isEmpty());
     }
 
     // ── OVERVIEW ─────────────────────────────────────────────────────────────
@@ -124,6 +156,30 @@ class LocalReasoningSessionQueryTest {
                     return "Alice Smith".equals(label) || "alice".equals(id);
                 });
         assertTrue(found, "SEARCH for 'Alice' should find Alice Smith: " + json);
+    }
+
+    @Test
+    void questionOnlyRequestDefaultsToSearch() {
+        String json = dispatcher.dispatch(session, "graph_reasoning_query",
+                "{\"question\":\"Find Alice\",\"topK\":5}");
+        Map<String, Object> result = parseResult(json);
+
+        assertEquals("SEARCH", result.get("intent"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> entities = (List<Map<String, Object>>) result.get("entities");
+        assertTrue(entities.stream().anyMatch(entity -> "alice".equals(entity.get("id"))), json);
+    }
+
+    @Test
+    void queryTextWinsWhenBothTextAliasesArePresent() {
+        String json = dispatcher.dispatch(session, "graph_reasoning_query",
+                "{\"queryText\":\"Alice\",\"question\":\"Beta\",\"topK\":5}");
+        Map<String, Object> result = parseResult(json);
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> entities = (List<Map<String, Object>>) result.get("entities");
+        assertTrue(entities.stream().anyMatch(entity -> "alice".equals(entity.get("id"))), json);
+        assertTrue(entities.stream().noneMatch(entity -> "beta".equals(entity.get("id"))), json);
     }
 
     @Test

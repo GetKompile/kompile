@@ -130,6 +130,8 @@ public class AgentRegistryService {
                 return;
             }
 
+            appendCodexExecHelp(agent, helpOutput);
+
             String help = helpOutput.toString();
             agent.setHelpOutput(help);
 
@@ -145,6 +147,40 @@ public class AgentRegistryService {
 
         } catch (Exception e) {
             log.debug("Error parsing --help for agent '{}': {}", agent.getName(), e.getMessage());
+        }
+    }
+
+    /** Codex's strict per-run isolation flag is declared by the exec subcommand, not root help. */
+    private void appendCodexExecHelp(AgentProvider agent, StringBuilder helpOutput) {
+        String name = agent.getName() == null ? "" : agent.getName().toLowerCase();
+        String command = agent.getCommand() == null ? "" : agent.getCommand().toLowerCase();
+        if (!name.contains("codex") && !command.contains("codex")) {
+            return;
+        }
+        Process process = null;
+        try {
+            process = new ProcessBuilder(agent.getCommand(), "exec", "--help")
+                    .redirectErrorStream(true)
+                    .start();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                helpOutput.append("\n--- exec --help ---\n");
+                while ((line = reader.readLine()) != null) {
+                    helpOutput.append(line).append('\n');
+                }
+            }
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                log.warn("Timeout parsing exec --help for Codex agent '{}'", agent.getName());
+            }
+        } catch (Exception failure) {
+            log.debug("Could not parse Codex exec --help for '{}': {}",
+                    agent.getName(), failure.getMessage());
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
     }
 

@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { BehaviorSubject, Observable, of } from 'rxjs';
 import { catchError, tap, map } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
@@ -151,7 +151,8 @@ export class SourceProviderService {
    */
   loadProviders(includeUnavailable: boolean = true): Observable<SourceProvider[]> {
     return this.http.get<SourceProvidersResponse>(
-      `${this.apiUrl}?includeUnavailable=${includeUnavailable}`
+      `${this.apiUrl}?includeUnavailable=${includeUnavailable}`,
+      this.authOptions()
     ).pipe(
       tap(response => {
         this.providersSubject.next(response.providers);
@@ -170,7 +171,7 @@ export class SourceProviderService {
    * Load category metadata from the backend.
    */
   loadCategories(): Observable<SourceCategory[]> {
-    return this.http.get<SourceCategory[]>(`${this.apiUrl}/categories`).pipe(
+    return this.http.get<SourceCategory[]>(`${this.apiUrl}/categories`, this.authOptions()).pipe(
       tap(categories => {
         this.categoriesSubject.next(categories);
       }),
@@ -193,7 +194,7 @@ export class SourceProviderService {
    * Get a specific provider by ID.
    */
   getProvider(providerId: string): Observable<SourceProvider | null> {
-    return this.http.get<SourceProvider>(`${this.apiUrl}/${providerId}`).pipe(
+    return this.http.get<SourceProvider>(`${this.apiUrl}/${providerId}`, this.authOptions()).pipe(
       catchError(error => {
         console.error(`Failed to load provider ${providerId}:`, error);
         return of(null);
@@ -322,5 +323,14 @@ export class SourceProviderService {
    */
   refresh(): Observable<SourceProvider[]> {
     return this.loadProviders();
+  }
+
+  private authOptions(): { headers: HttpHeaders; withCredentials: boolean } {
+    let headers = new HttpHeaders({ 'X-Kompile-Channel-Request': '1' });
+    if (typeof sessionStorage !== 'undefined') {
+      const csrf = sessionStorage.getItem('kompile.channel.csrf');
+      if (csrf) headers = headers.set('X-Kompile-Channel-CSRF', csrf);
+    }
+    return { headers, withCredentials: true };
   }
 }

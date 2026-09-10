@@ -45,6 +45,7 @@ import java.time.format.DateTimeFormatter;
 public final class McpStderrLogger {
 
     private static final long MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
+    private static final int MAX_BUFFERED_LINE_CHARS = 8192;
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
                     .withZone(ZoneId.systemDefault());
@@ -112,6 +113,8 @@ public final class McpStderrLogger {
                 buffer.append((char) (b & 0xFF));
                 if (b == '\n') {
                     flushBuffer();
+                } else if (buffer.length() >= MAX_BUFFERED_LINE_CHARS) {
+                    flushPrefix(MAX_BUFFERED_LINE_CHARS);
                 }
             }
         }
@@ -126,6 +129,9 @@ public final class McpStderrLogger {
                     String line = buffer.substring(0, nl);
                     buffer.delete(0, nl + 1);
                     writeLine(line);
+                }
+                while (buffer.length() >= MAX_BUFFERED_LINE_CHARS) {
+                    flushPrefix(MAX_BUFFERED_LINE_CHARS);
                 }
             }
         }
@@ -154,6 +160,12 @@ public final class McpStderrLogger {
                 line = line.substring(0, line.length() - 1);
             }
             writeLine(line);
+        }
+
+        private void flushPrefix(int length) {
+            String chunk = buffer.substring(0, length);
+            buffer.delete(0, length);
+            writeLine(chunk);
         }
     }
 }

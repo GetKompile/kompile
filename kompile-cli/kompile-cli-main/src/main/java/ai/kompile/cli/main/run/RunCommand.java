@@ -358,7 +358,7 @@ public class RunCommand implements Callable<Integer> {
             structured.put("messages", messages);
             structured.put("tools", List.of());
             structured.put("addGenerationPrompt", true);
-            structured.put("toolDefinitionFormat", "FLAT");
+            structured.put("toolDefinitionFormat", "STANDARD");
             structured.put("toolCallFormat", "NATIVE");
             structured.put("toolChoice", "NONE");
 

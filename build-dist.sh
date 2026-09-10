@@ -16,7 +16,7 @@
 #   cpu-intel     — CLI + app-main + staging with nd4j-native x86_64
 #   cpu-arm       — CLI + app-main + staging with nd4j-native aarch64
 #   cuda          — CLI + app-main + staging with nd4j-cuda
-#   amd-zluda     — CLI + app-main + staging with ZLUDA backend
+#   amd-zluda     — CLI + app-main + staging with ZLUDA (ROCm 7.2.4 default)
 #
 # Options:
 #   --skip-java-build    Skip the Maven Java install (use existing target/)
@@ -241,8 +241,8 @@ case "${VARIANT}" in
     amd-zluda)
         APP_NATIVE=true
         STAGING_NATIVE=true
-        ND4J_BACKEND="nd4j-zluda"
-        KOMPILE_BACKEND_PROFILE="zluda"
+        ND4J_BACKEND="nd4j-zluda-12.9"
+        KOMPILE_BACKEND_PROFILE="zluda-rocm-7.2.4"
         CUDA_FLAG="-Dkompile.cuda=true"
         EXTRA_MVN_FLAGS="-Dkompile.zluda=true"
         ;;
@@ -264,12 +264,18 @@ if [ -n "${BACKEND_PROFILE_OVERRIDE}" ]; then
         cuda-12.6*) ND4J_BACKEND="nd4j-cuda-12.6"; CUDA_VERSION="12.6"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         cuda-12.9*) ND4J_BACKEND="nd4j-cuda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         zluda) ND4J_BACKEND="nd4j-zluda"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
+        zluda-rocm-7.2.4|zluda-rocm-10.0.0) ND4J_BACKEND="nd4j-zluda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
         vulkan*) ND4J_BACKEND="nd4j-vulkan" ;;
         hexagon) ND4J_BACKEND="nd4j-hexagon" ;;
         tpu) ND4J_BACKEND="nd4j-tpu" ;;
         cpu*) ND4J_BACKEND="nd4j-native" ;;
         *) echo "Unsupported backend profile: ${KOMPILE_BACKEND_PROFILE}" >&2; exit 1 ;;
     esac
+fi
+if [ "${KOMPILE_BACKEND_PROFILE}" = "zluda-rocm-10.0.0" ] \
+        && [ "${PLATFORM}" != "linux-x86_64" ]; then
+    echo "ROCm 10 ZLUDA distributions are supported only on linux-x86_64 (got ${PLATFORM})" >&2
+    exit 1
 fi
 # Local request-scoped runtimes require a packaged numerical backend. A cli-only
 # build remains remote-only unless a backend profile is selected explicitly; with
@@ -296,6 +302,7 @@ else
         cuda-12.6-cudnn|cuda-12.9-cudnn) SDK_CLASSIFIER="${PLATFORM}-cudnn" ;;
         cuda-12.6-compile|cuda-12.9-compile|vulkan-compile) SDK_CLASSIFIER="${PLATFORM}-compile" ;;
         zluda) SDK_CLASSIFIER="${PLATFORM}-zluda" ;;
+        zluda-rocm-*) SDK_CLASSIFIER="${PLATFORM}-${KOMPILE_BACKEND_PROFILE}" ;;
         *) echo "Cannot derive SDK classifier for backend profile: ${KOMPILE_BACKEND_PROFILE}" >&2; exit 1 ;;
     esac
 fi
@@ -312,6 +319,7 @@ else
         cpu-*) RELEASE_LANE_CLASSIFIER="${PLATFORM}-${KOMPILE_BACKEND_PROFILE#cpu-}" ;;
         cuda-*) RELEASE_LANE_CLASSIFIER="${PLATFORM}-${KOMPILE_BACKEND_PROFILE}" ;;
         zluda) RELEASE_LANE_CLASSIFIER="${PLATFORM}-cuda-12.9-zluda" ;;
+        zluda-rocm-*) RELEASE_LANE_CLASSIFIER="${PLATFORM}-cuda-12.9-${KOMPILE_BACKEND_PROFILE}" ;;
         vulkan|vulkan-compile|hexagon|tpu) RELEASE_LANE_CLASSIFIER="${PLATFORM}-${KOMPILE_BACKEND_PROFILE}" ;;
         *) echo "Cannot derive distribution classifier for backend profile: ${KOMPILE_BACKEND_PROFILE}" >&2; exit 1 ;;
     esac
@@ -332,6 +340,7 @@ DL4J_MAVEN_REPOSITORY_ID="${DL4J_MAVEN_REPOSITORY_ID:-dl4j-release}"
 # native-image builds). Arrays preserve repository URLs and local paths exactly
 # and avoid reparsing user-provided values through eval.
 MAVEN_BUILD_ARGS=(
+    "--no-snapshot-updates"
     "-Dmaven.repo.local=${MAVEN_REPOSITORY}"
     "-Dnd4j.version=${ND4J_VERSION}"
 )
@@ -419,26 +428,49 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
     echo ""
 
     BUILD_CMD=("${MVN}" clean install -DskipTests "${MAVEN_BUILD_ARGS[@]}")
-    if [ "${VARIANT}" = "cli-only" ]; then
-        # A plain CLI-only archive does not require DL4J. Once a backend profile is
-        # selected, however, every request-scoped runtime copied below must be part
-        # of this clean reactor build so stale target/ output cannot enter the dist.
-        if [ "${JARS_ONLY}" = true ]; then
-            CLI_ONLY_MODULES=":kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli"
-        else
-            CLI_ONLY_MODULES=":kompile-cli-main,:kompile-model-cli"
-        fi
-        if [ "${LOCAL_RUNTIME}" = true ]; then
-            CLI_ONLY_MODULES+=",:kompile-app-subprocess-serving,:kompile-pipeline-serving"
-        fi
-        BUILD_CMD+=(-pl "${CLI_ONLY_MODULES}" -am)
-    elif [ "${VARIANT}" = "local" ]; then
-        # Keep the Java reactor at the local execution boundary. app-main is
-        # included only because it currently owns the dedicated VLM entrypoint;
-        # the combined staging REST/CLI application is intentionally excluded.
-        # Upstream Kompile/DL4J artifacts must already be installed; do not widen
-        # this focused build with Maven's also-make reactor expansion.
-        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-cli,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main)
+    JAVA_BUILD_MODULES=""
+    JAVA_BUILD_ALSO_MAKE=false
+    case "${VARIANT}" in
+        cli-only)
+            # A plain CLI-only archive does not require DL4J. Once a backend profile is
+            # selected, however, every request-scoped runtime copied below must be part
+            # of this clean reactor build so stale target/ output cannot enter the dist.
+            if [ "${JARS_ONLY}" = true ]; then
+                JAVA_BUILD_MODULES=":kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli"
+            else
+                JAVA_BUILD_MODULES=":kompile-cli-main,:kompile-model-cli,:kompile-agent-cli"
+            fi
+            if [ "${LOCAL_RUNTIME}" = true ]; then
+                JAVA_BUILD_MODULES+=",:kompile-app-subprocess-serving,:kompile-pipeline-serving"
+            fi
+            JAVA_BUILD_ALSO_MAKE=true
+            ;;
+        local)
+            # Keep the Java reactor at the local execution boundary. app-main is
+            # included only because it currently owns the dedicated VLM entrypoint;
+            # the combined staging REST/CLI application is intentionally excluded.
+            # Upstream Kompile/DL4J artifacts must already be installed; do not widen
+            # this focused build with Maven's also-make reactor expansion.
+            JAVA_BUILD_MODULES=":kompile-cli-main,:kompile-model-cli,:kompile-agent-cli,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main"
+            if [ "${JARS_ONLY}" = true ]; then
+                JAVA_BUILD_MODULES+=",:kompile-app-cli,:kompile-component-cli"
+            fi
+            ;;
+        full|hosted|cpu-intel|cpu-arm|cuda|amd-zluda)
+            # Product distributions build only the leaf artifacts they package. Maven
+            # supplies their dependency closure; unrelated root siblings such as
+            # kompile-chat-local and kompile-e2e-tests must never enter this reactor.
+            JAVA_BUILD_MODULES=":kompile-cli-main,:kompile-agent-cli,:kompile-app-cli,:kompile-model-cli,:kompile-component-cli,:kompile-app-main,:kompile-app-chat,:kompile-app-crawl-manager,:kompile-model-staging,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-compute-graph-scripting,:kompile-app-lite,:kompile-sdk-serving"
+            JAVA_BUILD_ALSO_MAKE=true
+            ;;
+    esac
+    if [ -z "${JAVA_BUILD_MODULES}" ]; then
+        echo "ERROR: no Java reactor boundary is defined for distribution variant '${VARIANT}'" >&2
+        exit 1
+    fi
+    BUILD_CMD+=(-pl "${JAVA_BUILD_MODULES}")
+    if [ "${JAVA_BUILD_ALSO_MAKE}" = true ]; then
+        BUILD_CMD+=(-am)
     fi
     # When building JARs (not native), produce exec JARs for app-main
     if { [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; } \
@@ -468,7 +500,25 @@ exec_jar_matches_backend() {
     if [ -z "${ND4J_BACKEND}" ]; then
         return 0
     fi
-    [ -n "${jar}" ] && [ -f "${jar}" ] && {
+    [ -n "${jar}" ] && [ -f "${jar}" ] || return 1
+
+    # ROCm-qualified ZLUDA releases share one artifactId. Require the exact
+    # native classifier as well as the Java backend so stale 7.2.4 target/
+    # output cannot be relabelled as a 10.0.0 distribution (or vice versa).
+    case "${KOMPILE_BACKEND_PROFILE}" in
+        zluda-rocm-*)
+            {
+                unzip -p "${jar}" \
+                    "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}-${SDK_CLASSIFIER}.jar" \
+                    >/dev/null 2>&1 \
+                || unzip -p "${jar}" \
+                    "org/nd4j/linalg/jcublas/bindings/${SDK_CLASSIFIER}/shared-runtime-manifest.txt" \
+                    >/dev/null 2>&1
+            } || return 1
+            ;;
+    esac
+
+    {
         unzip -p "${jar}" "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}.jar" \
             >/dev/null 2>&1 \
         || unzip -p "${jar}" \
@@ -597,6 +647,36 @@ if [ "${SKIP_NATIVE}" = false ]; then
             PIDS+=($!)
             throttle_native_build
         fi
+    fi
+
+    # Every native CLI distribution carries kompile-agent: `kompile spin` and
+    # `kompile agent` delegate to it even in cli-only/local variants. Product
+    # distributions additionally carry the app/component CLIs.
+    if [ "${CLI_NATIVE}" = true ]; then
+        DELEGATED_CLIS=("kompile-cli/kompile-agent-cli:kompile-agent")
+        if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
+            DELEGATED_CLIS+=(
+                "kompile-cli/kompile-app-cli:kompile-app-cli"
+                "kompile-cli/kompile-component-cli:kompile-component"
+            )
+        fi
+        for DELEGATED_CLI in "${DELEGATED_CLIS[@]}"; do
+            DELEGATED_CLI_MODULE="${DELEGATED_CLI%%:*}"
+            DELEGATED_CLI_IMAGE="${DELEGATED_CLI##*:}"
+            DELEGATED_CLI_TARGET="${DELEGATED_CLI_MODULE}/target/${DELEGATED_CLI_IMAGE}${EXE_SUFFIX}"
+            if [ -f "${DELEGATED_CLI_TARGET}" ] && [ "${SKIP_JAVA_BUILD}" = true ]; then
+                echo "  ${DELEGATED_CLI_IMAGE}: using existing binary"
+            else
+                echo "  ${DELEGATED_CLI_IMAGE}: building native image..."
+                (
+                    cd "${DELEGATED_CLI_MODULE}"
+                    "${MVN}" package "${NATIVE_BUILD_FLAG}" -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
+                        2>&1 | tee "/tmp/${DELEGATED_CLI_IMAGE}-native.log"
+                ) &
+                PIDS+=($!)
+                throttle_native_build
+            fi
+        done
     fi
 
     # App main native
@@ -1121,7 +1201,7 @@ require_native_component() {
 }
 
 if [ "${CLI_NATIVE}" = true ]; then
-    require_native_component "model CLI" "kompile-model"
+    require_native_component "model CLI" "kompile-model${EXE_SUFFIX}"
 fi
 if [ "${APP_NATIVE}" = true ]; then
     require_component_forms "server" "kompile-server" "kompile-server.jar"
@@ -1266,9 +1346,8 @@ fi
 # Copy extra CLI binaries only for native distributions. The JVM tier uses the
 # sibling shaded JARs copied below instead.
 if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
-    for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
-                 kompile-cli/kompile-app-cli/target/kompile-app-cli \
-                 kompile-cli/kompile-component-cli/target/kompile-component; do
+    for extra in "kompile-cli/kompile-app-cli/target/kompile-app-cli${EXE_SUFFIX}" \
+                 "kompile-cli/kompile-component-cli/target/kompile-component${EXE_SUFFIX}"; do
         if [ -f "${extra}" ]; then
             BNAME=$(basename "${extra}")
             cp "${extra}" "${DIST_DIR}/bin/${BNAME}"
@@ -1278,6 +1357,24 @@ if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
         fi
     done
 fi
+if [ "${CLI_NATIVE}" = true ]; then
+    require_native_component "app CLI" "kompile-app-cli${EXE_SUFFIX}"
+    require_native_component "component CLI" "kompile-component${EXE_SUFFIX}"
+fi
+fi
+
+# The agent CLI is part of the CLI contract, not a product extra. Keep it in
+# native cli-only/local archives as well as full product distributions.
+if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ] \
+        && [ "${CLI_NATIVE}" = true ]; then
+    AGENT_CLI_BIN="kompile-cli/kompile-agent-cli/target/kompile-agent${EXE_SUFFIX}"
+    if [ -f "${AGENT_CLI_BIN}" ]; then
+        cp "${AGENT_CLI_BIN}" "${DIST_DIR}/bin/kompile-agent${EXE_SUFFIX}"
+        chmod +x "${DIST_DIR}/bin/kompile-agent${EXE_SUFFIX}"
+        normalize_elf_portability "${DIST_DIR}/bin/kompile-agent${EXE_SUFFIX}"
+        echo "  bin/kompile-agent${EXE_SUFFIX} ($(du -h "${AGENT_CLI_BIN}" | cut -f1))"
+    fi
+    require_native_component "agent CLI" "kompile-agent${EXE_SUFFIX}"
 fi
 
 # A jars-only CLI carries the standalone delegated command JARs beside the
@@ -1329,12 +1426,11 @@ APP_NATIVE_LIBS="kompile-app/kompile-app-parent/kompile-app-main/target/native-l
 CLI_NATIVE_LIBS="kompile-cli/kompile-cli-main/target/native-libs"
 
 NATIVE_STAGER="${SCRIPT_DIR}/kompile-dist/src/main/build/stage-native-libs.sh"
-# CUDA/ZLUDA are backend artifact lanes, not JavaCPP platform flavors: the
-# artifactId selects the backend and its producer-owned manifest remains under
-# the base platform classifier. Preserve suffix handling only for true flavors
-# such as CPU ISA variants.
+# CUDA artifacts keep their producer manifest under the base platform classifier.
+# Version-qualified ZLUDA artifacts instead own a ROCm-qualified classifier, so
+# preserve that extension (and its manifest-declared .kpack resources) exactly.
 case "${ND4J_BACKEND:-}" in
-    nd4j-cuda-*|nd4j-zluda*) NATIVE_PLATFORM_EXTENSION="" ;;
+    nd4j-cuda-*|nd4j-zluda) NATIVE_PLATFORM_EXTENSION="" ;;
     *) NATIVE_PLATFORM_EXTENSION="${SDK_CLASSIFIER#${PLATFORM}}" ;;
 esac
 
@@ -1384,7 +1480,7 @@ if [ -n "${SDX_ASSETS_DIR}" ]; then
     mkdir -p "${DIST_DIR}/sdx-sdk"
     cp -a "${SDX_ASSETS_DIR}/." "${DIST_DIR}/sdx-sdk/"
     case "${ND4J_BACKEND:-}" in
-        nd4j-cuda-*)
+        nd4j-cuda-*|nd4j-zluda-*)
             rm -rf "${DIST_DIR}/sdx-sdk/cpu"
             rm -f "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cpu.zip" \
                 "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cpu.zip.sha256" \
@@ -1462,6 +1558,7 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
   "buildDate": "$(date -Iseconds)",
   "components": {
     "cli": $(component_forms kompile kompile-cli.jar),
+    "agent-cli": $(component_forms kompile-agent kompile-agent.jar),
     "model-cli": $(component_forms kompile-model kompile-model.jar),
     "server": $(component_forms kompile-server kompile-server.jar),
     "model-staging": $(component_forms kompile-model-staging kompile-model-staging.jar),

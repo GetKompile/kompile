@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.CliProcessLauncher;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -68,8 +70,14 @@ public final class McpToolInjectionSupport {
         ObjectNode server = root.putObject("mcpServers").putObject(SERVER_NAME);
         server.put("command", launcher.command());
 
+        String transcriptId = TranscriptLogScope.currentTranscriptId();
+        if (transcriptId != null) {
+            server.putObject("env").put(
+                    TranscriptLogScope.TRANSCRIPT_ID_ENV, transcriptId);
+        }
+
         ArrayNode args = server.putArray("args");
-        for (String arg : launcher.buildArgs(normalizedWorkingDir)) {
+        for (String arg : launcher.buildArgs(normalizedWorkingDir, transcriptId)) {
             args.add(arg);
         }
 
@@ -89,7 +97,8 @@ public final class McpToolInjectionSupport {
         Path normalizedWorkingDir = normalizeWorkingDir(workingDir);
         List<String> command = new ArrayList<>();
         command.add(launcher.command());
-        command.addAll(launcher.buildArgs(normalizedWorkingDir));
+        command.addAll(launcher.buildArgs(
+                normalizedWorkingDir, TranscriptLogScope.currentTranscriptId()));
         return command;
     }
 
@@ -128,9 +137,18 @@ public final class McpToolInjectionSupport {
 
     static CliLauncher findCliLauncher() {
         CliProcessLauncher.Launcher launcher = CliProcessLauncher.find();
-        return launcher == null
-                ? null
-                : new CliLauncher(launcher.command(), launcher.prefixArgs());
+        if (launcher == null) return null;
+        if (launcher.prefixArgs().contains("-jar")) {
+            Path wrapper = KompileHome.installDirectory().toPath()
+                    .resolve("bin").resolve("kompile").toAbsolutePath().normalize();
+            if (!Files.isExecutable(wrapper)) {
+                // A direct java -jar child bypasses the wrapper's pre-main stderr and
+                // HotSpot ErrorFile routing. Do not silently launch an unobservable MCP.
+                return null;
+            }
+            return new CliLauncher(wrapper.toString(), List.of());
+        }
+        return new CliLauncher(launcher.command(), launcher.prefixArgs());
     }
 
     /**
@@ -151,10 +169,18 @@ public final class McpToolInjectionSupport {
 
     static record CliLauncher(String command, List<String> prefixArgs) {
         List<String> buildArgs(Path workingDir) {
+            return buildArgs(workingDir, TranscriptLogScope.currentTranscriptId());
+        }
+
+        List<String> buildArgs(Path workingDir, String transcriptId) {
             List<String> args = new ArrayList<>(prefixArgs);
             args.add("mcp-stdio");
             args.add("--work-dir");
             args.add(workingDir.toString());
+            if (transcriptId != null && !transcriptId.isBlank()) {
+                args.add("--transcript-id");
+                args.add(transcriptId.trim());
+            }
             return args;
         }
     }

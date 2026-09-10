@@ -114,7 +114,59 @@ public class EnforcerConfig {
 
     /** What to do when the judge is unavailable or fails mid-turn: fail_open | fail_closed | degrade_to_keyword. */
     @JsonProperty
-    private String judgeFallbackPolicy = "degrade_to_keyword";
+    private String judgeFallbackPolicy = "fail_open";
+
+    // ── Host-enforced workflow profile ─────────────────────────────────────
+
+    /** off | advisory | enforced. Kept orthogonal to standard/passthrough transport mode. */
+    @JsonProperty
+    private String workflowMode = "off";
+
+    /** Exact skill names expanded by the host before the first model request. */
+    @JsonProperty
+    private List<String> workflowRequiredSkills = new ArrayList<>();
+
+    /** Hold mutating tools until this turn successfully creates a todo plan. */
+    @JsonProperty
+    private boolean workflowRequirePlanBeforeMutation = true;
+
+    /** Bounded final-response corrections after a mutation was held for missing prerequisites. */
+    @JsonProperty
+    private int workflowMaxCorrections = 2;
+
+    // ── Direction monitoring (goal-drift judge) ────────────────────────────
+    // Strictly opt-in: directionMonitoring defaults to false and is never enabled
+    // implicitly. When enabled, a direction judge watches whether the conversation
+    // is still moving toward the user's goal and can interrupt + redirect the agent.
+    // Unlike the compliance judges, an active direction monitor is deliberately NOT
+    // subject to the one-shot /judge override.
+
+    @JsonProperty
+    private boolean directionMonitoring = false;
+
+    /** Explicit session goal; when absent the judge uses each turn's user message. */
+    @JsonProperty
+    private String directionGoal;
+
+    /** Run every N model iterations; the final response is always checked (minimum 1). */
+    @JsonProperty
+    private int directionCheckEvery = 3;
+
+    /** Max in-place redirects per turn before the judge halts the turn (0..4). */
+    @JsonProperty
+    private int directionMaxRedirects = 2;
+
+    /** Minimum confidence required before a direction verdict may redirect or halt. */
+    @JsonProperty
+    private double directionConfidenceThreshold = 0.6;
+
+    /** Consecutive drift-affected turns before cross-turn escalation; 0 disables it. */
+    @JsonProperty
+    private int directionCrossTurnDriftLimit = 3;
+
+    /** Observe-only mode: report drift but never redirect or halt. */
+    @JsonProperty
+    private boolean directionReportOnly = false;
 
     // ── Semantic matching ─────────────────────────────────────────────────
 
@@ -163,7 +215,7 @@ public class EnforcerConfig {
         try {
             return MAPPER.readValue(configPath.toFile(), EnforcerConfig.class);
         } catch (IOException e) {
-            System.err.println("[enforcer] warning: could not read " + configPath + ": " + e.getMessage());
+            EnforcerDiagnostics.alert("[enforcer] warning: could not read " + configPath + ": " + e.getMessage());
             return null;
         }
     }
@@ -220,7 +272,7 @@ public class EnforcerConfig {
             try {
                 return MAPPER.readValue(codeProjectConfig.toFile(), EnforcerConfig.class);
             } catch (IOException e) {
-                System.err.println("[enforcer] warning: could not read " + codeProjectConfig + ": " + e.getMessage());
+                EnforcerDiagnostics.alert("[enforcer] warning: could not read " + codeProjectConfig + ": " + e.getMessage());
             }
         }
         // Fall back to project-level config
@@ -318,16 +370,21 @@ public class EnforcerConfig {
                 || (diffPatternRules != null && !diffPatternRules.isEmpty());
     }
 
+    /** Whether a host workflow profile is configured, independent of enforcer text rules. */
+    public boolean isWorkflowEnabled() {
+        if (workflowMode == null || workflowMode.isBlank()) return false;
+        String mode = workflowMode.trim().toLowerCase(java.util.Locale.ROOT);
+        return !"off".equals(mode) && !"disabled".equals(mode) && !"none".equals(mode);
+    }
+
     /**
-     * Decide whether a passthrough session should run enforced. Enforcement is strictly
-     * opt-in per session: a {@code .kompile/enforcer-config.json} on disk is never enough
-     * by itself — the user must have said yes THIS run (wizard answer, activation prompt)
-     * or passed explicit rule flags.
+     * Decide whether a passthrough session should use its configured judge policy.
+     * A project config now activates without a startup prompt; users control the live
+     * session with {@code /judge on|off} and every session with {@code /judge global on|off}.
      *
      * <ul>
      *   <li>Explicit CLI rule flags ({@code --rules}/{@code --rule-file}) always activate.</li>
-     *   <li>{@code sessionChoice == null} (the user was never asked this run) never
-     *       activates — callers must prompt via {@link EnforcerActivationPrompt} first.</li>
+     *   <li>{@code sessionChoice == null} uses the project configuration.</li>
      *   <li>{@code sessionChoice == TRUE} activates only when the project config actually
      *       has something to enforce ({@link #isEnforcementEnabled()}).</li>
      *   <li>{@code sessionChoice == FALSE} never activates, regardless of what is on disk.</li>
@@ -342,9 +399,7 @@ public class EnforcerConfig {
         if (hasExplicitRuleFlags) {
             return true;
         }
-        if (!Boolean.TRUE.equals(sessionChoice)) {
-            // null (never asked) and FALSE (declined) both mean OFF — enforcement is
-            // never turned on silently by a config file left on disk.
+        if (Boolean.FALSE.equals(sessionChoice)) {
             return false;
         }
         return projectConfig != null && projectConfig.isEnforcementEnabled();

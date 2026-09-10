@@ -24,11 +24,12 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for {@link ProjectIdResolver}: explicit param → registration.json →
- * deepest indexed root → cwd directory name.
+ * Tests for {@link ProjectIdResolver}: explicit param → project manifest →
+ * registration.json → deepest indexed root → cwd directory name.
  */
 class ProjectIdResolverTest {
 
@@ -48,6 +49,7 @@ class ProjectIdResolverTest {
         Files.writeString(projectDir.resolve("metadata.json"),
                 "{\"projectId\":\"" + projectId + "\",\"rootPath\":\""
                         + rootPath.toAbsolutePath() + "\",\"indexedAt\":\"" + indexedAt + "\"}");
+        Files.createFile(projectDir.resolve("index.db"));
     }
 
     private void writeRegistration(Path projectDir, String projectId) throws Exception {
@@ -55,6 +57,13 @@ class ProjectIdResolverTest {
         Files.createDirectories(kompileDir);
         Files.writeString(kompileDir.resolve("registration.json"),
                 "{\"projectId\":\"" + projectId + "\"}");
+    }
+
+    private void writeManifest(Path projectDir, String projectId, Path rootPath) throws Exception {
+        Files.createDirectories(projectDir);
+        Files.writeString(projectDir.resolve("kompile.project.json"), """
+                {"codingProjects":[{"id":"%s","codeProjectId":"%s","rootPath":"%s","lifecycle":"ACTIVE"}]}
+                """.formatted(projectId, projectId, rootPath.toAbsolutePath()));
     }
 
     @Test
@@ -67,13 +76,19 @@ class ProjectIdResolverTest {
     }
 
     @Test
+    void unsafeExplicitProjectIdRejected() throws Exception {
+        assertThrows(IllegalArgumentException.class,
+                () -> ProjectIdResolver.resolve("../../outside", tempDir, baseIndexDir()));
+    }
+
+    @Test
     void registrationWinsWhenItsIndexExists() throws Exception {
         Path base = baseIndexDir();
         Path project = tempDir.resolve("workdir/repo");
         Path nested = project.resolve("src/main/java");
         Files.createDirectories(nested);
         writeRegistration(project, "registered-id");
-        Files.createDirectories(base.resolve("registered-id"));
+        writeIndexedProject(base, "registered-id", project, "2026-01-01T00:00:00Z");
 
         ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", nested, base);
         assertEquals("registered-id", r.projectId());
@@ -91,6 +106,94 @@ class ProjectIdResolverTest {
         ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
         assertEquals("not-yet-indexed", r.projectId());
         assertEquals("registration-unindexed", r.source());
+    }
+
+    @Test
+    void projectManifestWinsOverNewerDuplicateIndexForSameRoot() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("manifest-repo");
+        Path nested = project.resolve("src/main/java");
+        Files.createDirectories(nested);
+        writeManifest(project, "canonical-id", project);
+        writeIndexedProject(base, "canonical-id", project, "2026-01-01T00:00:00Z");
+        writeIndexedProject(base, "temporary-newer-id", project, "2026-08-27T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", nested, base);
+        assertEquals("canonical-id", r.projectId());
+        assertEquals("project-manifest", r.source());
+    }
+
+    @Test
+    void projectManifestKeepsCanonicalIdBeforeIndexExists() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("manifest-unindexed-repo");
+        Files.createDirectories(project);
+        writeManifest(project, "canonical-unindexed", project);
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("canonical-unindexed", r.projectId());
+        assertEquals("project-manifest-unindexed", r.source());
+    }
+
+    @Test
+    void incompleteRegistrationIndexDoesNotHideValidRootIndex() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("partial-registration-repo");
+        Files.createDirectories(project);
+        writeRegistration(project, "partial-id");
+        Path partial = base.resolve("partial-id");
+        Files.createDirectories(partial);
+        Files.writeString(partial.resolve("metadata.json"),
+                "{\"projectId\":\"partial-id\",\"rootPath\":\"" + project.toAbsolutePath()
+                        + "\",\"indexedAt\":\"2026-08-27T00:00:00Z\"}");
+        writeIndexedProject(base, "valid-id", project, "2026-01-01T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("valid-id", r.projectId());
+        assertEquals("index-root", r.source());
+    }
+
+    @Test
+    void unsafeManifestProjectIdCannotEscapeIndexRoot() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("unsafe-manifest-repo");
+        Files.createDirectories(project);
+        writeManifest(project, "../../outside", project);
+        writeIndexedProject(base, "safe-id", project, "2026-01-01T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("safe-id", r.projectId());
+        assertEquals("index-root", r.source());
+        assertThrows(IllegalArgumentException.class,
+                () -> LocalCodeIndexer.getIndexDir("../../outside"));
+    }
+
+    @Test
+    void unsafeRegistrationProjectIdIsIgnored() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("unsafe-registration-repo");
+        Files.createDirectories(project);
+        writeRegistration(project, "../../outside");
+        writeIndexedProject(base, "safe-registration-fallback", project, "2026-01-01T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("safe-registration-fallback", r.projectId());
+        assertEquals("index-root", r.source());
+    }
+
+    @Test
+    void inactiveManifestEntryDoesNotOverrideActiveIndex() throws Exception {
+        Path base = baseIndexDir();
+        Path project = tempDir.resolve("inactive-manifest-repo");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve("kompile.project.json"), """
+                {"codingProjects":[{"codeProjectId":"paused-id","rootPath":"%s","lifecycle":"PAUSED"}]}
+                """.formatted(project.toAbsolutePath()));
+        writeIndexedProject(base, "active-id", project, "2026-01-01T00:00:00Z");
+
+        ProjectIdResolver.Resolution r = ProjectIdResolver.resolve("", project, base);
+        assertEquals("active-id", r.projectId());
+        assertEquals("index-root", r.source());
     }
 
     @Test

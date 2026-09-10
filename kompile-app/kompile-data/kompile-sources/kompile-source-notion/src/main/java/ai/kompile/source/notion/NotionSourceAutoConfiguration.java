@@ -17,6 +17,7 @@
 package ai.kompile.source.notion;
 
 import ai.kompile.oauth.service.OAuthConnectionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -31,5 +32,12 @@ public class NotionSourceAutoConfiguration {
     public NotionSourceProvider notionSourceProvider(
             @Autowired(required = false) OAuthConnectionService oauthService) {
         return new NotionSourceProvider(oauthService);
+    }
+
+    @Bean
+    public NotionDocumentLoader notionDocumentLoader(
+            @Autowired(required = false) OAuthConnectionService oauthService,
+            ObjectMapper objectMapper) {
+        return new NotionDocumentLoader(oauthService, objectMapper);
     }
 }

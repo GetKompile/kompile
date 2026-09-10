@@ -36,7 +36,7 @@ class RoleLoaderTest {
         Map<String, RoleAgentDefaults> defaults = Map.of(
                 "codex", new RoleAgentDefaults(
                         "gpt-5.6-terra", "medium",
-                        Map.of("gpt-5.6-sol", "ultra", "gpt-5.6-terra", "high")),
+                        Map.of("gpt-5.6-sol", "max", "gpt-5.6-terra", "high")),
                 "claude", new RoleAgentDefaults(
                         "claude-sonnet", "high",
                         Map.of("claude-opus", "max")),
@@ -60,7 +60,7 @@ class RoleLoaderTest {
 
         assertEquals("prompt-only-hint", loaded.getModelHint());
         assertEquals(defaults, loaded.getAgentDefaults());
-        assertEquals("ultra",
+        assertEquals("max",
                 loaded.getAgentDefaultsFor("CODEX").resolveThinking("gpt-5.6-sol"));
         assertEquals("high",
                 loaded.getAgentDefaultsFor("opencode").resolveThinking("OpenAI/GPT-Pro"));
@@ -68,7 +68,7 @@ class RoleLoaderTest {
         String markdown = Files.readString(file);
         assertTrue(markdown.contains("agent_defaults.codex.model: gpt-5.6-terra"));
         assertTrue(markdown.contains(
-                "agent_defaults.codex.thinking.models.gpt-5.6-sol: ultra"));
+                "agent_defaults.codex.thinking.models.gpt-5.6-sol: max"));
     }
 
     @Test
@@ -116,7 +116,7 @@ class RoleLoaderTest {
                 () -> new RoleAgentDefaults("gpt-5.6\n---", "medium", Map.of()));
         assertThrows(IllegalArgumentException.class,
                 () -> new RoleAgentDefaults(
-                        "gpt-5.6", "medium", Map.of("gpt-5.6-sol", "ultra\rnext")));
+                        "gpt-5.6", "medium", Map.of("gpt-5.6-sol", "max\rnext")));
     }
 
     @Test

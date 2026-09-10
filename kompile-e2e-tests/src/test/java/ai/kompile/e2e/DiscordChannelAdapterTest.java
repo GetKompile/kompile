@@ -12,9 +12,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.List;
-import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -50,6 +47,7 @@ class DiscordChannelAdapterTest {
         adapter = new DiscordChannelAdapter(agentService);
         adapter.setApiClient(discordApiClient);
         adapter.setBotToken("discord-bot-token");
+        adapter.addAllowedChannel("discord-ch-1");
 
         AdapterConfig config = AdapterConfig.defaults("discord-ch-1", "test-agent");
         adapter.updateConfig(config);
@@ -91,12 +89,6 @@ class DiscordChannelAdapterTest {
     void testHumanMessageTriggersAgent() {
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G1", "Test Guild", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "discord-ch-1", "G1", "general", "0", 0);
-
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
         AgentResponse agentResponse = AgentResponse.builder()
                 .response("Hello from agent!")
@@ -107,7 +99,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", humanUser, "Help me!",
+                "msg1", "discord-ch-1", "G1", humanUser, "Help me!",
                 System.currentTimeMillis(), null, null
         );
 
@@ -132,7 +124,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", botUser, "Bot response",
+                "msg1", "discord-ch-1", null, botUser, "Bot response",
                 System.currentTimeMillis(), null, null
         );
 
@@ -151,13 +143,10 @@ class DiscordChannelAdapterTest {
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
 
-        // No guild data needed since channel check happens first
-        when(discordApiClient.getGuilds()).thenReturn(List.of());
-
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "NOT_ALLOWED_CH", humanUser, "Hello",
+                "msg1", "NOT_ALLOWED_CH", null, humanUser, "Hello",
                 System.currentTimeMillis(), null, null
         );
 
@@ -174,12 +163,6 @@ class DiscordChannelAdapterTest {
 
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G1", "Test", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "ALLOWED_CH", "G1", "general", "0", 0);
-
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
         AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
@@ -190,7 +173,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "ALLOWED_CH", humanUser, "Hello",
+                "msg1", "ALLOWED_CH", "G1", humanUser, "Hello",
                 System.currentTimeMillis(), null, null
         );
 
@@ -207,12 +190,6 @@ class DiscordChannelAdapterTest {
 
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G_ALLOWED", "Allowed Guild", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "some-ch", "G_ALLOWED", "general", "0", 0);
-
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G_ALLOWED")).thenReturn(List.of(channel));
 
         AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
@@ -223,7 +200,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "some-ch", humanUser, "Hello from guild",
+                "msg1", "some-ch", "G_ALLOWED", humanUser, "Hello from guild",
                 System.currentTimeMillis(), null, null
         );
 
@@ -233,33 +210,25 @@ class DiscordChannelAdapterTest {
     }
 
     @Test
-    @DisplayName("Empty whitelist allows all channels and guilds")
-    void testEmptyWhitelistAllowsAll() {
+    @DisplayName("Empty whitelist denies inbound channels and guilds")
+    void testEmptyWhitelistDeniesAll() {
+        DiscordChannelAdapter denyByDefault = new DiscordChannelAdapter(agentService);
+        denyByDefault.setApiClient(discordApiClient);
+        denyByDefault.setBotToken("discord-bot-token");
+        denyByDefault.updateConfig(AdapterConfig.defaults("discord-ch-1", "test-agent"));
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G1", "Test", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "discord-ch-1", "G1", "general", "0", 0);
 
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
-
-        AgentResponse agentResponse = AgentResponse.builder()
-                .response("OK")
-                .success(true)
-                .build();
-        when(agentExecutor.execute(any(AgentRequest.class))).thenReturn(agentResponse);
-
-        adapter.start();
+        denyByDefault.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", humanUser, "Hello",
+                "msg1", "discord-ch-1", "G1", humanUser, "Hello",
                 System.currentTimeMillis(), null, null
         );
 
-        adapter.onMessage(message);
+        denyByDefault.onMessage(message);
 
-        verify(agentExecutor).execute(any(AgentRequest.class));
+        verify(agentExecutor, never()).execute(any(AgentRequest.class));
     }
 
     // ── Empty/Null Content ──
@@ -273,7 +242,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", humanUser, "",
+                "msg1", "discord-ch-1", null, humanUser, "",
                 System.currentTimeMillis(), null, null
         );
 
@@ -291,7 +260,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", humanUser, null,
+                "msg1", "discord-ch-1", null, humanUser, null,
                 System.currentTimeMillis(), null, null
         );
 
@@ -307,12 +276,6 @@ class DiscordChannelAdapterTest {
     void testAgentErrorResponse() {
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G1", "Test", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "discord-ch-1", "G1", "general", "0", 0);
-
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
         AgentResponse errorResponse = AgentResponse.builder()
                 .success(false)
@@ -323,7 +286,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg1", "discord-ch-1", humanUser, "Test",
+                "msg1", "discord-ch-1", "G1", humanUser, "Test",
                 System.currentTimeMillis(), null, null
         );
 
@@ -339,12 +302,6 @@ class DiscordChannelAdapterTest {
     void testReferencedMessage() {
         DiscordApiClient.DiscordUser humanUser = new DiscordApiClient.DiscordUser(
                 "U123", "testuser", "0001", null, false);
-        DiscordApiClient.DiscordGuild guild = new DiscordApiClient.DiscordGuild("G1", "Test", null);
-        DiscordApiClient.DiscordChannel channel = new DiscordApiClient.DiscordChannel(
-                "discord-ch-1", "G1", "general", "0", 0);
-
-        when(discordApiClient.getGuilds()).thenReturn(List.of(guild));
-        when(discordApiClient.getChannels("G1")).thenReturn(List.of(channel));
 
         AgentResponse agentResponse = AgentResponse.builder()
                 .response("OK")
@@ -355,7 +312,7 @@ class DiscordChannelAdapterTest {
         adapter.start();
 
         DiscordApiClient.DiscordMessage message = new DiscordApiClient.DiscordMessage(
-                "msg2", "discord-ch-1", humanUser, "Follow up",
+                "msg2", "discord-ch-1", "G1", humanUser, "Follow up",
                 System.currentTimeMillis(), "msg1", null
         );
 

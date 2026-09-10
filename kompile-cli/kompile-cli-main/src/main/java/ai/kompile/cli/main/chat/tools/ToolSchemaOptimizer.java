@@ -214,7 +214,8 @@ public final class ToolSchemaOptimizer {
                     compactHintFor(compactHints, level, function.path("name").asText(null)));
             JsonNode parametersNode = function.get("parameters");
             if (parametersNode != null && parametersNode.isObject()) {
-                optimizeParametersSchema((ObjectNode) parametersNode, level);
+                optimizeParametersSchema((ObjectNode) parametersNode,
+                        parameterLevel(level, function.path("name").asText()));
             }
             return copy;
         }
@@ -225,7 +226,8 @@ public final class ToolSchemaOptimizer {
                     compactHintFor(compactHints, level, copy.path("name").asText(null)));
             JsonNode inputSchema = copy.get("inputSchema");
             if (inputSchema != null && inputSchema.isObject()) {
-                optimizeParametersSchema((ObjectNode) inputSchema, level);
+                optimizeParametersSchema((ObjectNode) inputSchema,
+                        parameterLevel(level, copy.path("name").asText()));
             }
             return copy;
         }
@@ -301,6 +303,13 @@ public final class ToolSchemaOptimizer {
             cut = HINT_MAX;
         }
         return h.substring(0, cut) + ELLIPSIS;
+    }
+
+    private static OptimizationLevel parameterLevel(OptimizationLevel level, String toolName) {
+        // Parallel dispatch needs typed subtask fields and required name/prompt keys, not an
+        // opaque "object with keys" summary. Still strip prose/defaults; do not expand other tools.
+        return level == OptimizationLevel.COMPACT && "multi_task".equals(toolName)
+                ? OptimizationLevel.AGGRESSIVE : level;
     }
 
     private static boolean preserveLargeEnum(String propertyName) {

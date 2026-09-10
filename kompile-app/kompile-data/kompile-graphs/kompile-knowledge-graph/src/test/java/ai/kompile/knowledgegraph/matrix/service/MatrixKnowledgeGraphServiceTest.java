@@ -532,6 +532,10 @@ class MatrixKnowledgeGraphServiceTest {
 
     @Test
     void createEdgesBatchPreservesParallelSemanticRelationsBetweenTheSameEndpoints() {
+        when(graphStore.hasEdge("factsheet_42", "src", "tgt", "VERSION_OF"))
+                .thenReturn(false, true);
+        when(graphStore.hasEdge("factsheet_42", "src", "tgt", "REFERENCES_DATA"))
+                .thenReturn(false, true);
         List<KnowledgeGraphService.EdgeSpec> specs = List.of(
                 new KnowledgeGraphService.EdgeSpec("src", "tgt", EdgeType.USER_DEFINED,
                         0.8, "version", "VERSION_OF", null, null, 42L),
@@ -540,12 +544,24 @@ class MatrixKnowledgeGraphServiceTest {
 
         assertEquals(2, service.createEdgesBatch(specs));
 
-        verify(graphStore).hasEdge("factsheet_42", "src", "tgt", "VERSION_OF");
-        verify(graphStore).hasEdge("factsheet_42", "src", "tgt", "REFERENCES_DATA");
+        verify(graphStore, atLeastOnce()).hasEdge("factsheet_42", "src", "tgt", "VERSION_OF");
+        verify(graphStore, atLeastOnce()).hasEdge("factsheet_42", "src", "tgt", "REFERENCES_DATA");
         verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"), eq(0.8),
                 eq("VERSION_OF"), anyBoolean(), eq("VERSION_OF"), isNull(), eq("version"));
         verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"), eq(0.7),
                 eq("REFERENCES_DATA"), anyBoolean(), eq("REFERENCES_DATA"), isNull(), eq("reference"));
+    }
+
+    @Test
+    void scopedPruneTargetsOnlyTheRequestedFactSheetGraph() {
+        when(graphStore.removeNode("factsheet_42", "shared-node")).thenReturn(true);
+
+        var result = service.pruneNodes(
+                List.of("shared-node"), false, null, false, 42L);
+
+        assertEquals(1, result.affectedCount());
+        verify(graphStore).removeNode("factsheet_42", "shared-node");
+        verify(graphStore, never()).removeNode("factsheet_43", "shared-node");
     }
 
     @Test

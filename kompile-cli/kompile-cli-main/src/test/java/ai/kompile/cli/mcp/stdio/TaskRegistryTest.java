@@ -121,6 +121,30 @@ class TaskRegistryTest {
     }
 
     @Test
+    void detachedLogicalTaskFailsWhenItsSupervisingProcessDisappears() {
+        String taskId = TaskRegistry.generateId("passthrough");
+        TaskRecord record = TaskRecord.builder()
+                .taskId(taskId)
+                .taskType("passthrough")
+                .agentName("codex")
+                .description("detached response")
+                .promptSummary("prompt")
+                .workDir(tempDir.toString())
+                .status(TaskRecord.Status.DETACHED)
+                .pid(-1)
+                .ownerPid(Long.MAX_VALUE)
+                .createdAt(Instant.now())
+                .lastActivity(Instant.now())
+                .build();
+        registry.create(record);
+
+        assertEquals(1, registry.reconcileAll());
+        TaskRecord reconciled = registry.get(taskId);
+        assertEquals(TaskRecord.Status.FAILED, reconciled.getStatus());
+        assertTrue(reconciled.getResultSummary().contains("Supervising process disappeared"));
+    }
+
+    @Test
     void taskLifecycleRunningToFailed() {
         String taskId = TaskRegistry.generateId("agent");
         TaskRecord record = TaskRecord.builder().taskId(taskId).taskType("task").agentName("codex").description("fail test").promptSummary("prompt").sessionId(null).workDir(tempDir.toString()).createdAt(java.time.Instant.now()).lastActivity(java.time.Instant.now()).build();

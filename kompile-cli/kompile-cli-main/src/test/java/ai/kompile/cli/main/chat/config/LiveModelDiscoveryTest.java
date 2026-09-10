@@ -59,9 +59,11 @@ class LiveModelDiscoveryTest {
         assumeTrue(commandSucceeds("opencode", "--version"),
                 "OpenCode is not installed in this environment");
 
-        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.discoverNative("opencode");
-        assumeTrue(!models.isEmpty(), "OpenCode returned no accessible models");
-        LiveModelDiscovery.Model withVariants = models.stream()
+        ModelDiscovery.Result discovery =
+                ModelDiscoveryHttp.discoverResult("opencode", null, null);
+        assumeTrue(discovery.isUsable(),
+                "OpenCode returned no accessible models: " + discovery.message());
+        LiveModelDiscovery.Model withVariants = discovery.models().stream()
                 .filter(model -> model.id().contains("/") && !model.variants().isEmpty())
                 .findFirst()
                 .orElse(null);
@@ -74,18 +76,18 @@ class LiveModelDiscoveryTest {
     }
 
     @Test
-    void installedCodexUsesItsAppServerModelList() {
-        assumeTrue(commandSucceeds("codex", "--version"),
-                "Codex is not installed in this environment");
-
+    void codexSubscriptionCatalogUsesAppServerModelList() {
         ChatProvider codex = ChatProviderRegistry.find("openai-codex");
         assertTrue(codex != null);
+        assertFalse(codex.modelDiscoveryRequiresBaseUrl());
+
         ModelDiscovery.Result result = codex.modelDiscoveryStrategy().discover(
                 new ModelDiscovery.Context(
-                        "openai-codex", null, null, null, null, Duration.ofSeconds(20)));
-        assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
-        assertFalse(result.models().isEmpty());
-        assertTrue(result.models().stream().anyMatch(model -> !model.variants().isEmpty()));
+                        "openai-codex", null, null, null, null, Duration.ofSeconds(1)));
+
+        assertEquals(ModelDiscovery.Status.AUTH_REQUIRED, result.status());
+        assertEquals(List.of(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE),
+                result.attemptedEndpoints());
     }
 
     private static boolean commandSucceeds(String command, String... arguments) {

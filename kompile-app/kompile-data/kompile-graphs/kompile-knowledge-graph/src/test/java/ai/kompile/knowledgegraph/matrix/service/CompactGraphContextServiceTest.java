@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -87,21 +88,31 @@ class CompactGraphContextServiceTest {
                         "revenue(metric:revenue, current)=88", 0.95, "doc-22#chunk-4"),
                 ReasoningTrace.Step.fact(
                         "revenue(metric:revenue, prior)=100", 0.96, "doc-22#chunk-4")));
-        graph.putModel("trace:revenue-drop", trace);
-        graph.putModel("trace:process:selected", ReasoningTrace.of(
-                ReasoningTrace.Step.fact("complete the selected workflow", 0.84, "process-log:selected")));
-        graph.putModel("trace:process:unrelated", ReasoningTrace.of(
-                ReasoningTrace.Step.fact("complete an unrelated workflow", 0.83, "process-log:unrelated")));
+        String revenueTrace = "process/reasoning-traces/v1/revenue-drop.json";
+        String selectedTrace = "process/reasoning-traces/v1/selected.json";
+        String unrelatedTrace = "process/reasoning-traces/v1/unrelated.json";
+        graph.putArtifactText(revenueTrace, ReasoningTraceJsonCodec.encode(
+                "process-trace:revenue-drop", "revenue-drop", trace));
+        graph.putArtifactText(selectedTrace, ReasoningTraceJsonCodec.encode(
+                "process-trace:selected", "selected", ReasoningTrace.of(
+                        ReasoningTrace.Step.fact(
+                                "complete the selected workflow", 0.84, "process-log:selected"))));
+        graph.putArtifactText(unrelatedTrace, ReasoningTraceJsonCodec.encode(
+                "process-trace:unrelated", "unrelated", ReasoningTrace.of(
+                        ReasoningTrace.Step.fact(
+                                "complete an unrelated workflow", 0.83, "process-log:unrelated"))));
+        graph.putModel("trace:legacy-java", ReasoningTrace.of(
+                ReasoningTrace.Step.fact("LEGACY_JAVA_TRACE_SENTINEL", 1.0, "legacy")));
         graph.putArtifact(CompactGraphContextService.PROCESS_SUGGESTIONS_ARTIFACT,
                 objectMapper.writeValueAsBytes(List.of(
                         Map.of(
                                 "id", "selected",
-                                "reasoningTraceArtifactName", "trace:process:selected",
+                                "reasoningTraceArtifactName", selectedTrace,
                                 "sourceGraphNodeIds", List.of("company:acme", "metric:revenue"),
                                 "sourceGraphRelationIds", List.of("edge:reports")),
                         Map.of(
                                 "id", "unrelated",
-                                "reasoningTraceArtifactName", "trace:process:unrelated",
+                                "reasoningTraceArtifactName", unrelatedTrace,
                                 "sourceGraphNodeIds", List.of("unselected"),
                                 "sourceGraphRelationIds", List.of()))));
         graph.putArtifact(CompactGraphContextService.TRACE_DTO_ARTIFACT,
@@ -138,12 +149,13 @@ class CompactGraphContextServiceTest {
         assertEquals(3, first.traceCount());
 
         assertTrue(first.json().contains("doc-22#chunk-4"));
-        assertTrue(first.json().contains("trace:revenue-drop"));
-        assertTrue(first.json().contains("trace:revenue-drop:s0"));
-        assertTrue(first.json().contains("trace:process:selected"));
+        assertTrue(first.json().contains(revenueTrace));
+        assertTrue(first.json().contains(revenueTrace + ":s0"));
+        assertTrue(first.json().contains(selectedTrace));
         assertTrue(first.json().contains("\"sourceNodeIds\":[\"company:acme\",\"metric:revenue\"]"));
         assertTrue(first.json().contains("\"sourceRelationIds\":[\"edge:reports\"]"));
-        assertFalse(first.json().contains("trace:process:unrelated"));
+        assertFalse(first.json().contains(unrelatedTrace));
+        assertFalse(first.json().contains("LEGACY_JAVA_TRACE_SENTINEL"));
         assertTrue(first.json().contains("edge:reports"));
         assertTrue(first.json().contains("edge-doc#edge-chunk"));
         assertTrue(first.json().contains("amount"));

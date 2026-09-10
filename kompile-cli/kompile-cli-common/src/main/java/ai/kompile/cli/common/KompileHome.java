@@ -180,8 +180,8 @@ public final class KompileHome {
             }
             // Priority 3: the CWD itself. Launch scripts `cd` to the project root before starting the
             // app (see run-cpu.sh), so the CWD is the project dir even when the project has no
-            // kompile.project.json manifest yet (a built project that was never `project init`'d, like
-            // the generated fpna-v7). This keeps per-project artefacts (graph hashes, snapshots) WITH
+            // kompile.project.json manifest yet (for example, a built project that was never initialized).
+            // This keeps per-project artefacts (graph hashes, snapshots) WITH
             // the project — and clearable alongside data/graph — instead of leaking into ~/.kompile.
             return cwdPath.toFile();
         }

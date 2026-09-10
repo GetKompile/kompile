@@ -54,7 +54,7 @@ class ProcessDiscoveryServiceImplPolicyTest {
                 .graphNodeIds(List.of("node:review"))
                 .controlIds(List.of("C-04"))
                 .requiredRoles(List.of("Forecast gate owner"))
-                .requiredPermissions(List.of("fpna:approve"))
+                .requiredPermissions(List.of("planning:approve"))
                 .metadata(Map.of(
                         "approvalPolicy", "owner sign-off",
                         "confidenceThreshold", 0.85,
@@ -78,7 +78,7 @@ class ProcessDiscoveryServiceImplPolicyTest {
         ProcessStep step = definition.getPhases().get(0).getSteps().get(0);
         assertEquals(List.of("C-04"), step.getControlIds());
         assertEquals(List.of("Forecast gate owner"), step.getRequiredRoles());
-        assertEquals(List.of("fpna:approve"), step.getRequiredPermissions());
+        assertEquals(List.of("planning:approve"), step.getRequiredPermissions());
         assertEquals("#confidence == null || #confidence >= 0.85", step.getConditionExpression());
         assertEquals("Policy: confidence >= 0.85", step.getConditionLabel());
         assertEquals(0.85, ((Number) step.getMetadata().get("confidenceThreshold")).doubleValue(), 1.0e-9);

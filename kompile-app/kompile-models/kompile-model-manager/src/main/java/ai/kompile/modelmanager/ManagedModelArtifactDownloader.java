@@ -26,6 +26,7 @@ public final class ManagedModelArtifactDownloader {
     private static final int CONNECT_TIMEOUT_MS = 30_000;
     private static final int READ_TIMEOUT_MS = 120_000;
     private static final int MAX_REDIRECTS = 8;
+    private static final long MAX_UNDECLARED_COMPONENT_BYTES = 2L * 1024L * 1024L * 1024L;
 
     public record Acquisition(
             ManagedModelArtifactCatalog.Definition definition,
@@ -114,15 +115,25 @@ public final class ManagedModelArtifactDownloader {
             throw new IOException("HTTP " + status + " downloading " + url);
         }
 
+        long contentLength = connection.getContentLengthLong();
+        if (expectedBytes > 0 && contentLength >= 0 && contentLength != expectedBytes) {
+            connection.disconnect();
+            throw new IOException("Content-Length mismatch downloading " + url
+                    + ": expected " + expectedBytes + " bytes but server declared "
+                    + contentLength);
+        }
+        long byteLimit = expectedBytes > 0 ? expectedBytes : MAX_UNDECLARED_COMPONENT_BYTES;
+        if (contentLength > byteLimit) {
+            connection.disconnect();
+            throw new IOException("Managed model component exceeds download limit: " + contentLength
+                    + " > " + byteLimit + " bytes");
+        }
+
         Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".part");
         try {
             try (InputStream input = new BufferedInputStream(connection.getInputStream());
                  OutputStream output = new BufferedOutputStream(Files.newOutputStream(temp))) {
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    output.write(buffer, 0, read);
-                }
+                copyBounded(input, output, byteLimit);
             }
             verifySize(temp, expectedBytes);
             verifyChecksum(temp, expectedSha256);
@@ -136,6 +147,27 @@ public final class ManagedModelArtifactDownloader {
             connection.disconnect();
             Files.deleteIfExists(temp);
         }
+    }
+
+    static long copyBounded(InputStream input, OutputStream output, long maxBytes)
+            throws IOException {
+        if (maxBytes <= 0) {
+            throw new IllegalArgumentException("maxBytes must be positive");
+        }
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long total = 0L;
+        int read;
+        while ((read = input.read(buffer)) >= 0) {
+            if (read == 0) {
+                continue;
+            }
+            if (total > maxBytes - read) {
+                throw new IOException("Managed model download exceeded " + maxBytes + " bytes");
+            }
+            output.write(buffer, 0, read);
+            total += read;
+        }
+        return total;
     }
 
     static URL resolveRedirect(URL current, String location) throws IOException {
@@ -188,7 +220,7 @@ public final class ManagedModelArtifactDownloader {
         }
     }
 
-    static String sha256(Path file) throws IOException {
+    public static String sha256(Path file) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (InputStream input = Files.newInputStream(file)) {

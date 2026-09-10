@@ -69,6 +69,9 @@ class KompileServiceEndpointsTest {
         assertEquals(KompileService.CHAT, KompileServiceEndpoints.serviceForPath("/api/chat-sessions/42"));
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/unified-crawl/jobs"));
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/indexing/status"));
+        assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/sync/connections"));
+        assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/oauth/notion/status"));
+        assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/source-providers"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/staging-config/configs/active"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/embedding-restart/status"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/models/active-context"));
@@ -79,6 +82,7 @@ class KompileServiceEndpointsTest {
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/mcp/tools/list"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/process/ontology/conformance"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/graph-ontology/owl"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/channel-integrations/providers"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/nd4j/environment"));
     }
 
@@ -92,6 +96,10 @@ class KompileServiceEndpointsTest {
         assertEquals(KompileService.ADMIN, routes.get("/api/mcp"));
         assertEquals(KompileService.ADMIN, routes.get("/api/process"));
         assertEquals(KompileService.ADMIN, routes.get("/api/graph-ontology"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/channel-integrations"));
+        assertEquals(KompileService.CRAWL, routes.get("/api/sync"));
+        assertEquals(KompileService.CRAWL, routes.get("/api/oauth"));
+        assertEquals(KompileService.CRAWL, routes.get("/api/source-providers"));
     }
 
     @Test
@@ -121,8 +129,28 @@ class KompileServiceEndpointsTest {
         // aggregate/forecast pair is on chat, and everything else stays admin.
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/graph/hydration/run"));
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/graph/extraction-models"));
+        assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/graph/partitions/coverage"));
         assertEquals(KompileService.CHAT, KompileServiceEndpoints.serviceForPath("/api/graph/aggregate"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/graph/rules"));
+    }
+
+    @Test
+    void serviceForPath_routesCrawlDocumentIngestionMethods() {
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/add-path"));
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/add-url"));
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/add-files"));
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/add-jira"));
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/add-reddit"));
+        assertEquals(KompileService.CRAWL,
+                KompileServiceEndpoints.serviceForPath("/api/documents/preview-source-crawl"));
+        // The shared document controller remains the fallback for shared operations.
+        assertEquals(KompileService.ADMIN,
+                KompileServiceEndpoints.serviceForPath("/api/documents"));
     }
 
     @Test

@@ -125,9 +125,16 @@ public class GraphReasoningQueryService {
             return invalid("operation is required. Use operation=CAPABILITIES.");
         }
 
+        String operation = blankToNull(request.operation());
+        if (operation == null) {
+            operation = firstNonBlank(request.queryText(), request.question()) == null
+                    ? GraphQueryEngine.Intent.CAPABILITIES.name()
+                    : GraphQueryEngine.Intent.SEARCH.name();
+        }
+
         GraphQueryEngine.Intent intent;
         try {
-            intent = parseIntent(request.operation());
+            intent = parseIntent(operation);
         } catch (IllegalArgumentException e) {
             return invalid(e.getMessage());
         }
@@ -174,11 +181,82 @@ public class GraphReasoningQueryService {
                 ? new UnifiedGraph()
                 : useSuppliedGraph
                         ? (suppliedGraph == null ? new UnifiedGraph() : suppliedGraph)
-                        : bridge.export(request.factSheetId());
+                        : persistedQueryGraph(request, intent, direction);
         GraphQueryEngine.Result result = engine.query(graph, query);
+        if (Boolean.TRUE.equals(graph.meta().get("truncated"))) {
+            result = markPartial(result, graph);
+        }
         return intent == GraphQueryEngine.Intent.CAPABILITIES
                 ? queryRequestCapabilitiesResult(result)
                 : result;
+    }
+
+    private UnifiedGraph persistedQueryGraph(
+            QueryRequest request,
+            GraphQueryEngine.Intent intent,
+            GraphQueryEngine.Direction requestedDirection) {
+        if (bridge == null) return new UnifiedGraph();
+        String entityId = blankToNull(request.entityId());
+        boolean boundedIntent = switch (intent) {
+            case DESCRIBE, NEIGHBORS, PATH, VERIFY, WHY, WHY_NOT -> true;
+            case RELATIONS, TIMELINE, FACTS -> entityId != null;
+            default -> false;
+        };
+        if (!boundedIntent || entityId == null) return bridge.export(request.factSheetId());
+
+        List<String> seeds = new ArrayList<>();
+        seeds.add(entityId);
+        String targetId = blankToNull(request.targetId());
+        if (targetId != null) seeds.add(targetId);
+        int depth = switch (intent) {
+            case PATH -> request.maxDepth() == null || request.maxDepth() <= 0
+                    ? 4 : Math.min(request.maxDepth(), 12);
+            case WHY_NOT -> 3;
+            default -> 1;
+        };
+        int maxNodes = Math.max(1, Integer.getInteger(
+                "kompile.graph.query.maxMaterializedNodes", 10_000));
+        int maxEdges = Math.max(1, Integer.getInteger(
+                "kompile.graph.query.maxMaterializedEdges", 50_000));
+        GraphQueryEngine.Direction materializationDirection = switch (intent) {
+            case VERIFY, WHY -> GraphQueryEngine.Direction.OUTGOING;
+            case WHY_NOT -> GraphQueryEngine.Direction.BOTH;
+            case PATH -> requestedDirection == null
+                    ? GraphQueryEngine.Direction.OUTGOING : requestedDirection;
+            case NEIGHBORS -> requestedDirection == null
+                    ? GraphQueryEngine.Direction.BOTH : requestedDirection;
+            default -> GraphQueryEngine.Direction.BOTH;
+        };
+        UnifiedGraph bounded = bridge.exportNeighborhood(
+                request.factSheetId(), seeds, List.of(entityId), depth, maxNodes,
+                materializationDirection, maxEdges);
+        // Entity-scoped operations never fall back to a whole-graph export. Call SEARCH first when
+        // the input is a name or phrase, then use its exact stable id with this bounded path.
+        return bounded;
+    }
+
+    private static GraphQueryEngine.Result markPartial(
+            GraphQueryEngine.Result result, UnifiedGraph graph) {
+        java.util.LinkedHashMap<String, Object> data = new java.util.LinkedHashMap<>(result.data());
+        data.put("boundedGraphTruncated", true);
+        data.put("materializedNodes", graph.meta().get("materializedNodes"));
+        data.put("materializedEdges", graph.meta().get("materializedEdges"));
+        data.put("maxNodes", graph.meta().get("maxNodes"));
+        data.put("maxEdges", graph.meta().get("maxEdges"));
+        List<String> guidance = new ArrayList<>(result.guidance());
+        guidance.add("The storage-backed neighborhood reached its materialization budget; absence is not conclusive.");
+        return new GraphQueryEngine.Result(
+                GraphQueryEngine.Status.PARTIAL,
+                result.intent(),
+                result.summary() + " Results are partial because the bounded graph budget was reached.",
+                result.entities(),
+                result.relations(),
+                result.path(),
+                result.capabilities(),
+                guidance,
+                data,
+                result.resolutions(),
+                result.trace());
     }
 
     private static boolean supportedByQueryRequest(GraphQueryEngine.Capability capability) {

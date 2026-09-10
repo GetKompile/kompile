@@ -26,14 +26,22 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 
 /**
  * Service for managing the model registry file.
@@ -45,10 +53,16 @@ public class RegistryService {
     private static final Logger log = LoggerFactory.getLogger(RegistryService.class);
     private static final String REGISTRY_FILENAME = "registry.json";
     private static final String REGISTRY_BACKUP_FILENAME = "registry.json.bak";
+    private static final String REGISTRY_LOCK_FILENAME = ".registry.lock";
+    private static final ConcurrentHashMap<Path, ReentrantReadWriteLock> PATH_LOCKS =
+            new ConcurrentHashMap<>();
+    private static final ThreadLocal<Set<Path>> HELD_FILE_LOCKS =
+            ThreadLocal.withInitial(HashSet::new);
 
     private final Path modelDir;
     private final ObjectMapper objectMapper;
-    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    private final ReentrantReadWriteLock lock;
+    private final Path registryLockPath;
 
     private ModelRegistry cachedRegistry;
     private long lastModified = -1;
@@ -63,7 +77,10 @@ public class RegistryService {
     }
 
     public RegistryService(Path modelDir) {
-        this.modelDir = modelDir;
+        this.modelDir = modelDir.toAbsolutePath().normalize();
+        this.lock = PATH_LOCKS.computeIfAbsent(
+                this.modelDir, ignored -> new ReentrantReadWriteLock());
+        this.registryLockPath = this.modelDir.resolve(REGISTRY_LOCK_FILENAME);
         this.objectMapper = createObjectMapper();
         ensureDirectoryExists();
     }
@@ -154,27 +171,7 @@ public class RegistryService {
     public void saveRegistry(ModelRegistry registry) {
         lock.writeLock().lock();
         try {
-            Path registryPath = getRegistryPath();
-            Path backupPath = modelDir.resolve(REGISTRY_BACKUP_FILENAME);
-
-            if (Files.exists(registryPath)) {
-                Files.copy(registryPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
-            }
-
-            registry.setUpdatedAt(Instant.now().toString());
-
-            Path tempPath = modelDir.resolve("registry.json.tmp");
-            objectMapper.writeValue(tempPath.toFile(), registry);
-            Files.move(tempPath, registryPath, StandardCopyOption.REPLACE_EXISTING,
-                       StandardCopyOption.ATOMIC_MOVE);
-
-            cachedRegistry = registry;
-            lastModified = Files.getLastModifiedTime(registryPath).toMillis();
-
-            log.info("Saved registry with {} models", registry.getTotalModelCount());
-        } catch (IOException e) {
-            log.error("Failed to save registry", e);
-            throw new RuntimeException("Failed to save registry", e);
+            withRegistryFileLock(() -> saveRegistryInternal(registry));
         } finally {
             lock.writeLock().unlock();
         }
@@ -183,13 +180,91 @@ public class RegistryService {
     public void addModel(ModelEntry entry) {
         lock.writeLock().lock();
         try {
-            ModelRegistry registry = loadRegistryInternal();
-            registry.putModel(entry);
-            saveRegistry(registry);
+            withRegistryFileLock(() -> {
+                ModelRegistry registry = loadRegistryInternal();
+                registry.putModel(entry);
+                saveRegistryInternal(registry);
+            });
             log.info("Added/updated model: {}", entry.getModelId());
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    /** Atomically load, mutate, and publish the registry under the shared process/file lock. */
+    public void updateRegistry(Consumer<ModelRegistry> mutation) {
+        java.util.Objects.requireNonNull(mutation, "mutation");
+        lock.writeLock().lock();
+        try {
+            withRegistryFileLock(() -> {
+                ModelRegistry registry = loadRegistryInternal();
+                mutation.accept(registry);
+                saveRegistryInternal(registry);
+            });
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    private void saveRegistryInternal(ModelRegistry registry) {
+        Path registryPath = getRegistryPath();
+        Path backupPath = modelDir.resolve(REGISTRY_BACKUP_FILENAME);
+        Path tempPath = null;
+        try {
+            if (Files.exists(registryPath)) {
+                Files.copy(registryPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            registry.setUpdatedAt(Instant.now().toString());
+            tempPath = Files.createTempFile(modelDir, "registry-", ".tmp");
+            objectMapper.writeValue(tempPath.toFile(), registry);
+            try {
+                Files.move(tempPath, registryPath, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(tempPath, registryPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            cachedRegistry = registry;
+            lastModified = Files.getLastModifiedTime(registryPath).toMillis();
+            log.info("Saved registry with {} models", registry.getTotalModelCount());
+        } catch (IOException e) {
+            log.error("Failed to save registry", e);
+            throw new RuntimeException("Failed to save registry", e);
+        } finally {
+            if (tempPath != null) {
+                try {
+                    Files.deleteIfExists(tempPath);
+                } catch (IOException cleanupFailure) {
+                    log.debug("Failed to remove registry temp file {}", tempPath, cleanupFailure);
+                }
+            }
+        }
+    }
+
+    private void withRegistryFileLock(RegistryIoAction action) {
+        Set<Path> held = HELD_FILE_LOCKS.get();
+        if (!held.add(registryLockPath)) {
+            action.run();
+            return;
+        }
+        try (FileChannel channel = FileChannel.open(
+                registryLockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            action.run();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to lock model registry " + getRegistryPath(), e);
+        } finally {
+            held.remove(registryLockPath);
+            if (held.isEmpty()) {
+                HELD_FILE_LOCKS.remove();
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface RegistryIoAction {
+        void run();
     }
 
     public Optional<ModelEntry> removeModel(String modelId) {

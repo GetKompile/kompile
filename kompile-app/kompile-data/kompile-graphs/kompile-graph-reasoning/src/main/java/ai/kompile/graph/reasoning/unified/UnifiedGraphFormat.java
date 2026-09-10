@@ -50,11 +50,11 @@ public final class UnifiedGraphFormat {
     /** Oldest format version accepted by the reader. */
     public static final int MIN_READABLE_VERSION = 1;
 
-    /** Current format version. v2 is the property-complete debugging/persistence contract. */
-    public static final int CURRENT_VERSION = 2;
+    /** Latest readable format version. v3 adds dictionary-encoded compact link topology. */
+    public static final int CURRENT_VERSION = 3;
 
-    /** Compatibility alias used by existing callers and manifests. */
-    public static final int FORMAT_VERSION = CURRENT_VERSION;
+    /** Default write version retained during the reader-first v3 rollout. */
+    public static final int FORMAT_VERSION = 2;
 
     /** Required schema index entry in a v2 archive. */
     public static final String ENTRY_SCHEMA_INDEX = "schemas/index.json";
@@ -70,7 +70,13 @@ public final class UnifiedGraphFormat {
     // ── ZIP entry names ───────────────────────────────────────────────────────
     public static final String ENTRY_MANIFEST  = "manifest.json";
     public static final String ENTRY_ENTITIES   = "entities.jsonl";
+    /** Legacy v1/v2 relation rows. V3 uses {@link #ENTRY_COMPACT_LINKS}. */
     public static final String ENTRY_RELATIONS  = "relations.jsonl";
+    public static final String ENTRY_COMPACT_LINKS = "topology/links.bin";
+    public static final String ENTRY_COMPACT_ADJACENCY = "topology/adjacency.bin";
+    public static final String ENTRY_RELATION_PROPERTIES = "topology/relation-properties.jsonl";
+    public static final String COMPACT_TOPOLOGY_ENCODING = "compact-links";
+    public static final int COMPACT_TOPOLOGY_VERSION = 1;
     public static final String ENTRY_WEIGHTS    = "weights.json";
     public static final String ENTRY_OPINIONS   = "opinions.jsonl";
     public static final String VECTOR_DIR       = "vectors/";

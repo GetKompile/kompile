@@ -2,8 +2,8 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.fasterxml.jackson.databind.JsonNode;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,7 +18,6 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 class CodexAppServerModelDiscoveryTest {
 
@@ -129,6 +128,59 @@ class CodexAppServerModelDiscoveryTest {
     }
 
     @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void modelDiscoveryHttpPassesSelectedOauthCredentialToDynamicAppServer(
+            @TempDir Path tempDir) throws Exception {
+        Path shim = tempDir.resolve("codex-fixture");
+        Files.writeString(shim, """
+                #!/bin/sh
+                read initialize
+                printf '%s\\n' '{"id":1,"result":{"userAgent":"fixture-codex/next"}}'
+                read initialized
+                read login
+                case "$login" in
+                  *'"accessToken":"fixture-access-token"'*'"chatgptAccountId":"fixture-account"'*) ;;
+                  *) exit 21 ;;
+                esac
+                printf '%s\\n' '{"id":2,"result":{"type":"chatgptAuthTokens"}}'
+                read account
+                printf '%s\\n' '{"id":3,"result":{"account":{"type":"chatgpt","planType":"plus"}}}'
+                read models
+                printf '%s\\n' '{"id":4,"result":{"data":[{"id":"gpt-6-astra"}],"nextCursor":null}}'
+                """, StandardCharsets.UTF_8);
+        assertTrue(shim.toFile().setExecutable(true));
+
+        String previous = System.getProperty("kompile.codex.executable");
+        ModelDiscoveryHttp.clearCache();
+        try {
+            System.setProperty("kompile.codex.executable", shim.toString());
+            ModelDiscovery.Result result = ModelDiscoveryHttp.discoverResultWithAuth(
+                    "openai-codex", oauthContext(Duration.ofSeconds(5)).auth(), null);
+
+            assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
+            assertEquals(List.of("gpt-6-astra"), result.models().stream()
+                    .map(LiveModelDiscovery.Model::id).toList());
+            assertEquals(List.of(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE),
+                    result.attemptedEndpoints());
+
+            Files.delete(shim);
+            ModelDiscovery.Result cached = ModelDiscoveryHttp.discoverResultWithAuth(
+                    "openai-codex", oauthContext(Duration.ofSeconds(5)).auth(), null);
+            assertEquals(ModelDiscovery.Status.SUCCESS, cached.status(), cached.message());
+            assertEquals(List.of("gpt-6-astra"), cached.models().stream()
+                    .map(LiveModelDiscovery.Model::id).toList());
+            assertTrue(cached.message().contains("recently verified provider catalog cache"));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("kompile.codex.executable");
+            } else {
+                System.setProperty("kompile.codex.executable", previous);
+            }
+            ModelDiscoveryHttp.clearCache();
+        }
+    }
+
+    @Test
     void discoveryNeverFallsBackToAnIndependentCodexLogin() {
         ModelDiscovery.Result result = CodexAppServerModelDiscovery.discover(
                 new ModelDiscovery.Context(
@@ -187,29 +239,6 @@ class CodexAppServerModelDiscoveryTest {
         assertEquals("Medium — Balanced", model.variantLabels().get("medium"));
         assertEquals(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE,
                 model.capabilitySource());
-    }
-
-    @Test
-    @Tag("live")
-    void installedCodexReturnsItsLiveCatalogAndThinkingCapabilities() {
-        ModelDiscovery.Result result = ModelDiscoveryHttp.refreshResult(
-                "openai-codex", null, null);
-        assumeFalse(result.status() == ModelDiscovery.Status.UNSUPPORTED
-                        && result.message().contains("Codex executable was not found"),
-                "Codex is not installed in this environment");
-        assumeFalse(result.status() == ModelDiscovery.Status.AUTH_REQUIRED,
-                "A managed OpenAI subscription OAuth credential is not configured");
-
-        assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
-        assertFalse(result.models().isEmpty());
-        LiveModelDiscovery.Model withThinking = result.models().stream()
-                .filter(model -> !model.variants().isEmpty())
-                .findFirst()
-                .orElseThrow();
-        assertFalse(withThinking.defaultVariant().isBlank());
-        assertTrue(withThinking.variants().contains(withThinking.defaultVariant()));
-        assertEquals(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE,
-                result.attemptedEndpoints().get(0));
     }
 
     private static ModelDiscovery.Context oauthContext(Duration timeout) {

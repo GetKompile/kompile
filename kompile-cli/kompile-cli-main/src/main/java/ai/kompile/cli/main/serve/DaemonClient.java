@@ -17,8 +17,11 @@
 package ai.kompile.cli.main.serve;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.enforcer.EnforcerRuntimePolicy;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.*;
 import java.net.StandardProtocolFamily;
@@ -30,7 +33,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -45,6 +50,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * </ol>
  */
 public class DaemonClient implements Closeable {
+
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
     private final SocketChannel channel;
     private final BufferedReader reader;
@@ -64,6 +71,12 @@ public class DaemonClient implements Closeable {
      * @return connected client, or null if daemon is not running
      */
     public static DaemonClient connect(String type, Path workDir) {
+        return connect(type, workDir, null, null);
+    }
+
+    /** Connect while forwarding an MCP profile and its resolved tool allowlist. */
+    public static DaemonClient connect(String type, Path workDir, String profile,
+                                       Collection<String> allowedTools) {
         Path socketPath = KompileHome.daemonSocketFile().toPath();
         if (!Files.exists(socketPath)) return null;
 
@@ -78,24 +91,42 @@ public class DaemonClient implements Closeable {
                     Channels.newOutputStream(channel), StandardCharsets.UTF_8);
 
             // Send protocol header
-            StringBuilder headerBuilder = new StringBuilder();
-            headerBuilder.append("{\"type\":\"").append(type).append("\",\"workDir\":\"")
-                    .append(escapeJson(workDir.toAbsolutePath().toString())).append("\"");
-            String active = System.getenv(EnforcerRuntimePolicy.ENV_ACTIVE);
-            String policyFile = System.getenv(EnforcerRuntimePolicy.ENV_POLICY_FILE);
-            if (Boolean.parseBoolean(active) && policyFile != null && !policyFile.isBlank()) {
-                headerBuilder.append(",\"enforcerPolicyFile\":\"")
-                        .append(escapeJson(policyFile)).append("\"");
-            }
-            headerBuilder.append("}\n");
-            String header = headerBuilder.toString();
-            writer.write(header);
+            writer.write(protocolHeader(type, workDir, profile, allowedTools));
             writer.flush();
 
             return new DaemonClient(channel, reader, writer);
         } catch (IOException e) {
             // Daemon socket exists but not responding — stale
             return null;
+        }
+    }
+
+    static String protocolHeader(String type, Path workDir, String profile,
+                                 Collection<String> allowedTools) {
+        ObjectNode header = MAPPER.createObjectNode();
+        header.put("type", type);
+        header.put("workDir", workDir.toAbsolutePath().toString());
+        if (profile != null && !profile.isBlank()) {
+            header.put("profile", profile.trim());
+        }
+        if (allowedTools != null) {
+            TreeSet<String> sortedTools = new TreeSet<>();
+            for (String tool : allowedTools) {
+                if (tool != null && !tool.isBlank()) sortedTools.add(tool.trim());
+            }
+            var array = header.putArray("allowedTools");
+            sortedTools.forEach(array::add);
+        }
+        String active = System.getenv(EnforcerRuntimePolicy.ENV_ACTIVE);
+        String policyFile = System.getenv(EnforcerRuntimePolicy.ENV_POLICY_FILE);
+        if (Boolean.parseBoolean(active) && policyFile != null && !policyFile.isBlank()) {
+            header.put("enforcerPolicyFile", policyFile);
+        }
+
+        try {
+            return MAPPER.writeValueAsString(header) + "\n";
+        } catch (IOException impossible) {
+            throw new IllegalStateException("Unable to serialize daemon protocol header", impossible);
         }
     }
 
@@ -108,8 +139,14 @@ public class DaemonClient implements Closeable {
      * @return connected client, or null if daemon could not be started
      */
     public static DaemonClient ensureDaemon(String type, Path workDir) {
+        return ensureDaemon(type, workDir, null, null);
+    }
+
+    /** Connect/start a daemon while preserving the caller's resolved MCP profile. */
+    public static DaemonClient ensureDaemon(String type, Path workDir, String profile,
+                                            Collection<String> allowedTools) {
         // Try existing daemon first
-        DaemonClient client = connect(type, workDir);
+        DaemonClient client = connect(type, workDir, profile, allowedTools);
         if (client != null) return client;
 
         // No daemon running — start one in the background
@@ -122,7 +159,7 @@ public class DaemonClient implements Closeable {
                 Thread.currentThread().interrupt();
                 return null;
             }
-            client = connect(type, workDir);
+            client = connect(type, workDir, profile, allowedTools);
             if (client != null) return client;
         }
 
@@ -348,7 +385,4 @@ public class DaemonClient implements Closeable {
         }
     }
 
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
 }

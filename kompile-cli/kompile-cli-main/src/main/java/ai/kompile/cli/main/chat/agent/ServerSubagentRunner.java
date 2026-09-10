@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.config.IdleTimeoutInputStream;
+import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -30,6 +32,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -40,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -58,6 +62,8 @@ public class ServerSubagentRunner implements SubagentRunner {
     private final ToolRegistry toolRegistry;
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
+    private final ProviderConnectivityPolicy connectivityPolicy =
+            ProviderConnectivityPolicy.forProvider("kompile");
     private volatile LifecycleListener lifecycleListener;
     private volatile ReminderManager reminderManager;
     private final Map<String, ServerSession> sessions = new ConcurrentHashMap<>();
@@ -82,7 +88,7 @@ public class ServerSubagentRunner implements SubagentRunner {
                                  TerminalRenderer renderer) {
         this.baseUrl = baseUrl;
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
+                .connectTimeout(connectivityPolicy.connectTimeout())
                 .build();
         this.objectMapper = objectMapper;
         this.toolRegistry = toolRegistry;
@@ -102,6 +108,11 @@ public class ServerSubagentRunner implements SubagentRunner {
 
     @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
+        if ((agent.getModelOverride() != null && !agent.getModelOverride().isBlank())
+                || (agent.getThinkingOverride() != null && !agent.getThinkingOverride().isBlank())) {
+            throw new IllegalArgumentException("Server-backed chat task does not support model/thinking overrides. "
+                    + "Use direct-model chat or the MCP task tool; no agent was launched.");
+        }
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-"
                 + UUID.randomUUID().toString().substring(0, 8);
@@ -114,6 +125,11 @@ public class ServerSubagentRunner implements SubagentRunner {
         emitActivity(subagentId, "connecting",
                 renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
                 parentContext);
+        String reminderContent = ReminderManager.reminderBlockContent(prompt);
+        if (reminderContent != null) {
+            emitActivity(subagentId, "connecting",
+                    renderer.renderReminderSection(reminderContent), parentContext);
+        }
 
         notifyStatus(subagentId, "connecting");
         try {
@@ -144,14 +160,36 @@ public class ServerSubagentRunner implements SubagentRunner {
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                .timeout(Duration.ofMinutes(5))
+                .timeout(connectivityPolicy.requestTimeout())
                 .build();
 
-        HttpResponse<java.io.InputStream> response = httpClient.send(
-                httpRequest, HttpResponse.BodyHandlers.ofInputStream());
-        session.responseBody.set(response.body());
+        HttpResponse<java.io.InputStream> response = null;
+        for (int attempt = 1; attempt <= connectivityPolicy.maxAttempts(); attempt++) {
+            try {
+                response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+                if (connectivityPolicy.isRetryableStatus(response.statusCode())
+                        && attempt < connectivityPolicy.maxAttempts()) {
+                    response.body().close();
+                    waitForRetry(subagentId, attempt,
+                            "HTTP " + response.statusCode(), parentContext);
+                    continue;
+                }
+                break;
+            } catch (Exception failure) {
+                if (!connectivityPolicy.isRetryableFailure(failure)
+                        || attempt == connectivityPolicy.maxAttempts()) {
+                    throw failure;
+                }
+                waitForRetry(subagentId, attempt,
+                        failure.getMessage() == null
+                                ? failure.getClass().getSimpleName() : failure.getMessage(),
+                        parentContext);
+            }
+        }
+        if (response == null) throw new IOException("Subagent could not connect to Kompile");
 
         if (response.statusCode() != 200) {
+            response.body().close();
             emitActivity(subagentId, "failed · HTTP " + response.statusCode(),
                     renderer.renderSubagentError(agent.getName(),
                             "HTTP " + response.statusCode()), parentContext);
@@ -161,10 +199,14 @@ public class ServerSubagentRunner implements SubagentRunner {
 
         // Parse SSE stream and collect response
         StringBuilder fullResponse = new StringBuilder();
+        java.io.InputStream guardedBody = new IdleTimeoutInputStream(
+                response.body(), connectivityPolicy.streamIdleTimeout());
+        session.responseBody.set(guardedBody);
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(guardedBody))) {
             String eventType = null;
             StringBuilder dataBuffer = new StringBuilder();
+            boolean terminalEvent = false;
             String line;
 
             while ((line = reader.readLine()) != null) {
@@ -181,6 +223,8 @@ public class ServerSubagentRunner implements SubagentRunner {
                     dataBuffer.append(line.substring(5).trim());
                 } else if (line.isEmpty() && eventType != null) {
                     String data = dataBuffer.toString();
+                    terminalEvent = terminalEvent || "complete".equals(eventType)
+                            || "cancelled".equals(eventType) || "error".equals(eventType);
                     switch (eventType) {
                         case "start":
                             try {
@@ -223,10 +267,16 @@ public class ServerSubagentRunner implements SubagentRunner {
                                 notifyStatus(subagentId, "failed");
                             }
                             break;
+                        case "complete":
+                        case "cancelled":
+                            break;
                     }
                     eventType = null;
                     dataBuffer.setLength(0);
                 }
+            }
+            if (!session.cancelled.get() && !parentContext.isAborted() && !terminalEvent) {
+                throw new IOException("Subagent connection closed before a terminal event");
             }
         }
 
@@ -267,6 +317,24 @@ public class ServerSubagentRunner implements SubagentRunner {
             if (lifecycleListener != null) {
                 lifecycleListener.onSubagentEnd(subagentId);
             }
+        }
+    }
+
+    private void waitForRetry(String subagentId, int failedAttempt, String reason,
+                              ToolContext parentContext) throws InterruptedException {
+        Duration delay = connectivityPolicy.retryDelay(failedAttempt, null);
+        String status = "reconnecting " + (failedAttempt + 1) + "/"
+                + connectivityPolicy.maxAttempts() + " in " + delay.toMillis()
+                + " ms (" + reason + ")";
+        // The live subagent status is replaced on recovery/completion. Do not
+        // also append a stale connection-loss notification to its output.
+        notifyStatus(subagentId, status);
+        long deadline = System.nanoTime() + delay.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (parentContext.isAborted()) throw new InterruptedException("Subagent aborted");
+            long remaining = deadline - System.nanoTime();
+            TimeUnit.NANOSECONDS.sleep(Math.min(
+                    remaining, TimeUnit.MILLISECONDS.toNanos(100)));
         }
     }
 

@@ -45,7 +45,7 @@ class ProjectCommandKnowledgeCrawlTest {
         Path projectRoot = tempDir.resolve("knowledge-project");
         Path pdf = tempDir.resolve("knowledge-source.pdf");
         Path html = tempDir.resolve("knowledge-source.html");
-        writePdf(pdf, "Kompile knowledge PDF uniquealpha budget planning text.");
+        writePdf(pdf, "Kompile knowledge PDF uniquealpha budget planning text. uniquealpha uniquealpha.");
         Files.writeString(html, """
                 <!doctype html>
                 <html>
@@ -55,7 +55,8 @@ class ProjectCommandKnowledgeCrawlTest {
                 </head>
                 <body>
                   <h1>Semantic Layer</h1>
-                  <p>HTML uniqueomega margin bridge content.</p>
+                  <p>HTML uniqueomega margin bridge content. uniqueomega uniqueomega.</p>
+                  <p>galaxía galaxía 𐐨𐐻𐐯 𐐨𐐻𐐯</p>
                 </body>
                 </html>
                 """, StandardCharsets.UTF_8);
@@ -70,6 +71,7 @@ class ProjectCommandKnowledgeCrawlTest {
                 "--name", "Knowledge Docs",
                 "--source", pdf.toString(),
                 "--source", html.toString(),
+                "--source", tempDir.toString(),
                 "--type", "file",
                 "--include", "*.pdf,*.html",
                 "--loader", "local-knowledge",
@@ -94,6 +96,8 @@ class ProjectCommandKnowledgeCrawlTest {
         assertTrue(htmlMarkdown.contains("uniqueomega margin bridge"));
         assertFalse(htmlMarkdown.contains("<style>"));
         assertFalse(chunks.contains("<!doctype"));
+        assertFalse(chunks.contains("converter: kompile-project-crawl"));
+        assertFalse(chunks.contains("crawl_profile:"));
         assertTrue(chunks.contains("uniquealpha"));
         assertTrue(chunks.contains("uniqueomega"));
         assertTrue(chunks.contains("knowledge-source.pdf#chunk-0"));
@@ -101,7 +105,17 @@ class ProjectCommandKnowledgeCrawlTest {
         assertTrue(documents.contains("\"markdownPath\":\"data/markdown/knowledge-docs/knowledge-source.pdf.md\""));
         assertTrue(documents.contains("\"extractionStatus\":\"EXTRACTED\""));
         assertTrue(summary.contains("\"markdownCount\" : 2"));
+        assertTrue(analysis.contains("\"documentCount\" : 2"), analysis);
         assertTrue(analysis.contains("\"topTerms\""));
+        assertTrue(analysis.contains("\"term\":\"uniquealpha\",\"count\":3"), analysis);
+        assertTrue(analysis.contains("\"term\":\"uniqueomega\",\"count\":3"), analysis);
+        assertTrue(analysis.contains("\"term\":\"galaxía\",\"count\":2"), analysis);
+        assertTrue(ProjectCrawlCommand.localKnowledgeTerms("galaxía 𐐨𐐻𐐯").contains("𐐨𐐻𐐯"));
+        assertEquals(3, ProjectCrawlCommand.countWords("cafe\u0301 𐐨𐐻𐐯 galaxy"));
+        assertEquals("line\\n---\\r\\u2028end", ProjectCrawlCommand.escapeYaml("line\n---\r\u2028end"));
+        assertFalse(analysis.contains("\"term\":\"converter\""), analysis);
+        assertFalse(analysis.contains("\"term\":\"collection\""), analysis);
+        assertFalse(analysis.contains("\"term\":\"profile\""), analysis);
     }
 
     private static int execute(String... args) {

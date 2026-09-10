@@ -36,7 +36,10 @@ import java.util.stream.Collectors;
  *
  * <p>When native ML libraries are not available (e.g., lightweight CLI
  * deployments), the engine falls back to TF-IDF bag-of-words vectors
- * with cosine similarity.
+ * with cosine similarity. Set {@code kompile.memory.dense.enabled=false} or
+ * {@code KOMPILE_MEMORY_DENSE_ENABLED=false} to use TF-IDF without starting the
+ * dense encoder loader. The system property takes precedence over the environment
+ * variable; the setting is captured when the engine is constructed.
  *
  * <p>The engine watches the active project's {@code .kompile/memory/}, global
  * {@code ~/.kompile/memory/}, and that project's Claude auto-memory directory.
@@ -57,6 +60,7 @@ public class SemanticMemoryEngine {
     private volatile List<String> vocabularyOrder = List.of();
     private final List<Path> watchDirs = new CopyOnWriteArrayList<>();
     private final Path projectDirectory;
+    private final boolean denseEnabled;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
     private final ScheduledExecutorService refreshExecutor;
     private volatile long lastRefreshTime = 0;
@@ -73,7 +77,15 @@ public class SemanticMemoryEngine {
     }
 
     public SemanticMemoryEngine(Path projectDirectory) {
+        this(projectDirectory, resolveDenseEnabled(
+                System.getProperty("kompile.memory.dense.enabled"),
+                System.getenv("KOMPILE_MEMORY_DENSE_ENABLED")));
+    }
+
+    // Explicit policy seam keeps lexical-only tests independent of process configuration.
+    SemanticMemoryEngine(Path projectDirectory, boolean denseEnabled) {
         this.projectDirectory = projectDirectory.toAbsolutePath().normalize();
+        this.denseEnabled = denseEnabled;
         this.refreshExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "semantic-memory-refresh");
             t.setDaemon(true);
@@ -81,8 +93,14 @@ public class SemanticMemoryEngine {
         });
     }
 
+    /** Only an explicit false opts out; an explicitly set property wins over the environment. */
+    static boolean resolveDenseEnabled(String propertyValue, String environmentValue) {
+        String value = propertyValue != null ? propertyValue : environmentValue;
+        return value == null || !"false".equalsIgnoreCase(value.trim());
+    }
+
     /**
-     * Initialize the engine by attempting to load the SameDiff encoder,
+     * Initialize the engine by optionally attempting to load the SameDiff encoder,
      * scanning memory directories, and building the index.
      * Idempotent — safe to call multiple times.
      */
@@ -103,6 +121,13 @@ public class SemanticMemoryEngine {
         // Schedule periodic refresh
         refreshExecutor.scheduleAtFixedRate(this::refreshIndex,
                 REFRESH_INTERVAL_MS, REFRESH_INTERVAL_MS, TimeUnit.MILLISECONDS);
+
+        // Do not even start the loader when disabled: class initialization can load
+        // native libraries and model weights independently of an MCP tool request.
+        if (!denseEnabled) {
+            encoderMode = "tfidf (dense disabled)";
+            return;
+        }
 
         // Load dense encoder asynchronously — model download can take minutes
         // and must not block the MCP server startup handshake. The engine starts

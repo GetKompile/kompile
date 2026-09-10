@@ -96,7 +96,7 @@ class GraphHealthServiceTest {
         when(kg.getEdgesInFactSheet(1L)).thenReturn(List.of());
         GraphConformanceChecker checker = mock(GraphConformanceChecker.class);
         when(checker.checkFactSheet(1L)).thenReturn(
-                new GraphConformanceSummary(1L, true, "FPnA", 4, 0, 1, 0.75, "ok"));
+                new GraphConformanceSummary(1L, true, "Planning", 4, 0, 1, 0.75, "ok"));
 
         GraphHealthSnapshot s = service(checker).computeSnapshot(1L);
 

@@ -17,8 +17,13 @@ package ai.kompile.graph.reasoning.embedding.learn;
 
 import ai.kompile.graph.reasoning.model.MutableReasoningGraph;
 import org.junit.jupiter.api.Test;
+import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.factory.Nd4j;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -88,7 +93,8 @@ class SameDiffModelIOTest {
         int dim = 8;
 
         // Build and train for a few pairs
-        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(ids, dim, 2, 0.01, 42L, 4);
+        try (SameDiffEmbeddingTrainer trainer =
+                     new SameDiffEmbeddingTrainer(ids, dim, 2, 0.01, 42L, 4)) {
         trainer.fitPair(0, 1, new int[]{3, 4});
         trainer.fitPair(1, 2, new int[]{3, 4});
         trainer.fitPair(0, 2, new int[]{3, 4});
@@ -130,6 +136,7 @@ class SameDiffModelIOTest {
         assertTrue(mappingJson.contains("\"Alice\""),   "mapping.json must contain entity id Alice");
         assertTrue(mappingJson.contains("\"dim\":" + dim),
                 "mapping.json must contain dim=" + dim);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -331,6 +338,25 @@ class SameDiffModelIOTest {
         assertEquals(dim,      meta.dim,        "dim must survive mapping.json round-trip");
         assertEquals(entityIds, meta.entityIds, "entityIds must survive mapping.json round-trip");
         assertEquals(relTypes,  meta.relTypes,  "relTypes must survive mapping.json round-trip");
+    }
+
+    /**
+     * A loaded graph with the wrong variable contract must still be reclaimed on the failure path.
+     * This catches regressions where load returns before the SameDiff owner is closed.
+     */
+    @Test
+    void rotateLoad_missingVariablesClosesGraphOnFailure(@TempDir Path dir) throws Exception {
+        try (SameDiff invalid = SameDiff.create()) {
+            invalid.var("wrong", Nd4j.zeros(DataType.DOUBLE, 1, 1));
+            invalid.save(dir.resolve(SameDiffModelIO.MODEL_FILE).toFile(), true);
+        }
+        Files.writeString(dir.resolve(SameDiffModelIO.MAPPING_FILE),
+                SameDiffModelIO.buildMappingJson("rotate", List.of("A"), List.of("REL"), 1),
+                StandardCharsets.UTF_8);
+
+        assertThrows(IllegalStateException.class,
+                () -> SameDiffModelIO.loadRotatECheckpoint(dir),
+                "Missing RotatE variables must fail after the loaded graph is cleaned up");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

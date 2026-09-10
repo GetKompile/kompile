@@ -43,6 +43,9 @@ public final class KompileGraphNative {
             @Cast("kgr_thread_t*") Pointer thread,
             @Cast("const char*") BytePointer kgraphPath);
 
+    public static native @Cast("const char*") BytePointer kgr_last_error(
+            @Cast("kgr_thread_t*") Pointer thread);
+
     public static native int kgr_save(
             @Cast("kgr_thread_t*") Pointer thread,
             @Cast("kgr_session_t") long session,

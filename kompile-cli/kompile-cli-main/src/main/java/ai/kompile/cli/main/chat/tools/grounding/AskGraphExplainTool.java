@@ -66,7 +66,9 @@ public class AskGraphExplainTool implements CliTool {
         return "Produce a derivation trace explaining why the knowledge base believes (or disbelieves) " +
                 "a specific fact. Returns a derivation tree with rule applications and " +
                 "supporting facts at each hop, plus a natural-language summary. Use this to audit " +
-                "an LLM's reasoning or to present grounded explanations to end users.";
+                "an LLM's reasoning or to present grounded explanations to end users. " +
+                "Optional chatModel.provider/modelId interprets the returned evidence using native chat; " +
+                "model output is separate and does not replace the derivation.";
     }
 
     @Override
@@ -74,6 +76,7 @@ public class AskGraphExplainTool implements CliTool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
         props.putObject("atom")
                 .put("type", "string")
@@ -111,7 +114,10 @@ public class AskGraphExplainTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Explain KB derivation");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) throws ToolExecutionException {
         String atom = params.path("atom").asText("");
         if (atom.isBlank()) {
             return ToolResult.error("atom is required");

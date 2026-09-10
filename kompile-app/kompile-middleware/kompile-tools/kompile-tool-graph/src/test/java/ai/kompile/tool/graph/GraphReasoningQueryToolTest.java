@@ -11,7 +11,10 @@ import ai.kompile.knowledgegraph.unified.GraphReasoningQueryService;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.annotation.ToolParam;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Parameter;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -51,6 +54,24 @@ class GraphReasoningQueryToolTest {
     }
 
     @Test
+    void generatedToolInputMarksEveryComponentOptionalAndExposesQuestion() {
+        List<String> components = java.util.Arrays.stream(GraphReasoningQueryTool.QueryInput.class
+                .getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList();
+        assertTrue(components.contains("question"));
+        Constructor<?> canonical = java.util.Arrays.stream(
+                        GraphReasoningQueryTool.QueryInput.class.getDeclaredConstructors())
+                .filter(constructor -> constructor.getParameterCount() == components.size())
+                .findFirst()
+                .orElseThrow();
+        Parameter[] parameters = canonical.getParameters();
+        for (int index = 0; index < parameters.length; index++) {
+            ToolParam parameter = parameters[index].getAnnotation(ToolParam.class);
+            assertNotNull(parameter, components.get(index));
+            assertFalse(parameter.required(), components.get(index) + " must be optional");
+        }
+    }
+
+    @Test
     void nullInputReturnsInvalidWithoutCallingService() {
         GraphReasoningQueryService service = mock(GraphReasoningQueryService.class);
         GraphReasoningQueryTool tool = new GraphReasoningQueryTool(service);
@@ -72,8 +93,55 @@ class GraphReasoningQueryToolTest {
                 null, "capabilities", null, null, null, null, null, null, null, null, null));
 
         assertEquals(GraphQueryEngine.Status.OK, result.status());
-        assertEquals(21, result.capabilities().size());
+        assertEquals(GraphReasoningQueryService.queryRequestOperations().size(),
+                result.capabilities().size());
         assertNotNull(result.trace());
+        verifyNoInteractions(bridge);
+    }
+
+    @Test
+    void omittedOperationUsesQueryTextAsSearch() throws Exception {
+        UnifiedGraph graph = new UnifiedGraph();
+        graph.addEntity("orchid", "PROJECT", "Orchid");
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.export(42L)).thenReturn(graph);
+        GraphReasoningQueryTool tool = toolWithBridge(bridge);
+
+        GraphQueryEngine.Result result = tool.query(new GraphReasoningQueryTool.QueryInput(
+                42L, null, null, null, null, null, null, 5, null, null, "Orchid"));
+
+        assertEquals(GraphQueryEngine.Status.OK, result.status());
+        assertEquals(GraphQueryEngine.Intent.SEARCH, result.intent());
+        assertTrue(result.entities().stream().anyMatch(entity -> "orchid".equals(entity.id())));
+    }
+
+    @Test
+    void naturalLanguageQuestionAliasExecutesSearch() throws Exception {
+        UnifiedGraph graph = new UnifiedGraph();
+        graph.addEntity("orchid", "PROJECT", "Orchid");
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        when(bridge.export(42L)).thenReturn(graph);
+        GraphReasoningQueryTool tool = toolWithBridge(bridge);
+
+        GraphQueryEngine.Result result = tool.query(new GraphReasoningQueryTool.QueryInput(
+                42L, null, null, null, null, null, null, 5, null, null,
+                null, "Find Orchid"));
+
+        assertEquals(GraphQueryEngine.Status.OK, result.status());
+        assertEquals(GraphQueryEngine.Intent.SEARCH, result.intent());
+        assertTrue(result.entities().stream().anyMatch(entity -> "orchid".equals(entity.id())));
+    }
+
+    @Test
+    void omittedOperationAndQueryTextReturnsCapabilitiesWithoutLoadingGraph() {
+        UnifiedGraphBridge bridge = mock(UnifiedGraphBridge.class);
+        GraphReasoningQueryTool tool = toolWithBridge(bridge);
+
+        GraphQueryEngine.Result result = tool.query(new GraphReasoningQueryTool.QueryInput(
+                null, null, null, null, null, null, null, null, null, null, null));
+
+        assertEquals(GraphQueryEngine.Status.OK, result.status());
+        assertEquals(GraphQueryEngine.Intent.CAPABILITIES, result.intent());
         verifyNoInteractions(bridge);
     }
 

@@ -494,7 +494,7 @@ class EnforcerJudgeSessionTest {
     }
 
     @Test
-    void realJudge_unavailable_returnsStopDecision() throws Exception {
+    void realJudge_unavailable_failsOpenWithPassDecision() throws Exception {
         JudgeBackend unavailable = new JudgeBackend() {
             @Override
             public String generate(String u, String s) { return ""; }
@@ -507,8 +507,9 @@ class EnforcerJudgeSessionTest {
 
         EnforcerPolicy policy = new EnforcerPolicy("Some rule.", 2, false);
         EnforcerDecision decision = judge.evaluate("prompt", "output", policy, 1);
-        assertTrue(decision.isStop());
-        assertTrue(decision.getViolations().get(0).contains("No enforcer judge backend"));
+        assertTrue(decision.isCompliant(), "an unavailable judge must fail open");
+        assertFalse(decision.isStop());
+        assertTrue(decision.getReasoning().contains("No enforcer judge backend"));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -988,7 +989,7 @@ class EnforcerJudgeSessionTest {
     }
 
     @Test
-    void realRealtimeMonitor_toolCallEvaluationError_interrupts() {
+    void realRealtimeMonitor_toolCallEvaluationError_failsOpenByDefault() {
         // Backend that throws on generate
         JudgeBackend failingBackend = new JudgeBackend() {
             @Override
@@ -1008,8 +1009,33 @@ class EnforcerJudgeSessionTest {
         SubprocessAgentRunner.MonitorDecision decision =
                 rtMonitor.onToolUse("Bash", "{\"command\": \"echo hi\"}");
 
+        assertFalse(decision.interrupt(),
+                "tool evaluation infrastructure failure must fail open");
+    }
+
+    @Test
+    void realRealtimeMonitor_toolCallEvaluationError_failsClosedWhenExplicitlyConfigured() {
+        JudgeBackend failingBackend = new JudgeBackend() {
+            @Override
+            public String generate(String u, String s) throws Exception {
+                throw new RuntimeException("Connection refused");
+            }
+            @Override
+            public boolean isAvailable() { return true; }
+        };
+
+        EnforcerJudge judge = new EnforcerJudge(failingBackend, objectMapper);
+        EnforcerPolicy policy = new EnforcerPolicy("Some rules.", 2, false);
+
+        EnforcerRealtimeMonitor rtMonitor = new EnforcerRealtimeMonitor(
+                judge, policy, "prompt", conversationWindow);
+        rtMonitor.setFailOpenOnError(false);
+
+        SubprocessAgentRunner.MonitorDecision decision =
+                rtMonitor.onToolUse("Bash", "{\"command\": \"echo hi\"}");
+
         assertTrue(decision.interrupt(),
-                "Tool evaluation failure should interrupt (fail-closed)");
+                "explicit FAIL_CLOSED must still interrupt on evaluation failure");
         assertTrue(decision.reason().contains("failed"));
     }
 
@@ -1135,15 +1161,19 @@ class EnforcerJudgeSessionTest {
     }
 
     @Test
-    void decisionParsing_invalidJson_treatedAsStop() {
+    void decisionParsing_invalidJson_treatedAsPass() {
         EnforcerDecision decision = EnforcerDecision.parse(objectMapper, "not json at all");
-        assertTrue(decision.isStop(), "Invalid JSON should be treated as stop");
+        assertTrue(decision.isCompliant(), "invalid JSON must fail open");
+        assertFalse(decision.isStop());
+        assertTrue(decision.getReasoning().contains("valid JSON"),
+                "the fail-open reason must name the malformed verdict: " + decision.getReasoning());
     }
 
     @Test
-    void decisionParsing_nullResponse_treatedAsStop() {
+    void decisionParsing_nullResponse_treatedAsPass() {
         EnforcerDecision decision = EnforcerDecision.parse(objectMapper, null);
-        assertTrue(decision.isStop(), "Null response should be treated as stop");
+        assertTrue(decision.isCompliant(), "null response must fail open");
+        assertFalse(decision.isStop());
     }
 
     @Test
@@ -1170,11 +1200,11 @@ class EnforcerJudgeSessionTest {
     }
 
     @Test
-    void toolCallDecisionParsing_invalidJson_defaultsToBlock() {
+    void toolCallDecisionParsing_invalidJson_defaultsToAllow() {
         EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(
                 objectMapper, "garbage");
-        assertFalse(decision.isAllowed(),
-                "Invalid JSON should default to block (fail-closed)");
+        assertTrue(decision.isAllowed(),
+                "invalid JSON must fail open");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

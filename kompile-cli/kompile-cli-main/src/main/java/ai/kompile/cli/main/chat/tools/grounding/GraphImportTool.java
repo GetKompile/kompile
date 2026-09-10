@@ -59,7 +59,8 @@ public class GraphImportTool implements CliTool {
         return "Load a kompile .kgraph file into the live knowledge graph so you can reason over it. "
                 + "The imported graph is available to graph_reasoning_query immediately. "
                 + "Provide the path to a .kgraph file (produced by graph export) and, optionally, the "
-                + "fact sheet to import into (defaults to the graph's own recorded fact sheet).";
+                + "fact sheet to import into (defaults to the graph's own recorded fact sheet). "
+                + "Set requireManaged=true to reject ephemeral or compatibility-only services.";
     }
 
     @Override
@@ -73,6 +74,10 @@ public class GraphImportTool implements CliTool {
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy destination override. Locally the imported graph uses its recorded knowledge-base identity.");
+        props.putObject("requireManaged")
+                .put("type", "boolean")
+                .put("default", false)
+                .put("description", "Fail unless the remote service provides complete managed import semantics.");
         schema.putArray("required").add("path");
         return schema;
     }
@@ -101,10 +106,12 @@ public class GraphImportTool implements CliTool {
         }
 
         JsonNode fsNode = params.path("factSheetId");
-        Integer factSheetId = (fsNode.isMissingNode() || fsNode.isNull()) ? null : fsNode.asInt();
+        Long factSheetId = (fsNode.isMissingNode() || fsNode.isNull()) ? null : fsNode.asLong();
+        boolean requireManaged = params.path("requireManaged").asBoolean(false);
 
         try {
-            var resp = client.postMultipartFile("/api/graph/unified/import", file, factSheetId);
+            var resp = client.postMultipartFile(
+                    "/api/graph/unified/import", file, factSheetId, requireManaged);
             if (resp.statusCode() != 200) {
                 return ToolResult.error("graph_import failed (HTTP " + resp.statusCode() + "): "
                         + extractError(resp.body()));
@@ -115,10 +122,14 @@ public class GraphImportTool implements CliTool {
             int edges = r.path("edges").asInt();
             int embeddings = r.path("embeddings").asInt();
             int atoms = r.path("atoms").asInt();
+            String profile = r.path("profile").asText("LEGACY");
+            String durability = r.path("durability").asText("UNKNOWN");
 
             StringBuilder sb = new StringBuilder();
             sb.append("Loaded ").append(nodes).append(" nodes, ").append(edges).append(" edges, ")
                     .append(embeddings).append(" embeddings from ").append(file.getFileName());
+            sb.append(". Import profile: ").append(profile)
+                    .append(" (").append(durability).append(")");
             if (atoms > 0) {
                 sb.append(".\n").append(atoms).append(" facts projected — the graph is reasoning-ready: ")
                         .append("use graph_reasoning_query to reason over it.");
@@ -131,6 +142,8 @@ public class GraphImportTool implements CliTool {
             metadata.put("edges", edges);
             metadata.put("embeddings", embeddings);
             metadata.put("atoms", atoms);
+            metadata.put("profile", profile);
+            metadata.put("durability", durability);
             if (factSheetId != null) {
                 metadata.put("factSheetId", factSheetId);
             }

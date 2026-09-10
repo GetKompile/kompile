@@ -448,14 +448,16 @@ public class TerminalLauncher {
      * 2. Always drops to an interactive shell afterwards so the terminal stays open
      * 3. On failure, prints an error message before the shell
      */
-    private String buildBashWrapperCommand(List<String> command) {
+    String buildBashWrapperCommand(List<String> command) {
         String cmdStr = joinShellCommand(command);
         // Always keep the terminal open by exec-ing an interactive shell after the
-        // command finishes. On failure, print diagnostic info first.
+        // command finishes. Do not echo cmdStr: arguments can contain secrets or shell
+        // substitutions which must remain single-quoted data, never be evaluated again
+        // inside a diagnostic double-quoted string.
         return cmdStr + "; __kompile_ec=$?; "
                 + "if [ $__kompile_ec -ne 0 ]; then "
                 + "echo ''; "
-                + "echo \"[kompile] Command failed: " + cmdStr.replace("'", "'\\''") + "\"; "
+                + "echo \"[kompile] Command failed\"; "
                 + "echo \"[kompile] Exit code: $__kompile_ec\"; "
                 + "echo ''; "
                 + "fi; "

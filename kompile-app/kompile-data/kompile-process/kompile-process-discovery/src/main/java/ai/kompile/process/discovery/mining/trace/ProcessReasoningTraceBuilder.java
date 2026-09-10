@@ -43,6 +43,7 @@ public final class ProcessReasoningTraceBuilder {
     private static final int MAX_FACTS_PER_PRECEDENCE = 8;
     private static final int MAX_RULES_PER_PRECEDENCE = 8;
     private static final int MAX_CAUSAL_DEPENDENCIES = 10;
+    private static final int MAX_HYBRID_ACTIVITIES = 48;
 
     private ProcessReasoningTraceBuilder() {
     }
@@ -169,6 +170,7 @@ public final class ProcessReasoningTraceBuilder {
                 .sorted(Comparator.comparingDouble(ProcessHybridActivation.ActivityActivation::hybrid)
                         .reversed()
                         .thenComparing(ProcessHybridActivation.ActivityActivation::activity))
+                .limit(MAX_HYBRID_ACTIVITIES)
                 .map(activity -> hybridActivityStep(activity, hybrid))
                 .toList();
         Map<String, String> meta = new LinkedHashMap<>();

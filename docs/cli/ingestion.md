@@ -15,7 +15,7 @@ kompile ingest status                               # Check job progress
 
 Local files and directories, web crawl (recursive with configurable depth), S3, SFTP, SQL databases, email (IMAP, POP3, Gmail, Outlook PST, MBOX, Maildir), Confluence, Jira, Notion, Slack, Discord, Google Drive, OneDrive, Google Workspace, and SMB shares.
 
-Cloud sources use OAuth connections managed through the **Connected Services** screen in the web UI.
+Cloud-source OAuth connections can be managed through the **Connected Services** web screen or entirely from the CLI with `kompile auth source configure-oauth`, `login`, `oauth-status`, `oauth-health`, `refresh`, and `disconnect-oauth`. Use `oauth-settings`, `oauth-setup`, `validate-oauth`, and `reset-oauth` for application-registration lifecycle management.
 
 ## The ingestion pipeline
 

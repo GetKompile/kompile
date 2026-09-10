@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "provider": "github-copilot",
   "metadataSource": "DOCUMENTED_FALLBACK",
+  "wireValues": {
+    "ultra": "max"
+  },
   "source": {
     "label": "GitHub Copilot model inventory",
     "url": "https://docs.github.com/en/copilot/reference/ai-models/model-comparison",
@@ -41,10 +44,6 @@
         {
           "value": "max",
           "label": "Max"
-        },
-        {
-          "value": "ultra",
-          "label": "Ultra"
         }
       ]
     },
@@ -80,10 +79,6 @@
         {
           "value": "max",
           "label": "Max"
-        },
-        {
-          "value": "ultra",
-          "label": "Ultra"
         }
       ]
     },

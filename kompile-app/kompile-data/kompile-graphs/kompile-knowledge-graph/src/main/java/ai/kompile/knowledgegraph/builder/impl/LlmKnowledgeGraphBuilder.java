@@ -16,6 +16,8 @@
 package ai.kompile.knowledgegraph.builder.impl;
 
 import ai.kompile.core.graphbuilder.*;
+import ai.kompile.core.graphrag.agent.ExtractionLlmService;
+import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.llm.chat.LLMChat;
@@ -61,6 +63,12 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
 
     // Optional dependency - injected via setter
     private LLMChat llmChat;
+    private ExtractionLlmServiceRegistry extractionLlmServices;
+
+    @Autowired(required = false)
+    public void setExtractionLlmServices(ExtractionLlmServiceRegistry services) {
+        this.extractionLlmServices = services;
+    }
 
     private final ObjectMapper objectMapper;
     private final ExtractionJobRepository jobRepository;
@@ -122,8 +130,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
 
     @jakarta.annotation.PostConstruct
     public void init() {
-        if (llmChat == null) {
-            log.warn("LlmKnowledgeGraphBuilder initialized without LLMChat - extraction will not work until an LLM is configured");
+        if (!isReady()) {
+            log.warn("LlmKnowledgeGraphBuilder initialized without an available extraction provider");
         }
     }
 
@@ -132,7 +140,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
      * Returns false if no LLM is configured.
      */
     public boolean isReady() {
-        return llmChat != null;
+        return llmChat != null || (extractionLlmServices != null
+                && extractionLlmServices.listProviders().stream().anyMatch(p -> p.available()));
     }
 
     @Override
@@ -157,7 +166,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
     }
 
     @Override
-    public void configure(BuilderConfig config) {
+    public synchronized void configure(BuilderConfig config) {
         this.config = config != null ? config : BuilderConfig.defaults();
         log.info("Configured LLM builder: provider={}, model={}, temperature={}, entityTypes={}",
                 this.config.modelProvider(),
@@ -167,12 +176,12 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
     }
 
     @Override
-    public BuilderConfig getConfig() {
+    public synchronized BuilderConfig getConfig() {
         return config;
     }
 
     @Override
-    public List<ProposedTriple> buildFromChunks(
+    public synchronized List<ProposedTriple> buildFromChunks(
             List<RetrievedDoc> chunks,
             GraphBuildContext context,
             Consumer<BuildProgress> progressCallback) {
@@ -184,15 +193,24 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
             return Collections.emptyList();
         }
 
-        // Check if LLM is available
-        if (llmChat == null) {
-            log.error("Cannot perform LLM extraction - no LLMChat bean is configured. " +
-                     "Please configure an LLM provider (OpenAI, Anthropic, etc.)");
-            if (progressCallback != null) {
-                progressCallback.accept(BuildProgress.completed(context.jobId(), 0, 0));
+        boolean selected = (config.modelProvider() != null && !config.modelProvider().isBlank())
+                || (config.modelName() != null && !config.modelName().isBlank());
+        ExtractionLlmService selectedService = null;
+        if (selected || (llmChat == null && extractionLlmServices != null)) {
+            if (extractionLlmServices == null) {
+                throw new IllegalStateException("Selected extraction provider is unavailable; no fallback was attempted");
             }
-            return Collections.emptyList();
+            selectedService = extractionLlmServices.select(config.modelProvider(), config.modelName());
+            if (selectedService == null) throw new IllegalStateException("No extraction provider available");
+            if ((config.temperature() != null && config.temperature() != 0.0)
+                    || (config.maxTokens() != null && config.maxTokens() != 4096)) {
+                throw new IllegalArgumentException("Selected extraction adapter does not support generation overrides; use its configured defaults");
+            }
+        } else if (llmChat == null) {
+            throw new IllegalStateException("No LLM configured for graph extraction");
         }
+        String actualProvider = selectedService == null ? "llm-chat" : selectedService.getId();
+        String actualModel = selectedService == null ? null : selectedService.getEffectiveModel();
 
         // ── Ontology-guided extraction (Phase 1) ──────────────────────────────
         // Resolve allowed entity/relationship types ONCE per build, at the entry point
@@ -230,7 +248,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                 ChatOptions options = optionsBuilder.build();
 
                 // Call LLM
-                String response = llmChat.prompt()
+                String response = selectedService != null ? selectedService.complete(prompt) : llmChat.prompt()
                         .user(prompt)
                         .options(options)
                         .call()
@@ -258,8 +276,8 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                         prompt,          // FULL prompt
                         response,        // FULL response
                         chunkProposals,
-                        config.modelProvider(),
-                        config.modelName(),
+                        actualProvider,
+                        actualModel,
                         latencyMs,
                         estimateTokens(prompt),
                         estimateTokens(response)
@@ -279,12 +297,14 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
                         getDocumentId(chunk),
                         prompt,
                         e.getMessage(),
-                        config.modelProvider(),
-                        config.modelName(),
+                        actualProvider,
+                        actualModel,
                         0
                 );
                 logs.add(failLog);
                 persistFailureLog(context.jobId(), failLog, chunk.getText());
+                extractionLogsCache.put(context.jobId(), logs);
+                throw new IllegalStateException("Graph extraction failed for chunk " + chunk.getId(), e);
             }
 
             processedCount++;
@@ -437,6 +457,7 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
 
     private ExtractedGraphDTO.ExtractedGraph parseResponse(String response) throws JsonProcessingException {
         // Clean up response if needed
+        if (response == null || response.isBlank()) throw new IllegalArgumentException("Empty extraction response");
         String cleanResponse = response.trim();
 
         // Handle markdown code blocks
@@ -450,16 +471,10 @@ public class LlmKnowledgeGraphBuilder implements KnowledgeGraphBuilder {
         }
         cleanResponse = cleanResponse.trim();
 
-        try {
-            return objectMapper.readValue(cleanResponse, ExtractedGraphDTO.ExtractedGraph.class);
-        } catch (JsonProcessingException e) {
-            log.warn("Failed to parse LLM response as JSON: {}", cleanResponse);
-            // Return empty graph on parse failure
-            ExtractedGraphDTO.ExtractedGraph empty = new ExtractedGraphDTO.ExtractedGraph();
-            empty.setEntities(new ArrayList<>());
-            empty.setRelationships(new ArrayList<>());
-            return empty;
-        }
+        ExtractedGraphDTO.ExtractedGraph graph = objectMapper.readValue(cleanResponse, ExtractedGraphDTO.ExtractedGraph.class);
+        if (graph == null || graph.getEntities() == null || graph.getRelationships() == null)
+            throw new IllegalArgumentException("Extraction response must contain entities and relationships");
+        return graph;
     }
 
     private List<ProposedTriple> convertToProposals(

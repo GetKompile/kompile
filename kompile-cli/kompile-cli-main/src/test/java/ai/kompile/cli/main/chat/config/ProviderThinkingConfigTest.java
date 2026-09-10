@@ -50,15 +50,40 @@ class ProviderThinkingConfigTest {
     }
 
     @Test
-    void documentedFallbackPreservesWireValuesDefaultsAndPointsToItsResource() {
+    void documentedFallbackStopsAtMaxAndMigratesLegacyWireValues() {
         ThinkingCapabilityProvider.ThinkingCapabilities codex =
                 ProviderThinkingConfig.forProvider("openai-codex").resolve(
                         new LiveModelDiscovery.Model("gpt-5.6-terra", List.of()));
 
         assertEquals(ThinkingCapabilityProvider.Source.DOCUMENTED_FALLBACK, codex.source());
-        assertEquals(List.of("low", "medium", "high", "xhigh", "max", "ultra"),
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"),
                 codex.options().stream().map(ThinkingCapabilityProvider.Option::value).toList());
         assertEquals("medium", codex.defaultValue());
+        assertEquals("max", ProviderThinkingConfig.wireValue("openai-codex", "ultra"));
+        assertEquals("max", ProviderThinkingConfig.wireValue("openai-codex", "max"));
+
+        ThinkingCapabilityProvider.ThinkingCapabilities astra =
+                ProviderThinkingConfig.forProvider("openai-codex").resolve(
+                        new LiveModelDiscovery.Model("gpt-6-astra", List.of()));
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"),
+                astra.options().stream()
+                        .map(ThinkingCapabilityProvider.Option::value).toList());
+        assertEquals("medium", astra.defaultValue());
+
+        ThinkingCapabilityProvider.ThinkingCapabilities apiAstra =
+                ProviderThinkingConfig.forProvider("openai").resolve(
+                        new LiveModelDiscovery.Model("gpt-6-astra", List.of()));
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"),
+                apiAstra.options().stream()
+                        .map(ThinkingCapabilityProvider.Option::value).toList());
+
+        ThinkingCapabilityProvider.ThinkingCapabilities copilot =
+                ProviderThinkingConfig.forProvider("github-copilot").resolve(
+                        new LiveModelDiscovery.Model("gpt-5.6-sol", List.of()));
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"),
+                copilot.options().stream()
+                        .map(ThinkingCapabilityProvider.Option::value).toList());
+        assertEquals("max", ProviderThinkingConfig.wireValue("github-copilot", "ultra"));
         assertTrue(codex.sourceIndicator().contains("DOCUMENTED FALLBACK"));
         assertTrue(codex.sourceIndicator().contains("openai-codex.json"));
         assertTrue(codex.sourceIndicator().contains("developers.openai.com/codex/app-server"));

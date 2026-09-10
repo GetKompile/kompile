@@ -367,7 +367,7 @@ public class EnforcerJsonlTailer implements AutoCloseable {
                 reportViolation(decision.blockMessage(), decision.getCorrectionPrompt(), true);
             }
         } catch (Exception e) {
-            reportViolation("Enforcer tool-call evaluation failed: " + e.getMessage(), "", true);
+            EnforcerDiagnostics.alert("[enforcer] tool-call evaluation failed open: " + e.getMessage());
         }
     }
 

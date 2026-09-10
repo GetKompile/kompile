@@ -3,6 +3,7 @@
 #
 # The archive contains only:
 #   - kompile (the standard chat/MCP CLI; local crawl is an internal CLI mode)
+#   - kompile-agent (agent bundles and installable spin lifecycle)
 #   - kompile-model-serving
 #   - kompile-pipeline-serving
 #   - the selected backend's validated side-loaded native closure and SDX assets
@@ -20,7 +21,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_NATIVE_TARGETS="cli,model-serving,pipeline-serving"
+LOCAL_NATIVE_TARGETS="cli,agent,model-serving,pipeline-serving"
 
 export VARIANT=local
 export NATIVE_TARGETS="${NATIVE_TARGETS:-${LOCAL_NATIVE_TARGETS}}"

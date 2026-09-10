@@ -22,7 +22,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "uninstall",mixinStandardHelpOptions = false,subcommands = {
+@CommandLine.Command(name = "uninstall", description = "Remove managed Kompile runtimes and tools.", mixinStandardHelpOptions = false, subcommands = {
         UnInstallGraalvm.class,
         UnInstallPython.class,
         UnInstallMaven.class,

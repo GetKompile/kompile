@@ -16,17 +16,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CodeIndexDiagnosticsTest {
 
     @Test
-    void warningUsesAlertSinkAndIsNotDuplicatedIntoToolProgress() {
+    void onlyAsynchronousDiagnosticsUseAlertSink() {
         List<String> alerts = new ArrayList<>();
         List<String> progress = new ArrayList<>();
         Runnable cleanup = CodeIndexDiagnostics.installAlertSink(alerts::add);
         try {
             ProgressPrintStream stream = new ProgressPrintStream(progress::add);
             stream.println("Warning: connectivity pass failed: unavailable");
+            stream.println("Error indexing Broken.java: invalid UTF-8");
+            stream.println("[code-index] background refresh failed: unavailable");
             stream.println("Indexed 10 files");
 
-            assertEquals(List.of("Warning: connectivity pass failed: unavailable"), alerts);
-            assertEquals(List.of("Indexed 10 files"), progress);
+            assertEquals(List.of("[code-index] background refresh failed: unavailable"), alerts);
+            assertEquals(List.of(
+                    "Warning: connectivity pass failed: unavailable",
+                    "Error indexing Broken.java: invalid UTF-8",
+                    "Indexed 10 files"), progress);
             assertTrue(CodeIndexDiagnostics.hasAlertSink());
         } finally {
             cleanup.run();

@@ -117,6 +117,21 @@ public final class TableMemberOntologyBridge {
                 classIriByLocalName.put(localName, iri);
             }
         }
+        // Derive classes from plain graph entity types as well (PERSON, ORGANIZATION, ...).
+        // Table-member types above remain IRI-prefixed for provenance; plain types get the
+        // ontology namespace so type assertions resolve cleanly during OWL 2 RL inference.
+        for (GraphEntity entity : graph.entities()) {
+            String entityType = entity.type();
+            if (entityType == null || entityType.isBlank()) {
+                continue;
+            }
+            String localName = entityType.toLowerCase(Locale.ROOT);
+            if (!classIriByLocalName.containsKey(localName)) {
+                String iri = builder.ontologyIri() + "#" + entityType;
+                builder.addClass(OwlClass.of(iri).build());
+                classIriByLocalName.put(localName, iri);
+            }
+        }
 
         Set<String> declaredProperties = new LinkedHashSet<>();
         if (declared != null) {

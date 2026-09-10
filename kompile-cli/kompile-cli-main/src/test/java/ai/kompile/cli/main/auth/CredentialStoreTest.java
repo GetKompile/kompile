@@ -200,6 +200,107 @@ class CredentialStoreTest {
     }
 
     @Test
+    void repeatedLoginReusesIdentityAndNameWithoutChangingAnotherActiveAccount() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("identity.json"));
+        var alice = java.util.Map.of("accountId", "alice", "organizationId", "org");
+        var bob = java.util.Map.of("accountId", "bob", "organizationId", "org");
+        store.put("anthropic", "personal", ManagedCredential.oauth("old", "r1", 1L, alice), true);
+        store.put("anthropic", "work", ManagedCredential.oauth("bob", "rb", Long.MAX_VALUE, bob), true);
+        ManagedCredential latest = store.put("anthropic", "account-3",
+                ManagedCredential.oauth("new", "r2", Long.MAX_VALUE, alice), false);
+        assertEquals(2, store.list("anthropic").size());
+        assertEquals("work", store.activeCredentialName("anthropic"));
+        assertEquals("new", store.read("anthropic", "personal").getAccess());
+        assertNull(store.read("anthropic", "account-3"));
+        assertEquals("personal", store.credentialName("anthropic", latest));
+        store.put("anthropic", latest);
+        assertEquals("personal", store.activeCredentialName("anthropic"));
+        assertEquals(2, store.list("anthropic").size());
+    }
+
+    @Test
+    void differentUsersTenantsAndUnknownOpaqueTokensStaySeparate() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("separate.json"));
+        for (int i = 0; i < 3; i++) {
+            store.put("openai-codex", ManagedCredential.oauth("token-" + i, "r-" + i, Long.MAX_VALUE,
+                    java.util.Map.of("accountId", i == 2 ? "other-workspace" : "workspace",
+                            "subject", i == 1 ? "other-user" : "user")));
+        }
+        assertEquals(3, store.list("openai-codex").size());
+        store.put("openrouter", ManagedCredential.oauth("key-1", "", Long.MAX_VALUE));
+        store.put("openrouter", ManagedCredential.oauth("key-2", "", Long.MAX_VALUE));
+        store.put("openrouter", "alias", ManagedCredential.oauth("key-2", "", Long.MAX_VALUE), true);
+        assertEquals(2, store.list("openrouter").size(), "blank refresh tokens are not identities");
+        for (String issuer : java.util.List.of("https://issuer-a", "https://issuer-b")) {
+            store.put("custom-oauth", ManagedCredential.oauth(issuer, issuer, Long.MAX_VALUE,
+                    java.util.Map.of("subject", "shared-subject", "issuer", issuer)));
+        }
+        assertEquals(2, store.list("custom-oauth").size());
+        for (String token : java.util.List.of("opaque-a", "opaque-b")) {
+            store.put("openai-codex", ManagedCredential.oauth(token, token, Long.MAX_VALUE,
+                    java.util.Map.of("accountId", "workspace-with-unknown-users")));
+        }
+        assertEquals(5, store.list("openai-codex").size(), "workspace alone is not a user identity");
+    }
+
+    @Test
+    void reconcilesLegacyDuplicateJwtIdentitiesOnlyAfterSuccessfulRefresh() throws Exception {
+        Path path = tempDir.resolve("old-duplicates.json");
+        String old = jwt("user", "workspace", 1L);
+        long liveSeconds = System.currentTimeMillis() / 1000L + 3600L;
+        String live = jwt("user", "workspace", liveSeconds);
+        Files.writeString(path, """
+                {"version":2,"providers":{"openai-codex":{"active":"old-label","credentials":{
+                  "old-label":{"type":"oauth","access":"%s","refresh":"old-r","expires":%d},
+                  "account-2":{"type":"oauth","access":"%s","refresh":"new-r","expires":%d}
+                }}}}
+                """.formatted(old, Long.MAX_VALUE, live, Long.MAX_VALUE));
+        CredentialStore store = new CredentialStore(path);
+        assertEquals(2, store.list("openai-codex").size(),
+                "expiry does not prove which refresh grant is newest");
+        assertEquals("old-label", store.activeCredentialName("openai-codex"));
+        assertEquals("old-r", store.read("openai-codex").getRefresh());
+        store.resolveOAuth("openai-codex", 0L, current -> ManagedCredential.oauth(
+                live, "confirmed-rotation", liveSeconds * 1000L, current.getMetadata()));
+        assertEquals(1, store.list("openai-codex").size());
+        assertEquals("confirmed-rotation", store.read("openai-codex").getRefresh());
+        assertEquals(liveSeconds * 1000L, store.read("openai-codex").getExpires());
+        assertFalse(Files.readString(path).contains("account-2"));
+        assertEquals(1, new CredentialStore(path).list().size());
+    }
+
+    @Test
+    void preservesDifferentAtlassianSitesEvenWithTheSameTokens() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("sites.json"));
+        for (String site : java.util.List.of("site-a", "site-b")) {
+            store.put("atlassian", site, ManagedCredential.oauth("access", "refresh", Long.MAX_VALUE,
+                    java.util.Map.of("subject", "user", "cloudId", site)), true);
+        }
+        assertEquals(2, store.list("atlassian").size());
+    }
+
+    @Test
+    void expiredIdentityAppearsInStatusWithoutTokenMaterial() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("status.json"));
+        store.put("anthropic", ManagedCredential.oauth("secret-access", "", 1L,
+                java.util.Map.of("accountId", "account", "email", "alice@example.test\n\u001b")));
+        var info = store.list().get(0);
+        assertTrue(info.status().contains("expired; sign in again"));
+        assertEquals("alice@example.test", info.identity());
+        assertFalse(info.toString().contains("secret-access"));
+        assertFalse(info.displayLabel().contains("\n"));
+    }
+
+    private static String jwt(String user, String account, long expiry) {
+        String payload = """
+                {"sub":"%s","iss":"https://auth.openai.com","exp":%d,
+                 "https://api.openai.com/auth":{"chatgpt_account_id":"%s"}}
+                """.formatted(user, expiry, account);
+        return "e30." + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".signature";
+    }
+
+    @Test
     void rejectsMalformedCredentialFiles() throws Exception {
         Path authPath = tempDir.resolve("broken").resolve("auth.json");
         Files.createDirectories(authPath.getParent());

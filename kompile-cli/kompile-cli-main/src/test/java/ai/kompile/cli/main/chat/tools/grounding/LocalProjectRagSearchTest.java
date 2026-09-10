@@ -7,6 +7,8 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -78,6 +80,56 @@ class LocalProjectRagSearchTest {
     }
 
     @Test
+    void importedKgraphChunksRemainSearchableWithoutCrawlJsonlCompanions() throws Exception {
+        Path directory = Files.createDirectories(projectRoot.resolve("data/crawls/imported-kb"));
+        UnifiedGraph graph = new UnifiedGraph().graphId("imported");
+        graph.addEntity(GraphEntity.builder("document:service")
+                .type("DOCUMENT")
+                .label("ImportedService.java")
+                .attribute("documentId", "service")
+                .attribute("relativePath", "src/ImportedService.java")
+                .build());
+        graph.addEntity(GraphEntity.builder("chunk:service-1")
+                .type("CHUNK")
+                .label("portable graph search")
+                .attribute("documentId", "service")
+                .attribute("chunkId", "service-1")
+                .attribute("content", "Imported service exposes portable graph search")
+                .build());
+        graph.addRelation("has-chunk", "document:service", "chunk:service-1", "HAS_CHUNK", 1.0);
+        graph.save(directory.resolve("graph.kgraph"));
+
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper,
+                (root, ignored) -> {
+                    throw new IllegalStateException("local encoder is not materialized");
+                });
+        ToolResult result = search.search(projectRoot, List.of(directory),
+                "portable graph", null, 5);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("lexical-fallback", result.getMetadata().get("retrievalMode"));
+        assertTrue(result.getOutput().contains("src/ImportedService.java"), result.getOutput());
+        assertTrue(result.getOutput().contains("Imported service exposes portable graph search"),
+                result.getOutput());
+    }
+
+    @Test
+    void corruptOptionalKgraphDoesNotDiscardHealthyKnowledgeBaseResults() throws Exception {
+        Path healthy = writeKnowledgeBase();
+        Path corrupt = Files.createDirectories(projectRoot.resolve("data/crawls/corrupt-kb"));
+        Files.writeString(corrupt.resolve("graph.kgraph"), "not a graph", StandardCharsets.UTF_8);
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper,
+                (root, ignored) -> {
+                    throw new IllegalStateException("local encoder is not materialized");
+                });
+
+        ToolResult result = search.search(projectRoot, List.of(healthy, corrupt), "bread", null, 5);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Bread baking guide"), result.getOutput());
+    }
+
+    @Test
     void rejectsKnowledgeBasesOutsideTheCurrentProjectDirectory() throws Exception {
         Files.createDirectories(projectRoot.resolve("data/crawls"));
         Path outside = Files.createTempDirectory(projectRoot.getParent(), "foreign-kb-");
@@ -139,6 +191,21 @@ class LocalProjectRagSearchTest {
 
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("symbolic-link knowledge base"), result.getOutput());
+    }
+
+    @Test
+    void rejectsSymbolicLinkKgraphFallbackArtifact() throws Exception {
+        Path directory = Files.createDirectories(projectRoot.resolve("data/crawls/linked-graph-kb"));
+        Path outsideGraph = projectRoot.resolve("outside.kgraph");
+        new UnifiedGraph().graphId("outside").save(outsideGraph);
+        Files.createSymbolicLink(directory.resolve("graph.kgraph"), outsideGraph);
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper,
+                (root, ignored) -> new FakeEmbeddingRuntime());
+
+        ToolResult result = search.search(projectRoot, List.of(directory), "anything", null, 5);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("symbolic-link crawl artifact"), result.getOutput());
     }
 
     private Path writeKnowledgeBase() throws Exception {

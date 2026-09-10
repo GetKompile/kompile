@@ -33,6 +33,63 @@ class DirectLlmClientContentBlockTest {
         client = new DirectLlmClient(config, mapper);
     }
 
+    @Test
+    void responsesTerminalEventsDoNotWaitForTransportEof() throws Exception {
+        for (String type : List.of("response.completed", "response.incomplete", "response.failed")) {
+            String events = "data: {\"type\":\"response.output_item.added\",\"output_index\":0,"
+                    + "\"item\":{\"type\":\"function_call\",\"id\":\"fc_test\",\"call_id\":\"call_test\","
+                    + "\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n"
+                    + "data: {\"type\":\"" + type + "\",\"response\":{"
+                    + "\"usage\":{\"input_tokens\":12,\"output_tokens\":3},"
+                    + "\"error\":{\"message\":\"test failure\"}}}\n\n";
+            byte[] bytes = events.getBytes(StandardCharsets.UTF_8);
+            var input = new java.io.InputStream() {
+                int position;
+                @Override
+                public int read() {
+                    if (position == bytes.length) {
+                        throw new AssertionError("Read past terminal event: " + type);
+                    }
+                    return bytes[position++] & 0xff;
+                }
+                @Override
+                public int read(byte[] target, int offset, int length) {
+                    if (length == 0) return 0;
+                    if (position == bytes.length) {
+                        throw new AssertionError("Read past terminal event: " + type);
+                    }
+                    int count = Math.min(length, bytes.length - position);
+                    System.arraycopy(bytes, position, target, offset, count);
+                    position += count;
+                    return count;
+                }
+            };
+            Class<?> stateClass = Class.forName(DirectLlmClient.class.getName() + "$ResponsesStreamState");
+            var constructor = stateClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            var result = new DirectLlmClient.StreamResult();
+            Method parse = DirectLlmClient.class.getDeclaredMethod("parseResponsesStream",
+                    java.io.InputStream.class, DirectLlmClient.StreamResult.class, stateClass);
+            parse.setAccessible(true);
+            parse.invoke(client, input, result, constructor.newInstance());
+            if (type.equals("response.incomplete")) {
+                // Truncation discards pending calls without reading past the terminal event.
+                assertTrue(result.toolCalls.isEmpty(), type);
+                assertTrue(result.failed, type);
+                assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind, type);
+            } else {
+                assertEquals(1, result.toolCalls.size(), type);
+                assertEquals("lookup", result.toolCalls.get(0).name, type);
+            }
+            if (!type.equals("response.failed")) {
+                assertEquals(12, result.inputTokens, type);
+                assertEquals(3, result.outputTokens, type);
+            } else {
+                assertTrue(result.failed, type);
+            }
+        }
+    }
+
     // --- OpenAI content array ---
 
     @Test
@@ -147,6 +204,111 @@ class DirectLlmClientContentBlockTest {
     }
 
     @Test
+    void openAiChatRequestCarriesImageAttachment() throws Exception {
+        AtomicReference<JsonNode> captured = new AtomicReference<>();
+        HttpServer server = startSseServer("/v1/chat/completions", captured,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+                        + "data: [DONE]\n\n");
+        try {
+            ChatConfig config = new ChatConfig("openai", "test-key", "gpt-4o",
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/v1");
+            DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
+            requestClient.setOutputConsumer(ignored -> { });
+            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                    "page.png", "image/png", true, "cGFnZQ==", null);
+
+            DirectLlmClient.StreamResult result = requestClient.streamChat(
+                    "Extract this page", "", null, null, null, List.of(image));
+
+            assertFalse(result.failed, result.text);
+            assertEquals("ok", result.text);
+            JsonNode content = userContent(captured.get().path("messages"));
+            assertEquals("image_url", content.get(0).path("type").asText());
+            assertEquals("data:image/png;base64,cGFnZQ==",
+                    content.get(0).path("image_url").path("url").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiResponsesRequestCarriesInputImageAttachment() throws Exception {
+        AtomicReference<JsonNode> captured = new AtomicReference<>();
+        HttpServer server = startSseServer("/codex/responses", captured,
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+                        + "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{}}}\n\n");
+        try {
+            ChatConfig config = new ChatConfig("openai-codex", "test-key", "gpt-5.4",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
+            requestClient.setOutputConsumer(ignored -> { });
+            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                    "page.jpg", "image/jpeg", true, "anBlZw==", null);
+
+            DirectLlmClient.StreamResult result = requestClient.streamChat(
+                    "Extract this page", "system", null, null, null, List.of(image));
+
+            assertFalse(result.failed, result.text);
+            assertEquals("ok", result.text);
+            JsonNode content = userContent(captured.get().path("input"));
+            assertEquals("input_image", content.get(0).path("type").asText());
+            assertEquals("data:image/jpeg;base64,anBlZw==",
+                    content.get(0).path("image_url").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void anthropicRequestCarriesBase64ImageAttachment() throws Exception {
+        AtomicReference<JsonNode> captured = new AtomicReference<>();
+        HttpServer server = startSseServer("/v1/messages", captured,
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"
+                        + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n"
+                        + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+                        + "data: {\"type\":\"content_block_stop\"}\n\n"
+                        + "data: {\"type\":\"message_stop\"}\n\n");
+        try {
+            ChatConfig config = new ChatConfig("anthropic", "test-key", "claude-sonnet",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
+            requestClient.setOutputConsumer(ignored -> { });
+            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                    "page.webp", "image/webp", true, "d2VicA==", null);
+
+            DirectLlmClient.StreamResult result = requestClient.streamChat(
+                    "Extract this page", "system", null, null, null, List.of(image));
+
+            assertFalse(result.failed, result.text);
+            assertEquals("ok", result.text);
+            JsonNode content = userContent(captured.get().path("messages"));
+            assertEquals("image", content.get(0).path("type").asText());
+            assertEquals("base64", content.get(0).path("source").path("type").asText());
+            assertEquals("image/webp",
+                    content.get(0).path("source").path("media_type").asText());
+            assertEquals("d2VicA==", content.get(0).path("source").path("data").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void unsupportedProtocolRejectsRatherThanDroppingAttachment() {
+        ChatConfig config = new ChatConfig(
+                "kompile-local", null, "local", "http://127.0.0.1:1");
+        DirectLlmClient requestClient = new DirectLlmClient(config, mapper);
+        requestClient.setOutputConsumer(ignored -> { });
+        DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                "page.png", "image/png", true, "cGFnZQ==", null);
+
+        DirectLlmClient.StreamResult result = requestClient.streamChat(
+                "Extract", "", null, null, null, List.of(image));
+
+        assertTrue(result.failed);
+        assertTrue(result.text.contains("does not support structured attachments"), result.text);
+    }
+
+    @Test
     void openAiApiErrorIsReturnedAndPrinted() throws Exception {
         HttpServer server = startJsonServer("/v1/chat/completions", 500,
                 "{\"error\":{\"message\":\"bad key\"}}");
@@ -175,6 +337,34 @@ class DirectLlmClientContentBlockTest {
         result.cacheCreationTokens = 2_000;
 
         assertEquals(73_000, result.contextInputTokens());
+    }
+
+    @Test
+    void openAiCompatibleUsageNormalizesProviderCacheDialects() throws Exception {
+        DirectLlmClient.StreamResult openAi = new DirectLlmClient.StreamResult();
+        DirectLlmClient.readOpenAiCompatibleUsage(mapper.readTree("""
+                {"prompt_tokens":100,"completion_tokens":9,
+                 "prompt_tokens_details":{"cached_tokens":70,"cache_write_tokens":10}}
+                """), openAi);
+        assertEquals(20, openAi.inputTokens);
+        assertEquals(9, openAi.outputTokens);
+        assertEquals(70, openAi.cacheReadTokens);
+        assertEquals(10, openAi.cacheCreationTokens);
+
+        DirectLlmClient.StreamResult deepSeek = new DirectLlmClient.StreamResult();
+        DirectLlmClient.readOpenAiCompatibleUsage(mapper.readTree("""
+                {"prompt_tokens":100,"completion_tokens":8,
+                 "prompt_cache_hit_tokens":75,"prompt_cache_miss_tokens":25}
+                """), deepSeek);
+        assertEquals(25, deepSeek.inputTokens);
+        assertEquals(75, deepSeek.cacheReadTokens);
+
+        DirectLlmClient.StreamResult kimi = new DirectLlmClient.StreamResult();
+        DirectLlmClient.readOpenAiCompatibleUsage(mapper.readTree("""
+                {"prompt_tokens":100,"completion_tokens":7,"cached_tokens":60}
+                """), kimi);
+        assertEquals(40, kimi.inputTokens);
+        assertEquals(60, kimi.cacheReadTokens);
     }
 
     @Test
@@ -350,6 +540,31 @@ class DirectLlmClientContentBlockTest {
                 "buildAnthropicContentArray", String.class, List.class);
         method.setAccessible(true);
         return (ArrayNode) method.invoke(client, text, attachments);
+    }
+
+    private JsonNode userContent(JsonNode messages) {
+        for (JsonNode message : messages) {
+            if ("user".equals(message.path("role").asText())) {
+                return message.path("content");
+            }
+        }
+        throw new AssertionError("No user message found: " + messages);
+    }
+
+    private HttpServer startSseServer(
+            String path, AtomicReference<JsonNode> captured, String body) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext(path, exchange -> {
+            captured.set(mapper.readTree(exchange.getRequestBody()));
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream responseBody = exchange.getResponseBody()) {
+                responseBody.write(bytes);
+            }
+        });
+        server.start();
+        return server;
     }
 
     private HttpServer startJsonServer(String path, int status, String body) throws IOException {

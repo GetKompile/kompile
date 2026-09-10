@@ -42,6 +42,10 @@ public final class GraphNodeTypes {
             List.of("entity_category", "entityCategory", "resolution_category", "resolutionCategory");
     private static final List<String> TYPE_KEYS = List.of("entity_type", "entityType");
     private static final List<String> SUBTYPE_KEYS = List.of("entity_subtype", "entitySubtype");
+    private static final List<String> SCHEMA_PARENT_KEYS =
+            List.of("schema.parentType", "schema_parent_type");
+    private static final List<String> SCHEMA_ANCESTOR_KEYS =
+            List.of("schema.typeAncestors", "schema_type_ancestors");
 
     /**
      * The metadata keys carrying an OWL is-a CLOSURE (most-specific-first list, e.g.
@@ -123,6 +127,8 @@ public final class GraphNodeTypes {
         LinkedHashSet<String> types = new LinkedHashSet<>();
         addIfPresent(types, firstNonBlank(metadata, SUBTYPE_KEYS));
         addIfPresent(types, firstNonBlank(metadata, TYPE_KEYS));
+        addIfPresent(types, firstNonBlank(metadata, SCHEMA_PARENT_KEYS));
+        firstStringList(metadata, SCHEMA_ANCESTOR_KEYS).forEach(value -> addIfPresent(types, value));
         addIfPresent(types, firstNonBlank(metadata, CATEGORY_KEYS));
         return List.copyOf(types);
     }
@@ -136,17 +142,55 @@ public final class GraphNodeTypes {
         String category = firstNonBlank(metadata, CATEGORY_KEYS);
         String type = firstNonBlank(metadata, TYPE_KEYS);
         String subtype = firstNonBlank(metadata, SUBTYPE_KEYS);
+        String schemaParent = firstNonBlank(metadata, SCHEMA_PARENT_KEYS);
+        List<String> schemaAncestors = firstStringList(metadata, SCHEMA_ANCESTOR_KEYS);
+        if (schemaParent == null && !schemaAncestors.isEmpty()) {
+            schemaParent = schemaAncestors.get(0);
+        }
 
-        List<TypeHierarchyEdge> hierarchy = new ArrayList<>(2);
+        List<TypeHierarchyEdge> hierarchy = new ArrayList<>(3);
         if (different(subtype, type)) {
             hierarchy.add(new TypeHierarchyEdge(subtype, type, "entity_subtype", "entity_type"));
         }
-        if (different(type, category)) {
-            hierarchy.add(new TypeHierarchyEdge(type, category, "entity_type", "entity_category"));
+        String broadest = type;
+        if (different(broadest, schemaParent)) {
+            hierarchy.add(new TypeHierarchyEdge(
+                    broadest, schemaParent, "entity_type", "schema.parentType"));
+            broadest = schemaParent;
+        }
+        for (String ancestor : schemaAncestors) {
+            if (different(broadest, ancestor)) {
+                hierarchy.add(new TypeHierarchyEdge(
+                        broadest, ancestor, "schema.typeAncestors", "schema.typeAncestors"));
+                broadest = ancestor;
+            }
+        }
+        if (different(broadest, category)) {
+            hierarchy.add(new TypeHierarchyEdge(broadest, category,
+                    broadest == type ? "entity_type" : "schema.typeAncestors",
+                    "entity_category"));
         } else if (type == null && different(subtype, category)) {
             hierarchy.add(new TypeHierarchyEdge(subtype, category, "entity_subtype", "entity_category"));
         }
         return List.copyOf(hierarchy);
+    }
+
+    private static List<String> firstStringList(
+            Map<String, Object> metadata, List<String> keys) {
+        if (metadata == null) return List.of();
+        for (String key : keys) {
+            Object value = metadata.get(key);
+            if (value instanceof List<?> list) {
+                List<String> strings = new ArrayList<>();
+                for (Object element : list) {
+                    if (element instanceof String string && !string.isBlank()) {
+                        strings.add(string.trim());
+                    }
+                }
+                if (!strings.isEmpty()) return List.copyOf(strings);
+            }
+        }
+        return List.of();
     }
 
     private static String firstNonBlank(Map<String, Object> metadata, List<String> keys) {

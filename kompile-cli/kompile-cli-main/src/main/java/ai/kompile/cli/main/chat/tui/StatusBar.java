@@ -17,7 +17,7 @@
 package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
-import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
@@ -197,6 +197,9 @@ public class StatusBar {
     /** A menu item displayed below the status bar, selectable via arrow keys. */
     public record MenuItem(String id, String label, String status, boolean selected) {}
 
+    /** Owner captured at construction: worker redraws must not read another chat's activity. */
+    private final ChatUiSession uiSession = ChatUiSession.current();
+
     /** Currently displayed menu items (set externally, rendered on each redraw). */
     private volatile List<MenuItem> menuItems = List.of();
     /** Message/hint shown below menu items. */
@@ -253,6 +256,12 @@ public class StatusBar {
      * Start the status bar, setting scroll regions and starting the refresh thread.
      */
     public void start(Terminal terminal) {
+        if (running.get()) {
+            this.terminal = terminal;
+            updateTerminalSize();
+            requestRedraw();
+            return;
+        }
         if (!renderer.isAnsiEnabled()) {
             enabled = false;
             return;
@@ -315,6 +324,16 @@ public class StatusBar {
         requestRedraw();
     }
 
+    /** Release a managed surface's terminal, not its activity records or refresh lifetime. */
+    void detachTerminal() {
+        if (!externalScrollManagement) {
+            throw new IllegalStateException("Only an externally managed status bar can detach");
+        }
+        synchronized (drawLock) {
+            terminal = null;
+        }
+    }
+
     /**
      * Stop the status bar, reset scroll regions, and clean up.
      */
@@ -333,9 +352,10 @@ public class StatusBar {
                 if (!externalScrollManagement) {
                     resetScrollRegion();
                 }
-                clearStatusArea();
+                if (terminal != null) clearStatusArea();
             }
         }
+        terminal = null;
     }
 
     // ========================================================================
@@ -545,7 +565,7 @@ public class StatusBar {
         Runnable requester = redrawRequester;
         if (requester != null) {
             requester.run();
-        } else if (canDraw()) {
+        } else if (!externalScrollManagement && canDraw()) {
             redraw();
         }
     }
@@ -559,6 +579,10 @@ public class StatusBar {
      * Thread-safe: uses drawLock to prevent interleaved ANSI sequences.
      */
     public void redraw() {
+        if (externalScrollManagement) {
+            requestRedraw();
+            return;
+        }
         if (!canDraw()) return;
 
         synchronized (drawLock) {
@@ -639,14 +663,14 @@ public class StatusBar {
         List<String> segments = new ArrayList<>();
 
         // --- Foreground model activity ---
-        String activity = ChatCompleter.getActivity();
+        String activity = uiSession.getActivity();
         if (activity != null && !activity.isBlank()) {
-            if (ChatCompleter.isActivityTerminal()) {
+            if (uiSession.isActivityTerminal()) {
                 segments.add(YELLOW + "■" + RESET + " " + YELLOW + activity + RESET);
             } else {
                 String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
                 String backgroundHint = taskManager.isCurrentTaskBackgroundable()
-                        ? DIM + " (use Ctrl+B to background this)" + RESET
+                        ? DIM + " (Ctrl+B backgrounds active subagent)" + RESET
                         : "";
                 segments.add(spinner + " " + YELLOW + activity + RESET + backgroundHint);
             }
@@ -747,9 +771,9 @@ public class StatusBar {
             segments.add(DIM + "(" + current + "/" + total + ")" + RESET);
         }
 
-        // --- Enforcer active ---
+        // --- Judge active ---
         if (enforcerActive) {
-            segments.add(MAGENTA + "[enforcer]" + RESET);
+            segments.add(MAGENTA + "[judge]" + RESET);
         }
 
         // --- Planning mode ---
@@ -959,6 +983,10 @@ public class StatusBar {
     }
 
     private void clearStatusArea() {
+        if (externalScrollManagement) {
+            requestRedraw();
+            return;
+        }
         int sepRow = terminalHeight - STATUS_HEIGHT + 1;
         PrintStream out = System.out;
         out.print(SAVE_CURSOR);
@@ -971,9 +999,10 @@ public class StatusBar {
     }
 
     private void updateTerminalSize() {
-        if (terminal != null) {
-            terminalHeight = terminal.getHeight();
-            terminalWidth = terminal.getWidth();
+        Terminal active = terminal;
+        if (active != null) {
+            terminalHeight = active.getHeight();
+            terminalWidth = active.getWidth();
         }
         if (terminalHeight <= 0) terminalHeight = 24;
         if (terminalWidth <= 0) terminalWidth = 80;
@@ -984,7 +1013,7 @@ public class StatusBar {
     // ========================================================================
 
     private boolean hasActiveItems() {
-        return (ChatCompleter.getActivity() != null && !ChatCompleter.isActivityTerminal())
+        return (uiSession.getActivity() != null && !uiSession.isActivityTerminal())
                 || !processManager.listRunning().isEmpty()
                 || !taskManager.getActiveTasks().isEmpty()
                 || activeSubagents.stream().anyMatch(sa -> !isIdleStatus(sa.getStatus()));

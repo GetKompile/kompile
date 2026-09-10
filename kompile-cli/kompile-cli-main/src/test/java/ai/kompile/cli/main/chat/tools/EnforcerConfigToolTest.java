@@ -169,6 +169,74 @@ class EnforcerConfigToolTest {
     }
 
     @Test
+    void setDirectionFieldsAndStatus() throws Exception {
+        new EnforcerConfig().save(tempDir);
+
+        assertFalse(setField("direction_monitoring", "true").isError());
+        assertFalse(setField("direction_goal", "ship the parser fix").isError());
+        assertFalse(setField("direction_check_every", "2").isError());
+        assertFalse(setField("direction_max_redirects", "1").isError());
+        assertFalse(setField("direction_confidence_threshold", "0.75").isError());
+        assertFalse(setField("direction_cross_turn_limit", "4").isError());
+        assertFalse(setField("direction_report_only", "true").isError());
+
+        EnforcerConfig loaded = EnforcerConfig.load(tempDir);
+        assertTrue(loaded.isDirectionMonitoring());
+        assertEquals("ship the parser fix", loaded.getDirectionGoal());
+        assertEquals(2, loaded.getDirectionCheckEvery());
+        assertEquals(1, loaded.getDirectionMaxRedirects());
+        assertEquals(0.75, loaded.getDirectionConfidenceThreshold());
+        assertEquals(4, loaded.getDirectionCrossTurnDriftLimit());
+        assertTrue(loaded.isDirectionReportOnly());
+
+        ObjectNode status = mapper.createObjectNode().put("action", "status");
+        String output = tool.execute(status, ctx).getOutput();
+        assertTrue(output.contains("Direction:       enabled (report-only)"));
+        assertTrue(output.contains("confidence >= 0.75"));
+        assertTrue(output.contains("cross-turn limit 4"));
+    }
+
+    @Test
+    void setWorkflowFieldsAndStatus() throws Exception {
+        new EnforcerConfig().save(tempDir);
+
+        assertFalse(setField("workflow_mode", "strict").isError());
+        assertFalse(setField("workflow_required_skills",
+                "kompile-orchestrator, review").isError());
+        assertFalse(setField("workflow_require_plan_before_mutation", "true").isError());
+        assertFalse(setField("workflow_max_corrections", "3").isError());
+
+        EnforcerConfig loaded = EnforcerConfig.load(tempDir);
+        assertEquals("enforced", loaded.getWorkflowMode());
+        assertEquals(java.util.List.of("kompile-orchestrator", "review"),
+                loaded.getWorkflowRequiredSkills());
+        assertTrue(loaded.isWorkflowRequirePlanBeforeMutation());
+        assertEquals(3, loaded.getWorkflowMaxCorrections());
+
+        ObjectNode status = mapper.createObjectNode().put("action", "status");
+        String output = tool.execute(status, ctx).getOutput();
+        assertTrue(output.contains("Workflow:        enforced"));
+        assertTrue(output.contains("kompile-orchestrator, review"));
+        assertTrue(output.contains("required before mutation"));
+    }
+
+    @Test
+    void invalidWorkflowModeIsRejectedWithoutChangingConfig() throws Exception {
+        new EnforcerConfig().save(tempDir);
+        ToolResult result = setField("workflow_mode", "sometimes");
+        assertTrue(result.isError());
+        assertEquals("off", EnforcerConfig.load(tempDir).getWorkflowMode());
+    }
+
+    @Test
+    void nonFiniteDirectionConfidenceIsRejected() throws Exception {
+        new EnforcerConfig().save(tempDir);
+        ToolResult result = setField("direction_confidence_threshold", "NaN");
+        assertTrue(result.isError());
+        assertEquals(0.6, EnforcerConfig.load(tempDir).getDirectionConfidenceThreshold());
+    }
+
+    @Test
     void test_semanticExpansion() throws Exception {
         EnforcerConfig config = new EnforcerConfig();
         config.setSemanticMode("wordnet");
@@ -217,5 +285,13 @@ class EnforcerConfigToolTest {
         assertFalse(result.isError());
         assertTrue(result.getOutput().contains("\"semanticMode\" : \"both\""));
         assertTrue(result.getOutput().contains("8080"));
+    }
+
+    private ToolResult setField(String field, String value) throws Exception {
+        ObjectNode params = mapper.createObjectNode();
+        params.put("action", "set");
+        params.put("field", field);
+        params.put("value", value);
+        return tool.execute(params, ctx);
     }
 }

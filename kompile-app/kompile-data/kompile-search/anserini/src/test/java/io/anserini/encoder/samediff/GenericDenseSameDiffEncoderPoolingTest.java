@@ -32,12 +32,12 @@ class GenericDenseSameDiffEncoderPoolingTest {
 
     @Test
     void inputPrefixIsAppliedExactlyOnce() {
-        assertEquals("query: revenue forecast",
-                GenericDenseSameDiffEncoder.applyInputPrefix("query: ", "revenue forecast"));
-        assertEquals("query: revenue forecast",
-                GenericDenseSameDiffEncoder.applyInputPrefix("query: ", "query: revenue forecast"));
-        assertEquals("revenue forecast",
-                GenericDenseSameDiffEncoder.applyInputPrefix("", "revenue forecast"));
+        assertEquals("query: distant galaxy",
+                GenericDenseSameDiffEncoder.applyInputPrefix("query: ", "distant galaxy"));
+        assertEquals("query: distant galaxy",
+                GenericDenseSameDiffEncoder.applyInputPrefix("query: ", "query: distant galaxy"));
+        assertEquals("distant galaxy",
+                GenericDenseSameDiffEncoder.applyInputPrefix("", "distant galaxy"));
     }
 
     @Test
@@ -64,5 +64,17 @@ class GenericDenseSameDiffEncoderPoolingTest {
             if (pooled != null && !pooled.wasClosed()) pooled.close();
             if (!output.wasClosed()) output.close();
         }
+    }
+
+    @Test
+    void scalarAndBatchNormalizationUseTheSameNormFloor() {
+        assertEquals(1.0e-6,
+                GenericDenseSameDiffEncoder.l2Denominator(0.0), 0.0);
+        assertEquals(1.0e-6,
+                GenericDenseSameDiffEncoder.l2Denominator(1.0e-30), 0.0);
+        assertEquals(2.0,
+                GenericDenseSameDiffEncoder.l2Denominator(4.0), 0.0);
+        assertEquals(1.0e-6,
+                GenericDenseSameDiffEncoder.l2Denominator(Double.NaN), 0.0);
     }
 }

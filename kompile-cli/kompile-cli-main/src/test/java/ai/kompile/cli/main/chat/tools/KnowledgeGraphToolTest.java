@@ -607,6 +607,81 @@ class KnowledgeGraphToolTest {
     }
 
     @Test
+    void managedExtractUsesHostNativeModelSelectionInsteadOfRemoteMultiAgentEndpoint() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<JsonNode> captured = new java.util.concurrent.atomic.AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            captured.set(om.readTree(exchange.getRequestBody()));
+            String payload = "{\"entities\":[{\"id\":\"acme\",\"name\":\"Acme\",\"type\":\"ORGANIZATION\"}],\"relations\":[]}";
+            ObjectNode event = om.createObjectNode();
+            event.putArray("choices").addObject().putObject("delta").put("content", payload);
+            byte[] bytes = ("data: " + event + "\n\ndata: [DONE]\n\n")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+        try {
+            Path config = Files.createDirectories(tempDir.resolve(".kompile"))
+                    .resolve("chat-config.json");
+            om.writeValue(config.toFile(), Map.of("provider", "openai", "apiKey", "test-key",
+                    "model", "saved-model", "baseUrl", "http://127.0.0.1:"
+                            + server.getAddress().getPort() + "/v1"));
+            KnowledgeGraphTool managed = new KnowledgeGraphTool("http://127.0.0.1:1", om);
+            ToolResult result = managed.execute(om.createObjectNode().put("action", "extract")
+                    .put("text", "Acme exists.").put("model_provider", "chat:openai")
+                    .put("model_name", "request-model").put("thinking", "xhigh")
+                    .put("entity_types", "ORGANIZATION"), context);
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals("request-model", captured.get().path("model").asText());
+            assertEquals("xhigh", ai.kompile.cli.main.project.NativeChatModels
+                    .resolve(tempDir, "openai", "request-model", "xhigh").thinking());
+            assertTrue(result.getOutput().contains("Acme"), result.getOutput());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void remoteFiltersArePreservedAcrossNodeEdgeAndDocumentSearchActions() throws Exception {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI()
+                    + " " + new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] bytes = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+        try {
+            KnowledgeGraphTool managed = new KnowledgeGraphTool(
+                    "http://127.0.0.1:" + server.getAddress().getPort(), om);
+            managed.execute(om.createObjectNode().put("action", "search_nodes")
+                    .put("query", "Acme").put("node_type", "ORGANIZATION")
+                    .put("max_results", 7), context);
+            managed.execute(om.createObjectNode().put("action", "list_nodes")
+                    .put("node_type", "ENTITY").put("limit", 11), context);
+            managed.execute(om.createObjectNode().put("action", "list_edges")
+                    .put("node_id", "node-1").put("edge_type", "KNOWS").put("limit", 13), context);
+            managed.execute(om.createObjectNode().put("action", "related_docs")
+                    .put("document_id", "doc-1").put("relationship_type", "entity")
+                    .put("max_results", 5), context);
+            managed.execute(om.createObjectNode().put("action", "source_context")
+                    .put("source_id", "src-1").put("include_children", true), context);
+            assertTrue(requests.stream().anyMatch(request -> request.contains("nodeType\":\"ORGANIZATION")), requests.toString());
+            assertTrue(requests.stream().anyMatch(request -> request.contains("/nodes?limit=11&type=ENTITY")), requests.toString());
+            assertTrue(requests.stream().anyMatch(request -> request.contains("/edges?limit=13&nodeId=node-1&type=KNOWS")), requests.toString());
+            assertTrue(requests.stream().anyMatch(request -> request.contains("relationshipType\":\"entity")), requests.toString());
+            assertTrue(requests.stream().anyMatch(request -> request.contains("includeChildren\":true")), requests.toString());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void testCypherRequiresQuery() throws Exception {
         ObjectNode params = om.createObjectNode();
         params.put("action", "cypher");

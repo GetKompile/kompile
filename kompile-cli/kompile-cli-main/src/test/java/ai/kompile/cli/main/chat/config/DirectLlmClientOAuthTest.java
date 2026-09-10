@@ -17,6 +17,7 @@ import org.junit.jupiter.api.parallel.Resources;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,7 @@ class DirectLlmClientOAuthTest {
                 requestBody.set(new String(
                         exchange.getRequestBody().readAllBytes(),
                         StandardCharsets.UTF_8));
-                respond(exchange, 401, "{\"error\":{\"message\":\"test\"}}");
+                respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
             });
             try {
                 CredentialStore.create().putOAuth(
@@ -62,6 +63,10 @@ class DirectLlmClientOAuthTest {
                 assertEquals("Bearer sk-ant-oat-managed", first(headers.get(), "Authorization"));
                 assertNull(first(headers.get(), "x-api-key"));
                 assertTrue(first(headers.get(), "anthropic-beta").contains("oauth-2025-04-20"));
+                JsonNode request = new ObjectMapper().readTree(requestBody.get());
+                assertEquals("ephemeral",
+                        request.path("cache_control").path("type").asText());
+                assertFalse(request.path("cache_control").has("ttl"));
                 assertTrue(requestBody.get().contains(
                         "You are Claude Code, Anthropic's official CLI for Claude."));
             } finally {
@@ -163,13 +168,65 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void anthropicContextOverflowDoesNotDisableNativeCompactionAndRetryUnchanged()
+            throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicInteger calls = new AtomicInteger();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = server("/v1/messages", exchange -> {
+            int call = calls.getAndIncrement();
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (call == 0) {
+                respond(exchange, 400,
+                        "{\"type\":\"error\",\"error\":{"
+                                + "\"type\":\"invalid_request_error\","
+                                + "\"message\":\"prompt is too long: 210000 tokens > 200000 maximum\"}}");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n"
+                                + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+                                + "data: {\"type\":\"content_block_stop\"}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+            }
+        });
+        try {
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("anthropic", "key", "claude-overflow", baseUrl(server)),
+                    mapper);
+            client.setOutputConsumer(ignored -> { });
+            client.setNativeCompactionTriggerTokens(50_000);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(1, calls.get(),
+                    "a context rejection must not resend the same payload without compaction");
+            assertTrue(result.isContextOverflow());
+            assertTrue(result.canRetryAfterContextOverflow());
+
+            DirectLlmClient.StreamResult next =
+                    client.streamChat("shorter follow-up", "system", null, null);
+            assertEquals("ok", next.text);
+            assertEquals(2, calls.get());
+            assertTrue(requests.get(0).has("context_management"));
+            assertTrue(requests.get(1).has("context_management"),
+                    "a context rejection must not disable native compaction support");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void xaiOauthUsesBearerForOpenAiCompatibleRequest() throws Exception {
         withTemporaryHome(() -> {
             AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();
             HttpServer server = server("/chat/completions", exchange -> {
                 headers.set(exchange.getRequestHeaders());
                 exchange.getRequestBody().readAllBytes();
-                respond(exchange, 401, "{\"error\":{\"message\":\"test\"}}");
+                // This test inspects request headers; avoid a 401 because production
+                // correctly treats it as a signal to refresh the stored OAuth token.
+                respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
             });
             try {
                 CredentialStore.create().putOAuth(
@@ -179,14 +236,293 @@ class DirectLlmClientOAuthTest {
                         System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1));
                 ChatConfig config = new ChatConfig("xai", null, "grok-4", baseUrl(server));
                 DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper());
+                client.setPromptCacheSessionId("xai-session-123");
 
                 client.streamChat("hello", "system", null, null);
 
                 assertEquals("Bearer xai-access", first(headers.get(), "Authorization"));
+                assertEquals("xai-session-123", first(headers.get(), "x-grok-conv-id"));
             } finally {
                 server.stop(0);
             }
         });
+    }
+
+    @Test
+    void openAiLongCachePolicySendsAffinityAndExtendedRetention() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+                            + "\"finish_reason\":\"stop\"}],\"usage\":{"
+                            + "\"prompt_tokens\":20,\"completion_tokens\":1,"
+                            + "\"prompt_tokens_details\":{\"cached_tokens\":10}}}\n\n"
+                            + "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.4", baseUrl(server));
+            config.setPromptCacheRetention("long");
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+            client.setPromptCacheSessionId("openai-session-123");
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals("ok", result.text);
+            assertEquals(10, result.inputTokens);
+            assertEquals(10, result.cacheReadTokens);
+            assertEquals("openai-session-123",
+                    requestBody.get().path("prompt_cache_key").asText());
+            assertEquals("24h",
+                    requestBody.get().path("prompt_cache_retention").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiShortCachePolicySelectsInMemoryRetentionOnEarlierModels() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.4", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            client.streamChat("hello", "system", null, null);
+
+            assertEquals("in_memory",
+                    requestBody.get().path("prompt_cache_retention").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiShortCachePolicyUsesTheOnlyRetentionSupportedByGpt55() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.5", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            client.streamChat("hello", "system", null, null);
+
+            assertEquals("24h",
+                    requestBody.get().path("prompt_cache_retention").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiLongCachePolicyFallsBackToInMemoryWhenModelLacks24h() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-4o", baseUrl(server));
+            config.setPromptCacheRetention("long");
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            client.streamChat("hello", "system", null, null);
+
+            assertEquals("in_memory",
+                    requestBody.get().path("prompt_cache_retention").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiShortCachePolicySelectsImplicitModeOnGpt56AndLater() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.6-terra", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            client.streamChat("hello", "system", null, null);
+
+            JsonNode options = requestBody.get().path("prompt_cache_options");
+            assertEquals("implicit", options.path("mode").asText());
+            assertFalse(options.has("ttl"), "short policy uses OpenAI's default 30-minute TTL");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiLongCachePolicySelectsImplicitModeAndSupportedGpt56Ttl() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.6-terra", baseUrl(server));
+            config.setPromptCacheRetention("long");
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            client.streamChat("hello", "system", null, null);
+
+            JsonNode options = requestBody.get().path("prompt_cache_options");
+            assertEquals("implicit", options.path("mode").asText());
+            assertEquals("30m", options.path("ttl").asText());
+            assertFalse(requestBody.get().has("prompt_cache_retention"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiDisabledCachePolicySuppressesAffinityAndImplicitCaching() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.6-terra", baseUrl(server));
+            config.setPromptCacheRetention("none");
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+            client.setPromptCacheSessionId("must-not-be-sent");
+
+            client.streamChat("hello", "system", null, null);
+
+            assertFalse(requestBody.get().has("prompt_cache_key"));
+            assertEquals("explicit",
+                    requestBody.get().path("prompt_cache_options").path("mode").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void oneShotUsesDistinctBoundedPromptCacheAffinity() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+                            + "\"finish_reason\":\"stop\"}]}\n\n"
+                            + "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "key", "gpt-5.4", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+            String liveAffinity = "x".repeat(64);
+            client.setPromptCacheSessionId(liveAffinity);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamOneShot("summarize", "utility system", null);
+
+            assertEquals("ok", result.text);
+            String utilityAffinity = requestBody.get().path("prompt_cache_key").asText();
+            assertTrue(utilityAffinity.startsWith("utility:"));
+            assertTrue(utilityAffinity.length() <= 64);
+            assertNotEquals(liveAffinity, utilityAffinity);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openRouterUsesSessionAffinityAndOnlyMarksAnthropicRoutesExplicitly()
+            throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        List<Map<String, java.util.List<String>>> headers = new ArrayList<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            headers.add(exchange.getRequestHeaders());
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openrouter", "key", "anthropic/claude-sonnet-4", baseUrl(server));
+            config.setPromptCacheRetention("long");
+            DirectLlmClient client = new DirectLlmClient(config, mapper, tempDir);
+            client.setOutputConsumer(ignored -> { });
+            client.setPromptCacheSessionId("router-session-123");
+
+            client.streamChat("one", "system", null, null);
+            config.setModel("openai/gpt-5.4");
+            client.streamChat("two", "system", null, null);
+
+            assertEquals("router-session-123", first(headers.get(0), "x-session-id"));
+            assertEquals("ephemeral",
+                    requests.get(0).path("cache_control").path("type").asText());
+            assertEquals("1h",
+                    requests.get(0).path("cache_control").path("ttl").asText());
+            assertFalse(requests.get(1).has("cache_control"),
+                    "OpenRouter automatic-cache routes must not receive Anthropic controls");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void unauthenticatedOpenAiCompatibleEndpointReceivesNoAuthorizationHeader()
+            throws Exception {
+        AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            headers.set(exchange.getRequestHeaders());
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"
+                            + "data: [DONE]\n\n");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "custom", null, "custom-model", baseUrl(server) + "/");
+            DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper(), tempDir);
+            client.setOutputConsumer(ignored -> { });
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals("ok", result.text);
+            assertNull(first(headers.get(), "Authorization"));
+            assertNull(first(headers.get(), "x-api-key"));
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -196,7 +532,8 @@ class DirectLlmClientOAuthTest {
             HttpServer server = server("/chat/completions", exchange -> {
                 headers.set(exchange.getRequestHeaders());
                 exchange.getRequestBody().readAllBytes();
-                respond(exchange, 401, "{\"error\":{\"message\":\"test\"}}");
+                // Header-only fixture: a 401 would intentionally enter OAuth refresh.
+                respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
             });
             try {
                 CredentialStore.create().put(
@@ -274,9 +611,11 @@ class DirectLlmClientOAuthTest {
                                 Map.of("accountId", "account-123")));
                 ChatConfig config = new ChatConfig(
                         "openai-codex", null, "gpt-5.6-terra", baseUrl(server));
-                config.setThinking("high");
+                // A value saved by older pickers must migrate even though max is now the ceiling.
+                config.setThinking("ultra");
                 DirectLlmClient client = new DirectLlmClient(config, mapper);
                 client.setOutputConsumer(ignored -> {});
+                client.setPromptCacheSessionId("codex-session-123");
 
                 DirectLlmClient.StreamResult first =
                         client.streamChat("read it", "system", toolDefinitions(mapper), null);
@@ -298,8 +637,13 @@ class DirectLlmClientOAuthTest {
 
                 JsonNode firstRequest = requests.get(0);
                 assertEquals("gpt-5.6-terra", firstRequest.path("model").asText());
-                assertEquals("high", firstRequest.path("reasoning").path("effort").asText());
+                assertEquals("max", firstRequest.path("reasoning").path("effort").asText());
                 assertFalse(firstRequest.path("store").asBoolean(true));
+                assertEquals("codex-session-123",
+                        firstRequest.path("prompt_cache_key").asText());
+                assertFalse(firstRequest.has("prompt_cache_retention"));
+                assertFalse(firstRequest.has("prompt_cache_options"),
+                        "the ChatGPT/Codex subscription endpoint owns cache retention");
                 assertEquals("system", firstRequest.path("instructions").asText());
                 assertEquals(1, firstRequest.path("tools").size());
                 assertEquals("function", firstRequest.path("tools").path(0).path("type").asText());
@@ -372,6 +716,50 @@ class DirectLlmClientOAuthTest {
             assertTrue(requests.get(1).path("input").toString().contains("opaque-context"));
             assertFalse(requests.get(1).path("input").toString().contains("hello"),
                     "Responses input before the compaction item must not be replayed");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void responsesContextOverflowIsNotRetriedAsUnsupportedNativeCompaction()
+            throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server("/codex/responses", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (calls.getAndIncrement() == 0) {
+                respond(exchange, 400,
+                        "{\"error\":{\"code\":\"context_length_exceeded\","
+                                + "\"message\":\"Maximum context length exceeded\"}}");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"response.output_text.delta\","
+                                + "\"output_index\":0,\"delta\":\"ok\"}\n\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{"
+                                + "\"status\":\"completed\",\"usage\":{"
+                                + "\"input_tokens\":4,\"output_tokens\":1}}}\n\n");
+            }
+        });
+        try {
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("openai-codex", "key", "gpt-test", baseUrl(server)),
+                    mapper);
+            client.setOutputConsumer(ignored -> { });
+            client.setNativeCompactionTriggerTokens(10_000);
+
+            DirectLlmClient.StreamResult overflow =
+                    client.streamChat("hello", "system", null, null);
+            assertEquals(1, calls.get());
+            assertTrue(overflow.isContextOverflow());
+
+            DirectLlmClient.StreamResult next =
+                    client.streamChat("shorter", "system", null, null);
+            assertEquals("ok", next.text);
+            assertEquals(2, calls.get());
+            assertTrue(requests.get(0).has("context_management"));
+            assertTrue(requests.get(1).has("context_management"));
         } finally {
             server.stop(0);
         }
@@ -466,6 +854,7 @@ class DirectLlmClientOAuthTest {
                     "radius", "radius-key", "radius-model", baseUrl(server));
             DirectLlmClient client = new DirectLlmClient(config, mapper);
             client.setOutputConsumer(ignored -> {});
+            client.setPromptCacheSessionId("radius-session-123");
 
             DirectLlmClient.StreamResult result =
                     client.streamChat("hello", "system", toolDefinitions(mapper), null);
@@ -489,6 +878,10 @@ class DirectLlmClientOAuthTest {
             assertEquals("Bearer radius-key", first(messageHeaders.get(), "Authorization"));
             JsonNode firstRequest = requestBodies.get(0);
             assertEquals("radius-model", firstRequest.path("model").asText());
+            assertEquals("short", firstRequest.path("options")
+                    .path("cacheRetention").asText());
+            assertEquals("radius-session-123", firstRequest.path("options")
+                    .path("sessionId").asText());
             assertEquals("system", firstRequest.path("context").path("systemPrompt").asText());
             assertEquals("read",
                     firstRequest.path("context").path("tools").path(0).path("name").asText());
@@ -506,15 +899,78 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void radiusRetriesPendingToolResultWithoutDuplicatingIt() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/config", exchange -> {
+            try {
+                respond(exchange, 200,
+                        "{\"baseUrl\":\"" + baseUrl(server) + "/pi\","
+                                + "\"models\":[{\"id\":\"radius-model\"}]}");
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/pi/messages", exchange -> {
+            try {
+                requests.add(mapper.readTree(exchange.getRequestBody()));
+                if (calls.getAndIncrement() == 0) {
+                    respond(exchange, 503, "{\"error\":{\"message\":\"retry\"}}");
+                } else {
+                    respondSse(exchange,
+                            "data: {\"type\":\"text_delta\",\"contentIndex\":0,"
+                                    + "\"delta\":\"ok\"}\n\n"
+                                    + "data: {\"type\":\"done\",\"reason\":\"stop\","
+                                    + "\"usage\":{}}\n\n");
+                }
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            ProviderConnectivityPolicy policy = new ProviderConnectivityPolicy(
+                    Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(1),
+                    Duration.ofSeconds(1), 2, Duration.ofMillis(1), Duration.ofMillis(2));
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("radius", "key", "radius-model", baseUrl(server)),
+                    mapper, policy);
+            client.setOutputConsumer(ignored -> { });
+            List<DirectLlmClient.ToolCallResultInput> toolResults = List.of(
+                    new DirectLlmClient.ToolCallResultInput(
+                            "call_radius", "read", "contents", false));
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat(null, "system", null, toolResults);
+
+            assertEquals("ok", result.text);
+            assertEquals(2, requests.size());
+            for (JsonNode request : requests) {
+                long resultCount = java.util.stream.StreamSupport.stream(
+                                request.path("context").path("messages").spliterator(), false)
+                        .filter(message -> "toolResult".equals(message.path("role").asText()))
+                        .count();
+                assertEquals(1, resultCount,
+                        "each retry request must contain the pending result exactly once");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void githubCopilotRoutesModelsToTheirPiApiFamilies() throws Exception {
         withTemporaryHome(() -> {
             AtomicReference<Map<String, java.util.List<String>>> responsesHeaders = new AtomicReference<>();
+            AtomicReference<JsonNode> responsesBody = new AtomicReference<>();
             AtomicReference<Map<String, java.util.List<String>>> anthropicHeaders = new AtomicReference<>();
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/responses", exchange -> {
                 try {
                     responsesHeaders.set(exchange.getRequestHeaders());
-                    exchange.getRequestBody().readAllBytes();
+                    responsesBody.set(mapper().readTree(exchange.getRequestBody()));
                     respondSse(exchange,
                             "data: {\"type\":\"response.completed\","
                                     + "\"response\":{\"status\":\"completed\",\"usage\":{}}}\n\n");
@@ -526,7 +982,7 @@ class DirectLlmClientOAuthTest {
                 try {
                     anthropicHeaders.set(exchange.getRequestHeaders());
                     exchange.getRequestBody().readAllBytes();
-                    respond(exchange, 401, "{\"error\":{\"message\":\"test\"}}");
+                    respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
                 } finally {
                     exchange.close();
                 }
@@ -542,6 +998,7 @@ class DirectLlmClientOAuthTest {
 
                 ChatConfig responsesConfig = new ChatConfig(
                         "github-copilot", null, "gpt-5.6-terra", baseUrl(server));
+                responsesConfig.setPromptCacheRetention("long");
                 DirectLlmClient responsesClient = new DirectLlmClient(responsesConfig, mapper());
                 responsesClient.setOutputConsumer(ignored -> {});
                 responsesClient.streamChat("hello", "system", null, null);
@@ -553,6 +1010,10 @@ class DirectLlmClientOAuthTest {
 
                 assertEquals("user", first(responsesHeaders.get(), "X-Initiator"));
                 assertEquals("conversation-edits", first(responsesHeaders.get(), "Openai-Intent"));
+                assertFalse(responsesBody.get().has("prompt_cache_key"));
+                assertFalse(responsesBody.get().has("prompt_cache_retention"));
+                assertFalse(responsesBody.get().has("prompt_cache_options"),
+                        "delegated providers must own their cache wire controls");
                 assertNotNull(anthropicHeaders.get());
                 assertEquals(
                         "Bearer tid=x;proxy-ep=proxy.individual.githubcopilot.com;exp=y",
@@ -570,7 +1031,7 @@ class DirectLlmClientOAuthTest {
         HttpServer server = server("/v1/messages", exchange -> {
             headers.set(exchange.getRequestHeaders());
             exchange.getRequestBody().readAllBytes();
-            respond(exchange, 401, "{\"error\":{\"message\":\"test\"}}");
+            respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
         });
         try {
             ChatConfig config = new ChatConfig(
@@ -592,6 +1053,183 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void oneShotJsonAddsResponsesStructuredOutputWithoutReasoning() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/codex/responses", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai-codex", "test-token", "gpt-5.6-sol", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.createObjectNode()
+                    .put("type", "object")
+                    .put("additionalProperties", false)
+                    .set("properties", mapper.createObjectNode()
+                            .set("allowed", mapper.createObjectNode().put("type", "boolean")));
+
+            client.streamOneShotJson(
+                    "review", "return JSON", null, "judge verdict", schema, true);
+
+            JsonNode request = mapper.readTree(requestBody.get());
+            JsonNode format = request.path("text").path("format");
+            assertEquals("low", request.path("text").path("verbosity").asText());
+            assertEquals("json_schema", format.path("type").asText());
+            assertEquals("judge_verdict", format.path("name").asText());
+            assertTrue(format.path("strict").asBoolean());
+            assertEquals("object", format.path("schema").path("type").asText());
+            assertFalse(request.has("reasoning"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void codexStrictSchemaWirePayloadKeepsTypesAndRemovesUnsupportedBounds() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/codex/responses", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            // The original provider response had no body; do not invent an unsupported-keyword
+            // diagnostic when this wire test only inspects the request payload.
+            respond(exchange, 400, "");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai-codex", "test-token", "gpt-5.6-sol", baseUrl(server));
+            config.setThinking("xhigh");
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.readTree("{"
+                    + "\"type\":\"object\","
+                    + "\"properties\":{\"nodeTypes\":{"
+                    + "\"type\":\"array\",\"items\":{"
+                    + "\"type\":\"object\",\"properties\":{"
+                    + "\"label\":{\"type\":\"string\",\"pattern\":\"^[A-Z]+$\",\"maxLength\":48},"
+                    + "\"parentType\":{\"type\":\"string\",\"enum\":[\"PERSON\"]}},"
+                    + "\"required\":[\"label\",\"parentType\"],\"additionalProperties\":false},"
+                    + "\"uniqueItems\":true,\"maxItems\":32},"
+                    + "\"pattern\":{\"type\":\"string\"},"
+                    + "\"minimum\":{\"type\":\"integer\",\"minimum\":0},"
+                    + "\"default\":{\"type\":\"object\",\"default\":{"
+                    + "\"pattern\":\"payload\",\"minimum\":7}}},"
+                    + "\"$defs\":{\"minimum\":{\"type\":\"object\",\"properties\":{"
+                    + "\"default\":{\"type\":\"object\",\"enum\":[{"
+                    + "\"pattern\":\"enum-payload\",\"minimum\":3}]}}},"
+                    + "\"required\":[\"default\"],\"additionalProperties\":false},"
+                    + "\"required\":[\"nodeTypes\",\"pattern\",\"minimum\",\"default\"],"
+                    + "\"additionalProperties\":false}");
+            JsonNode originalSchema = schema.deepCopy();
+
+            DirectLlmClient.StreamResult result = client.streamOneShotJson(
+                    "review", "return JSON", null, "schema-prepass", schema, true);
+
+            assertTrue(result.failed);
+            assertEquals(400, result.failureStatusCode);
+            assertFalse(result.text.contains("invalid_json_schema"), result.text);
+            assertEquals(originalSchema, schema,
+                    "transport normalization must not mutate the local schema");
+            JsonNode request = mapper.readTree(requestBody.get());
+            assertEquals("gpt-5.6-sol", request.path("model").asText());
+            assertEquals("xhigh", request.path("reasoning").path("effort").asText());
+            JsonNode wire = request.path("text").path("format").path("schema");
+            assertEquals(List.of("nodeTypes", "pattern", "minimum", "default"), mapper.convertValue(
+                    wire.path("required"), List.class));
+            assertFalse(wire.path("additionalProperties").asBoolean());
+            JsonNode item = wire.path("properties").path("nodeTypes").path("items");
+            assertEquals("object", item.path("type").asText());
+            assertEquals(List.of("label", "parentType"), mapper.convertValue(
+                    item.path("required"), List.class));
+            assertEquals(List.of("PERSON"), mapper.convertValue(
+                    item.path("properties").path("parentType").path("enum"), List.class));
+            assertFalse(item.path("properties").path("label").has("pattern"));
+            assertFalse(item.path("properties").path("label").has("maxLength"));
+            assertFalse(wire.path("properties").path("nodeTypes").has("uniqueItems"));
+            assertFalse(wire.path("properties").path("nodeTypes").has("maxItems"));
+            assertTrue(wire.path("properties").has("pattern"));
+            assertTrue(wire.path("properties").has("minimum"));
+            assertTrue(wire.path("properties").has("default"));
+            assertFalse(wire.path("properties").path("minimum").has("minimum"));
+            assertEquals("payload", wire.path("properties").path("default")
+                    .path("default").path("pattern").asText());
+            assertTrue(wire.path("$defs").has("minimum"));
+            assertTrue(wire.path("$defs").path("minimum").path("properties").has("default"));
+            assertEquals("enum-payload", wire.path("$defs").path("minimum")
+                    .path("properties").path("default").path("enum").path(0)
+                    .path("pattern").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void oneShotJsonAddsChatCompletionsStructuredOutput() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai", "test-key", "gpt-4o", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.createObjectNode()
+                    .put("type", "object")
+                    .put("additionalProperties", false)
+                    .set("properties", mapper.createObjectNode());
+
+            client.streamOneShotJson(
+                    "review", "return JSON", null, "judge", schema, false);
+
+            JsonNode responseFormat = mapper.readTree(requestBody.get()).path("response_format");
+            JsonNode jsonSchema = responseFormat.path("json_schema");
+            assertEquals("json_schema", responseFormat.path("type").asText());
+            assertEquals("judge", jsonSchema.path("name").asText());
+            assertFalse(jsonSchema.path("strict").asBoolean(true));
+            assertEquals("object", jsonSchema.path("schema").path("type").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void genericOpenAiStrictSchemaRetainsValidationKeywords() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 400, "");
+        });
+        try {
+            ChatConfig config = new ChatConfig("openai", "test-key", "gpt-4o", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.readTree("{\"type\":\"object\",\"properties\":{"
+                    + "\"pattern\":{\"type\":\"string\",\"pattern\":\"^x\"},"
+                    + "\"minimum\":{\"type\":\"number\",\"minimum\":0},"
+                    + "\"default\":{\"type\":\"object\",\"default\":{\"pattern\":\"keep\"}}"
+                    + "},\"required\":[\"pattern\",\"minimum\",\"default\"],"
+                    + "\"additionalProperties\":false}");
+
+            client.streamOneShotJson("review", "return JSON", null, "judge", schema, true);
+
+            JsonNode wire = mapper.readTree(requestBody.get()).path("response_format")
+                    .path("json_schema").path("schema");
+            assertTrue(wire.path("properties").path("pattern").has("pattern"));
+            assertEquals(0, wire.path("properties").path("minimum").path("minimum").asInt());
+            assertEquals("keep", wire.path("properties").path("default")
+                    .path("default").path("pattern").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void providerPickerIncludesSubscriptionProtocols() {
         assertEquals("https://chatgpt.com/backend-api",
                 ChatConfig.getDefaultBaseUrl("openai-codex"));
@@ -600,6 +1238,142 @@ class DirectLlmClientOAuthTest {
         assertTrue(ChatConfig.PROVIDERS.containsKey("radius"));
         assertEquals(0, ChatConfig.getDefaultModels("openai-codex").length);
         assertEquals(0, ChatConfig.getDefaultModels("radius").length);
+    }
+
+    @Test
+    void expiredNonRefreshableAuthFailsBeforeHttpAndReloginRepairsSameClient() throws Exception {
+        withTemporaryHome(() -> {
+            AtomicInteger calls = new AtomicInteger();
+            HttpServer server = server("/v1/messages", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                calls.incrementAndGet();
+                respondSse(exchange, """
+                        data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}
+
+                        data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"recovered"}}
+
+                        data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+                        data: {"type":"message_stop"}
+
+                        """);
+            });
+            try {
+                CredentialStore store = CredentialStore.create();
+                Map<String, String> identity = Map.of("accountId", "test-account");
+                store.put("anthropic", "personal", ManagedCredential.oauth("expired-secret", "", 1L, identity), true);
+                ChatConfig config = new ChatConfig("anthropic", null, "claude-sonnet-4-6", baseUrl(server));
+                config.setAuthenticationMethod("oauth");
+                try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                    client.setOutputConsumer(ignored -> { });
+                    DirectLlmClient.StreamResult rejected = client.streamChat("hello", "system", null, null);
+                    assertTrue(rejected.failed);
+                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, rejected.failureKind);
+                    assertTrue(rejected.failureMessage.contains("kompile auth login anthropic"));
+                    assertFalse(rejected.text.contains("expired-secret"));
+                    assertEquals(0, calls.get());
+                    store.put("anthropic", "another-name", ManagedCredential.oauth(
+                            "new-secret", "new-refresh", System.currentTimeMillis() + 3_600_000L, identity), true);
+                    DirectLlmClient.StreamResult recovered = client.streamChat("hello", "system", null, null);
+                    assertFalse(recovered.failed, recovered.text);
+                    assertEquals("recovered", recovered.text);
+                    assertEquals(1, calls.get());
+                    assertEquals(1, store.list("anthropic").size());
+                    assertEquals("personal", store.activeCredentialName("anthropic"));
+                }
+            } finally {
+                server.stop(0);
+            }
+        });
+    }
+
+    @Test
+    void anthropicAndRadius401sRefreshOnceAndPinTheReturnedCredential() throws Exception {
+        // Exercise both Radius entry points and Claude, including a failed replay.
+        for (String route : List.of("anthropic", "radius-config", "radius-messages")) {
+            for (boolean rejectReplay : List.of(false, true)) {
+                boolean radius = route.startsWith("radius");
+                String provider = radius ? "radius" : "anthropic";
+                AtomicInteger refreshes = new AtomicInteger();
+                AtomicInteger rejectedCalls = new AtomicInteger();
+                List<String> tokens = new ArrayList<>();
+                HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+                Handler endpoint = exchange -> {
+                    exchange.getRequestBody().readAllBytes();
+                    String token = exchange.getRequestHeaders().getFirst("Authorization");
+                    tokens.add(token);
+                    boolean configRequest = exchange.getRequestURI().getPath().endsWith("config");
+                    boolean rejectHere = configRequest == "radius-config".equals(route);
+                    if (rejectHere && ("Bearer old".equals(token) || rejectReplay)) {
+                        rejectedCalls.incrementAndGet();
+                        respond(exchange, 401, "{\"error\":{\"message\":\"secret-reflected-token\"}}");
+                    } else if (configRequest) {
+                        respond(exchange, 200, "{\"baseUrl\":\"" + baseUrl(server)
+                                + "/pi\",\"models\":[{\"id\":\"test-model\"}]}");
+                    } else if (radius) {
+                        respondSse(exchange, "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"ok\"}\n\n"
+                                + "data: {\"type\":\"done\",\"reason\":\"stop\"}\n\n");
+                    } else {
+                        respondSse(exchange, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+                    }
+                };
+                for (String path : List.of("/v1/messages", "/v1/config", "/pi/messages")) {
+                    server.createContext(path, exchange -> {
+                        try { endpoint.handle(exchange); } finally { exchange.close(); }
+                    });
+                }
+                server.start();
+                ChatConfig config = new ChatConfig(provider, null, "test-model", baseUrl(server)) {
+                    @Override
+                    public ai.kompile.cli.main.auth.oauth.OAuthProviderFlow.RequestAuth resolveRequestAuth() {
+                        String token = refreshes.get() == 0 ? "old" : "wrong-account";
+                        return ai.kompile.cli.main.auth.oauth.OAuthProviderFlow.RequestAuth.oauth(
+                                token, null, Map.of("Authorization", "Bearer " + token));
+                    }
+
+                    @Override
+                    public ai.kompile.cli.main.auth.oauth.OAuthProviderFlow.RequestAuth refreshRequestAuthAfterUnauthorized(
+                            ai.kompile.cli.main.auth.oauth.OAuthProviderFlow.RequestAuth rejected) {
+                        assertEquals("old", rejected.token());
+                        refreshes.incrementAndGet();
+                        // Another account becomes active immediately after refresh. The
+                        // retry must use this return value, NOT resolveRequestAuth again.
+                        return ai.kompile.cli.main.auth.oauth.OAuthProviderFlow.RequestAuth.oauth(
+                                "new", null, Map.of("Authorization", "Bearer new"));
+                    }
+                };
+                try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                    client.setOutputConsumer(ignored -> { });
+                    var result = client.streamChat("hello", "system", null, null);
+                    assertEquals(1, refreshes.get(), route + ": " + result.text);
+                    assertEquals(rejectReplay ? 2 : 1, rejectedCalls.get(), route);
+                    assertEquals(rejectReplay, result.failed, result.text);
+                    assertFalse(tokens.contains("Bearer wrong-account"), route);
+                    assertFalse(result.text.contains("secret-reflected-token"));
+                    if (rejectReplay) assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    else assertEquals("ok", result.text);
+                } finally {
+                    server.stop(0);
+                }
+            }
+        }
+    }
+
+    @Test
+    void missingExplicitOauthDoesNotSendAnonymousRequests() throws Exception {
+        withTemporaryHome(() -> {
+            ChatConfig config = new ChatConfig("openai-codex", null, "gpt-5.5", "http://127.0.0.1:1");
+            config.setAuthenticationMethod("oauth");
+            assertThrows(ChatConfig.AuthenticationException.class, config::resolveRequestAuth);
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(ignored -> { });
+                var result = client.streamChat("hello", "system", null, null);
+                assertTrue(result.failed);
+                assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                assertEquals(0, result.failureStatusCode);
+            }
+        });
     }
 
     private static ObjectMapper mapper() {

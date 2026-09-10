@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -390,6 +391,43 @@ class AnseriniVectorStoreAsyncTest {
 
         // awaitPendingEmbeddings() must succeed cleanly.
         store.awaitPendingEmbeddings(); // must not throw
+    }
+
+    @Test
+    void test4b_noOpModel_persistsStoredOnlyGraphRecords() {
+        NoOpEmbeddingModelImpl noOpModel = new NoOpEmbeddingModelImpl();
+        store = buildStore(tempDir, noOpModel);
+        Document graphMetadata = new Document("graph:test:meta", "graph metadata",
+                Map.of("type", "graph_metadata", "graphId", "test"));
+
+        assertEquals(1, store.addStoredOnlyDocuments(List.of(graphMetadata)));
+
+        List<Map<String, Object>> persisted = store.listVectorDocuments(0, 10);
+        Map<String, Object> record = persisted.stream()
+                .filter(row -> "graph:test:meta".equals(row.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("graph metadata", record.get("content"));
+        assertEquals(Map.of("type", "graph_metadata", "graphId", "test"),
+                record.get("metadata"));
+    }
+
+    @Test
+    void test4c_storedOnlyGraphEdgesSupportExactMetadataLookup() {
+        store = buildStore(tempDir, new NoOpEmbeddingModelImpl());
+        Document first = new Document("edge-1", "CALLS", Map.of(
+                "type", "graph_edge", "graphId", "g", "sourceNodeId", "a",
+                "targetNodeId", "b", "bidirectional", false));
+        Document second = new Document("edge-2", "CALLS", Map.of(
+                "type", "graph_edge", "graphId", "g", "sourceNodeId", "c",
+                "targetNodeId", "b", "bidirectional", false));
+        assertEquals(2, store.addStoredOnlyDocuments(List.of(first, second)));
+
+        List<Map<String, Object>> matches = store.listVectorDocumentsByMetadata(Map.of(
+                "type", "graph_edge", "graphId", "g", "sourceNodeId", "a"), 10);
+
+        assertEquals(1, matches.size());
+        assertEquals("edge-1", matches.get(0).get("id"));
     }
 
     // ══════════════════════════════════════════════════════════════════════════

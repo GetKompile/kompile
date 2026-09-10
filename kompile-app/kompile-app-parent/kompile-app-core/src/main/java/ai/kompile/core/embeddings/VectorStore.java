@@ -20,6 +20,7 @@ import ai.kompile.core.reranking.RerankerConfig;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.document.Document;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -543,6 +544,11 @@ public interface VectorStore {
         return null;
     }
 
+    /** Exact lookup that distinguishes a missing document from a storage/read failure. */
+    default Map<String, Object> getVectorDocumentStrict(String id) {
+        return getVectorDocument(id);
+    }
+
     /**
      * Deletes all documents from the vector store.
      * <p>
@@ -592,6 +598,69 @@ public interface VectorStore {
             offset += limit;
         } while (batch.size() == limit);
         return allDocs;
+    }
+
+    /**
+     * Bounded exact-match lookup over scalar metadata fields. Stores with a metadata index should
+     * override this; the compatibility implementation scans bounded document pages without retaining
+     * the complete index.
+     */
+    default List<Map<String, Object>> listVectorDocumentsByMetadata(
+            Map<String, String> filters, int limit) {
+        if (filters == null || filters.isEmpty() || limit <= 0) return Collections.emptyList();
+        List<Map<String, Object>> matches = new ArrayList<>(Math.min(limit, 1_000));
+        int offset = 0;
+        int pageSize = 1_000;
+        List<Map<String, Object>> page;
+        do {
+            page = listVectorDocuments(offset, pageSize);
+            for (Map<String, Object> document : page) {
+                Object rawMetadata = document.get("metadata");
+                if (!(rawMetadata instanceof Map<?, ?> metadata)) continue;
+                boolean accepted = true;
+                for (Map.Entry<String, String> filter : filters.entrySet()) {
+                    if (!filter.getValue().equals(String.valueOf(metadata.get(filter.getKey())))) {
+                        accepted = false;
+                        break;
+                    }
+                }
+                if (accepted) {
+                    matches.add(document);
+                    if (matches.size() >= limit) return matches;
+                }
+            }
+            offset += page.size();
+        } while (page.size() == pageSize);
+        return matches;
+    }
+
+    /**
+     * Strict page scan used by durable migrations. Implementations must propagate storage failures
+     * instead of converting them to an empty page. Compatibility stores delegate to the legacy API.
+     */
+    default List<Map<String, Object>> listVectorDocumentsStrict(int offset, int limit) {
+        return listVectorDocuments(offset, limit);
+    }
+
+    /**
+     * Traverse one stable document snapshot in bounded pages. Implementations with snapshot readers
+     * should override this so concurrent commits cannot shift offset-based pagination.
+     */
+    @FunctionalInterface
+    interface DocumentPageConsumer {
+        void accept(List<Map<String, Object>> page) throws IOException;
+    }
+
+    default void scanVectorDocumentsStrict(
+            int pageSize, DocumentPageConsumer consumer) throws IOException {
+        if (pageSize <= 0) throw new IllegalArgumentException("pageSize must be > 0");
+        int offset = 0;
+        List<Map<String, Object>> page;
+        do {
+            page = listVectorDocumentsStrict(offset, pageSize);
+            consumer.accept(page);
+            offset += page.size();
+        } while (page.size() == pageSize);
     }
 
     /**

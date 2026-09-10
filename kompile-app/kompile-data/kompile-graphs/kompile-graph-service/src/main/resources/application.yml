@@ -31,6 +31,8 @@ kompile:
   data:
     dir: ${KOMPILE_GRAPH_DATA_DIR:${user.home}/.kompile/graph-service}
   graph:
+    import:
+      profile: EPHEMERAL
     http:
       enabled: true
   jpa:

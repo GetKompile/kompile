@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-package ai.kompile.app.sync.webhook;
+package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.sync.config.NoteSyncConfigService;
-import ai.kompile.app.sync.domain.NoteSyncConnection;
 import ai.kompile.app.sync.repository.NoteSyncConnectionRepository;
 import ai.kompile.app.sync.service.NoteSyncConnectionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,9 +29,9 @@ import org.springframework.web.bind.annotation.*;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Receives Notion webhook events for real-time sync triggering.
@@ -69,13 +68,15 @@ public class NotionWebhookController {
             return ResponseEntity.ok(Map.of("status", "ignored", "reason", "notion sync disabled"));
         }
 
-        // Verify signature if webhook secret is configured
+        // Webhook ingress is never allowed to degrade to unauthenticated mode.
         String webhookSecret = configService.getConfiguration().getNotionWebhookSecret();
-        if (webhookSecret != null && !webhookSecret.isBlank()) {
-            if (!verifySignature(rawBody, signature, webhookSecret)) {
-                log.warn("Notion webhook signature verification failed");
-                return ResponseEntity.status(401).body(Map.of("error", "invalid signature"));
-            }
+        if (webhookSecret == null || webhookSecret.isBlank()) {
+            return ResponseEntity.status(503)
+                    .body(Map.of("error", "Notion webhook secret is not configured"));
+        }
+        if (!verifySignature(rawBody, signature, webhookSecret)) {
+            log.warn("Notion webhook signature verification failed");
+            return ResponseEntity.status(401).body(Map.of("error", "invalid signature"));
         }
 
         try {
@@ -130,8 +131,8 @@ public class NotionWebhookController {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
             byte[] hash = mac.doFinal(body.getBytes(StandardCharsets.UTF_8));
-            String computed = HexFormat.of().formatHex(hash);
-            return computed.equalsIgnoreCase(expected);
+            byte[] supplied = HexFormat.of().parseHex(expected);
+            return MessageDigest.isEqual(hash, supplied);
         } catch (Exception e) {
             log.error("Webhook signature verification error: {}", e.getMessage());
             return false;

@@ -335,6 +335,26 @@
         <span class="source-desc">Wiki pages</span>
         <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'confluence'">check_circle</mat-icon>
       </div>
+
+      <div class="source-type-card jira"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'jira'"
+           [class.disabled]="isSubmitting || sourceProviderUnavailable('jira')"
+           (click)="!isSubmitting && !sourceProviderUnavailable('jira') && addSourceForm.get('sourceType')?.setValue('jira')">
+        <mat-icon class="source-icon">bug_report</mat-icon>
+        <span class="source-name">Jira</span>
+        <span class="source-desc">Issues and comments</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'jira'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card reddit"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'reddit'"
+           [class.disabled]="isSubmitting || sourceProviderUnavailable('reddit')"
+           (click)="!isSubmitting && !sourceProviderUnavailable('reddit') && addSourceForm.get('sourceType')?.setValue('reddit')">
+        <mat-icon class="source-icon">forum</mat-icon>
+        <span class="source-name">Reddit</span>
+        <span class="source-desc">Posts and comments</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'reddit'">check_circle</mat-icon>
+      </div>
     </div>
   </div>
 
@@ -705,9 +725,9 @@
     <mat-form-field appearance="outline" class="full-width-field">
       <mat-label>Bot OAuth Token (Optional)</mat-label>
       <input matInput formControlName="slackToken" type="password"
-        placeholder="xoxb-your-token (uses config if empty)" [disabled]="isSubmitting">
+        placeholder="xoxb-your-token (uses connected Slack OAuth if empty)" [disabled]="isSubmitting">
       <mat-icon matSuffix *ngIf="addSourceForm.get('slackToken')?.value" color="primary">check_circle</mat-icon>
-      <mat-hint>Leave empty to use server-configured token</mat-hint>
+      <mat-hint>Leave empty to use the encrypted Slack OAuth connection</mat-hint>
     </mat-form-field>
 
     <div class="slack-options">
@@ -755,9 +775,9 @@
     <mat-form-field appearance="outline" class="full-width-field">
       <mat-label>Bot OAuth Token (Optional)</mat-label>
       <input matInput formControlName="slackToken" type="password"
-        placeholder="xoxb-your-token (uses config if empty)" [disabled]="isSubmitting">
+        placeholder="xoxb-your-token (uses connected Slack OAuth if empty)" [disabled]="isSubmitting">
       <mat-icon matSuffix *ngIf="addSourceForm.get('slackToken')?.value" color="primary">check_circle</mat-icon>
-      <mat-hint>Leave empty to use server-configured token</mat-hint>
+      <mat-hint>Leave empty to use the encrypted Slack OAuth connection</mat-hint>
     </mat-form-field>
 
     <div class="slack-date-range">
@@ -814,7 +834,8 @@
       Confluence Pages
     </h4>
     <p class="section-description">
-      Import pages from your Confluence workspace. Connect using your Atlassian API token to access and index Confluence content.
+      Import pages from your Confluence workspace. Leave the email and API token empty to use the
+      Atlassian OAuth connection configured through <code>kompile auth source login atlassian</code>.
     </p>
 
     <mat-form-field appearance="outline" class="full-width-field">
@@ -836,14 +857,10 @@
 
     <div class="confluence-auth-row">
       <mat-form-field appearance="outline" class="email-field">
-        <mat-label>Email Address</mat-label>
+        <mat-label>Email Address (API token auth)</mat-label>
         <input matInput formControlName="confluenceEmail" type="email"
-          placeholder="user@example.com" required [disabled]="isSubmitting">
+          placeholder="Optional when OAuth is connected" [disabled]="isSubmitting">
         <mat-icon matSuffix>email</mat-icon>
-        <mat-error
-          *ngIf="addSourceForm.get('confluenceEmail')?.hasError('required') && addSourceForm.get('confluenceEmail')?.touched">
-          Email is required.
-        </mat-error>
         <mat-error
           *ngIf="addSourceForm.get('confluenceEmail')?.hasError('email') && addSourceForm.get('confluenceEmail')?.touched">
           Please enter a valid email address.
@@ -851,14 +868,10 @@
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="token-field">
-        <mat-label>API Token</mat-label>
+        <mat-label>API Token (optional)</mat-label>
         <input matInput formControlName="confluenceApiToken" type="password"
-          placeholder="Enter your Atlassian API token" required [disabled]="isSubmitting">
+          placeholder="Optional when OAuth is connected" [disabled]="isSubmitting">
         <mat-icon matSuffix>vpn_key</mat-icon>
-        <mat-error
-          *ngIf="addSourceForm.get('confluenceApiToken')?.hasError('required') && addSourceForm.get('confluenceApiToken')?.touched">
-          API token is required.
-        </mat-error>
       </mat-form-field>
     </div>
 
@@ -900,6 +913,189 @@
           <li>Give it a name and copy the generated token</li>
         </ol>
         <strong>Note:</strong> The token is tied to your Atlassian account and provides access to spaces you have permission to view.
+      </div>
+    </div>
+  </div>
+
+  <!-- Jira Issues Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'jira'" class="form-section confluence-section">
+    <h4>
+      <mat-icon class="section-icon">bug_report</mat-icon>
+      Jira Issues
+    </h4>
+    <p class="section-description">
+      Import Jira Cloud issues, descriptions, comments, and attachment links. Leave email and API token empty
+      to use the Atlassian OAuth connection managed by Kompile Auth.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Jira Base URL</mat-label>
+      <input matInput formControlName="jiraBaseUrl"
+        placeholder="https://your-domain.atlassian.net" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('jiraBaseUrl')?.valid && addSourceForm.get('jiraBaseUrl')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>The HTTPS root of the matching *.atlassian.net OAuth cloud resource</mat-hint>
+      <mat-error *ngIf="addSourceForm.get('jiraBaseUrl')?.hasError('required') && addSourceForm.get('jiraBaseUrl')?.touched">
+        Jira URL is required.
+      </mat-error>
+      <mat-error *ngIf="addSourceForm.get('jiraBaseUrl')?.hasError('pattern') && addSourceForm.get('jiraBaseUrl')?.touched">
+        Enter an HTTPS Jira Cloud root such as https://company.atlassian.net
+      </mat-error>
+    </mat-form-field>
+
+    <div class="confluence-auth-row">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Email Address (API token auth)</mat-label>
+        <input matInput formControlName="jiraEmail" type="email"
+          placeholder="Optional when OAuth is connected" [disabled]="isSubmitting">
+        <mat-icon matSuffix>email</mat-icon>
+        <mat-error *ngIf="addSourceForm.get('jiraEmail')?.hasError('email') && addSourceForm.get('jiraEmail')?.touched">
+          Enter a valid email address.
+        </mat-error>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>API Token (optional)</mat-label>
+        <input matInput formControlName="jiraApiToken" type="password"
+          placeholder="Optional when OAuth is connected" [disabled]="isSubmitting">
+        <mat-icon matSuffix>vpn_key</mat-icon>
+      </mat-form-field>
+    </div>
+
+    <div class="confluence-auth-row">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Project Key (optional)</mat-label>
+        <input matInput formControlName="jiraProjectKey" placeholder="APP" [disabled]="isSubmitting">
+        <mat-icon matSuffix>folder_special</mat-icon>
+        <mat-hint>Used when no custom JQL is supplied</mat-hint>
+        <mat-error *ngIf="addSourceForm.get('jiraProjectKey')?.hasError('pattern') && addSourceForm.get('jiraProjectKey')?.touched">
+          Use a letter followed by letters, numbers, or underscores.
+        </mat-error>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>Maximum Issues</mat-label>
+        <input matInput type="number" formControlName="jiraMaxIssues" min="1" max="10000" [disabled]="isSubmitting">
+        <mat-hint>1–10,000 issues</mat-hint>
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>JQL Query (optional)</mat-label>
+      <textarea matInput formControlName="jiraJql" rows="3"
+        placeholder="project = APP AND updated >= -30d ORDER BY updated DESC" [disabled]="isSubmitting"></textarea>
+      <mat-hint>Overrides the project-key filter. Leave both filters empty to import the most recently updated issues.</mat-hint>
+    </mat-form-field>
+
+    <div class="confluence-options">
+      <mat-checkbox formControlName="jiraIncludeComments" [disabled]="isSubmitting">Include comments</mat-checkbox>
+      <mat-checkbox formControlName="jiraIncludeAttachments" [disabled]="isSubmitting">Include attachment links</mat-checkbox>
+    </div>
+
+    <div class="confluence-info-box">
+      <mat-icon>verified_user</mat-icon>
+      <div class="info-content">
+        Connect once with <code>kompile auth source login atlassian</code>. For API-token authentication,
+        credentials are sent only to the crawl service and are removed before document metadata is persisted.
+      </div>
+    </div>
+  </div>
+
+  <!-- Reddit Posts Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'reddit'" class="form-section confluence-section">
+    <h4>
+      <mat-icon class="section-icon">forum</mat-icon>
+      Reddit Posts and Comments
+    </h4>
+    <p class="section-description">
+      Import posts from a subreddit and optionally include bounded comment threads. Reddit browser ingestion
+      uses the encrypted OAuth connection managed by Kompile Auth; raw access tokens are never entered here.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Subreddit</mat-label>
+      <input matInput formControlName="redditSubreddit" placeholder="programming or r/programming" required
+        [disabled]="isSubmitting">
+      <mat-icon matSuffix>tag</mat-icon>
+      <mat-error *ngIf="addSourceForm.get('redditSubreddit')?.hasError('required') && addSourceForm.get('redditSubreddit')?.touched">
+        Subreddit is required.
+      </mat-error>
+      <mat-error *ngIf="addSourceForm.get('redditSubreddit')?.hasError('pattern') && addSourceForm.get('redditSubreddit')?.touched">
+        Enter a subreddit name, r/name, or a reddit.com/r/name URL.
+      </mat-error>
+    </mat-form-field>
+
+    <div class="confluence-auth-row">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Sort By</mat-label>
+        <mat-select formControlName="redditSortType" [disabled]="isSubmitting">
+          <mat-option value="hot">Hot</mat-option>
+          <mat-option value="new">New</mat-option>
+          <mat-option value="top">Top</mat-option>
+          <mat-option value="rising">Rising</mat-option>
+          <mat-option value="controversial">Controversial</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>Time Period</mat-label>
+        <mat-select formControlName="redditTimePeriod" [disabled]="isSubmitting">
+          <mat-option value="hour">Past hour</mat-option>
+          <mat-option value="day">Past day</mat-option>
+          <mat-option value="week">Past week</mat-option>
+          <mat-option value="month">Past month</mat-option>
+          <mat-option value="year">Past year</mat-option>
+          <mat-option value="all">All time</mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+
+    <div class="confluence-auth-row">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Maximum Posts</mat-label>
+        <input matInput type="number" formControlName="redditPostLimit" min="1" max="1000" [disabled]="isSubmitting">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>Minimum Score</mat-label>
+        <input matInput type="number" formControlName="redditMinScore" min="0" [disabled]="isSubmitting">
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Search within subreddit (optional)</mat-label>
+      <input matInput formControlName="redditSearchQuery" placeholder="vector databases" [disabled]="isSubmitting">
+    </mat-form-field>
+
+    <div class="confluence-auth-row" *ngIf="addSourceForm.get('redditIncludeComments')?.value">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Comment Depth</mat-label>
+        <input matInput type="number" formControlName="redditCommentDepth" min="1" max="10" [disabled]="isSubmitting">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>Comments per Post</mat-label>
+        <input matInput type="number" formControlName="redditCommentLimit" min="0" max="500" [disabled]="isSubmitting">
+        <mat-hint>0 disables comment loading</mat-hint>
+      </mat-form-field>
+    </div>
+
+    <div class="confluence-options">
+      <mat-checkbox formControlName="redditIncludeComments" [disabled]="isSubmitting">Include comments</mat-checkbox>
+      <mat-checkbox formControlName="redditIncludeNsfw" [disabled]="isSubmitting">Include NSFW posts</mat-checkbox>
+    </div>
+
+    <div class="confluence-info-box">
+      <mat-icon>verified_user</mat-icon>
+      <div class="info-content">
+        <ng-container *ngIf="sourceProviderRequiresAuth('reddit'); else redditConnected">
+          <strong>Reddit OAuth is not connected.</strong> Configure it with
+          <code>kompile auth source configure-oauth reddit</code> and
+          <code>kompile auth source login reddit</code>, or use the equivalent Connections screen.
+          Submission remains disabled until the connection is ready.
+        </ng-container>
+        <ng-template #redditConnected>
+          Reddit OAuth is connected. Kompile requests only the identity and read scopes needed for ingestion.
+        </ng-template>
       </div>
     </div>
   </div>

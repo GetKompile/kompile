@@ -54,6 +54,7 @@ public class ChatCompleter implements Completer {
         // Chat & agents
         COMMANDS.put("/help", "Show help message");
         COMMANDS.put("/setup", "Run setup wizard");
+        COMMANDS.put("/auth", "Select session credentials or global per-vendor authentication");
         COMMANDS.put("/status", "Connection and session info");
         COMMANDS.put("/agent", "Switch or show current agent");
         COMMANDS.put("/agents", "List available agents");
@@ -71,7 +72,10 @@ public class ChatCompleter implements Completer {
 
         // Context & memory
         COMMANDS.put("/history", "Show conversation history");
-        COMMANDS.put("/clear", "Clear conversation");
+        COMMANDS.put("/clear", "Start a new conversation in this process");
+        COMMANDS.put("/reset", "Restart this session in a new process");
+        COMMANDS.put("/reset-all", "Restart every active CLI chat session");
+        COMMANDS.put("/restart", "Alias for /reset");
         COMMANDS.put("/compact", "Summarize conversation to free context");
         COMMANDS.put("/auto-compact", "Configure automatic model-aware compaction");
         COMMANDS.put("/memory", "Show memory entries");
@@ -81,6 +85,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/conversations", "List conversations");
         COMMANDS.put("/sessions", "List sessions");
         COMMANDS.put("/title", "Show or change the session title");
+        COMMANDS.put("/dashboard", "Refresh, show, hide, or inspect the project dashboard");
         COMMANDS.put("/reminder", "List or add session reminders");
         COMMANDS.put("/reminder-global", "List or add project-global reminders");
 
@@ -93,6 +98,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/config", "Show or edit configuration");
         COMMANDS.put("/permissions", "Manage permissions");
         COMMANDS.put("/model", "Switch or show model");
+        COMMANDS.put("/fast", "Toggle premium fast mode (supported models only)");
         COMMANDS.put("/mode", "Switch interaction mode");
 
         // Queue & jobs
@@ -108,23 +114,26 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/jobs", "List background jobs");
         COMMANDS.put("/jobs-remove", "Remove a background job");
         COMMANDS.put("/jobs-clear", "Clear all jobs");
-        COMMANDS.put("/activity", "Manage processes, subagents, and logs");
+        COMMANDS.put("/activity", "Show local work or the live project-agent dashboard");
+        COMMANDS.put("/resources", "Configure tool-argument resource rules or preview a call");
         COMMANDS.put("/processes", "Show processes & subagents");
+        COMMANDS.put("/process-monitors", "List or cancel process monitors");
         COMMANDS.put("/process-kill", "Kill a running process");
         COMMANDS.put("/process-output", "View process output");
         COMMANDS.put("/process-status", "Show process or watcher status");
         COMMANDS.put("/statusbar", "Toggle status bar");
         COMMANDS.put("/auto-dequeue", "Toggle auto-dequeue");
-        COMMANDS.put("/loop", "Schedule recurring local tasks");
+        COMMANDS.put("/loop", "Schedule recurring tasks for this session");
+        COMMANDS.put("/loop-global", "Schedule recurring tasks for this project");
         COMMANDS.put("/stats", "Show session statistics");
 
         // Roles & skills
         COMMANDS.put("/skills", "List available skills");
         COMMANDS.put("/roles", "Manage roles");
         COMMANDS.put("/role", "Show or assign role");
-        COMMANDS.put("/enforce", "Toggle or configure enforcer");
-        COMMANDS.put("/enforcer", "Toggle or configure enforcer");
-        COMMANDS.put("/rules", "Show active enforcer rules");
+        COMMANDS.put("/judge", "Judge control, policy, direction, and global switch");
+        COMMANDS.put("/judge-global", "Persistent judge master switch");
+        COMMANDS.put("/rules", "Show active judge policy rules");
         COMMANDS.put("/archive", "List archived enforced turns");
         COMMANDS.put("/rollback", "Roll back archived turns");
         COMMANDS.put("/diff", "Show an archived turn diff");
@@ -135,7 +144,8 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/keys", "Forward keys directly to the agent");
         COMMANDS.put("/render", "Show or set managed render mode");
         COMMANDS.put("/forward", "Forward command to agent");
-        COMMANDS.put("/resume", "Resume a session");
+        COMMANDS.put("/resume", "Browse and resume one session");
+        COMMANDS.put("/resume-all", "Restore recent exited or crashed sessions");
         COMMANDS.put("/menu", "Show menu");
 
         // Files & attachments
@@ -153,22 +163,53 @@ public class ChatCompleter implements Completer {
 
     private static final Map<String, List<String[]>> SUB_ARGS = new LinkedHashMap<>();
     static {
-        List<String[]> enforcerArgs = List.of(
-                new String[]{"status", "Show enforcer status"},
-                new String[]{"on", "Enable enforcer"},
-                new String[]{"off", "Disable enforcer"},
-                new String[]{"pause", "Pause live enforcement"},
-                new String[]{"resume", "Resume live enforcement"},
+        List<String[]> judgeArgs = List.of(
+                new String[]{"status", "Show unified judge status"},
+                new String[]{"on", "Enable the judge for this session"},
+                new String[]{"off", "Disable the judge for this session"},
+                new String[]{"pause", "Legacy alias for off"},
+                new String[]{"resume", "Legacy alias for on"},
+                new String[]{"global", "Persistent master switch: on, off, or status"},
+                new String[]{"workflow", "Configure required skills and deterministic workflow gates"},
                 new String[]{"judgements", "Show recorded judgements"},
-                new String[]{"show", "Show enforcer config"},
-                new String[]{"rules", "Show active enforcer rules"},
-                new String[]{"init", "Configure enforcer"},
-                new String[]{"delete", "Remove enforcer config"},
-                new String[]{"reload", "Reload enforcer config"},
-                new String[]{"run", "Show enforcer launch command"}
+                new String[]{"config", "Show project judge policy config"},
+                new String[]{"show", "Legacy alias for status"},
+                new String[]{"rules", "Show active judge policy rules"},
+                new String[]{"init", "Configure project judge policy"},
+                new String[]{"delete", "Remove project judge policy config"},
+                new String[]{"reload", "Reload all project judge components"},
+                new String[]{"run", "Show standalone compatibility command"},
+                new String[]{"direction", "Configure goal-drift direction checks"},
+                new String[]{"chat", "Talk with the judge"},
+                new String[]{"feedback", "Durable guidance for every verdict"},
+                new String[]{"override", "Arm one-shot report-only turn"},
+                new String[]{"restart", "Restart the judge backend"},
+                new String[]{"agent", "Switch the judge agent"}
         );
-        SUB_ARGS.put("/enforce", enforcerArgs);
-        SUB_ARGS.put("/enforcer", enforcerArgs);
+        // Legacy aliases remain parseable/completable when typed explicitly, but only
+        // /judge is advertised as a top-level concept.
+        SUB_ARGS.put("/enforce", judgeArgs);
+        SUB_ARGS.put("/enforcer", judgeArgs);
+        SUB_ARGS.put("/judge", judgeArgs);
+        SUB_ARGS.put("/judge-global", List.of(
+                new String[]{"status", "Show the persistent master switch"},
+                new String[]{"on", "Enable the judge globally"},
+                new String[]{"off", "Disable the judge globally"}
+        ));
+        SUB_ARGS.put("/resume-all", List.of(
+                new String[]{"--dry-run", "Preview commands without launching"},
+                new String[]{"--list", "List the resumable batch"},
+                new String[]{"--recent", "Override the recent-session limit"},
+                new String[]{"--all", "Restore every resumable tracked chat"},
+                new String[]{"--agent", "Filter by recorded agent"},
+                new String[]{"--project", "Filter by project directory"},
+                new String[]{"--status", "Show registry and terminal status"},
+                new String[]{"--terminal", "Override the terminal emulator"},
+                new String[]{"--set-recent", "Persist the default recent limit"},
+                new String[]{"--set-terminal", "Persist the terminal emulator"},
+                new String[]{"--set-terminal-args", "Persist terminal arguments"},
+                new String[]{"--prune", "Remove old tracked sessions"}
+        ));
         SUB_ARGS.put("/rag", List.of(
                 new String[]{"on", "Enable RAG"},
                 new String[]{"off", "Disable RAG"}
@@ -177,14 +218,23 @@ public class ChatCompleter implements Completer {
                 new String[]{"on", "Enable plan mode"},
                 new String[]{"off", "Disable plan mode"}
         ));
-        SUB_ARGS.put("/loop", List.of(
+        SUB_ARGS.put("/dashboard", List.of(
+                new String[]{"refresh", "Fetch the configured dashboard now"},
+                new String[]{"show", "Show the retained project dashboard"},
+                new String[]{"hide", "Hide the project dashboard"},
+                new String[]{"status", "Show dashboard configuration and snapshot status"}
+        ));
+        List<String[]> loopArgs = List.of(
                 new String[]{"add", "Add a recurring prompt"},
                 new String[]{"list", "List scheduled loops"},
+                new String[]{"clear", "Clear all loops in this scope"},
                 new String[]{"pause", "Pause a loop by id"},
                 new String[]{"resume", "Resume a loop by id"},
                 new String[]{"run", "Run a loop immediately"},
                 new String[]{"remove", "Remove a loop by id"}
-        ));
+        );
+        SUB_ARGS.put("/loop", loopArgs);
+        SUB_ARGS.put("/loop-global", loopArgs);
         SUB_ARGS.put("/auto-compact", List.of(
                 new String[]{"status", "Show active model limits and trigger"},
                 new String[]{"on", "Enable automatic compaction"},
@@ -193,6 +243,11 @@ public class ChatCompleter implements Completer {
                 new String[]{"reserve", "Set reserved input headroom"},
                 new String[]{"context", "Override context window"},
                 new String[]{"output", "Override max output tokens"}
+        ));
+        SUB_ARGS.put("/fast", List.of(
+                new String[]{"on", "Request fast mode (higher cost)"},
+                new String[]{"off", "Use standard speed"},
+                new String[]{"status", "Show fast-mode preference"}
         ));
         SUB_ARGS.put("/mode", List.of(
                 new String[]{"standard", "Standard chat mode"},
@@ -212,6 +267,22 @@ public class ChatCompleter implements Completer {
                 new String[]{"decode", "Alias for decoded render mode"}
         ));
         List<String[]> activityArgs = List.of(
+                new String[]{"agents", "Open the live project-agent dashboard"},
+                new String[]{"agent", "Filter the project dashboard by agent or session"},
+                new String[]{"refresh", "Refresh the project-agent dashboard"},
+                new String[]{"session", "Open a read-only conversation activity summary"},
+                new String[]{"project", "Browse retained activity for this project"},
+                new String[]{"global", "Browse all locally known retained activity"},
+                new String[]{"history", "Alias for global retained activity"},
+                new String[]{"outcomes", "Browse recorded outcomes and evidence"},
+                new String[]{"transcript", "Inspect a permitted transcript without resuming"},
+                new String[]{"detail", "Open retained events and source evidence"},
+                new String[]{"search", "Filter retained activity metadata"},
+                new String[]{"next", "Read the next bounded activity page"},
+                new String[]{"previous", "Read the previous bounded activity page"},
+                new String[]{"confirm", "Record deliberate user outcome confirmation"},
+                new String[]{"annotate", "Record a non-confirming outcome annotation"},
+                new String[]{"local", "Show local processes and subagents"},
                 new String[]{"enter", "Inspect activity or subagent"},
                 new String[]{"inspect", "Inspect activity or subagent"},
                 new String[]{"status", "Inspect activity status"},
@@ -221,6 +292,22 @@ public class ChatCompleter implements Completer {
                 new String[]{"clear", "Clear completed activities"},
                 new String[]{"close", "Close activity menu"}
         );
+        SUB_ARGS.put("/resources", List.of(
+                new String[]{"setup", "Interactive resource configuration wizard"},
+                new String[]{"add", "Interactive add-rule wizard"},
+                new String[]{"show", "Show effective resource policy and sources"},
+                new String[]{"sources", "Show configuration precedence and origins"},
+                new String[]{"rules", "List ordered resource rules"},
+                new String[]{"check", "Preview a shell command without executing it"},
+                new String[]{"rule", "Add: id low|high executable [argument prefix...]"},
+                new String[]{"remove", "Remove a named rule"},
+                new String[]{"default", "Set unmatched launches: low or high"},
+                new String[]{"unknown-shell", "Set unparsed shell syntax: low or high"},
+                new String[]{"inherit", "Clear an override: default, unknown-shell or rules"},
+                new String[]{"global", "Configure user defaults rather than this project"},
+                new String[]{"json", "Export advanced policy JSON"},
+                new String[]{"help", "Show resource configuration help"}
+        ));
         SUB_ARGS.put("/activity", activityArgs);
         SUB_ARGS.put("/processes", activityArgs);
         SUB_ARGS.put("/jobs", activityArgs);
@@ -319,6 +406,13 @@ public class ChatCompleter implements Completer {
 
     private void completeSubArgs(String cmd, String argPart, List<Candidate> candidates) {
         String argPrefix = argPart.trim().toLowerCase();
+
+        if ("/auth".equals(cmd)) {
+            for (String option : List.of("list", "session", "global", "default session", "default global")) {
+                if (option.startsWith(argPrefix)) candidates.add(new Candidate(option));
+            }
+            return;
+        }
 
         // Tool name completion: /tool <name>, /local-tool <name>
         if (TOOL_COMMANDS.contains(cmd)) {
@@ -494,7 +588,7 @@ public class ChatCompleter implements Completer {
 
     // ── Auto-trigger completion on slash ─────────────────────────────────────
 
-    /** Max candidates to show below the prompt. */
+    /** Max candidates to show in the non-TUI JLine fallback. */
     private static final int MAX_DISPLAY_CANDIDATES = 15;
 
     /** Cached reflective handle to LineReaderImpl.post (protected field). */
@@ -507,21 +601,8 @@ public class ChatCompleter implements Completer {
     private static final ThreadLocal<Boolean> IN_INPUT_WIDGET =
             ThreadLocal.withInitial(() -> false);
 
-    /** Terminal reference for measuring width (set via {@link #setTerminalRef}). */
-    private static volatile Terminal terminalRef;
-
-    /** Active standard-chat reader used for thread-safe asynchronous output. */
-    private static volatile LineReader lineReaderRef;
-
-    /** Repaints the TUI content after JLine redraws the prompt/post area. */
-    private static volatile Runnable contentRedraw;
-
-    /**
-     * Authoritative output sink for the active TUI transcript. Keeping this separate
-     * from JLine's printAbove prevents streamed tool/model output from disappearing
-     * on the next prompt redisplay.
-     */
-    private static volatile Consumer<String> contentOutput;
+    // Mutable routing belongs to ChatUiSession. Unbound callers retain the legacy
+    // single-chat route; opt-in hosts bind/capture an explicit owner.
 
     /** Managed TUI hook for one replaceable in-flight transcript block. */
     @FunctionalInterface
@@ -529,10 +610,19 @@ public class ChatCompleter implements Completer {
         boolean upsert(String key, String content);
     }
 
-    private static volatile TranscriptBlockOutput transcriptBlockOutput;
 
-    /** Retained compatibility hook; queue state is rendered by the status bar, not JLine post rows. */
-    private static volatile Supplier<List<String>> queueSupplier;
+    /** One slash-completion row rendered by the managed standard-chat panel. */
+    public record CompletionItem(String value, String description) {}
+
+    /**
+     * Managed completion sink. Returning {@code true} means the host owns the
+     * candidate rows and JLine must keep its scrolling {@code post} area empty.
+     */
+    @FunctionalInterface
+    public interface CompletionDisplay {
+        boolean update(List<CompletionItem> items);
+    }
+
 
     /** Large pasted blocks stay compact in the editor and expand on submit. */
     static final int LARGE_PASTE_THRESHOLD = 1_000;
@@ -542,17 +632,8 @@ public class ChatCompleter implements Completer {
     private static final Set<LineReader> PASTE_SUPPORT_READERS =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
-    /** True while a temporary picker owns the transcript area. */
-    private static volatile boolean temporaryWindowActive;
 
-    /** Current standard-chat model activity rendered by the persistent status bar. */
-    private static volatile String activityLabel;
-    /** Terminal activity must remain visible without being rendered as a live spinner. */
-    private static volatile boolean activityTerminal;
-    /** Listener used to mirror activity changes into the terminal tab title. */
-    private static volatile Consumer<String> activityListener;
-
-    /** Activity shown after Escape interrupts a turn until the next edit begins. */
+    /** Activity shown after Escape until the next edit or the notice timeout. */
     private static final String INTERRUPTED_ACTIVITY = "Interrupted by user";
 
     /** DIM ANSI escape. */
@@ -567,8 +648,11 @@ public class ChatCompleter implements Completer {
      * sized to the actual terminal width.
      */
     public static void setTerminalRef(LineReader reader, Terminal terminal) {
-        lineReaderRef = reader;
-        terminalRef = terminal;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().lineReaderRef = reader;
+            ChatUiSession.current().terminalRef = terminal;
+        }
     }
 
     /**
@@ -577,17 +661,34 @@ public class ChatCompleter implements Completer {
      * repaint its authoritative view immediately afterwards.
      */
     public static void setContentRedraw(Runnable redraw) {
-        contentRedraw = redraw;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().contentRedraw = redraw;
+        }
     }
 
     /** Register the active TUI transcript sink for asynchronous output. */
     public static void setContentOutput(Consumer<String> output) {
-        contentOutput = output;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().contentOutput = output;
+        }
     }
 
     /** Register the active TUI sink for replaceable tool/process blocks. */
     public static void setTranscriptBlockOutput(TranscriptBlockOutput output) {
-        transcriptBlockOutput = output;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().transcriptBlockOutput = output;
+        }
+    }
+
+    /** Register the managed standard-chat slash-completion panel. */
+    public static void setCompletionDisplay(CompletionDisplay display) {
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().completionDisplay = display;
+        }
     }
 
     /**
@@ -595,7 +696,8 @@ public class ChatCompleter implements Completer {
      * managed TUI so callers can retain append-only stdout/headless behavior.
      */
     public static boolean upsertTranscriptBlock(String key, String content) {
-        TranscriptBlockOutput output = transcriptBlockOutput;
+        if (ChatUiSession.current().isClosed()) return false;
+        TranscriptBlockOutput output = ChatUiSession.current().transcriptBlockOutput;
         if (output == null || key == null || key.isBlank()) return false;
         try {
             return output.upsert(key, content == null ? "" : content);
@@ -604,13 +706,39 @@ public class ChatCompleter implements Completer {
         }
     }
 
+    /** Session-owned warning lane; retained while a session is detached. */
+    public static void setAlertOutput(Consumer<String> output) {
+        synchronized (ChatUiSession.current()) {
+            if (!ChatUiSession.current().isClosed()) ChatUiSession.current().alertOutput = output;
+        }
+    }
+
+    /** Returns false only when no managed header is available. Never writes into input rows. */
+    public static boolean showAlert(String text) {
+        ChatUiSession owner = ChatUiSession.current();
+        if (owner.isClosed() || text == null || text.isBlank()) return true;
+        Consumer<String> output = owner.alertOutput;
+        if (output == null) return false;
+        output.accept(text);
+        return true;
+    }
+
+    /** Transient UI feedback, not transcript content. Plain terminals retain a readable fallback. */
+    public static void showNotice(String text) {
+        if (!showAlert(text)) printAbove(text);
+    }
+
     /** Register a listener for activity changes (for example, a terminal tab title). */
     public static void setActivityListener(Consumer<String> listener) {
-        activityListener = listener;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().activityListener = listener;
+        }
     }
 
     private static void redrawContentView() {
-        Runnable redraw = contentRedraw;
+        if (ChatUiSession.current().isClosed()) return;
+        Runnable redraw = ChatUiSession.current().contentRedraw;
         if (redraw == null) return;
         try {
             redraw.run();
@@ -623,42 +751,62 @@ public class ChatCompleter implements Completer {
      * Whether a standard-chat line editor is available for managed asynchronous output.
      */
     public static boolean hasLineReader() {
-        return lineReaderRef != null;
+        return !ChatUiSession.current().isClosed() && ChatUiSession.current().lineReaderRef != null;
+    }
+
+    /** Release terminal focus without discarding transcript sinks, activity or drafts. */
+    public static void detachTerminalRef(LineReader reader) {
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().lineReaderRef == reader) {
+                ChatUiSession.current().lineReaderRef = null;
+                ChatUiSession.current().terminalRef = null;
+            }
+        }
     }
 
     public static void clearTerminalRef(LineReader reader) {
-        if (lineReaderRef == reader) {
-            lineReaderRef = null;
-            terminalRef = null;
-            contentRedraw = null;
-            contentOutput = null;
-            transcriptBlockOutput = null;
-            cachedImpl = null;
-            activityLabel = null;
-            activityTerminal = false;
-            activityListener = null;
-            temporaryWindowActive = false;
-            LARGE_PASTES.remove(reader);
-            PASTE_SUPPORT_READERS.remove(reader);
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().lineReaderRef == reader) {
+                ChatUiSession.current().lineReaderRef = null;
+                ChatUiSession.current().terminalRef = null;
+                ChatUiSession.current().contentRedraw = null;
+                ChatUiSession.current().contentOutput = null;
+                ChatUiSession.current().alertOutput = null;
+                ChatUiSession.current().transcriptBlockOutput = null;
+                ChatUiSession.current().completionDisplay = null;
+                ChatUiSession.current().queueSupplier = null;
+                ChatUiSession.current().activityLabel = null;
+                ChatUiSession.current().activityTerminal = false;
+                ChatUiSession.current().activityListener = null;
+                ChatUiSession.current().temporaryWindowActive = false;
+                LARGE_PASTES.remove(reader);
+                PASTE_SUPPORT_READERS.remove(reader);
+            }
         }
     }
 
     public static void setTemporaryWindowActive(boolean active) {
-        temporaryWindowActive = active;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().temporaryWindowActive = active;
+        }
     }
 
     public static boolean isTemporaryWindowActive() {
-        return temporaryWindowActive;
+        return ChatUiSession.current().temporaryWindowActive;
     }
 
     public static void setActivity(String activity) {
-        activityLabel = activity == null || activity.isBlank() ? null : activity;
-        activityTerminal = false;
-        notifyActivityListener(activityLabel);
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().activityLabel = activity == null || activity.isBlank() ? null : activity;
+            ChatUiSession.current().activityTerminal = false;
+        }
+        notifyActivityListener(ChatUiSession.current().activityLabel);
     }
 
     private static void notifyActivityListener(String activity) {
-        Consumer<String> listener = activityListener;
+        Consumer<String> listener = ChatUiSession.current().activityListener;
         if (listener == null) return;
         try {
             listener.accept(activity);
@@ -668,29 +816,51 @@ public class ChatCompleter implements Completer {
     }
 
     public static String getActivity() {
-        return activityLabel;
+        return ChatUiSession.current().getActivity();
     }
 
-    /** Mark the foreground turn as interrupted; the next input edit clears it. */
+    /** Mark interruption until the next input edit or ten seconds of inactivity. */
     public static void markInterrupted() {
-        activityLabel = INTERRUPTED_ACTIVITY;
-        activityTerminal = true;
-        notifyActivityListener(activityLabel);
+        markInterrupted(java.util.concurrent.CompletableFuture.delayedExecutor(
+                ai.kompile.cli.main.chat.tui.KompileTui.EPHEMERAL_MESSAGE_SECONDS,
+                java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    static void markInterrupted(java.util.concurrent.Executor expiryExecutor) {
+        ChatUiSession owner = ChatUiSession.current();
+        long version;
+        synchronized (owner) {
+            if (owner.isClosed()) return;
+            version = ++owner.interruptionVersion;
+            owner.activityLabel = INTERRUPTED_ACTIVITY;
+            owner.activityTerminal = true;
+        }
+        notifyActivityListener(owner.activityLabel);
+        expiryExecutor.execute(owner.capture((Runnable) () -> {
+            synchronized (owner) {
+                if (owner.isClosed() || owner.interruptionVersion != version || !owner.activityTerminal) return;
+                owner.activityLabel = null;
+                owner.activityTerminal = false;
+            }
+            notifyActivityListener(owner.activityLabel);
+            redrawContentView();
+        }));
     }
 
     public static boolean isActivityTerminal() {
-        return activityTerminal;
+        return ChatUiSession.current().isActivityTerminal();
     }
 
     /** Clear only the transient interruption marker, preserving normal activity state. */
     public static boolean clearInterruptedOnInput() {
-        if (INTERRUPTED_ACTIVITY.equals(activityLabel)) {
-            activityLabel = null;
-            activityTerminal = false;
-            notifyActivityListener(null);
-            return true;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()
+                    || !INTERRUPTED_ACTIVITY.equals(ChatUiSession.current().activityLabel)) return false;
+            ChatUiSession.current().activityLabel = null;
+            ChatUiSession.current().activityTerminal = false;
         }
-        return false;
+        notifyActivityListener(null);
+        return true;
     }
 
     /**
@@ -699,8 +869,9 @@ public class ChatCompleter implements Completer {
      * text the user is typing. Falls back to stdout outside an interactive REPL.
      */
     public static void printAbove(String text) {
+        if (ChatUiSession.current().isClosed()) return;
         String line = text == null ? "" : text;
-        Consumer<String> output = contentOutput;
+        Consumer<String> output = ChatUiSession.current().contentOutput;
         if (output != null) {
             try {
                 // Update the authoritative transcript first. The actual terminal write
@@ -714,16 +885,16 @@ public class ChatCompleter implements Completer {
             if (output != null) {
                 // The modal owns the terminal surface. Keep recording output above,
                 // but defer display until the picker restores the main view.
-                if (temporaryWindowActive) {
+                if (ChatUiSession.current().temporaryWindowActive) {
                     return;
                 }
                 // A managed TUI sink schedules one complete frame through the
                 // LineReader widget. Do not also call printAbove with raw tool
                 // text: terminal auto-wrap can cross the reserved input row.
-                if (contentRedraw != null) {
+                if (ChatUiSession.current().contentRedraw != null) {
                     return;
                 }
-                LineReader reader = lineReaderRef;
+                LineReader reader = ChatUiSession.current().lineReaderRef;
                 if (reader instanceof LineReaderImpl impl && impl.isReading()) {
                     try {
                         reader.printAbove(line);
@@ -736,7 +907,7 @@ public class ChatCompleter implements Completer {
                 return;
             }
         }
-        LineReader reader = lineReaderRef;
+        LineReader reader = ChatUiSession.current().lineReaderRef;
         if (reader instanceof LineReaderImpl impl && impl.isReading()) {
             try {
                 reader.printAbove(line);
@@ -745,7 +916,7 @@ public class ChatCompleter implements Completer {
                 // Terminal may be shutting down; preserve the output via stdout.
             }
         }
-        System.out.println(line);
+        if (ChatUiSession.current().usesLegacyOutput()) System.out.println(line);
     }
 
     /**
@@ -753,14 +924,17 @@ public class ChatCompleter implements Completer {
      * When non-empty, queued messages are rendered below the bottom border.
      */
     public static void setQueueSupplier(Supplier<List<String>> supplier) {
-        queueSupplier = supplier;
+        synchronized (ChatUiSession.current()) {
+            if (ChatUiSession.current().isClosed()) return;
+            ChatUiSession.current().queueSupplier = supplier;
+        }
     }
 
     /**
      * Returns the current terminal width, defaulting to 80 if unknown.
      */
     private static int getTermWidth() {
-        Terminal t = terminalRef;
+        Terminal t = ChatUiSession.current().terminalRef;
         if (t != null) {
             int w = t.getWidth();
             if (w > 0) return w;
@@ -772,11 +946,12 @@ public class ChatCompleter implements Completer {
      * Installs auto-trigger behavior on a LineReader: typing {@code /} at the
      * start of a line automatically pops up the completion list without requiring Tab.
      * <p>
-     * A bottom border is always rendered below the input line via the JLine
-     * {@code post} field. When slash-command candidates match, they appear
-     * below the bottom border.
+     * In managed standard chat, candidates use its fixed lower activity rows so
+     * they cannot scroll the transcript. Other readers retain the JLine
+     * {@code post} fallback.
      */
     public static void enableAutoTrigger(LineReader reader) {
+        if (ChatUiSession.current().isClosed()) return;
         if (!(reader instanceof LineReaderImpl impl)) return;
 
         installPasteSupport(impl);
@@ -787,11 +962,11 @@ public class ChatCompleter implements Completer {
                 postField = LineReaderImpl.class.getDeclaredField("post");
                 postField.setAccessible(true);
             } catch (Exception e) {
-                return; // can't set post — fall back to plain Tab completion
+                // The managed completion panel does not depend on this private
+                // JLine field. Non-managed readers still retain plain Tab completion.
+                postField = null;
             }
         }
-
-        cachedImpl = impl;
 
         reader.unsetOpt(LineReader.Option.INSERT_TAB);
         reader.setOpt(LineReader.Option.DISABLE_EVENT_EXPANSION);
@@ -799,7 +974,7 @@ public class ChatCompleter implements Completer {
         Widget origSelfInsert = impl.getWidgets().get(LineReader.SELF_INSERT);
         Widget origBackDelete = impl.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
 
-        impl.getWidgets().put(LineReader.SELF_INSERT, () -> {
+        impl.getWidgets().put(LineReader.SELF_INSERT, ChatUiSession.current().captureWidget(() -> {
             boolean previous = IN_INPUT_WIDGET.get();
             IN_INPUT_WIDGET.set(true);
             try {
@@ -810,9 +985,9 @@ public class ChatCompleter implements Completer {
             } finally {
                 IN_INPUT_WIDGET.set(previous);
             }
-        });
+        }));
 
-        impl.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
+        impl.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, ChatUiSession.current().captureWidget(() -> {
             boolean previous = IN_INPUT_WIDGET.get();
             IN_INPUT_WIDGET.set(true);
             try {
@@ -823,25 +998,40 @@ public class ChatCompleter implements Completer {
             } finally {
                 IN_INPUT_WIDGET.set(previous);
             }
-        });
+        }));
+
+        Widget origCompleteWord = impl.getWidgets().get(LineReader.COMPLETE_WORD);
+        if (origCompleteWord != null) {
+            impl.getWidgets().put(LineReader.COMPLETE_WORD, ChatUiSession.current().captureWidget(() -> {
+                boolean previous = IN_INPUT_WIDGET.get();
+                IN_INPUT_WIDGET.set(true);
+                try {
+                    boolean result = origCompleteWord.apply();
+                    updatePostDisplay(impl);
+                    return result;
+                } finally {
+                    IN_INPUT_WIDGET.set(previous);
+                }
+            }));
+        }
 
         // Hook up/down history navigation so border updates after recall
         Widget origUp = impl.getWidgets().get(LineReader.UP_LINE_OR_HISTORY);
         if (origUp != null) {
-            impl.getWidgets().put(LineReader.UP_LINE_OR_HISTORY, () -> {
+            impl.getWidgets().put(LineReader.UP_LINE_OR_HISTORY, ChatUiSession.current().captureWidget(() -> {
                 boolean result = origUp.apply();
                 updatePostDisplay(impl);
                 return result;
-            });
+            }));
         }
 
         Widget origDown = impl.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
         if (origDown != null) {
-            impl.getWidgets().put(LineReader.DOWN_LINE_OR_HISTORY, () -> {
+            impl.getWidgets().put(LineReader.DOWN_LINE_OR_HISTORY, ChatUiSession.current().captureWidget(() -> {
                 boolean result = origDown.apply();
                 updatePostDisplay(impl);
                 return result;
-            });
+            }));
         }
 
         // Show the bottom border immediately when the prompt first appears
@@ -880,7 +1070,7 @@ public class ChatCompleter implements Completer {
         if (beginPaste == null) beginPaste = impl.getBuiltinWidgets().get(LineReader.BEGIN_PASTE);
         if (beginPaste != null) {
             Widget originalBeginPaste = beginPaste;
-            impl.getWidgets().put(LineReader.BEGIN_PASTE, () -> {
+            impl.getWidgets().put(LineReader.BEGIN_PASTE, ChatUiSession.current().captureWidget(() -> {
                 boolean previous = IN_INPUT_WIDGET.get();
                 IN_INPUT_WIDGET.set(true);
                 try {
@@ -893,21 +1083,22 @@ public class ChatCompleter implements Completer {
                 } finally {
                     IN_INPUT_WIDGET.set(previous);
                 }
-            });
+            }));
         }
 
         Widget acceptLine = impl.getWidgets().get(LineReader.ACCEPT_LINE);
         if (acceptLine == null) acceptLine = impl.getBuiltinWidgets().get(LineReader.ACCEPT_LINE);
         if (acceptLine != null) {
             Widget originalAcceptLine = acceptLine;
-            impl.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
+            impl.getWidgets().put(LineReader.ACCEPT_LINE, ChatUiSession.current().captureWidget(() -> {
+                clearManagedCompletion();
                 expandLargePastes(impl);
                 try {
                     return originalAcceptLine.apply();
                 } finally {
                     LARGE_PASTES.remove(impl);
                 }
-            });
+            }));
         }
     }
 
@@ -947,9 +1138,6 @@ public class ChatCompleter implements Completer {
         impl.getBuffer().clear();
         impl.getBuffer().write(expanded);
     }
-
-    /** Cached impl reference for post-restore scheduling. */
-    private static volatile LineReaderImpl cachedImpl;
 
     /**
      * Compatibility hook retained for callers. Persistent post restoration was
@@ -991,6 +1179,44 @@ public class ChatCompleter implements Completer {
         }
     }
 
+    private static boolean updateManagedCompletion(
+            LineReaderImpl impl, List<Candidate> candidates) {
+        if (ChatUiSession.current().isClosed()) return false;
+        CompletionDisplay display = ChatUiSession.current().completionDisplay;
+        if (display == null) return false;
+
+        List<CompletionItem> items = new ArrayList<>(candidates.size());
+        for (Candidate candidate : candidates) {
+            String value = candidate.displ() != null ? candidate.displ() : candidate.value();
+            items.add(new CompletionItem(value, candidate.descr()));
+        }
+
+        try {
+            // The prompt is anchored to the final row of a restricted scroll region.
+            // Any JLine post rows would scroll that transcript, so a managed panel
+            // must clear the post before scheduling its own cursor-safe redraw.
+            setBottomBorderOnly(impl);
+            if (!display.update(List.copyOf(items))) return false;
+            impl.unsetOpt(LineReader.Option.AUTO_LIST);
+            impl.unsetOpt(LineReader.Option.LIST_AMBIGUOUS);
+            impl.unsetOpt(LineReader.Option.AUTO_MENU);
+            return true;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static void clearManagedCompletion() {
+        if (ChatUiSession.current().isClosed()) return;
+        CompletionDisplay display = ChatUiSession.current().completionDisplay;
+        if (display == null) return;
+        try {
+            display.update(List.of());
+        } catch (RuntimeException ignored) {
+            // Completion cleanup must never block ACCEPT_LINE.
+        }
+    }
+
     private static void redisplayWithContent(LineReaderImpl impl) {
         // JLine itself redraws after a SELF_INSERT widget returns. Calling
         // REDISPLAY here would re-enter the widget while its buffer/cursor state
@@ -1008,11 +1234,9 @@ public class ChatCompleter implements Completer {
     }
 
     /**
-     * Sets JLine's {@code post} field to show a bottom border below the
-     * input line, followed by any matching candidates when typing slash
-     * commands. The border + candidates appear below the editing buffer
-     * via JLine's post-display mechanism, which coordinates properly with
-     * cursor position and screen redraws.
+     * Updates slash completion after an input edit. Managed standard chat sends
+     * candidates to its fixed activity panel; other readers use JLine's
+     * {@code post} field as a compatibility fallback.
      * <p>
      * IMPORTANT: All strings containing ANSI escape codes must be wrapped
      * via {@link AttributedString#fromAnsi} — the plain constructor treats
@@ -1021,14 +1245,14 @@ public class ChatCompleter implements Completer {
      */
     @SuppressWarnings("unchecked")
     private static void updatePostDisplay(LineReaderImpl impl) {
+        if (ChatUiSession.current().isClosed()) return;
         try {
-            if (postField == null) return;
+            if (postField == null && ChatUiSession.current().completionDisplay == null) return;
             String buf = impl.getBuffer().toString();
 
-            String bottomBorder = buildBottomBorder();
-
-            // No slash prefix: the status bar owns persistent state, so clear post rows.
+            // No slash prefix: restore the activity panel and clear transient post rows.
             if (buf.isEmpty() || !buf.startsWith("/")) {
+                if (updateManagedCompletion(impl, List.of())) return;
                 setBottomBorderOnly(impl);
                 redisplayWithContent(impl);
                 return;
@@ -1041,12 +1265,16 @@ public class ChatCompleter implements Completer {
             completer.complete(impl, impl.getParser().parse(buf, buf.length()), candidates);
 
             if (candidates.isEmpty()) {
-                // No matches: remove transient completion rows.
+                // No matches: remove transient completion rows and restore activity.
+                if (updateManagedCompletion(impl, List.of())) return;
                 setBottomBorderOnly(impl);
                 redisplayWithContent(impl);
                 return;
             }
 
+            if (updateManagedCompletion(impl, candidates)) return;
+
+            String bottomBorder = buildBottomBorder();
             int total = candidates.size();
             int showing = Math.min(total, MAX_DISPLAY_CANDIDATES);
 

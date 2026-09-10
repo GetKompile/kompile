@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.auth.oauth;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.main.auth.OAuthCredentialIdentity;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.IOException;
@@ -24,7 +25,6 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
             URI.create("https://auth.x.ai/oauth2/device/code");
     private static final URI TOKEN_URL =
             URI.create("https://auth.x.ai/oauth2/token");
-    private static final long REFRESH_SKEW_MILLIS = 5 * 60 * 1000L;
     private static final int DEFAULT_LIFETIME_SECONDS = 3600;
 
     private final OAuthSupport.HttpTransport http;
@@ -138,7 +138,7 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
         OAuthSupport.requireSuccess(response, "xAI token refresh");
         return parseToken(
                 OAuthSupport.json(response, "xAI token refresh"),
-                credential.getRefresh(),
+                credential,
                 "xAI token refresh");
     }
 
@@ -155,11 +155,11 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
 
     private ManagedCredential parseToken(
             JsonNode body,
-            String previousRefreshToken,
+            ManagedCredential previous,
             String context) throws IOException {
         String refresh = OAuthSupport.optionalText(body, "refresh_token");
         if (refresh == null) {
-            refresh = previousRefreshToken;
+            refresh = previous == null ? null : previous.getRefresh();
         }
         if (refresh == null || refresh.isBlank()) {
             throw new IOException(context + " is missing 'refresh_token'");
@@ -170,7 +170,8 @@ public final class XaiOAuthFlow implements OAuthProviderFlow {
         return ManagedCredential.oauth(
                 OAuthSupport.requiredText(body, "access_token", context),
                 refresh,
-                OAuthSupport.expiryFromNow(expiresIn, REFRESH_SKEW_MILLIS));
+                OAuthSupport.expiryFromNow(expiresIn, 0L),
+                OAuthCredentialIdentity.tokenMetadata(PROVIDER_ID, body, previous));
     }
 
     @Override

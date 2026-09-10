@@ -15,25 +15,25 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
-import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.gateway.core.gateway.channel.*;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 @Slf4j
-public class DiscordChannelAdapter extends BaseChannelAdapter implements DiscordApiClient.DiscordMessageHandler {
+public class DiscordChannelAdapter extends ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter implements DiscordApiClient.DiscordMessageHandler {
 
     private DiscordApiClient apiClient;
     private String botToken;
     private final Set<String> allowedChannelIds = new HashSet<>();
     private final Set<String> allowedGuildIds = new HashSet<>();
+    private boolean allowAllInbound;
 
-    public DiscordChannelAdapter(KClawAgentService agentService) {
-        super(agentService);
+    public DiscordChannelAdapter(AgentExecutor agentExecutor) {
+        super(agentExecutor);
     }
 
     @Override
@@ -57,11 +57,14 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
         allowedGuildIds.add(guildId);
     }
 
+    public void setAllowAllInbound(boolean allowAllInbound) {
+        this.allowAllInbound = allowAllInbound;
+    }
+
     @Override
     protected void doStart() {
         if (apiClient == null) {
-            log.warn("Discord API client not configured");
-            return;
+            throw new IllegalStateException("Discord API client is not configured");
         }
 
         apiClient.addMessageHandler(this);
@@ -77,12 +80,12 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
     }
 
     @Override
-    public void send(String target, String content) {
+    public DeliveryResult send(String target, String content) {
         if (apiClient == null || !isRunning()) {
-            log.warn("Discord adapter not ready; cannot deliver to {}", target);
-            return;
+            throw new IllegalStateException("Discord connection is not running");
         }
         apiClient.sendMessage(target, content);
+        return DeliveryResult.accepted("Discord accepted the message");
     }
 
     @Override
@@ -107,7 +110,9 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
                 message.channelId(),
                 message.timestamp(),
                 message.referencedMessageId(),
-                Map.of("guild_id", extractGuildId(message.channelId()))
+                message.guildId() == null
+                        ? Map.of()
+                        : Map.of("guild_id", message.guildId())
         );
 
         ChannelAdapter.MessageResponder responder = new DiscordMessageResponder(apiClient, message.channelId());
@@ -116,11 +121,13 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
 
     @Override
     public void onReady() {
+        markReady();
         log.info("Discord adapter ready");
     }
 
     @Override
     public void onError(Throwable error) {
+        recordError(error);
         log.error("Discord adapter error", error);
     }
 
@@ -130,7 +137,7 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
     }
 
     private boolean isAllowed(DiscordApiClient.DiscordMessage message) {
-        if (allowedChannelIds.isEmpty() && allowedGuildIds.isEmpty()) {
+        if (allowAllInbound) {
             return true;
         }
 
@@ -138,21 +145,6 @@ public class DiscordChannelAdapter extends BaseChannelAdapter implements Discord
             return true;
         }
 
-        String guildId = extractGuildId(message.channelId());
-        return guildId != null && allowedGuildIds.contains(guildId);
-    }
-
-    private String extractGuildId(String channelId) {
-        List<DiscordApiClient.DiscordChannel> channels = apiClient != null 
-                ? apiClient.getGuilds().stream()
-                        .flatMap(g -> apiClient.getChannels(g.id()).stream())
-                        .toList()
-                : List.of();
-
-        return channels.stream()
-                .filter(c -> c.id().equals(channelId))
-                .map(DiscordApiClient.DiscordChannel::guildId)
-                .findFirst()
-                .orElse(null);
+        return message.guildId() != null && allowedGuildIds.contains(message.guildId());
     }
 }

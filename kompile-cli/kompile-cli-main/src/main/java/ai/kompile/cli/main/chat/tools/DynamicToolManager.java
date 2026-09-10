@@ -52,8 +52,9 @@ public class DynamicToolManager {
      * This core set covers the kompile-specific tools that are always active.
      */
     private static final List<String> CORE_TOOL_ORDER = List.of(
-            "read", "write", "edit", "grep", "glob", "list", "bash",
-            "fetch_result", "poll", "activate_tools", "exit_plan_mode");
+            "read", "file_context", "write", "edit", "grep", "glob", "list", "bash",
+            "fetch_result", "poll", "mcp_tool_search", "mcp_tool_call",
+            "activate_tools", "exit_plan_mode");
     private static final Set<String> CORE_TOOLS =
             Collections.unmodifiableSet(new LinkedHashSet<>(CORE_TOOL_ORDER));
 
@@ -64,24 +65,30 @@ public class DynamicToolManager {
         GROUPS.put("files", new ToolGroup("files",
                 "Batch file reads, searches, edits, patches, result retrieval, and file activity",
                 Set.of("read_batch", "edit_batch", "edit_patch", "patch", "grep_batch",
-                        "fetch_result_batch", "explore", "file_activity")));
+                        "fetch_result_batch", "explore", "file_activity", "file_note")));
 
         GROUPS.put("code", new ToolGroup("code",
                 "Semantic code search, indexes, dependency graphs, language-server queries, and edit history",
-                Set.of("code_search", "code_graph", "local_code_index", "lsp", "diff_index")));
+                Set.of("code_search", "code_graph", "local_code_index", "lsp", "diff_index",
+                        "graph_search", "graph_reasoning_query")));
 
         GROUPS.put("workflow", new ToolGroup("workflow",
                 "Todo tracking, project/enforcer configuration, archives, side panels, and ambient capture",
-                Set.of("todowrite", "todoread", "project_config", "enforcer_config",
+                Set.of("todowrite", "todoread", "project_config", "enforcer_config", "judge_control",
                         "config_archive", "side_panel", "dictation", "ambient_garden")));
 
         GROUPS.put("web", new ToolGroup("web",
                 "Web search, page retrieval, and interactive browsing",
                 Set.of("webfetch", "websearch", "browser")));
 
+        GROUPS.put("integrations", new ToolGroup("integrations",
+                "Provider login, non-secret channel status, and allowlisted delivery",
+                Set.of("channel")));
+
         GROUPS.put("process", new ToolGroup("process",
-                "Background processes, result polling, server control, process mining, and edit coordination",
-                Set.of("process", "poll", "server_mode", "process_mining", "edit_coordinator")));
+                "Background processes, subprocess memory watchdog, result polling, server control, process mining, and agent coordination",
+                Set.of("process", "subprocess_watchdog", "poll", "server_mode", "process_mining",
+                        "edit_coordinator", "sessions")));
 
         GROUPS.put("delegation", new ToolGroup("delegation",
                 "Subagents, parallel/quorum tasks, roles, and skills",

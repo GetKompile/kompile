@@ -17,9 +17,11 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager.BackgroundTask;
+import ai.kompile.cli.main.chat.activity.ProjectActivityView;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessMonitor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tui.StatusBar;
@@ -27,6 +29,12 @@ import ai.kompile.cli.main.chat.tui.StatusBar.SubagentEntry;
 import ai.kompile.utils.FormatUtils;
 
 import java.time.Instant;
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.function.BiConsumer;
+import ai.kompile.cli.main.chat.tui.KompileTui;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -40,7 +48,7 @@ import java.util.Set;
 import java.util.function.IntSupplier;
 
 /**
- * Claude-style process and subagent activity pane for literal standard chat.
+ * Claude-style auxiliary-chat, process, and subagent activity pane for literal standard chat.
  *
  * <p>The pane uses a fixed number of rows for the current terminal size. This is
  * intentional: resizing the JLine scroll region while a prompt is being edited
@@ -51,9 +59,12 @@ final class StandardChatActivityPanel {
 
     enum ActivityKind {
         MAIN("main"),
+        PROJECT("project"),
+        REPL("chat"),
         PROCESS("process"),
         SUBAGENT("subagent"),
         TOOL("tool"),
+        MONITOR("monitor"),
         TASK("task");
 
         private final String label;
@@ -85,6 +96,7 @@ final class StandardChatActivityPanel {
     }
 
     static final String MAIN_KEY = "main";
+    static final String PROJECT_ACTIVITY_KEY = "project:agents";
     private static final int MAX_RETAINED_TOOL_ACTIVITIES = 64;
     private static final int MAX_INLINE_SUBAGENT_LINES = 80;
     private static final int MAX_INLINE_SUBAGENT_CHARS = 16_000;
@@ -101,10 +113,23 @@ final class StandardChatActivityPanel {
     private volatile int selectedIndex = -1;
     private volatile String viewedKey = MAIN_KEY;
     private volatile String panelMessage = "";
+    private volatile Instant panelMessageExpiresAt = Instant.MIN;
+    private final Supplier<Instant> now;
+    private final BiConsumer<Long, Runnable> expiryScheduler;
+    private final ChatUiSession owner = ChatUiSession.current();
+    private final ChatSessionContext context = ChatSessionContext.current();
+    private Instant nextExpiry;
     private volatile List<StatusBar.MenuItem> currentMenuItems = List.of();
+    private volatile List<ChatCompleter.CompletionItem> completionItems = List.of();
     private final Object toolActivityLock = new Object();
     private final Map<String, ToolActivity> toolActivities = new LinkedHashMap<>();
+    private final Object auxiliaryReplLock = new Object();
+    private final Map<String, AuxiliaryChatRepl> auxiliaryRepls = new LinkedHashMap<>();
+    private final Object backgroundTaskLinkLock = new Object();
+    private String linkedBackgroundTaskId = "";
+    private String linkedSubagentId = "";
     private volatile SubagentRunner subagentRunner;
+    private volatile ProjectActivityView projectActivityView;
 
     private static final class ToolActivity {
         private final String key;
@@ -134,14 +159,66 @@ final class StandardChatActivityPanel {
             BackgroundProcessManager processManager,
             StatusBar statusBar,
             IntSupplier reservedRowSupplier) {
+        this(taskManager, processManager, statusBar, reservedRowSupplier, Instant::now,
+                (millis, callback) -> CompletableFuture.delayedExecutor(millis, TimeUnit.MILLISECONDS)
+                        .execute(callback));
+    }
+
+    StandardChatActivityPanel(BackgroundTaskManager taskManager, BackgroundProcessManager processManager,
+            StatusBar statusBar, IntSupplier reservedRowSupplier, Supplier<Instant> now,
+            BiConsumer<Long, Runnable> expiryScheduler) {
         this.taskManager = taskManager;
         this.processManager = processManager;
         this.statusBar = statusBar;
         this.reservedRowSupplier = reservedRowSupplier;
+        this.now = now;
+        this.expiryScheduler = expiryScheduler;
+    }
+
+    private synchronized void scheduleExpiry(Instant deadline) {
+        if (owner.isClosed() || (nextExpiry != null && !deadline.isBefore(nextExpiry))) return;
+        nextExpiry = deadline;
+        expiryScheduler.accept(Math.max(1, Duration.between(now.get(), deadline).toMillis()), context.wrap(() -> {
+            synchronized (StandardChatActivityPanel.this) {
+                if (!deadline.equals(nextExpiry)) return;
+                nextExpiry = null;
+            }
+            if (!owner.isClosed()) refresh();
+        }));
+    }
+
+    private boolean completionVisible(String key, Instant completedAt) {
+        if (completedAt == null) return true;
+        Instant deadline = completedAt.plusSeconds(KompileTui.EPHEMERAL_MESSAGE_SECONDS);
+        if (now.get().isBefore(deadline)) {
+            scheduleExpiry(deadline);
+            return true;
+        }
+        // Expire the notification, not a transcript the user deliberately opened.
+        return key.equals(viewedKey);
+    }
+
+    private void setPanelMessage(String message) {
+        panelMessageExpiresAt = now.get().plusSeconds(KompileTui.EPHEMERAL_MESSAGE_SECONDS);
+        panelMessage = message == null ? "" : message;
+        if (!panelMessage.isBlank()) scheduleExpiry(panelMessageExpiresAt);
     }
 
     void setSubagentRunner(SubagentRunner subagentRunner) {
         this.subagentRunner = subagentRunner;
+        refresh();
+    }
+
+    void setProjectActivityView(ProjectActivityView projectActivityView) {
+        this.projectActivityView = projectActivityView;
+        refresh();
+    }
+
+    void registerAuxiliaryRepl(AuxiliaryChatRepl repl) {
+        if (repl == null) return;
+        synchronized (auxiliaryReplLock) {
+            auxiliaryRepls.put("repl:" + repl.id(), repl);
+        }
         refresh();
     }
 
@@ -169,12 +246,15 @@ final class StandardChatActivityPanel {
         block.append("\n  ").append(status).append(" · ").append(entry.getElapsed());
         if (backgrounded) {
             block.append("\n  ◐ Backgrounded · output continues in the subagent row below")
-                    .append(" · ↓ then Enter to inspect");
+                    .append(" · ↓ selects it; Enter opens it; then type a follow-up · Delete to stop");
             return block.toString();
         }
 
-        block.append("\n  Live activity · Ctrl+B background")
-                .append(" · ↓ then Enter to inspect below");
+        block.append("\n  Live activity");
+        if (taskManager.isCurrentTaskBackgroundable()) {
+            block.append(" · Ctrl+B background this invocation");
+        }
+        block.append(" · ↓ then Delete to stop or Enter to inspect");
         String transcript = boundedInlineTranscript(entry.getTranscript());
         if (!transcript.isBlank()) {
             block.append('\n').append(transcript);
@@ -245,7 +325,7 @@ final class StandardChatActivityPanel {
         ToolActivity activity = toolActivity(callId, toolName, rawInput);
         activity.result = result;
         activity.active = false;
-        activity.updatedAt = Instant.now();
+        activity.updatedAt = now.get();
         String outcome = TerminalRenderer.summarizeToolResult(result, 72);
         activity.status = (result != null && result.isError() ? "✗" : "✓")
                 + (outcome.isBlank() ? "" : " " + outcome);
@@ -294,9 +374,43 @@ final class StandardChatActivityPanel {
         return MAIN_KEY.equals(viewedKey);
     }
 
+    boolean isViewingProjectActivity() {
+        return PROJECT_ACTIVITY_KEY.equals(viewedKey);
+    }
+
     String viewedSubagentId() {
-        return viewedKey.startsWith("subagent:")
-                ? viewedKey.substring("subagent:".length()) : "";
+        return subagentTargetForKey(viewedKey);
+    }
+
+    private String subagentTargetForKey(String key) {
+        if (key == null || key.isBlank()) return "";
+        if (key.startsWith("subagent:")) {
+            return key.substring("subagent:".length());
+        }
+        if (!key.startsWith("task:")) return "";
+        String taskId = key.substring("task:".length());
+        synchronized (backgroundTaskLinkLock) {
+            return taskId.equals(linkedBackgroundTaskId) ? linkedSubagentId : "";
+        }
+    }
+
+    /**
+     * Route input to the open subagent only while its retained session accepts
+     * follow-ups. A false result deliberately restores Main so the caller can
+     * dispatch the same input to the parent rather than dropping it.
+     */
+    boolean trySendMessageToViewedSubagent(String message) {
+        String id = viewedSubagentId();
+        if (id.isBlank() || message == null || message.isBlank()) return false;
+        SubagentRunner runner = subagentRunner;
+        if (runner != null && runner.sendMessage(id, message)) return true;
+
+        statusBar.appendSubagentActivity(
+                id,
+                "follow-up unavailable",
+                "\n  Follow-up was not sent: this subagent session is no longer interactive.");
+        returnToMain("subagent " + id + " unavailable; continuing in Main chat");
+        return false;
     }
 
     String getSelectedKey() {
@@ -307,13 +421,68 @@ final class StandardChatActivityPanel {
         return currentMenuItems;
     }
 
+    /**
+     * Temporarily replace activity rows with slash-command completions. The row
+     * budget is already reserved, so opening the menu never moves the prompt or
+     * scrolls the transcript. Passing an empty list restores normal activity.
+     */
+    boolean updateCompletions(List<ChatCompleter.CompletionItem> items) {
+        List<ChatCompleter.CompletionItem> next = items == null
+                ? List.of()
+                : items.stream().filter(java.util.Objects::nonNull).toList();
+        if (next.equals(completionItems)) return true;
+        completionItems = List.copyOf(next);
+        refresh();
+        return true;
+    }
+
+    boolean hasCompletions() {
+        return !completionItems.isEmpty();
+    }
+
     List<ActivityItem> activityItems() {
         List<ActivityItem> rawItems = new ArrayList<>();
 
-        for (SubagentEntry entry : statusBar.getActiveSubagents()) {
+        ProjectActivityView project = projectActivityView;
+        if (project != null) {
+            rawItems.add(new ActivityItem(
+                    PROJECT_ACTIVITY_KEY,
+                    "agents",
+                    ActivityKind.PROJECT,
+                    "Project activity",
+                    project.compactStatus(),
+                    project.hasLiveWork(),
+                    false,
+                    null,
+                    MAIN_KEY,
+                    0));
+        }
+
+        synchronized (auxiliaryReplLock) {
+            for (Map.Entry<String, AuxiliaryChatRepl> entry : auxiliaryRepls.entrySet()) {
+                AuxiliaryChatRepl repl = entry.getValue();
+                rawItems.add(new ActivityItem(
+                        entry.getKey(),
+                        repl.id(),
+                        ActivityKind.REPL,
+                        repl.displayName(),
+                        repl.status() + " · " + repl.describe(),
+                        repl.isRunning(),
+                        false,
+                        repl.startedAt(),
+                        MAIN_KEY,
+                        0));
+            }
+        }
+
+        List<SubagentEntry> activeSubagents = statusBar.getActiveSubagents();
+        List<SubagentEntry> recentSubagents = statusBar.getRecentSubagents().stream()
+                .filter(entry -> completionVisible("subagent:" + entry.getId(), entry.getCompletedAt()))
+                .toList();
+        for (SubagentEntry entry : activeSubagents) {
             rawItems.add(subagentItem(entry, true));
         }
-        for (SubagentEntry entry : statusBar.getRecentSubagents()) {
+        for (SubagentEntry entry : recentSubagents) {
             rawItems.add(subagentItem(entry, false));
         }
         // The fixed bottom pane is live work, not process history. Keeping terminal
@@ -344,8 +513,34 @@ final class StandardChatActivityPanel {
                     processParentKey(entry, processKeys, processKeysByPid),
                     0));
         }
+        // One-shot completion monitors are traceable wake-up configurations, not
+        // processes. Surface each one nested under the process it watches so the
+        // agent-visible event list shows every managed wake the session armed.
+        for (ProcessMonitor monitor : processManager.listMonitors()) {
+            String wakeMessage = monitor.message();
+            rawItems.add(new ActivityItem(
+                    "monitor:" + monitor.processId(),
+                    monitor.processId(),
+                    ActivityKind.MONITOR,
+                    truncate(wakeMessage == null || wakeMessage.isBlank()
+                            ? "wake on exit of " + monitor.processId() : wakeMessage, 64),
+                    "armed · " + FormatUtils.formatDuration(java.time.Duration.between(
+                            monitor.createdAt(), Instant.now())),
+                    true,
+                    true,
+                    monitor.createdAt(),
+                    "process:" + monitor.processId(),
+                    0));
+        }
         for (BackgroundTask task : taskManager.getActiveTasks()) {
-            if (task.getStatus() != BackgroundTask.BackgroundTaskStatus.BACKGROUNDED) {
+            if (task.getStatus() != BackgroundTask.BackgroundTaskStatus.BACKGROUNDED
+                    || isRepresentedBySubagent(task, activeSubagents, recentSubagents)) {
+                // Ctrl+B detaches a parent turn only while TaskTool is blocked on a
+                // child. That exact child row owns cancellation and retained follow-up
+                // input even after its first response completes; publishing the parent
+                // task beside it creates a second row that looks interactive but routes
+                // typed text back to Main. Keep the task row only after the linked child
+                // has left both the active and visible recent activity lists.
                 continue;
             }
             rawItems.add(new ActivityItem(
@@ -362,6 +557,7 @@ final class StandardChatActivityPanel {
         }
         synchronized (toolActivityLock) {
             for (ToolActivity activity : toolActivities.values()) {
+                if (!activity.active && !completionVisible(activity.key, activity.updatedAt)) continue;
                 String label = TerminalRenderer.summarizeToolCall(
                         activity.toolName, activity.rawInput, 72);
                 String duration = FormatUtils.formatDuration(java.time.Duration.between(
@@ -382,6 +578,7 @@ final class StandardChatActivityPanel {
 
         Comparator<ActivityItem> itemOrder = Comparator
                 .comparing(ActivityItem::killable).reversed()
+                .thenComparingInt(item -> item.kind() == ActivityKind.PROJECT ? 0 : 1)
                 .thenComparing(Comparator.comparing(ActivityItem::active).reversed())
                 .thenComparing(ActivityItem::startedAt,
                         Comparator.nullsLast(Comparator.reverseOrder()))
@@ -417,6 +614,46 @@ final class StandardChatActivityPanel {
             }
         }
         return items;
+    }
+
+    private boolean isRepresentedBySubagent(
+            BackgroundTask task,
+            List<SubagentEntry> activeSubagents,
+            List<SubagentEntry> recentSubagents) {
+        synchronized (backgroundTaskLinkLock) {
+            if (!task.getId().equals(linkedBackgroundTaskId)) {
+                linkedBackgroundTaskId = task.getId();
+                linkedSubagentId = "";
+            }
+            if (linkedSubagentId.isBlank()) {
+                SubagentEntry newest = null;
+                for (SubagentEntry entry : activeSubagents) {
+                    if (!entry.getStartedAt().isBefore(task.getStartedAt())
+                            && (newest == null
+                            || entry.getStartedAt().isAfter(newest.getStartedAt()))) {
+                        newest = entry;
+                    }
+                }
+                if (newest == null) {
+                    for (SubagentEntry entry : recentSubagents) {
+                        if (!entry.getStartedAt().isBefore(task.getStartedAt())
+                                && (newest == null
+                                || entry.getStartedAt().isAfter(newest.getStartedAt()))) {
+                            newest = entry;
+                        }
+                    }
+                }
+                if (newest != null) linkedSubagentId = newest.getId();
+            }
+            if (linkedSubagentId.isBlank()) return false;
+            for (SubagentEntry entry : activeSubagents) {
+                if (linkedSubagentId.equals(entry.getId())) return true;
+            }
+            for (SubagentEntry entry : recentSubagents) {
+                if (linkedSubagentId.equals(entry.getId())) return true;
+            }
+            return false;
+        }
     }
 
     private ActivityItem subagentItem(SubagentEntry entry, boolean active) {
@@ -497,10 +734,16 @@ final class StandardChatActivityPanel {
     }
 
     void refresh() {
+        int panelRows = Math.max(1, reservedRowSupplier.getAsInt());
+        List<ChatCompleter.CompletionItem> completions = completionItems;
+        if (!completions.isEmpty()) {
+            renderCompletions(completions, panelRows);
+            return;
+        }
+
         List<ActivityItem> items = activityItems();
         normalizeSelection(items);
 
-        int panelRows = Math.max(1, reservedRowSupplier.getAsInt());
         int itemRows = Math.max(0, panelRows - 1);
         List<ActivityItem> visibleItems = visibleItems(items, itemRows);
 
@@ -516,21 +759,31 @@ final class StandardChatActivityPanel {
                     label = branch + "[" + item.id() + "] "
                             + item.kind().label() + " " + item.label();
                 }
-                String status = item.status() + (item.killable() ? " · Del kill" : "");
+                String status = item.status() + (item.killable() ? " · Del stop" : "");
                 menu.add(new StatusBar.MenuItem(
                         item.key(), label, status,
                         focused && item.key().equals(selectedKey)));
             } else if (items.size() == 1 && i == 0) {
                 menu.add(new StatusBar.MenuItem(
-                        "activity-idle", "No active processes or subagents", "", false));
+                        "activity-idle", "No auxiliary chats, active processes, or subagents", "", false));
             } else {
                 menu.add(new StatusBar.MenuItem("activity-spacer-" + i, "", "", false));
             }
         }
 
+        String viewedSubagentTarget = viewedSubagentId();
         String hint;
         if (focused) {
-            hint = "↑/↓ select · ← parent · Enter open · Del kill · type for Main chat";
+            String inputTarget;
+            if (!subagentTargetForKey(selectedKey).isBlank()
+                    && !selectedKey.equals(viewedKey)) {
+                inputTarget = "Enter opens subagent; then type sends follow-up";
+            } else if (!viewedSubagentTarget.isBlank()) {
+                inputTarget = "type sends to open subagent when supported";
+            } else {
+                inputTarget = "type for Main chat";
+            }
+            hint = "↑/↓ select · ← parent · Enter open · Del stop · " + inputTarget;
         } else if (items.size() == 1) {
             hint = "/processes shows session activity";
         } else {
@@ -538,20 +791,47 @@ final class StandardChatActivityPanel {
             hint = isViewingMain()
                     ? "↓ manage process tree · Enter opens output in transcript"
                     + (taskManager.isCurrentTaskBackgroundable()
-                    ? " · Ctrl+B backgrounds current turn" : "")
+                    ? " · Ctrl+B backgrounds active subagent" : "")
                     : "Viewing " + viewedKey.replaceFirst("^[^:]+:", "")
-                    + (viewedKey.startsWith("subagent:")
-                    ? " · type to send follow-up · PageUp/PageDown scroll"
-                    : " · PageUp/PageDown scroll · select Main chat to return");
+                    + (!viewedSubagentTarget.isBlank()
+                    ? " · type sends follow-up when supported" : "")
+                    + " · PageUp/PageDown scroll · select Main chat + Enter to return";
             hint += ""
                     + (hidden > 0 ? " · " + hidden + " more" : "");
         }
-        if (!panelMessage.isBlank()) {
+        if (!panelMessage.isBlank() && now.get().isBefore(panelMessageExpiresAt)) {
+            scheduleExpiry(panelMessageExpiresAt);
             hint = panelMessage + " · " + hint;
         }
 
         currentMenuItems = List.copyOf(menu);
         statusBar.setMenuItems(menu, hint);
+    }
+
+    private void renderCompletions(
+            List<ChatCompleter.CompletionItem> completions, int panelRows) {
+        boolean showHint = panelRows > 1;
+        int itemRows = Math.max(1, panelRows - (showHint ? 1 : 0));
+        int showing = Math.min(completions.size(), itemRows);
+        List<StatusBar.MenuItem> menu = new ArrayList<>(itemRows);
+        for (int i = 0; i < showing; i++) {
+            ChatCompleter.CompletionItem completion = completions.get(i);
+            String status = completion.description() == null ? "" : completion.description();
+            if (i == showing - 1 && completions.size() > showing) {
+                String remaining = "+" + (completions.size() - showing) + " more";
+                status = status.isBlank() ? remaining : status + " · " + remaining;
+            }
+            menu.add(new StatusBar.MenuItem(
+                    "completion-" + i, completion.value(), status, false));
+        }
+        // Keep the reserved panel height stable as filtering removes candidates.
+        // Blank rows erase the previous frame and keep the separator anchored.
+        for (int i = showing; i < itemRows; i++) {
+            menu.add(new StatusBar.MenuItem("completion-spacer-" + i, "", "", false));
+        }
+        currentMenuItems = List.copyOf(menu);
+        statusBar.setMenuItems(menu,
+                showHint ? "Slash commands · type to filter · Tab completes" : "");
     }
 
     boolean selectNext() {
@@ -618,16 +898,41 @@ final class StandardChatActivityPanel {
             return null;
         }
         if (item.kind() == ActivityKind.MAIN) {
+            hideProjectActivity();
             viewedKey = MAIN_KEY;
-            panelMessage = "restored Main chat";
+            setPanelMessage("restored Main chat");
             refresh();
             return new ActivityView(MAIN_KEY, "Main chat", "", true);
         }
 
+        if (item.kind() == ActivityKind.PROJECT && projectActivityView != null) {
+            projectActivityView.show("");
+        } else {
+            hideProjectActivity();
+        }
         viewedKey = item.key();
-        panelMessage = "viewing " + item.id();
+        setPanelMessage("viewing " + item.id());
         refresh();
         return activityView(item);
+    }
+
+    ActivityView openProjectActivity(String filter) {
+        ProjectActivityView project = projectActivityView;
+        if (project == null) return null;
+        focused = false;
+        selectedKey = "";
+        selectedIndex = -1;
+        viewedKey = PROJECT_ACTIVITY_KEY;
+        project.show(filter);
+        setPanelMessage(filter == null || filter.isBlank()
+                ? "viewing project activity" : "filtered project activity");
+        refresh();
+        return new ActivityView(PROJECT_ACTIVITY_KEY, project.title(), project.content(), false);
+    }
+
+    void refreshProjectActivity() {
+        ProjectActivityView project = projectActivityView;
+        if (project != null) project.refresh();
     }
 
     String inspectSelected() {
@@ -668,16 +973,35 @@ final class StandardChatActivityPanel {
                         1));
             }
         }
+        // An asynchronously evicted subagent/tool/task must not leave a hidden
+        // viewedKey behind after the renderer falls back to Main. That stale key
+        // would continue routing subsequent input to the vanished child.
+        returnToMain();
         return new ActivityView(MAIN_KEY, "Main chat", "", true);
     }
 
     private ActivityView activityView(ActivityItem item) {
+        if (item.kind() == ActivityKind.PROJECT) {
+            ProjectActivityView project = projectActivityView;
+            if (project != null) {
+                return new ActivityView(
+                        PROJECT_ACTIVITY_KEY, project.title(), project.content(), false);
+            }
+        }
         StringBuilder details = new StringBuilder();
         details.append("  kind: ").append(item.kind().label())
                 .append(" · status: ").append(item.status()).append("\n");
         details.append("  ").append(item.label()).append("\n");
 
-        if (item.kind() == ActivityKind.PROCESS) {
+        if (item.kind() == ActivityKind.REPL) {
+            AuxiliaryChatRepl repl;
+            synchronized (auxiliaryReplLock) {
+                repl = auxiliaryRepls.get(item.key());
+            }
+            if (repl != null && !repl.transcript().isBlank()) {
+                details.append("\n").append(repl.transcript());
+            }
+        } else if (item.kind() == ActivityKind.PROCESS) {
             ProcessEntry process = processManager.get(item.id());
             if (process != null) {
                 details.append("  pid: ").append(process.getPid())
@@ -686,6 +1010,25 @@ final class StandardChatActivityPanel {
                     details.append("  output: ").append(process.getOutputFile()).append("\n");
                 }
                 details.append("\n").append(processManager.readOutput(item.id(), 2000));
+            }
+        } else if (item.kind() == ActivityKind.MONITOR) {
+            ProcessMonitor monitor = processManager.getMonitor(item.id());
+            if (monitor != null) {
+                String wakeMessage = monitor.message();
+                details.append("  wake: agent is woken when the watched process exits\n")
+                        .append("  message: ")
+                        .append(wakeMessage == null || wakeMessage.isBlank()
+                                ? "(none)" : wakeMessage).append("\n")
+                        .append("  armed for: ").append(FormatUtils.formatDuration(
+                                java.time.Duration.between(monitor.createdAt(), Instant.now())))
+                        .append("\n")
+                        .append("  Del cancels the wake-up without touching the process\n");
+            }
+            ProcessEntry watched = processManager.get(item.id());
+            if (watched != null) {
+                details.append("  watched: ").append(watched.getId())
+                        .append(" · ").append(watched.getState())
+                        .append(" · command: ").append(watched.getCommand()).append("\n");
             }
         } else if (item.kind() == ActivityKind.SUBAGENT) {
             SubagentEntry subagent = findSubagent(item.id());
@@ -721,6 +1064,10 @@ final class StandardChatActivityPanel {
         } else if (item.kind() == ActivityKind.TASK) {
             BackgroundTask task = taskManager.getTask(item.id());
             if (task != null) {
+                String subagentId = subagentTargetForKey(item.key());
+                if (!subagentId.isBlank()) {
+                    details.append("  follow-ups: subagent ").append(subagentId).append("\n");
+                }
                 if (task.getError() != null) {
                     details.append("  error: ").append(task.getError().getMessage()).append("\n");
                 }
@@ -748,9 +1095,19 @@ final class StandardChatActivityPanel {
     }
 
     void returnToMain() {
+        returnToMain("");
+    }
+
+    private void returnToMain(String message) {
+        hideProjectActivity();
         viewedKey = MAIN_KEY;
-        panelMessage = "";
+        setPanelMessage(message);
         refresh();
+    }
+
+    private void hideProjectActivity() {
+        ProjectActivityView project = projectActivityView;
+        if (project != null && project.isVisible()) project.hide();
     }
 
     String killSelected() {
@@ -759,13 +1116,23 @@ final class StandardChatActivityPanel {
             return "No activity selected";
         }
         if (!item.killable()) {
-            panelMessage = switch (item.kind()) {
+            setPanelMessage(switch (item.kind()) {
                 case PROCESS -> item.active()
                         ? item.id() + " is a non-owned watcher; inspect/logs only"
                         : "process is no longer running: " + item.id();
                 case SUBAGENT -> "subagent is no longer running: " + item.id();
+                case REPL -> item.id() + " is an in-process supervisory chat; inspect only";
                 default -> item.id() + " is informational; inspect/logs only";
-            };
+            });
+            refresh();
+            return panelMessage;
+        }
+
+        if (item.kind() == ActivityKind.MONITOR) {
+            boolean cancelled = processManager.removeMonitor(item.id());
+            setPanelMessage(cancelled
+                    ? "monitor cancelled for " + item.id()
+                    : "no active monitor: " + item.id());
             refresh();
             return panelMessage;
         }
@@ -773,17 +1140,17 @@ final class StandardChatActivityPanel {
         boolean killed;
         if (item.kind() == ActivityKind.PROCESS) {
             killed = processManager.kill(item.id());
-            panelMessage = killed
+            setPanelMessage(killed
                     ? "kill requested for " + item.id()
-                    : "process is no longer running: " + item.id();
+                    : "process is no longer running: " + item.id());
         } else if (item.kind() == ActivityKind.SUBAGENT) {
             SubagentRunner runner = subagentRunner;
             killed = runner != null && runner.cancel(item.id());
-            panelMessage = killed
+            setPanelMessage(killed
                     ? "cancel requested for subagent " + item.id()
-                    : "subagent is no longer running: " + item.id();
+                    : "subagent is no longer running: " + item.id());
         } else {
-            panelMessage = item.id() + " is informational; inspect/logs only";
+            setPanelMessage(item.id() + " is informational; inspect/logs only");
         }
         refresh();
         return panelMessage;

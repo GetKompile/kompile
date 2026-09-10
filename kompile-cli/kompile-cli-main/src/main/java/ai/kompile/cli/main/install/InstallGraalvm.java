@@ -25,7 +25,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "graalvm", description = "Install the managed GraalVM runtime.", mixinStandardHelpOptions = false)
 public class InstallGraalvm implements Callable<Integer> {
 
     public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-17.0.11+9/graalvm-community-jdk-17.0.11+9.1_linux-x64_bin.tar.gz";

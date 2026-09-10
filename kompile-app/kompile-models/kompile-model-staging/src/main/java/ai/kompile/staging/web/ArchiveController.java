@@ -415,9 +415,8 @@ public class ArchiveController {
             ModelRegistry.ArchiveInstallInfo archive = archiveOpt.get();
             List<String> modelIds = archive.getModelIds();
 
-            // Remove from registry
-            registry.removeInstalledArchive(archiveId);
-            registryService.saveRegistry(registry);
+            // Remove atomically from the latest registry snapshot.
+            registryService.updateRegistry(current -> current.removeInstalledArchive(archiveId));
 
             return ResponseEntity.ok(Map.of(
                     "success", true,

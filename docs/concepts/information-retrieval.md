@@ -252,6 +252,24 @@ previous sessions.
 4. Refreshes index every 60 seconds
 5. Encoder loads asynchronously (non-blocking startup)
 
+### Lexical-only memory for lightweight CLI/MCP hosts
+
+Dense memory encoding is enabled by default. To prevent `SemanticMemoryEngine`
+from starting its background SameDiff/BGE encoder loader, set
+`KOMPILE_MEMORY_DENSE_ENABLED=false` in the host environment (including an MCP
+client's server `env`), or pass the JVM system property
+`-Dkompile.memory.dense.enabled=false`. An explicitly set system property takes
+precedence over the environment variable. Only `false` (case-insensitive, with
+surrounding whitespace ignored) disables it; unset or other values keep it enabled.
+The setting is captured when the engine is constructed, so restart the host after
+changing it.
+
+Disabled mode reports `tfidf (dense disabled)` and retains the initial memory scan,
+60-second refresh, turn indexing, and TF-IDF queries without loading encoder
+classes, native libraries, or weights through this engine. This is independent of
+MCP tool profiles and `--no-daemon`; it does not disable other model runtimes,
+crawl/RAG embeddings, or explicitly requested pipelines.
+
 **MCP tool: `semantic_memory`**
 
 | Action | Description |

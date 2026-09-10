@@ -100,6 +100,10 @@ public final class AgentLaunchDefaults {
         if (thinking == null && agent != null) {
             thinking = configuredThinking(agent, model, workingDirectory).orElse(null);
         }
+        if ("codex".equals(agent) && "ultra".equalsIgnoreCase(thinking)) {
+            // Older Kompile pickers exposed this unsupported value. Codex accepts max.
+            thinking = "max";
+        }
         return new Selection(model, thinking);
     }
 

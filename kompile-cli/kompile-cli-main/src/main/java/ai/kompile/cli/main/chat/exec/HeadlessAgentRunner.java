@@ -16,19 +16,27 @@
 
 package ai.kompile.cli.main.chat.exec;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatMemory;
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
 import ai.kompile.cli.main.chat.agent.ProjectChatContext;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
+import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -40,11 +48,13 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -77,6 +87,9 @@ import java.util.function.Consumer;
  */
 public final class HeadlessAgentRunner {
 
+    /** System.out is process-global; serialize the temporary chrome redirect. */
+    private static final Object STDOUT_REDIRECT_LOCK = new Object();
+
     /** How the agent's output is presented on stdout. */
     public enum OutputMode {
         /** Stream raw assistant text to stdout; chrome/progress to stderr. */
@@ -100,14 +113,39 @@ public final class HeadlessAgentRunner {
             Path outputLastMessage,
             String crawlBaseUrl,
             AgentRunController runController,
-            HeadlessRunEventSink eventSink) {
+            HeadlessRunEventSink eventSink,
+            ChatConfig chatConfig,
+            String serverBaseUrl,
+            boolean ragEnabled,
+            boolean memoryEnabled,
+            String roleName,
+            boolean autoApproveTools,
+            List<DirectLlmClient.AttachmentInput> attachments) {
+
+        public Options {
+            attachments = attachments == null ? List.of() : List.copyOf(attachments);
+        }
+
+        /** Compatibility constructor for callers compiled against the pre-attachment shape. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage, String crawlBaseUrl,
+                       AgentRunController runController, HeadlessRunEventSink eventSink,
+                       ChatConfig chatConfig, String serverBaseUrl, boolean ragEnabled,
+                       boolean memoryEnabled, String roleName, boolean autoApproveTools) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
+                    runController, eventSink, chatConfig, serverBaseUrl, ragEnabled,
+                    memoryEnabled, roleName, autoApproveTools, List.of());
+        }
 
         /** Backward-compatible options used by the general {@code kompile exec} command. */
         public Options(String prompt, String sessionId, boolean resume, String agentName,
                        String modelOverride, OutputMode outputMode, Path workingDirectory,
                        long timeoutMs, Path outputLastMessage) {
             this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
-                    workingDirectory, timeoutMs, outputLastMessage, null, null, null);
+                    workingDirectory, timeoutMs, outputLastMessage, null, null, null,
+                    null, null, false, false, null, true, List.of());
         }
 
         /** Backward-compatible options used by crawl workers. */
@@ -117,7 +155,18 @@ public final class HeadlessAgentRunner {
                        AgentRunController runController) {
             this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
                     workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
-                    runController, null);
+                    runController, null, null, null, false, false, null, true, List.of());
+        }
+
+        /** Compatibility constructor for callers that supplied an observational event sink. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage, String crawlBaseUrl,
+                       AgentRunController runController, HeadlessRunEventSink eventSink) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
+                    runController, eventSink, null, null, false, false, null, true,
+                    List.of());
         }
     }
 
@@ -125,20 +174,60 @@ public final class HeadlessAgentRunner {
     public record Result(int exitCode, String text, String sessionId) {}
 
     public Result run(Options opts) {
-        final ObjectMapper mapper = JsonUtils.standardMapper();
+        synchronized (STDOUT_REDIRECT_LOCK) {
+            return runWithRedirect(opts);
+        }
+    }
+
+    private Result runWithRedirect(Options opts) {
         final PrintStream realOut = System.out;
         final PrintStream realErr = System.err;
+        final ObjectMapper mapper = JsonUtils.standardMapper();
         HeadlessRunEventSink configuredEventSink = opts.eventSink();
         if (configuredEventSink == null && opts.outputMode() == OutputMode.JSON) {
-            configuredEventSink = event -> realOut.println(ExecJsonEvents.event(mapper, event));
+            configuredEventSink = event -> {
+                synchronized (realOut) {
+                    realOut.println(ExecJsonEvents.event(mapper, event));
+                    realOut.flush();
+                }
+            };
         }
         EventPublisher events = new EventPublisher(configuredEventSink);
+        final PrintStream chromeTarget = (opts.outputMode() == OutputMode.QUIET)
+                ? new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8)
+                : realErr;
+        System.setOut(chromeTarget);
+        try {
+            return runInternal(opts, realOut, realErr, mapper, events);
+        } catch (RuntimeException e) {
+            String message = e.getMessage() == null
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), message, 1));
+            if (opts.outputMode() != OutputMode.JSON) {
+                realErr.println("Error: " + message);
+            }
+            return new Result(1, "", opts.sessionId());
+        } finally {
+            System.setOut(realOut);
+            if (chromeTarget != realErr) {
+                chromeTarget.close();
+            }
+        }
+    }
 
-        // ── Resolve local LLM config (direct mode) ──────────────────────────
-        ChatConfig config = ChatConfig.loadOrFromEnv();
+    private Result runInternal(Options opts, PrintStream realOut, PrintStream realErr,
+                               ObjectMapper mapper, EventPublisher events) {
+        boolean serverMode = opts.serverBaseUrl() != null && !opts.serverBaseUrl().isBlank();
+
+        // ── Resolve the same project-scoped config used by interactive chat ──
+        ChatConfig config = opts.chatConfig() != null
+                ? opts.chatConfig() : ChatConfig.loadOrFromEnv(opts.workingDirectory());
+        if (config == null && serverMode) {
+            config = new ChatConfig("kompile", null, null, opts.serverBaseUrl());
+        }
         if (config == null) {
             String msg = "No LLM configuration found. Run `kompile chat --setup` to configure a provider and model.";
-            events.publish(HeadlessRunEvent.failed(opts.sessionId(), msg, 1));
+            events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 1));
             if (opts.outputMode() != OutputMode.JSON) {
                 realErr.println(msg);
             }
@@ -147,42 +236,128 @@ public final class HeadlessAgentRunner {
         if (opts.modelOverride() != null) {
             config.setModel(opts.modelOverride());
         }
-        events.publish(HeadlessRunEvent.started(opts.sessionId(), config.getModel(),
-                opts.workingDirectory().toString()));
+        if (!serverMode && ("passthrough".equalsIgnoreCase(config.getChatMode())
+                || !config.isValid())) {
+            String msg = "Incomplete Standard Chat configuration for provider '"
+                    + config.getProvider() + "'. Run `kompile chat --setup`.";
+            events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 2));
+            if (opts.outputMode() != OutputMode.JSON) realErr.println(msg);
+            return new Result(2, "", opts.sessionId());
+        }
+
+        AgentRegistry agentRegistry = new AgentRegistry();
+        for (var custom : new CustomAgentLoader(opts.workingDirectory()).loadAll().values()) {
+            agentRegistry.register(custom);
+        }
+        RoleManager roleManager = new RoleManager(opts.workingDirectory());
+        String localAgent = firstNonBlank(
+                serverMode ? null : opts.agentName(), config.getDefaultAgent(), "coder");
+        String serverAgent = serverMode
+                ? firstNonBlank(opts.agentName(), "claude-cli") : localAgent;
+        if (opts.roleName() != null && !opts.roleName().isBlank()) {
+            RoleConfig role = roleManager.getRole(opts.roleName());
+            if (role == null) {
+                String msg = "Role not found: " + opts.roleName();
+                events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 2));
+                if (opts.outputMode() != OutputMode.JSON) realErr.println(msg);
+                return new Result(2, "", opts.sessionId());
+            }
+            agentRegistry.register(role.toAgentConfig());
+            localAgent = role.getName();
+        }
+        String effectiveAgent = serverMode ? serverAgent : localAgent;
+        boolean effectiveRag = serverMode && opts.ragEnabled();
+
+        Map<String, String> effectiveConfiguration = new LinkedHashMap<>();
+        effectiveConfiguration.put("mode", serverMode ? "server" : "standard");
+        String effectiveProvider = serverMode ? "kompile" : config.getProvider();
+        effectiveConfiguration.put("provider", nullToEmpty(effectiveProvider));
+        effectiveConfiguration.put("auth", serverMode ? "none" : effectiveAuth(config));
+        effectiveConfiguration.put("thinking", serverMode
+                ? "" : nullToEmpty(config.getThinking()));
+        effectiveConfiguration.put("agent", effectiveAgent);
+        effectiveConfiguration.put("role", nullToEmpty(opts.roleName()));
+        effectiveConfiguration.put("rag", Boolean.toString(effectiveRag));
+        effectiveConfiguration.put("memory", Boolean.toString(opts.memoryEnabled()));
+        events.publish(HeadlessRunEvent.started(opts.sessionId(),
+                serverMode ? null : config.getModel(),
+                opts.workingDirectory().toString(), effectiveConfiguration));
 
         // ── Mode-specific raw-text sink (writes to the REAL stdout) ─────────
+        final StreamingTextCapture streamedText = new StreamingTextCapture();
         final Consumer<String> textSink = switch (opts.outputMode()) {
             case TEXT -> chunk -> {
+                if (events.isClosed()) return;
+                streamedText.append(chunk);
                 events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
                 realOut.print(chunk);
             };
-            case JSON -> chunk -> events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
-            case QUIET -> chunk -> events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
+            case JSON -> chunk -> {
+                if (events.isClosed()) return;
+                streamedText.append(chunk);
+                events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
+            };
+            case QUIET -> chunk -> {
+                if (events.isClosed()) return;
+                streamedText.append(chunk);
+                events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
+            };
         };
 
-        final CapturingLlmClient directClient = new CapturingLlmClient(config, mapper, textSink);
+        final CapturingLlmClient directClient = serverMode
+                ? null : new CapturingLlmClient(
+                config, mapper, textSink, opts.workingDirectory());
 
         // ── Build the agent harness (auto-approve: non-interactive) ─────────
         PermissionService permissionService = new PermissionService();
-        permissionService.setAutoApproveAll(true);
-        AgentRegistry agentRegistry = new AgentRegistry();
+        permissionService.setAutoApproveAll(opts.autoApproveTools());
         BackgroundProcessManager processManager = new BackgroundProcessManager(
                 opts.sessionId(), opts.workingDirectory());
+        CoordinationStateManager coordinationManager = new CoordinationStateManager(
+                opts.workingDirectory(), opts.sessionId(), mapper);
         TerminalRenderer renderer = new TerminalRenderer();
         ToolRegistry toolRegistry = ToolRegistryFactory.create(
-                mapper, "", agentRegistry, permissionService, renderer, processManager,
-                config, null, opts.crawlBaseUrl());
-        // Offline describes the transport topology, not a reduced capability set.
-        // Load the same workspace MCP bundles (including Kompile stdio) as normal direct execution.
-        McpBundleToolLoader mcpBundleTools =
-                McpBundleToolLoader.load(opts.workingDirectory(), toolRegistry);
-
+                mapper, serverMode ? opts.serverBaseUrl() : "", agentRegistry,
+                permissionService, renderer, processManager,
+                serverMode ? null : config, roleManager, opts.crawlBaseUrl(),
+                opts.workingDirectory(), coordinationManager);
         ProjectChatContext projectContext = ProjectChatContext.load(opts.workingDirectory());
         AgenticChatLoop loop = new AgenticChatLoop(
-                null, mapper, toolRegistry, permissionService, agentRegistry,
+                serverMode ? opts.serverBaseUrl() : null,
+                mapper, toolRegistry, permissionService, agentRegistry,
                 opts.workingDirectory(), directClient, processManager,
                 projectContext.skillRegistry());
+        loop.setWorkflowGlobalEnabled(
+                HarnessConfig.load(mapper).isJudgeGlobalEnabled());
         loop.configureConversationSession(opts.sessionId());
+        if (!serverMode && !opts.attachments().isEmpty()) {
+            loop.setPendingAttachments(opts.attachments());
+        }
+        ReminderManager reminderManager = new ReminderManager(
+                mapper, opts.sessionId(), opts.workingDirectory());
+        loop.setReminderManager(reminderManager);
+        if (serverMode) {
+            loop.setAssistantDeltaListener(textSink);
+            loop.setServerEventListener(new AgenticChatLoop.ServerEventListener() {
+                @Override
+                public void onBackendStarted(String agent, String processId) {
+                    events.publish(HeadlessRunEvent.backendStarted(
+                            opts.sessionId(), agent, processId));
+                }
+
+                @Override
+                public void onSources(com.fasterxml.jackson.databind.JsonNode sources) {
+                    events.publish(HeadlessRunEvent.sources(
+                            opts.sessionId(), sources.toString()));
+                }
+
+                @Override
+                public void onStats(com.fasterxml.jackson.databind.JsonNode stats) {
+                    events.publish(HeadlessRunEvent.stats(
+                            opts.sessionId(), stats.toString()));
+                }
+            });
+        }
         if (opts.runController() != null) {
             loop.setRunController(opts.runController());
         }
@@ -207,10 +382,10 @@ public final class HeadlessAgentRunner {
                         rawInput, result != null && !result.isError(), duration));
             }
         });
-        ChatSessionMetrics metrics = new ChatSessionMetrics(opts.sessionId());
-        metrics.setProvider(config.getProvider());
+        ChatSessionMetrics metrics = new EventEmittingMetrics(opts.sessionId(), events);
+        metrics.setProvider(effectiveProvider);
         metrics.setModel(config.getModel());
-        metrics.setAgentName(opts.agentName());
+        metrics.setAgentName(effectiveAgent);
         loop.setSessionMetrics(metrics);
 
         AtomicBoolean cancel = new AtomicBoolean(false);
@@ -231,44 +406,61 @@ public final class HeadlessAgentRunner {
         // ── Persist this run's turns so future --resume picks them up ───────
         ChatHistory history = new ChatHistory(opts.sessionId());
         try {
-            history.open("(local)", opts.agentName(), false);
+            history.open(serverMode ? opts.serverBaseUrl() : "(local)", effectiveAgent,
+                    effectiveRag, opts.workingDirectory());
         } catch (Exception ignored) {
             // Transcript persistence is best-effort; never block the run on it.
         }
-        String effectivePrompt = projectContext.skillRegistry().resolveInvocation(opts.prompt())
+        String resolvedPrompt = projectContext.skillRegistry().resolveInvocation(opts.prompt())
                 .map(SkillRegistry.SkillInvocation::prompt)
                 .orElse(opts.prompt());
-        history.logUserMessage(effectivePrompt);
+        ChatMemory chatMemory = new ChatMemory(
+                null, opts.sessionId(), opts.memoryEnabled(), opts.workingDirectory());
+        String memoryContext = chatMemory.buildMemoryContext(resolvedPrompt);
+        String effectivePrompt = memoryContext == null || memoryContext.isBlank()
+                ? resolvedPrompt
+                : "<memory_context>\n" + memoryContext
+                + "</memory_context>\n\n" + resolvedPrompt;
+        // Decorate once here: the transcript records the outbound text and the agentic
+        // loop's idempotent decoration will not tick or stack a second block.
+        String outboundPrompt = reminderManager.decorateUserTurn(effectivePrompt);
+        history.logUserMessage(outboundPrompt);
 
-        // ── Run, with all loop chrome redirected off of stdout ──────────────
-        final PrintStream chromeTarget = (opts.outputMode() == OutputMode.QUIET)
-                ? new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8)
-                : realErr;
-        System.setOut(chromeTarget);
+        // ── Run; the public wrapper already routed terminal chrome off stdout ─
 
         int exitCode = 0;
         String response = "";
+        String failureMessage = null;
         long start = System.currentTimeMillis();
+        McpBundleToolLoader mcpBundleTools = null;
         try {
+            // Process-backed MCP bundles are intentionally acquired inside the cleanup
+            // scope so even a required-server startup failure closes headless resources.
+            mcpBundleTools = McpBundleToolLoader.load(
+                    opts.workingDirectory(), toolRegistry, opts.sessionId());
             response = opts.timeoutMs() > 0
-                    ? runWithTimeout(loop, opts, effectivePrompt, directClient, cancel)
-                    : loop.chat(effectivePrompt, opts.sessionId(), opts.agentName(), "kompile", false);
+                    ? runWithTimeout(loop, opts, outboundPrompt,
+                    localAgent, serverAgent, effectiveRag, cancel)
+                    : loop.chat(outboundPrompt, opts.sessionId(), localAgent,
+                    serverAgent, effectiveRag);
             if (response == null) { // null sentinel from runWithTimeout == timed out
-                response = directClient.captured();
+                response = streamedText.captured();
                 exitCode = 124;
             }
         } catch (Exception e) {
-            response = directClient.captured();
+            response = streamedText.captured();
             exitCode = 1;
-            System.setOut(realOut);
-            events.publish(HeadlessRunEvent.failed(opts.sessionId(), String.valueOf(e.getMessage()), 1));
+            failureMessage = e.getMessage() == null
+                    ? e.getClass().getSimpleName() : e.getMessage();
             if (opts.outputMode() != OutputMode.JSON) {
-                realErr.println("Error: " + e.getMessage());
+                realErr.println("Error: " + failureMessage);
             }
         } finally {
-            System.setOut(realOut);
             if (mcpBundleTools != null) {
                 mcpBundleTools.close();
+            }
+            if (directClient != null) {
+                directClient.close();
             }
         }
         if (response == null) {
@@ -277,10 +469,23 @@ public final class HeadlessAgentRunner {
         long durationMs = System.currentTimeMillis() - start;
 
         try {
-            history.logAgentResponse(opts.agentName(), response, durationMs);
+            history.logAgentResponse(effectiveAgent, response, durationMs);
         } catch (Exception ignored) {
             // best-effort
         }
+        metrics.recordAssistantTurn(response, durationMs);
+        metrics.saveToFile(
+                KompileHome.homeDirectory().toPath().resolve("conversations")
+                        .resolve(opts.sessionId() + ".metrics.json"), mapper);
+        history.close();
+        processManager.close();
+        coordinationManager.shutdown();
+
+        HeadlessRunEvent terminalEvent = exitCode == 1
+                ? HeadlessRunEvent.failed(opts.sessionId(), failureMessage, exitCode)
+                : HeadlessRunEvent.completed(
+                opts.sessionId(), response, exitCode, toolCounter.count());
+        events.publishTerminal(terminalEvent);
 
         // ── Final output per mode ───────────────────────────────────────────
         switch (opts.outputMode()) {
@@ -288,14 +493,7 @@ public final class HeadlessAgentRunner {
                 if (exitCode != 1) realOut.println(); // newline after the streamed text
             }
             case QUIET -> realOut.println(response.stripTrailing());
-            case JSON -> {
-                if (exitCode == 1) {
-                    // The failure event was emitted by the catch block.
-                } else {
-                    events.publish(HeadlessRunEvent.completed(
-                            opts.sessionId(), response, exitCode, toolCounter.count()));
-                }
-            }
+            case JSON -> { /* terminal JSON event was published above */ }
         }
 
         if (opts.outputLastMessage() != null) {
@@ -318,28 +516,63 @@ public final class HeadlessAgentRunner {
      * substitutes whatever text was streamed so far).
      */
     private String runWithTimeout(AgenticChatLoop loop, Options opts, String prompt,
-                                  CapturingLlmClient directClient, AtomicBoolean cancel) {
+                                  String localAgent, String serverAgent, boolean effectiveRag,
+                                  AtomicBoolean cancel) throws Exception {
         ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "kompile-exec");
             t.setDaemon(true);
             return t;
         });
         Future<String> future = exec.submit(() ->
-                loop.chat(prompt, opts.sessionId(), opts.agentName(), "kompile", false));
+                loop.chat(prompt, opts.sessionId(), localAgent,
+                        serverAgent, effectiveRag));
         try {
             return future.get(opts.timeoutMs(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {
             cancel.set(true);
+            loop.cancelActiveTurn();
             future.cancel(true);
             return null;
-        } catch (Exception e) {
+        } catch (ExecutionException e) {
             cancel.set(true);
             future.cancel(true);
-            // Surface as a streamed-text fallback rather than throwing.
-            return directClient.captured();
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            throw new RuntimeException(cause);
+        } catch (InterruptedException e) {
+            cancel.set(true);
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
         } finally {
             exec.shutdownNow();
+            try {
+                exec.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.isBlank()) return value;
+            }
+        }
+        return "";
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String effectiveAuth(ChatConfig config) {
+        if (config == null) return "none";
+        if (config.isOpenCodeNative()) return "native";
+        var auth = config.resolveRequestAuth();
+        if (auth == null || auth.token() == null || auth.token().isBlank()) return "none";
+        return auth.oauth() ? "oauth" : "api-key";
     }
 
     // ========================================================================
@@ -350,18 +583,36 @@ public final class HeadlessAgentRunner {
     private static final class EventPublisher {
         private final HeadlessRunEventSink sink;
         private final AtomicLong sequence = new AtomicLong();
+        private boolean closed;
 
         private EventPublisher(HeadlessRunEventSink sink) {
             this.sink = sink;
         }
 
         synchronized void publish(HeadlessRunEvent event) {
-            if (sink == null || event == null) return;
+            if (closed || event == null) return;
             try {
-                sink.accept(event.withSequence(sequence.incrementAndGet()));
+                if (sink != null) sink.accept(event.withSequence(sequence.incrementAndGet()));
             } catch (RuntimeException ignored) {
                 // Event sinks are observational; a broken sink must not fail the run.
             }
+        }
+
+        synchronized void publishTerminal(HeadlessRunEvent event) {
+            if (closed) return;
+            try {
+                if (sink != null && event != null) {
+                    sink.accept(event.withSequence(sequence.incrementAndGet()));
+                }
+            } catch (RuntimeException ignored) {
+                // Terminal delivery remains best-effort for observational sinks.
+            } finally {
+                closed = true;
+            }
+        }
+
+        synchronized boolean isClosed() {
+            return closed;
         }
     }
 
@@ -374,8 +625,9 @@ public final class HeadlessAgentRunner {
         private final Consumer<String> sink;
         private final StringBuilder captured = new StringBuilder();
 
-        CapturingLlmClient(ChatConfig config, ObjectMapper mapper, Consumer<String> sink) {
-            super(config, mapper);
+        CapturingLlmClient(ChatConfig config, ObjectMapper mapper, Consumer<String> sink,
+                           Path workingDirectory) {
+            super(config, mapper, workingDirectory);
             this.sink = sink;
         }
 
@@ -395,6 +647,19 @@ public final class HeadlessAgentRunner {
         }
     }
 
+    /** Thread-safe capture shared by direct-model and server-SSE transports. */
+    static final class StreamingTextCapture {
+        private final StringBuilder text = new StringBuilder();
+
+        synchronized void append(String chunk) {
+            if (chunk != null) text.append(chunk);
+        }
+
+        synchronized String captured() {
+            return text.toString();
+        }
+    }
+
     /** Thread-safe counter for completed tool calls (used in the JSON {@code result} event). */
     static final class ToolEventCounter {
         private int n;
@@ -404,24 +669,23 @@ public final class HeadlessAgentRunner {
         synchronized int count() { return n; }
     }
 
-    /** {@link ChatSessionMetrics} that also emits a JSONL {@code tool} event per completed tool call. */
-    static final class JsonEmittingMetrics extends ChatSessionMetrics {
-        private final PrintStream out;
-        private final ObjectMapper mapper;
-        private final ToolEventCounter counter;
+    /** Emits provider-reported token usage through the same ordered event stream. */
+    static final class EventEmittingMetrics extends ChatSessionMetrics {
+        private final String sessionId;
+        private final EventPublisher events;
 
-        JsonEmittingMetrics(String sessionId, PrintStream out, ObjectMapper mapper, ToolEventCounter counter) {
+        EventEmittingMetrics(String sessionId, EventPublisher events) {
             super(sessionId);
-            this.out = out;
-            this.mapper = mapper;
-            this.counter = counter;
+            this.sessionId = sessionId;
+            this.events = events;
         }
 
         @Override
-        public void recordToolCall(String toolName, boolean isError, long durationMs) {
-            super.recordToolCall(toolName, isError, durationMs);
-            counter.inc();
-            out.println(ExecJsonEvents.tool(mapper, toolName, !isError, durationMs));
+        public void recordTokenUsage(long input, long output,
+                                     long cacheRead, long cacheCreation) {
+            super.recordTokenUsage(input, output, cacheRead, cacheCreation);
+            events.publish(HeadlessRunEvent.tokenUsage(
+                    sessionId, input, output, cacheRead, cacheCreation));
         }
     }
 }

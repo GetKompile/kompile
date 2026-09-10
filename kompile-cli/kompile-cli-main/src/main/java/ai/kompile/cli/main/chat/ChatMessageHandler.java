@@ -20,6 +20,8 @@ import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.IdleTimeoutInputStream;
+import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.StreamingMarkdownRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -33,6 +35,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
@@ -41,7 +44,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -52,8 +56,7 @@ import java.util.stream.Collectors;
  */
 public class ChatMessageHandler {
 
-    static final String BACKGROUND_HINT = "(use Ctrl+B to background this)";
-
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ChatRepl repl;
     private final McpSseClient mcpClient;
     private final HttpClient httpClient;
@@ -72,7 +75,12 @@ public class ChatMessageHandler {
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
     private final ReminderManager reminderManager;
     private final Object turnDispatchLock = new Object();
+    /** Serializes synchronous crawl/headless turns without blocking cancellation. */
+    private final Object synchronousTurnLock = new Object();
+    private final ProviderConnectivityPolicy serverConnectivityPolicy =
+            ProviderConnectivityPolicy.forProvider("kompile");
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
+    private final AtomicReference<Thread> synchronousTurnOwner = new AtomicReference<>();
     private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
     private final AtomicReference<String> activeRemoteProcessId = new AtomicReference<>();
     private final AtomicBoolean turnActive = new AtomicBoolean();
@@ -80,15 +88,18 @@ public class ChatMessageHandler {
     private final AtomicBoolean acceptingExternalMessages = new AtomicBoolean(true);
     private final AtomicBoolean externalTurnActive = new AtomicBoolean(false);
     private final AtomicBoolean externalWorkClaimed = new AtomicBoolean(false);
-    private final ConcurrentLinkedQueue<String> mandatoryExternalMessages =
-            new ConcurrentLinkedQueue<>();
+    /** Mandatory judge feedback that must retain user role and outrank system wakeups. */
+    private final ConcurrentLinkedDeque<String> mandatoryUserFeedback =
+            new ConcurrentLinkedDeque<>();
+    private final ConcurrentLinkedDeque<String> mandatoryExternalMessages =
+            new ConcurrentLinkedDeque<>();
     /**
      * Input handed directly to a detached turn. These messages are no longer
      * durable queue entries: Ctrl+B explicitly released them for processing by
      * the active owner at its first safe model/tool boundary.
      */
-    private final ConcurrentLinkedQueue<BackgroundInput> backgroundInputs =
-            new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedDeque<BackgroundInput> backgroundInputs =
+            new ConcurrentLinkedDeque<>();
 
     private record BackgroundInput(String content, String formerQueueId) { }
 
@@ -151,13 +162,7 @@ public class ChatMessageHandler {
         // Crawl/headless runs deliberately stay synchronous so callers do not
         // tear down the transcript before the one requested turn completes.
         if (repl.isForceAgentic()) {
-            cancelSignal.set(false);
-            turnActive.set(true);
-            try {
-                handleAcceptedChatMessage(message);
-            } finally {
-                turnActive.set(false);
-            }
+            runSynchronousAgenticTurn(message);
             return;
         }
 
@@ -171,6 +176,31 @@ public class ChatMessageHandler {
         }
     }
 
+    private void runSynchronousAgenticTurn(String message) {
+        synchronized (synchronousTurnLock) {
+            Thread owner = Thread.currentThread();
+            synchronized (turnDispatchLock) {
+                if (!acceptingDispatches.get()) return;
+                cancelSignal.set(false);
+                repl.setLlmBusy(true);
+                turnActive.set(true);
+                synchronousTurnOwner.set(owner);
+            }
+            try {
+                repl.syncPendingSessionTitle();
+                handleAcceptedChatMessage(message);
+            } finally {
+                synchronized (turnDispatchLock) {
+                    turnActive.set(false);
+                    synchronousTurnOwner.compareAndSet(owner, null);
+                    activeResponseBody.set(null);
+                    activeRemoteProcessId.set(null);
+                    repl.setLlmBusy(false);
+                }
+            }
+        }
+    }
+
     /** Deliver a system event even when ordinary queue auto-dequeue is disabled. */
     public void handleExternalMessage(String message) {
         if (message == null || message.isBlank() || repl.isForceAgentic()
@@ -179,16 +209,46 @@ public class ChatMessageHandler {
         synchronized (turnDispatchLock) {
             if (!acceptingExternalMessages.get()) return;
             if (repl.isLlmBusy()) {
+                if (mandatoryExternalMessages.contains(normalized)) return;
                 mandatoryExternalMessages.add(normalized);
-                ChatCompleter.printAbove(renderer.cyan(hasBackgroundedActiveTurn()
-                        ? "  ↻ Process completion handed to background task"
-                        : "  ↻ Process completion queued for agent"));
+                ChatCompleter.showNotice(renderer.cyan(hasBackgroundedActiveTurn()
+                        ? "  ↻ Completion event handed to background task"
+                        : "  ↻ Completion event queued for agent"));
                 repl.requestStatusRedraw();
                 return;
             }
             dispatchTurn(normalized,
                     () -> handleAcceptedExternalMessage(normalized),
                     "standard-chat-process-wakeup");
+        }
+    }
+
+    /**
+     * Deliver judge feedback as an explicit user-authored turn. When another
+     * turn owns the session, enqueue first and publish cancellation under the
+     * same dispatch lock so the successor can never be cancelled by mistake.
+     */
+    public boolean handleUserFeedback(String message, boolean interrupt) {
+        if (message == null || message.isBlank() || repl.isForceAgentic()) return false;
+        String normalized = message.strip();
+        synchronized (turnDispatchLock) {
+            if (!acceptingDispatches.get()) return false;
+            boolean activeTurn = turnActive.get() || repl.isLlmBusy()
+                    || activeDispatchThread.get() != null
+                    || synchronousTurnOwner.get() != null;
+            if (activeTurn) {
+                if (mandatoryUserFeedback.contains(normalized)) return true;
+                mandatoryUserFeedback.add(normalized);
+                ChatCompleter.showNotice(renderer.cyan(
+                        "  ↻ Judge feedback queued as an interrupting user message"));
+                repl.requestStatusRedraw();
+                if (interrupt) requestCancel();
+                return true;
+            }
+            dispatchTurn(normalized,
+                    () -> handleAcceptedChatMessage(normalized),
+                    "standard-chat-judge-feedback");
+            return true;
         }
     }
 
@@ -222,12 +282,21 @@ public class ChatMessageHandler {
     void shutdown() {
         synchronized (turnDispatchLock) {
             acceptingDispatches.set(false);
+            mandatoryUserFeedback.clear();
             restoreUnclaimedBackgroundInputs();
         }
         stopAcceptingExternalMessages();
-        Thread owner = activeDispatchThread.get();
-        if (owner == null || owner == Thread.currentThread()) return;
+        Thread asyncOwner = activeDispatchThread.get();
+        Thread synchronousOwner = synchronousTurnOwner.get();
+        if ((asyncOwner == null || asyncOwner == Thread.currentThread())
+                && (synchronousOwner == null || synchronousOwner == Thread.currentThread())) return;
         requestCancel();
+        joinOwner(asyncOwner);
+        if (synchronousOwner != asyncOwner) joinOwner(synchronousOwner);
+    }
+
+    private static void joinOwner(Thread owner) {
+        if (owner == null || owner == Thread.currentThread()) return;
         try {
             owner.join(2_000);
         } catch (InterruptedException e) {
@@ -239,6 +308,17 @@ public class ChatMessageHandler {
     boolean runIfAcceptingDispatches(Runnable action) {
         if (action == null) return false;
         synchronized (turnDispatchLock) {
+            if (!acceptingDispatches.get()) return false;
+            action.run();
+            return true;
+        }
+    }
+
+    /** Serialize scheduler callbacks with synchronous interactive crawl turns. */
+    boolean runScheduledDispatch(Runnable action) {
+        if (!repl.isForceAgentic()) return runIfAcceptingDispatches(action);
+        if (action == null) return false;
+        synchronized (synchronousTurnLock) {
             if (!acceptingDispatches.get()) return false;
             action.run();
             return true;
@@ -279,35 +359,124 @@ public class ChatMessageHandler {
             cancelSignal.set(false);
             turnActive.set(true);
             activeRemoteProcessId.set(null);
-            Thread dispatchThread = new Thread(() -> {
+            Thread dispatchThread = new Thread(sessionContext.wrap(() -> {
                 try {
+                    repl.syncPendingSessionTitle();
                     action.run();
+                } catch (Throwable uncaughtTurnFailure) {
+                    // LinkageError and friends are not Exception: before this guard, an
+                    // error thrown outside the per-tool catch (request assembly, history
+                    // rebuild, stream wiring) escaped this thread and the turn died with
+                    // zero terminal output — the "typed Continue, nothing happened" class
+                    // of silent crash. Render it the same way as ordinary chat errors.
+                    repl.stopGeneratingSpinner();
+                    emitLine(renderer.red("Error in chat turn: "
+                            + AgenticChatLoop.describeThrowable(uncaughtTurnFailure)));
+                    chatHistory.logSystem("Uncaught turn failure: "
+                            + uncaughtTurnFailure.getClass().getName() + ": "
+                            + uncaughtTurnFailure.getMessage());
                 } finally {
-                    turnActive.set(false);
-                    synchronized (turnDispatchLock) {
-                        boolean ownerReleased = activeDispatchThread.compareAndSet(
-                                Thread.currentThread(), null);
-                        if (ownerReleased) {
-                            activeResponseBody.set(null);
-                            activeRemoteProcessId.set(null);
-                            repl.setLlmBusy(false);
-                            // Queue hand-off happens under the same reservation lock
-                            // only after this owner can no longer be overwritten.
-                            boolean externalDispatched = acceptingExternalMessages.get()
-                                    && dispatchPendingExternalAfterTurnRelease();
-                            boolean backgroundInputDispatched = !externalDispatched
-                                    && dispatchPendingBackgroundInputAfterTurnRelease();
-                            if (acceptingDispatches.get() && !externalDispatched
-                                    && !backgroundInputDispatched) {
-                                repl.dispatchQueuedMessageAfterTurnRelease();
-                            }
-                        }
-                    }
+                    releaseTurnOwnershipAndHandOff();
                 }
-            }, threadName);
+            }), threadName);
             dispatchThread.setDaemon(true);
             activeDispatchThread.set(dispatchThread);
             dispatchThread.start();
+        }
+    }
+
+    /**
+     * Shared turn-owner release: clears the reservation and hands pending queue
+     * work to the next owner. Called from the worker thread's finally block so
+     * every accepted turn — chat or maintenance — releases state identically.
+     */
+    private void releaseTurnOwnershipAndHandOff() {
+        turnActive.set(false);
+        synchronized (turnDispatchLock) {
+            boolean ownerReleased = activeDispatchThread.compareAndSet(
+                    Thread.currentThread(), null);
+            if (ownerReleased) {
+                activeResponseBody.set(null);
+                activeRemoteProcessId.set(null);
+                repl.setLlmBusy(false);
+                // Queue hand-off happens under the same reservation lock
+                // only after this owner can no longer be overwritten.
+                boolean feedbackDispatched = dispatchPendingUserFeedbackAfterTurnRelease();
+                boolean externalDispatched = !feedbackDispatched && acceptingExternalMessages.get()
+                        && dispatchPendingExternalAfterTurnRelease();
+                boolean backgroundInputDispatched = !feedbackDispatched && !externalDispatched
+                        && dispatchPendingBackgroundInputAfterTurnRelease();
+                if (acceptingDispatches.get() && !feedbackDispatched && !externalDispatched
+                        && !backgroundInputDispatched) {
+                    repl.dispatchQueuedMessageAfterTurnRelease();
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs a maintenance action (e.g. /compact) through the same turn lifecycle
+     * as a chat turn. Compaction must never execute on the REPL reader thread:
+     * the point-in-time isLlmBusy() guard there misses backgrounded turns
+     * (llmBusy is false while a detached turn still owns the model/history),
+     * and a reader-thread LLM call cannot be cancelled because no dispatch
+     * owner is registered — a slow or wedged summarization call deadlocks the
+     * whole session. Dispatching it as a reserved turn (a) atomically re-checks
+     * occupancy under the dispatch lock so a turn starting between the check
+     * and the call cannot race the compaction, and (b) registers the worker as
+     * the cancel/interrupt owner so Escape can always break a hung call.
+     *
+     * @return true when the action was accepted for execution, false when a
+     *         turn (foreground or backgrounded) is active and the caller must
+     *         retry after it finishes.
+     */
+    public boolean dispatchMaintenanceTurn(Runnable action, String threadName) {
+        if (!acceptingDispatches.get()) return false;
+        if (repl.isForceAgentic()) {
+            // Headless runs stay synchronous by contract, mirroring chat turns.
+            cancelSignal.set(false);
+            turnActive.set(true);
+            try {
+                action.run();
+                return true;
+            } finally {
+                turnActive.set(false);
+            }
+        }
+        synchronized (turnDispatchLock) {
+            if (!acceptingDispatches.get()) return false;
+            // turnActive stays true while a Ctrl+B-backgrounded turn still owns
+            // the model/tools even though llmBusy is false — check both plus the
+            // registered owner to close the race the busy flag alone misses.
+            if (repl.isLlmBusy() || turnActive.get() || activeDispatchThread.get() != null) {
+                return false;
+            }
+            repl.setLlmBusy(true);
+            cancelSignal.set(false);
+            turnActive.set(true);
+            Thread dispatchThread = new Thread(sessionContext.wrap(() -> {
+                try {
+                    action.run();
+                } catch (Throwable uncaughtTurnFailure) {
+                    // LinkageError and friends are not Exception: before this guard, an
+                    // error thrown outside the per-tool catch (request assembly, history
+                    // rebuild, stream wiring) escaped this thread and the turn died with
+                    // zero terminal output — the "typed Continue, nothing happened" class
+                    // of silent crash. Render it the same way as ordinary chat errors.
+                    repl.stopGeneratingSpinner();
+                    emitLine(renderer.red("Error in chat turn: "
+                            + AgenticChatLoop.describeThrowable(uncaughtTurnFailure)));
+                    chatHistory.logSystem("Uncaught turn failure: "
+                            + uncaughtTurnFailure.getClass().getName() + ": "
+                            + uncaughtTurnFailure.getMessage());
+                } finally {
+                    releaseTurnOwnershipAndHandOff();
+                }
+            }), threadName);
+            dispatchThread.setDaemon(true);
+            activeDispatchThread.set(dispatchThread);
+            dispatchThread.start();
+            return true;
         }
     }
 
@@ -318,15 +487,18 @@ public class ChatMessageHandler {
      */
     public boolean requestCancel() {
         Thread active;
+        Thread synchronous;
         String processId;
         synchronized (turnDispatchLock) {
             // Keep the old owner reserved until every local cancellation signal is
             // published. Its release callback cannot start a successor that these
             // operations would accidentally cancel.
             active = activeDispatchThread.get();
+            synchronous = synchronousTurnOwner.get();
             processId = activeRemoteProcessId.getAndSet(null);
             InputStream responseBody = activeResponseBody.get();
-            boolean accepted = turnActive.get() || active != null || responseBody != null
+            boolean accepted = turnActive.get() || active != null || synchronous != null
+                    || responseBody != null
                     || (processId != null && !processId.isBlank());
             if (!accepted) {
                 return false;
@@ -346,6 +518,10 @@ public class ChatMessageHandler {
             if (active != null && active != Thread.currentThread()) {
                 active.interrupt();
             }
+            if (synchronous != null && synchronous != active
+                    && synchronous != Thread.currentThread()) {
+                synchronous.interrupt();
+            }
         }
         if (processId != null && !processId.isBlank()) {
             cancelRemoteProcess(processId);
@@ -354,10 +530,9 @@ public class ChatMessageHandler {
     }
 
     /**
-     * Detach the active foreground turn without cancelling its model/tool owner.
-     * Existing queued input is removed from the durable queue immediately, and
-     * both it and subsequent input are handed directly to the detached owner at
-     * its first safe model/tool boundary.
+     * Detach the blocking subagent worker without cancelling it. The parent
+     * resumes with an explicit pending tool result, so queued and fresh input
+     * reach a model boundary without waiting for that worker to finish.
      */
     public boolean requestBackground() {
         synchronized (turnDispatchLock) {
@@ -373,7 +548,17 @@ public class ChatMessageHandler {
             task.appendOutput("\n[Backgrounded; input is processed directly at the next safe boundary]"
                     + (released > 0 ? " [released " + released + " queued message(s)]" : "")
                     + "\n");
-            agenticLoop.backgroundActiveTurn(task::appendOutput);
+            agenticLoop.backgroundActiveTurn(task::appendOutput, () -> {
+                synchronized (turnDispatchLock) {
+                    backgroundTaskManager.detachTask(task);
+                    backgroundTaskManager.startTask("Parent conversation (background task continues)");
+                    agenticLoop.clearBackgroundOutput();
+                }
+            }, result -> {
+                task.appendOutput("\n" + result.getOutput() + "\n");
+                backgroundTaskManager.completeDetachedTask(task, result.isError()
+                        ? new IllegalStateException(result.getOutput()) : null);
+            });
             repl.stopGeneratingSpinner();
             ChatCompleter.setActivity(null);
             repl.requestStatusRedraw();
@@ -400,34 +585,33 @@ public class ChatMessageHandler {
     }
 
     private void enqueueChatMessage(String message) {
-        messageQueue.enqueue(message);
+        if (messageQueue.enqueue(message) == null) return;
         repl.requestStatusRedraw();
         sessionMetrics.recordMessageQueued();
         int queueSize = messageQueue.size();
-        emitForegroundLine("");
-        emitForegroundLine(renderer.yellow("  ⏳ Queued ")
-                + renderer.dim("(" + queueSize + " pending)"));
-        emitForegroundLine(renderer.dim("     → ") + StringUtils.truncate(message, 60));
-        if (repl.isAutoDequeueEnabled()) {
-            emitForegroundLine(renderer.dim(
-                    "     Will auto-send at the next model/tool boundary"));
-        } else {
-            emitForegroundLine(renderer.dim("     Use /queue-send to send manually"));
-        }
-        emitForegroundLine("");
+        ChatCompleter.showNotice(renderer.yellow("  ⏳ Queued ")
+                + renderer.dim("(" + queueSize + " pending) → ") + StringUtils.truncate(message, 60)
+                + renderer.dim(repl.isAutoDequeueEnabled()
+                        ? " · Will auto-send at the next model/tool boundary"
+                        : " · Use /queue-send to send manually"));
         // MessageQueue is the durable source until dispatch accepts this input.
         // Logging it here and again at acceptance duplicates context on resume.
     }
 
     private void handleAcceptedChatMessage(String message) {
         sessionMetrics.recordUserTurn(message);
-        if (!repl.isForceAgentic()) {
-            chatHistory.logUserMessage(message);
+        boolean workflowForServer = !localMode && agenticLoop.isWorkflowActive();
+        if (!repl.isForceAgentic() && !workflowForServer) {
+            // Record exactly what the model will receive, reminder block included.
+            // previewUserTurn does not tick; the send boundary owns the interval counter.
+            chatHistory.logUserMessage(reminderManager == null
+                    ? message : reminderManager.previewUserTurn(message));
         }
 
         try {
-            if (repl.isForceAgentic()) {
-                // Crawl profile: every ordinary message is an agentic control/reasoning turn.
+            if (repl.isForceAgentic() || workflowForServer) {
+                // Crawl and workflow profiles require the local agentic owner so tool
+                // prerequisites can be checked before execution.
                 runAgenticChat(message);
             } else if (localMode) {
                 // In local mode, all messages go through the agentic loop
@@ -465,6 +649,19 @@ public class ChatMessageHandler {
         }
     }
 
+    private boolean dispatchPendingUserFeedbackAfterTurnRelease() {
+        if (!acceptingDispatches.get()) {
+            mandatoryUserFeedback.clear();
+            return false;
+        }
+        String message = mandatoryUserFeedback.poll();
+        if (message == null) return false;
+        dispatchTurn(message,
+                () -> handleAcceptedChatMessage(message),
+                "standard-chat-judge-feedback");
+        return true;
+    }
+
     private boolean dispatchPendingExternalAfterTurnRelease() {
         if (!acceptingExternalMessages.get()) {
             mandatoryExternalMessages.clear();
@@ -495,8 +692,8 @@ public class ChatMessageHandler {
 
     /**
      * Completes one accepted turn without launching its successor. dispatchTurn's
-     * owner-release callback claims mandatory process events first, direct input
-     * from a background handoff second, and ordinary auto-dequeued input last.
+     * owner-release callback claims mandatory judge feedback first, process events
+     * second, direct background input third, and ordinary queued input last.
      */
     private void completeAcceptedTurn() {
         synchronized (turnDispatchLock) {
@@ -510,6 +707,15 @@ public class ChatMessageHandler {
         }
     }
 
+    /** Show the user the reminder block attached to an outbound prompt, if any. */
+    private void emitReminderSection(String outboundMessage) {
+        String section = renderer.renderReminderSection(
+                ReminderManager.reminderBlockContent(outboundMessage));
+        if (!section.isEmpty()) {
+            emitLine(section);
+        }
+    }
+
     private void emitLine(String line) {
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
         if (task != null && task.getStatus()
@@ -517,10 +723,6 @@ public class ChatMessageHandler {
             task.appendOutput((line == null ? "" : line) + System.lineSeparator());
             return;
         }
-        ChatCompleter.printAbove(line);
-    }
-
-    private void emitForegroundLine(String line) {
         ChatCompleter.printAbove(line);
     }
 
@@ -545,39 +747,88 @@ public class ChatMessageHandler {
     }
 
     /** Atomically claim the highest-priority pending input for the active agent loop. */
-    private String claimPendingInputAtBoundary() {
+    private AgenticChatLoop.QueuedInput claimPendingInputAtBoundary() {
         synchronized (turnDispatchLock) {
             if (!acceptingDispatches.get()) return null;
+            String feedback = mandatoryUserFeedback.poll();
+            if (feedback != null) {
+                return new AgenticChatLoop.QueuedInput(feedback, () -> {
+                    synchronized (turnDispatchLock) {
+                        if (cancelSignal.get() || !acceptingDispatches.get()) return false;
+                        sessionMetrics.recordUserTurn(feedback);
+                        chatHistory.logUserMessage(reminderManager == null
+                                ? feedback : reminderManager.previewUserTurn(feedback));
+                        ChatCompleter.showNotice(renderer.cyan(
+                                "  ↻ Applying judge feedback as user guidance"));
+                        repl.requestStatusRedraw();
+                        return true;
+                    }
+                }, () -> {
+                    synchronized (turnDispatchLock) {
+                        if (acceptingDispatches.get()) {
+                            mandatoryUserFeedback.remove(feedback);
+                            mandatoryUserFeedback.addFirst(feedback);
+                        }
+                    }
+                });
+            }
             if (!acceptingExternalMessages.get()) {
                 mandatoryExternalMessages.clear();
             }
             String external = mandatoryExternalMessages.poll();
-            if (external != null) {
-                externalWorkClaimed.set(true);
-            }
             if (external != null && acceptingExternalMessages.get()) {
-                chatHistory.logSystem(external);
-                ChatCompleter.printAbove(renderer.cyan(
-                        "  ↻ Applying process completion at agent boundary"));
-                repl.requestStatusRedraw();
-                return external;
-            }
-            if (external != null) {
-                externalWorkClaimed.set(false);
+                return new AgenticChatLoop.QueuedInput(external, () -> {
+                    synchronized (turnDispatchLock) {
+                        if (cancelSignal.get() || !acceptingExternalMessages.get()) {
+                            return false;
+                        }
+                        externalWorkClaimed.set(true);
+                        chatHistory.logSystem(external);
+                        ChatCompleter.showNotice(renderer.cyan(
+                                "  ↻ Applying completion event at agent boundary"));
+                        repl.requestStatusRedraw();
+                        return true;
+                    }
+                }, () -> {
+                    synchronized (turnDispatchLock) {
+                        externalWorkClaimed.set(false);
+                        if (acceptingExternalMessages.get()) {
+                            mandatoryExternalMessages.remove(external);
+                            mandatoryExternalMessages.addFirst(external);
+                        }
+                    }
+                });
             }
             BackgroundInput backgroundInput = backgroundInputs.poll();
             if (backgroundInput != null) {
-                if (backgroundInput.formerQueueId() != null) {
-                    sessionMetrics.recordMessageAutoDequeued();
-                }
-                sessionMetrics.recordUserTurn(backgroundInput.content());
-                chatHistory.logUserMessage(backgroundInput.content());
-                repl.requestStatusRedraw();
-                ChatCompleter.printAbove(renderer.cyan(
-                                "  ↪ Processing input immediately after backgrounding")
-                        + (backgroundInput.formerQueueId() == null
-                                ? "" : renderer.dim(" [" + backgroundInput.formerQueueId() + "]")));
-                return backgroundInput.content();
+                return new AgenticChatLoop.QueuedInput(backgroundInput.content(), () -> {
+                    synchronized (turnDispatchLock) {
+                        if (cancelSignal.get() || !acceptingDispatches.get()) return false;
+                        if (backgroundInput.formerQueueId() != null) {
+                            sessionMetrics.recordMessageAutoDequeued();
+                        }
+                        sessionMetrics.recordUserTurn(backgroundInput.content());
+                        chatHistory.logUserMessage(reminderManager == null
+                                ? backgroundInput.content()
+                                : reminderManager.previewUserTurn(backgroundInput.content()));
+                        repl.requestStatusRedraw();
+                        ChatCompleter.showNotice(renderer.cyan(
+                                        "  ↪ Processing input immediately after backgrounding")
+                                + (backgroundInput.formerQueueId() == null ? ""
+                                        : renderer.dim(" [" + backgroundInput.formerQueueId() + "]")));
+                        return true;
+                    }
+                }, () -> {
+                    synchronized (turnDispatchLock) {
+                        if (acceptingDispatches.get()) {
+                            backgroundInputs.removeIf(input -> input.content().equals(backgroundInput.content()));
+                            backgroundInputs.addFirst(backgroundInput);
+                            repl.requestStatusRedraw();
+                        } else {
+                            messageQueue.enqueue(backgroundInput.content());
+                        }
+                    }
+                });
             }
             if (!repl.isAutoDequeueEnabled() && !backgroundTaskManager.isInQueueChain()) {
                 return null;
@@ -591,21 +842,36 @@ public class ChatMessageHandler {
             if (claimed == null) {
                 return null;
             }
-
-            if (!backgroundTaskManager.isInQueueChain()) {
-                backgroundTaskManager.startQueueChain(messageQueue.size() + 1);
-            }
-            backgroundTaskManager.advanceQueueChain();
-            if (messageQueue.isEmpty()) {
-                backgroundTaskManager.endQueueChain();
-            }
-            sessionMetrics.recordMessageAutoDequeued();
-            sessionMetrics.recordUserTurn(claimed.getContent());
-            chatHistory.logUserMessage(claimed.getContent());
             repl.requestStatusRedraw();
-            ChatCompleter.printAbove(renderer.cyan("  ↪ Sent queued message at tool boundary")
-                    + renderer.dim(" [" + claimed.getId() + "]"));
-            return claimed.getContent();
+            return new AgenticChatLoop.QueuedInput(claimed.getContent(), () -> {
+                synchronized (turnDispatchLock) {
+                    if (cancelSignal.get() || !acceptingDispatches.get()) return false;
+                    if (!backgroundTaskManager.isInQueueChain()) {
+                        backgroundTaskManager.startQueueChain(messageQueue.size() + 1);
+                    }
+                    backgroundTaskManager.advanceQueueChain();
+                    if (messageQueue.isEmpty()) {
+                        backgroundTaskManager.endQueueChain();
+                    }
+                    sessionMetrics.recordMessageAutoDequeued();
+                    sessionMetrics.recordUserTurn(claimed.getContent());
+                    chatHistory.logUserMessage(reminderManager == null
+                            ? claimed.getContent()
+                            : reminderManager.previewUserTurn(claimed.getContent()));
+                    repl.requestStatusRedraw();
+                    ChatCompleter.showNotice(renderer.cyan(
+                                    "  ↪ Sent queued message at tool boundary")
+                            + renderer.dim(" [" + claimed.getId() + "]"));
+                    return true;
+                }
+            }, () -> {
+                synchronized (turnDispatchLock) {
+                    messageQueue.requeueFirst(claimed);
+                    if (acceptingDispatches.get()) {
+                        repl.requestStatusRedraw();
+                    }
+                }
+            });
         }
     }
 
@@ -618,11 +884,11 @@ public class ChatMessageHandler {
 
     private void acceptBackgroundInput(String message, String formerQueueId) {
         if (message == null || message.isBlank()) return;
+        if (backgroundInputs.stream().anyMatch(input -> input.content().equals(message))) return;
         backgroundInputs.add(new BackgroundInput(message, formerQueueId));
         repl.requestStatusRedraw();
-        ChatCompleter.printAbove(renderer.cyan("  ↪ Processing with background task")
-                + renderer.dim(" (not queued)"));
-        ChatCompleter.printAbove(renderer.dim("     → ") + StringUtils.truncate(message, 60));
+        ChatCompleter.showNotice(renderer.cyan("  ↪ Processing with background task")
+                + renderer.dim(" (not queued) → ") + StringUtils.truncate(message, 60));
     }
 
     /** Move all currently sendable queue entries into the detached turn's direct lane. */
@@ -630,8 +896,11 @@ public class ChatMessageHandler {
         int released = 0;
         MessageQueue.QueuedMessage message;
         while ((message = messageQueue.dequeue()) != null) {
-            backgroundInputs.add(new BackgroundInput(message.getContent(), message.getId()));
-            released++;
+            BackgroundInput input = new BackgroundInput(message.getContent(), message.getId());
+            if (backgroundInputs.stream().noneMatch(queued -> queued.content().equals(input.content()))) {
+                backgroundInputs.add(input);
+                released++;
+            }
         }
         if (released > 0 && backgroundTaskManager.isInQueueChain()) {
             backgroundTaskManager.endQueueChain();
@@ -666,11 +935,6 @@ public class ChatMessageHandler {
     private void startActivityIndicator() {
         setForegroundActivity("Thinking");
         repl.requestStatusRedraw();
-        if (backgroundTaskManager.isCurrentTaskBackgroundable()) {
-            // Durable, one-time affordance. Nested tools/subagents remain part of
-            // this same backgroundable parent turn and do not repeat the hint.
-            emitLine(renderer.dim("  ◐ Running " + BACKGROUND_HINT));
-        }
         // With an active LineReader the persistent status bar renders the
         // foreground RUNNING task. A carriage-return spinner would overwrite
         // the draft the user is typing for the queue.
@@ -745,9 +1009,12 @@ public class ChatMessageHandler {
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + StringUtils.truncate(message, 50));
         startActivityIndicator();
         try {
+            String outboundMessage = reminderManager == null
+                    ? enrichedMessage : reminderManager.decorateUserTurn(enrichedMessage);
+            emitReminderSection(outboundMessage);
             ObjectNode args = objectMapper.createObjectNode();
             args.put("sessionId", sessionId);
-            args.put("message", reminderManager.prependTo(enrichedMessage));
+            args.put("message", outboundMessage);
             args.put("enableRag", repl.isRagEnabled());
             args.put("maxResults", 10);
             args.put("similarityThreshold", 0.5);
@@ -807,11 +1074,17 @@ public class ChatMessageHandler {
             return;
         }
         repl.initializeSessionTitleFromPrompt(message);
+        if (agenticLoop.isWorkflowActive()) {
+            dispatchTurn(message, () -> runAgenticChat(message),
+                    "workflow-agentic-chat");
+            return;
+        }
         dispatchTurn(message, () -> streamAgentChatAccepted(message), "server-stream-chat");
     }
 
     private void streamAgentChatAccepted(String message) {
-        chatHistory.logUserMessage("/ask " + message);
+        chatHistory.logUserMessage("/ask " + (reminderManager == null
+                ? message : reminderManager.previewUserTurn(message)));
 
         // Build memory-enriched message if memory is enabled
         String enrichedMessage = message;
@@ -826,8 +1099,11 @@ public class ChatMessageHandler {
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Streaming LLM response: " + StringUtils.truncate(message, 40));
         startActivityIndicator();
         try {
+            String outboundMessage = reminderManager == null
+                    ? enrichedMessage : reminderManager.decorateUserTurn(enrichedMessage);
+            emitReminderSection(outboundMessage);
             ObjectNode request = objectMapper.createObjectNode();
-            request.put("message", reminderManager.prependTo(enrichedMessage));
+            request.put("message", outboundMessage);
             request.put("agentName", repl.getAgentName());
             request.put("enableRag", repl.isRagEnabled());
             request.put("ragMaxResults", 5);
@@ -840,61 +1116,94 @@ public class ChatMessageHandler {
             request.put("timeoutSeconds", 300);
 
             String body = objectMapper.writeValueAsString(request);
-
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(repl.getBaseUrl() + "/api/agents/chat/stream"))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .timeout(Duration.ofMinutes(10))
-                    .build();
-
-            HttpResponse<InputStream> response = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofInputStream());
-
-            if (response.statusCode() != 200) {
-                repl.stopGeneratingSpinner();
-                emitLine(renderer.red("Agent stream failed: HTTP " + response.statusCode()));
-                return;
-            }
-
-            repl.stopGeneratingSpinner();
-            setForegroundActivity("Responding");
-            repl.requestStatusRedraw();
-            emitLine("");
-
-            // Accumulate full response for transcript
             StringBuilder fullResponse = new StringBuilder();
             long[] durationMs = {0};
             StreamingMarkdownRenderer streamingMd =
                     new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
-
-            InputStream responseBody = response.body();
-            activeResponseBody.set(responseBody);
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody))) {
-                String eventType = null;
-                StringBuilder dataBuffer = new StringBuilder();
-                String line;
-
-                while ((line = reader.readLine()) != null) {
-                    if (cancelSignal.get()) {
-                        streamingMd.flush();
-                        emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
-                        fullResponse.append("\n[Interrupted by user]");
-                        break;
+            boolean connected = false;
+            for (int attempt = 1; attempt <= serverConnectivityPolicy.maxAttempts(); attempt++) {
+                boolean streamStarted = false;
+                boolean terminalEvent = false;
+                InputStream responseBody = null;
+                try {
+                    HttpRequest httpRequest = HttpRequest.newBuilder()
+                            .uri(URI.create(repl.getBaseUrl() + "/api/agents/chat/stream"))
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "text/event-stream")
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .timeout(serverConnectivityPolicy.requestTimeout())
+                            .build();
+                    HttpResponse<InputStream> response = httpClient.send(
+                            httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+                    if (response.statusCode() != 200) {
+                        if (serverConnectivityPolicy.isRetryableStatus(response.statusCode())
+                                && attempt < serverConnectivityPolicy.maxAttempts()) {
+                            response.body().close();
+                            reconnectServerStream(attempt,
+                                    "HTTP " + response.statusCode(), response.headers());
+                            continue;
+                        }
+                        response.body().close();
+                        repl.stopGeneratingSpinner();
+                        emitLine(renderer.red("Agent stream failed: HTTP " + response.statusCode()));
+                        return;
                     }
-                    if (line.startsWith("event:")) {
-                        eventType = line.substring(6).trim();
-                    } else if (line.startsWith("data:")) {
-                        dataBuffer.append(line.substring(5).trim());
-                    } else if (line.isEmpty() && eventType != null) {
-                        handleStreamEvent(eventType, dataBuffer.toString(), fullResponse, durationMs, streamingMd);
-                        eventType = null;
-                        dataBuffer.setLength(0);
+
+                    repl.stopGeneratingSpinner();
+                    setForegroundActivity("Responding");
+                    repl.requestStatusRedraw();
+                    emitLine("");
+                    responseBody = new IdleTimeoutInputStream(
+                            response.body(), serverConnectivityPolicy.streamIdleTimeout());
+                    activeResponseBody.set(responseBody);
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(responseBody))) {
+                        String eventType = null;
+                        StringBuilder dataBuffer = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            if (cancelSignal.get()) {
+                                streamingMd.flush();
+                                emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
+                                fullResponse.append("\n[Interrupted by user]");
+                                break;
+                            }
+                            if (line.startsWith("event:")) {
+                                eventType = line.substring(6).trim();
+                            } else if (line.startsWith("data:")) {
+                                dataBuffer.append(line.substring(5).trim());
+                            } else if (line.isEmpty() && eventType != null) {
+                                streamStarted = true;
+                                terminalEvent = terminalEvent || "complete".equals(eventType)
+                                        || "cancelled".equals(eventType)
+                                        || "error".equals(eventType);
+                                handleStreamEvent(eventType, dataBuffer.toString(), fullResponse,
+                                        durationMs, streamingMd);
+                                eventType = null;
+                                dataBuffer.setLength(0);
+                            }
+                        }
+                    }
+                    if (!cancelSignal.get() && !terminalEvent) {
+                        throw new IOException("Agent stream ended before a terminal event");
+                    }
+                    connected = true;
+                    break;
+                } catch (Exception failure) {
+                    boolean retry = !streamStarted && fullResponse.isEmpty()
+                            && serverConnectivityPolicy.isRetryableFailure(failure)
+                            && attempt < serverConnectivityPolicy.maxAttempts();
+                    if (!retry) throw failure;
+                    reconnectServerStream(attempt, connectivityMessage(failure), null);
+                } finally {
+                    if (responseBody != null) {
+                        activeResponseBody.compareAndSet(responseBody, null);
                     }
                 }
             }
-            activeResponseBody.compareAndSet(responseBody, null);
+            if (!connected && !cancelSignal.get()) {
+                throw new IOException("Agent stream could not reconnect");
+            }
             streamingMd.flush();
 
             emitLine("");
@@ -917,6 +1226,28 @@ public class ChatMessageHandler {
             repl.requestStatusRedraw();
             completeAcceptedTurn();
         }
+    }
+
+    private void reconnectServerStream(
+            int failedAttempt, String reason, HttpHeaders headers) throws InterruptedException {
+        Duration delay = serverConnectivityPolicy.retryDelay(failedAttempt, headers);
+        setForegroundActivity("Reconnecting Kompile · " + (failedAttempt + 1) + "/"
+                + serverConnectivityPolicy.maxAttempts() + " in " + delay.toMillis()
+                + " ms (" + reason + ")");
+        repl.requestStatusRedraw();
+        long deadline = System.nanoTime() + delay.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (cancelSignal.get()) throw new InterruptedException("Chat turn cancelled");
+            long remaining = deadline - System.nanoTime();
+            TimeUnit.NANOSECONDS.sleep(Math.min(
+                    remaining, TimeUnit.MILLISECONDS.toNanos(100)));
+        }
+    }
+
+    private static String connectivityMessage(Throwable failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank()
+                ? failure.getClass().getSimpleName() : message;
     }
 
     // ========================================================================
@@ -951,7 +1282,10 @@ public class ChatMessageHandler {
             return;
         }
 
-        chatHistory.logUserMessage(repl.isForceAgentic() ? message : "/agent-chat " + message);
+        String transcriptPrefix = repl.isForceAgentic() || agenticLoop.isWorkflowActive()
+                ? "" : "/agent-chat ";
+        chatHistory.logUserMessage(transcriptPrefix + (reminderManager == null
+                ? message : reminderManager.previewUserTurn(message)));
 
         // Build memory-enriched message if memory is enabled
         String enrichedMessage = message;
@@ -965,7 +1299,7 @@ public class ChatMessageHandler {
         emitLine("");
 
         repl.setLlmBusy(true);
-        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Agentic chat: " + StringUtils.truncate(message, 40));
+        backgroundTaskManager.startTask("Agentic chat: " + StringUtils.truncate(message, 40));
         startActivityIndicator();
         agenticLoop.setOnFirstOutput(repl::stopGeneratingSpinner);
         long turnStart = System.currentTimeMillis();
@@ -977,16 +1311,17 @@ public class ChatMessageHandler {
             long turnDuration = System.currentTimeMillis() - turnStart;
             emitLine("");
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
-            appendFinalTaskOutput(task, response);
+            appendFinalTaskOutput(backgroundTaskManager.getCurrentTask(), response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
 
         } catch (Exception e) {
+            BackgroundTaskManager.BackgroundTask parentTask = backgroundTaskManager.getCurrentTask();
             if (cancelSignal.get()) {
-                emitInterruptedMessage(task);
+                emitInterruptedMessage(parentTask);
             } else {
                 repl.stopGeneratingSpinner();
                 emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
-                task.setError(e);
+                if (parentTask != null) parentTask.setError(e);
             }
         }
     }

@@ -12,7 +12,6 @@ import org.mockito.quality.Strictness;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
-import java.net.URI;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -63,11 +62,11 @@ class OAuthControllerTest {
                     .state("abc")
                     .providerId("google")
                     .build();
-            when(connectionService.initiateAuthorization(eq("google"), anyString()))
+            when(connectionService.initiateAuthorization(eq("google"), anyString(), isNull()))
                     .thenReturn(authResponse);
 
             ResponseEntity<AuthorizationUrlResponse> response =
-                    controller.initiateAuthorization("google", null, request);
+                    controller.initiateAuthorization("google", null, null, request);
 
             assertEquals(HttpStatus.OK, response.getStatusCode());
             assertNotNull(response.getBody());
@@ -76,14 +75,35 @@ class OAuthControllerTest {
         }
 
         @Test
+        @DisplayName("should forward fixed channel authorization purpose")
+        void channelPurpose() {
+            HttpServletRequest request = mockStandardRequest();
+            AuthorizationUrlResponse authResponse = AuthorizationUrlResponse.builder()
+                    .authorizationUrl("https://slack.com/oauth?scope=chat:write")
+                    .state("state")
+                    .providerId("slack")
+                    .build();
+            when(connectionService.initiateAuthorization(
+                    eq("slack"), anyString(), eq("channel")))
+                    .thenReturn(authResponse);
+
+            ResponseEntity<AuthorizationUrlResponse> response =
+                    controller.initiateAuthorization("slack", null, "channel", request);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            verify(connectionService).initiateAuthorization(
+                    eq("slack"), anyString(), eq("channel"));
+        }
+
+        @Test
         @DisplayName("should return 400 for unknown provider")
         void unknownProvider() {
             HttpServletRequest request = mockStandardRequest();
-            when(connectionService.initiateAuthorization(eq("unknown"), anyString()))
+            when(connectionService.initiateAuthorization(eq("unknown"), anyString(), isNull()))
                     .thenThrow(new IllegalArgumentException("Unknown provider"));
 
             ResponseEntity<AuthorizationUrlResponse> response =
-                    controller.initiateAuthorization("unknown", null, request);
+                    controller.initiateAuthorization("unknown", null, null, request);
 
             assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
         }
@@ -92,11 +112,11 @@ class OAuthControllerTest {
         @DisplayName("should return 428 PRECONDITION_REQUIRED for unconfigured provider")
         void unconfiguredProvider() {
             HttpServletRequest request = mockStandardRequest();
-            when(connectionService.initiateAuthorization(eq("google"), anyString()))
+            when(connectionService.initiateAuthorization(eq("google"), anyString(), isNull()))
                     .thenThrow(new IllegalStateException("Not configured"));
 
             ResponseEntity<AuthorizationUrlResponse> response =
-                    controller.initiateAuthorization("google", null, request);
+                    controller.initiateAuthorization("google", null, null, request);
 
             assertEquals(HttpStatus.PRECONDITION_REQUIRED, response.getStatusCode());
         }
@@ -117,18 +137,15 @@ class OAuthControllerTest {
             OAuthConnectionDto dto = OAuthConnectionDto.builder()
                     .providerId("google").status("connected").build();
             when(connectionService.completeAuthorization(
-                    eq("google"), eq("code123"), eq("state456"), anyString()))
+                    eq("google"), eq("code123"), eq("state456")))
                     .thenReturn(dto);
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", "code123", "state456", null, null, request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            assertTrue(location.toString().contains("success=true"), "Redirect must contain success=true");
-            assertTrue(location.toString().contains("provider=google"), "Redirect must contain provider=google");
-            assertNull(response.getBody(), "302 redirect must have no body");
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertTrue(((String) response.getBody()).contains("google is now connected"));
+            assertTrue(((String) response.getBody()).contains("oauth-complete"));
         }
 
         @Test
@@ -139,13 +156,21 @@ class OAuthControllerTest {
             ResponseEntity<?> response = controller.handleCallback(
                     "google", null, null, "access_denied", "User denied access", request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            assertTrue(location.toString().contains("error=access_denied"),
-                    "Redirect must contain the error code");
-            assertTrue(location.toString().contains("provider=google"),
-                    "Redirect must contain provider=google");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(((String) response.getBody()).contains("Connection failed"));
+            assertTrue(((String) response.getBody()).contains("Authorization was denied"));
+        }
+
+        @Test
+        @DisplayName("provider denial consumes returned OAuth state")
+        void providerDenialConsumesState() {
+            HttpServletRequest request = mockStandardRequest();
+
+            ResponseEntity<?> response = controller.handleCallback(
+                    "reddit", null, "denied-state", "access_denied", "Denied", request);
+
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            verify(connectionService).consumeDeniedAuthorization("reddit", "denied-state");
         }
 
         @Test
@@ -183,19 +208,14 @@ class OAuthControllerTest {
         void invalidStateThrowsSecurityException() {
             HttpServletRequest request = mockStandardRequest();
             when(connectionService.completeAuthorization(
-                    eq("google"), eq("code"), eq("forged-state"), anyString()))
+                    eq("google"), eq("code"), eq("forged-state")))
                     .thenThrow(new SecurityException("Invalid OAuth state parameter"));
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", "code", "forged-state", null, null, request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            assertTrue(location.toString().contains("invalid_state"),
-                    "Redirect must contain invalid_state error");
-            assertTrue(location.toString().contains("provider=google"),
-                    "Redirect must contain provider=google");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(((String) response.getBody()).contains("OAuth state validation failed"));
         }
 
         @Test
@@ -203,17 +223,14 @@ class OAuthControllerTest {
         void tokenExchangeFailed() {
             HttpServletRequest request = mockStandardRequest();
             when(connectionService.completeAuthorization(
-                    eq("google"), eq("bad-code"), eq("state"), anyString()))
+                    eq("google"), eq("bad-code"), eq("state")))
                     .thenThrow(new RuntimeException("Token exchange failed"));
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", "bad-code", "state", null, null, request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            assertTrue(location.toString().contains("token_exchange_failed"),
-                    "Redirect must contain token_exchange_failed error");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(((String) response.getBody()).contains("Token exchange failed"));
         }
     }
 
@@ -226,50 +243,40 @@ class OAuthControllerTest {
     class CallbackRedirectSafety {
 
         @Test
-        @DisplayName("should include error code but not inject raw script tags into redirect URL")
+        @DisplayName("should render a fixed error page without reflecting provider error input")
         void errorCodeInRedirectUrl() {
             HttpServletRequest request = mockStandardRequest();
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", null, null, "access_denied", "User denied access", request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            // The redirect URL should carry the URL-encoded error parameter
-            assertTrue(location.toString().contains("error=access_denied"),
-                    "Redirect URL must contain the error code");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertFalse(((String) response.getBody()).contains("access_denied"));
         }
 
         @Test
-        @DisplayName("should include URL-encoded error description in redirect URL query parameter")
+        @DisplayName("should not reflect raw provider error descriptions into HTML")
         void errorDescriptionInRedirectUrl() {
             HttpServletRequest request = mockStandardRequest();
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", null, null, "access_denied", "User denied access", request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            // error_description is URL-encoded (spaces become +)
-            assertTrue(location.toString().contains("error_description=User+denied+access"),
-                    "Redirect URL must carry URL-encoded error_description parameter");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertFalse(((String) response.getBody()).contains("User denied access"));
         }
 
         @Test
-        @DisplayName("should redirect to connections page on provider error")
+        @DisplayName("should notify an opener instead of redirecting to a missing page")
         void redirectsToConnectionsPage() {
             HttpServletRequest request = mockStandardRequest();
 
             ResponseEntity<?> response = controller.handleCallback(
                     "google", null, null, "access_denied", null, request);
 
-            assertEquals(HttpStatus.FOUND, response.getStatusCode());
-            URI location = response.getHeaders().getLocation();
-            assertNotNull(location);
-            assertTrue(location.toString().contains("/connections"),
-                    "Redirect must point to /connections page");
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(((String) response.getBody()).contains("window.opener.postMessage"));
+            assertFalse(((String) response.getBody()).contains("/connections"));
         }
     }
 
@@ -326,6 +333,42 @@ class OAuthControllerTest {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // Credential endpoint
+    // ═══════════════════════════════════════════════════════════════
+
+    @Nested
+    @DisplayName("GET /{providerId}/credential")
+    class Credential {
+
+        @Test
+        @DisplayName("should hand the runtime token to the admin-token-gated caller")
+        void exposesTokenToBridge() {
+            when(connectionService.getValidAccessToken("google"))
+                    .thenReturn("ya29.bridge-token");
+
+            ResponseEntity<Map<String, Object>> response = controller.getCredential("google");
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            Map<String, Object> body = response.getBody();
+            assertNotNull(body);
+            assertEquals(true, body.get("hasToken"));
+            assertEquals("google", body.get("providerId"));
+            assertEquals("ya29.bridge-token", body.get("accessToken"));
+        }
+
+        @Test
+        @DisplayName("should return 428 when the provider is not connected")
+        void notConnected() {
+            when(connectionService.getValidAccessToken("google")).thenReturn(null);
+
+            ResponseEntity<Map<String, Object>> response = controller.getCredential("google");
+
+            assertEquals(HttpStatus.PRECONDITION_REQUIRED, response.getStatusCode());
+            assertEquals(false, response.getBody().get("hasToken"));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // Disconnect
     // ═══════════════════════════════════════════════════════════════
 
@@ -366,59 +409,75 @@ class OAuthControllerTest {
     class BaseUrlConstruction {
 
         @Test
+        @DisplayName("configured public redirect base wins behind a reverse proxy")
+        void configuredPublicBaseWins() {
+            HttpServletRequest request = mockRequest("http", "crawl-manager.internal", 8082);
+            when(connectionService.getConfiguredRedirectUri("reddit"))
+                    .thenReturn("https://public.example/api/oauth/reddit/callback");
+            when(connectionService.initiateAuthorization(eq("reddit"), anyString(), isNull()))
+                    .thenReturn(AuthorizationUrlResponse.builder()
+                            .authorizationUrl("url").state("s").providerId("reddit").build());
+
+            controller.initiateAuthorization("reddit", null, null, request);
+
+            verify(connectionService).initiateAuthorization("reddit",
+                    "https://public.example/api/oauth/reddit/callback", null);
+        }
+
+        @Test
         @DisplayName("should omit port for standard HTTPS (443)")
         void standardHttps() {
             HttpServletRequest request = mockRequest("https", "app.example.com", 443);
-            when(connectionService.initiateAuthorization(eq("google"), anyString()))
+            when(connectionService.initiateAuthorization(eq("google"), anyString(), isNull()))
                     .thenReturn(AuthorizationUrlResponse.builder()
                             .authorizationUrl("url").state("s").providerId("google").build());
 
-            controller.initiateAuthorization("google", null, request);
+            controller.initiateAuthorization("google", null, null, request);
 
             verify(connectionService).initiateAuthorization(eq("google"),
-                    eq("https://app.example.com/api/oauth/google/callback"));
+                    eq("https://app.example.com/api/oauth/google/callback"), isNull());
         }
 
         @Test
         @DisplayName("should omit port for standard HTTP (80)")
         void standardHttp() {
             HttpServletRequest request = mockRequest("http", "localhost", 80);
-            when(connectionService.initiateAuthorization(eq("google"), anyString()))
+            when(connectionService.initiateAuthorization(eq("google"), anyString(), isNull()))
                     .thenReturn(AuthorizationUrlResponse.builder()
                             .authorizationUrl("url").state("s").providerId("google").build());
 
-            controller.initiateAuthorization("google", null, request);
+            controller.initiateAuthorization("google", null, null, request);
 
             verify(connectionService).initiateAuthorization(eq("google"),
-                    eq("http://localhost/api/oauth/google/callback"));
+                    eq("http://localhost/api/oauth/google/callback"), isNull());
         }
 
         @Test
         @DisplayName("should include non-standard port")
         void nonStandardPort() {
             HttpServletRequest request = mockRequest("http", "localhost", 9090);
-            when(connectionService.initiateAuthorization(eq("google"), anyString()))
+            when(connectionService.initiateAuthorization(eq("google"), anyString(), isNull()))
                     .thenReturn(AuthorizationUrlResponse.builder()
                             .authorizationUrl("url").state("s").providerId("google").build());
 
-            controller.initiateAuthorization("google", null, request);
+            controller.initiateAuthorization("google", null, null, request);
 
             verify(connectionService).initiateAuthorization(eq("google"),
-                    eq("http://localhost:9090/api/oauth/google/callback"));
+                    eq("http://localhost:9090/api/oauth/google/callback"), isNull());
         }
 
         @Test
         @DisplayName("should construct correct callback path per provider")
         void providerSpecificPath() {
             HttpServletRequest request = mockRequest("https", "app.example.com", 443);
-            when(connectionService.initiateAuthorization(eq("atlassian"), anyString()))
+            when(connectionService.initiateAuthorization(eq("atlassian"), anyString(), isNull()))
                     .thenReturn(AuthorizationUrlResponse.builder()
                             .authorizationUrl("url").state("s").providerId("atlassian").build());
 
-            controller.initiateAuthorization("atlassian", null, request);
+            controller.initiateAuthorization("atlassian", null, null, request);
 
             verify(connectionService).initiateAuthorization(eq("atlassian"),
-                    eq("https://app.example.com/api/oauth/atlassian/callback"));
+                    eq("https://app.example.com/api/oauth/atlassian/callback"), isNull());
         }
     }
 

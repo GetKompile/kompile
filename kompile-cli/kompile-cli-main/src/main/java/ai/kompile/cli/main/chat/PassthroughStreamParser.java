@@ -564,9 +564,13 @@ public class PassthroughStreamParser {
                     long cacheCreationTokens = 0;
                     if (node.has("usage")) {
                         JsonNode usage = node.get("usage");
-                        inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asLong() : 0;
+                        long inclusiveInputTokens = usage.has("input_tokens")
+                                ? usage.get("input_tokens").asLong() : 0;
                         outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asLong() : 0;
                         cacheReadTokens = usage.has("cached_input_tokens") ? usage.get("cached_input_tokens").asLong() : 0;
+                        // Codex reports cached_input_tokens as a subset of input_tokens. Internally
+                        // the counters are disjoint so totals can safely add ordinary + cached input.
+                        inputTokens = Math.max(0, inclusiveInputTokens - cacheReadTokens);
                     }
                     return new TurnComplete(durationMs, cost, 0, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens);
                 }

@@ -46,7 +46,8 @@ describe('ServiceEndpointRouter', () => {
       '/api/embedding-restart': 'admin',
       '/api/models/active-context': 'admin',
       '/api/chat': 'chat',
-      '/api/cross-index': 'crawl'
+      '/api/cross-index': 'crawl',
+      '/api/unified-crawl': 'crawl'
     }
   };
 
@@ -68,7 +69,10 @@ describe('ServiceEndpointRouter', () => {
     router = TestBed.inject(ServiceEndpointRouter);
   });
 
-  afterEach(() => http.verify());
+  afterEach(() => {
+    http.verify();
+    sessionStorage.removeItem('kompile.channel.csrf');
+  });
 
   async function load(
     config: ManagedServiceEndpoints = endpoints,
@@ -140,6 +144,8 @@ describe('ServiceEndpointRouter', () => {
     expect(router.resolve('https://example.com/api/chat')).toBe('https://example.com/api/chat');
     expect(router.resolve('/assets/branding/kompile-logo.svg'))
       .toBe('/assets/branding/kompile-logo.svg');
+    expect(router.resolve('/api/channel-integrations/browser-sessions/exchange'))
+      .toBe('/api/channel-integrations/browser-sessions/exchange');
   });
 
   it('intercepts HttpClient requests after topology initialization', async () => {
@@ -154,6 +160,18 @@ describe('ServiceEndpointRouter', () => {
     const sameOrigin = http.expectOne('/api/fact-sheets');
     expect(sameOrigin.request.url).toBe('/api/fact-sheets');
     sameOrigin.flush([]);
+  });
+
+  it('carries the integration session and CSRF proof to remote crawl mutations', async () => {
+    await load();
+    sessionStorage.setItem('kompile.channel.csrf', 'crawl-csrf');
+
+    client.post('/api/unified-crawl/start', {}).subscribe();
+    const request = http.expectOne('http://localhost:9382/api/unified-crawl/start');
+    expect(request.request.withCredentials).toBeTrue();
+    expect(request.request.headers.get('X-Kompile-Channel-Request')).toBe('1');
+    expect(request.request.headers.get('X-Kompile-Channel-CSRF')).toBe('crawl-csrf');
+    request.flush({ jobId: 'job-1' });
   });
 
   it('falls back to same-origin requests when topology loading fails', async () => {

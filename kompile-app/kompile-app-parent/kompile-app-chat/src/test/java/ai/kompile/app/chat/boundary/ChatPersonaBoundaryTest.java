@@ -92,6 +92,27 @@ class ChatPersonaBoundaryTest {
     }
 
     @Test
+    @DisplayName("classifies every API family it mounts")
+    void classifiesEverythingItMounts() {
+        Set<String> classified = new TreeSet<>();
+        classified.addAll(PersonaSurfaces.CHAT);
+        classified.addAll(PersonaSurfaces.GRAPH);
+        classified.addAll(PersonaSurfaces.SHARED);
+        classified.addAll(PersonaSurfaces.LIBRARY_UNSCOPED);
+        classified.addAll(PersonaSurfaces.LIBRARY_OVERLAPS);
+
+        SortedSet<String> unclassified = new TreeSet<>();
+        for (String path : mounted) {
+            if (path.startsWith("/api/") && !classified.contains(path)) {
+                unclassified.add(path);
+            }
+        }
+        assertTrue(unclassified.isEmpty(),
+                "The chat app mounts API families that PersonaSurfaces does not classify: "
+                        + unclassified);
+    }
+
+    @Test
     @DisplayName("does not mount the admin console's API")
     void doesNotMountAdminSurface() {
         SortedSet<String> leaked = PersonaApiSurface.matching(mounted, PersonaSurfaces.ADMIN);

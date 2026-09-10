@@ -16,18 +16,22 @@
 
 package ai.kompile.app.sync.config;
 
-import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.oauth.service.TokenEncryptionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 
 /**
  * Manages bilateral sync configuration persisted to JSON.
@@ -43,12 +47,15 @@ public class NoteSyncConfigService {
 
     private final ObjectMapper objectMapper;
     private final Path configFilePath;
+    private final TokenEncryptionService encryptionService;
     private volatile NoteSyncConfig currentConfig;
 
-    public NoteSyncConfigService() {
+    public NoteSyncConfigService(
+            TokenEncryptionService encryptionService,
+            @Value("${kompile.data.dir:${user.home}/.kompile}") String dataDir) {
         this.objectMapper = JsonUtils.standardMapper();
-
-        this.configFilePath = KompileHome.configDirectory().toPath().resolve(CONFIG_FILENAME);
+        this.encryptionService = encryptionService;
+        this.configFilePath = Path.of(dataDir, "config", CONFIG_FILENAME);
         this.currentConfig = NoteSyncConfig.defaults();
 
         log.info("NoteSyncConfigService initialized, config path: {}", configFilePath);
@@ -72,7 +79,9 @@ public class NoteSyncConfigService {
         try {
             String json = Files.readString(configFilePath);
             NoteSyncConfig loaded = objectMapper.readValue(json, NoteSyncConfig.class);
+            boolean migratePlaintext = decryptWebhookSecret(loaded);
             currentConfig = NoteSyncConfig.defaults().merge(loaded);
+            if (migratePlaintext) persistConfig();
             log.info("Loaded note sync config: notionEnabled={}, obsidianEnabled={}, schedulerEnabled={}",
                     currentConfig.getNotionEnabled(),
                     currentConfig.getObsidianEnabled(),
@@ -128,10 +137,59 @@ public class NoteSyncConfigService {
     private void persistConfig() {
         try {
             Files.createDirectories(configFilePath.getParent());
-            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(currentConfig);
-            Files.writeString(configFilePath, json);
+            NoteSyncConfig persisted = persistedCopy(currentConfig);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(persisted);
+            Path temporary = Files.createTempFile(
+                    configFilePath.getParent(), ".note-sync-config-", ".tmp");
+            try {
+                Files.writeString(temporary, json);
+                restrictPermissions(temporary);
+                try {
+                    Files.move(temporary, configFilePath,
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temporary, configFilePath, StandardCopyOption.REPLACE_EXISTING);
+                }
+                restrictPermissions(configFilePath);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
         } catch (IOException e) {
-            log.error("Failed to persist note sync config: {}", e.getMessage());
+            throw new IllegalStateException("Failed to persist note sync config", e);
+        }
+    }
+
+    private boolean decryptWebhookSecret(NoteSyncConfig loaded) {
+        String secret = loaded.getNotionWebhookSecret();
+        if (secret == null || secret.isBlank()) return false;
+        if (secret.startsWith("enc:")) {
+            loaded.setNotionWebhookSecret(
+                    encryptionService.decrypt(secret.substring("enc:".length())));
+            return false;
+        }
+        // Legacy plaintext is kept in memory just long enough for persistConfig to replace it.
+        return true;
+    }
+
+    private NoteSyncConfig persistedCopy(NoteSyncConfig source) {
+        String secret = source.getNotionWebhookSecret();
+        String encryptedSecret = secret == null || secret.isBlank()
+                ? "" : "enc:" + encryptionService.encrypt(secret);
+        return new NoteSyncConfig(
+                source.getNotionEnabled(), encryptedSecret, source.getNotionCallbackBaseUrl(),
+                source.getObsidianEnabled(), source.getObsidianFileWatchEnabled(),
+                source.getSchedulerEnabled(), source.getSchedulerCheckIntervalMs());
+    }
+
+    private static void restrictPermissions(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (IOException | UnsupportedOperationException ignored) {
+            path.toFile().setReadable(false, false);
+            path.toFile().setWritable(false, false);
+            path.toFile().setReadable(true, true);
+            path.toFile().setWritable(true, true);
         }
     }
 }

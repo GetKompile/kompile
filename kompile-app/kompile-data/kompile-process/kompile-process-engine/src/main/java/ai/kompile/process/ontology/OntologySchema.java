@@ -29,7 +29,7 @@ import java.util.Map;
 /**
  * A versioned ontology schema that defines entity types, relationship types,
  * and validation rules for a specific domain process.
- * Generalization of the FP&amp;A semantic layer — works for any domain.
+ * Generalization of the domain semantic layer — works for any domain.
  */
 @Data
 @Builder
@@ -41,7 +41,7 @@ public class OntologySchema {
     private String id;
     private String name;
     private int version;
-    /** Cross-customer template this derives from (e.g., "FP&A_CPG_Channel v3.1"). */
+    /** Optional reusable template from which this schema derives. */
     private String templateId;
     private Instant createdAt;
     private Instant updatedAt;

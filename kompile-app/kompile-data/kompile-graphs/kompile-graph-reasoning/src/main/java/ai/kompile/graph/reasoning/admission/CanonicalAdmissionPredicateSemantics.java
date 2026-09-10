@@ -29,7 +29,7 @@ import java.util.Set;
  * <p>Callers can override a relation with {@code admissionEvidenceKind}, {@code admissionRuleId},
  * and {@code admissionSummary} attributes. The built-ins cover general conflict and identity
  * predicates plus the status, version, period, exception, override, and action vocabulary present in
- * the FP&amp;A golden graph.</p>
+ * the reference golden graph.</p>
  */
 public final class CanonicalAdmissionPredicateSemantics implements AdmissionPredicateSemantics {
 
@@ -78,7 +78,7 @@ public final class CanonicalAdmissionPredicateSemantics implements AdmissionPred
         if ("HAS_STATUS".equals(type)) {
             if (focusEntityId.equals(relation.targetId())) {
                 return assessment(AdmissionEvidence.Kind.CONTEXT_RELATION,
-                        "fpna.status.assignment",
+                        "canonical.status.assignment",
                         "the focused status concept is assigned to another entity");
             }
             return statusAssessment(target);
@@ -86,11 +86,11 @@ public final class CanonicalAdmissionPredicateSemantics implements AdmissionPred
         if ("SUPERSEDES".equals(type)) {
             if (!focusIsSource) {
                 return assessment(AdmissionEvidence.Kind.CAUTION,
-                        "fpna.version.superseded",
+                        "canonical.version.superseded",
                         "the focused version is superseded by a newer version");
             }
             return assessment(AdmissionEvidence.Kind.AFFIRMING_RELATION,
-                    "fpna.version.supersedes",
+                    "canonical.version.supersedes",
                     "the focused version supersedes an older version");
         }
         if ("GOVERNED_BY".equals(type) || "GOVERNS".equals(type)) {
@@ -99,7 +99,7 @@ public final class CanonicalAdmissionPredicateSemantics implements AdmissionPred
                     : !focusIsSource;
             return assessment(
                     AdmissionEvidence.Kind.REQUIREMENT,
-                    focusIsGoverned ? "fpna.governed-by" : "fpna.governs",
+                    focusIsGoverned ? "canonical.governed-by" : "canonical.governs",
                     focusIsGoverned
                             ? "the focused entity is governed by an explicit policy"
                             : "the focused policy governs the related entity");
@@ -107,28 +107,28 @@ public final class CanonicalAdmissionPredicateSemantics implements AdmissionPred
         if (CAUTION_TYPES.contains(type)) {
             if (!focusIsSource) {
                 return assessment(AdmissionEvidence.Kind.CONTEXT_RELATION,
-                        "fpna." + ruleName(type) + ".subject",
+                        "canonical." + ruleName(type) + ".subject",
                         "the focused concept is the object of a caution on another entity");
             }
             return assessment(AdmissionEvidence.Kind.CAUTION,
-                    "fpna." + ruleName(type),
+                    "canonical." + ruleName(type),
                     cautionSummary(type));
         }
         if (REQUIREMENT_TYPES.contains(type)) {
             if (!focusIsSource) {
                 return assessment(AdmissionEvidence.Kind.CONTEXT_RELATION,
-                        "fpna." + ruleName(type) + ".target",
+                        "canonical." + ruleName(type) + ".target",
                         "the focused concept is the target of another entity's requirement");
             }
             return assessment(AdmissionEvidence.Kind.REQUIREMENT,
-                    "fpna." + ruleName(type),
+                    "canonical." + ruleName(type),
                     requirementSummary(type));
         }
         if (OVERRIDE_TYPES.contains(type)) {
             return assessment(AdmissionEvidence.Kind.OVERRIDE,
                     focusIsSource
-                            ? "fpna." + ruleName(type)
-                            : "fpna." + ruleName(type) + ".target",
+                            ? "canonical." + ruleName(type)
+                            : "canonical." + ruleName(type) + ".target",
                     focusIsSource
                             ? "an exception or override changes the default policy path"
                             : "the focused entity is the target of an exception or override");
@@ -154,21 +154,21 @@ public final class CanonicalAdmissionPredicateSemantics implements AdmissionPred
                 "DO NOT USE", "DO NOT TRUST", "IGNORE", "UNRELIABLE",
                 "INVALID", "REJECTED", "OBSOLETE")) {
             return assessment(AdmissionEvidence.Kind.CAUTION,
-                    "fpna.status.not-usable",
+                    "canonical.status.not-usable",
                     "the status marks the focused entity as ignored or not usable");
         }
         if (containsAny(text, "REFERENCE ONLY", "REFERENCE-ONLY")) {
             return assessment(AdmissionEvidence.Kind.CAUTION,
-                    "fpna.status.reference-only",
+                    "canonical.status.reference-only",
                     "the status limits the focused entity to reference use");
         }
         if (containsAny(text, "AUTHORITATIVE", "APPROVED", "CURRENT", "RIGHT ONE")) {
             return assessment(AdmissionEvidence.Kind.AFFIRMING_RELATION,
-                    "fpna.status.authoritative",
+                    "canonical.status.authoritative",
                     "the status marks the focused entity as authoritative");
         }
         return assessment(AdmissionEvidence.Kind.REQUIREMENT,
-                "fpna.status.unclassified",
+                "canonical.status.unclassified",
                 "the focused entity has an operational status that requires interpretation");
     }
 

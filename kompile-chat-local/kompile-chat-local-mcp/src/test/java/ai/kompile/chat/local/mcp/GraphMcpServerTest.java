@@ -1,12 +1,15 @@
 package ai.kompile.chat.local.mcp;
 
 import ai.kompile.chat.local.GraphToolBackend;
+import ai.kompile.chat.local.GraphToolBridge;
 import ai.kompile.graph.reasoning.unified.MiniJson;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -75,6 +78,64 @@ class GraphMcpServerTest {
             Map<String, Object> content = object(list(callResult.get("content")).get(0));
             assertEquals("text", content.get("type"));
             assertEquals(Map.of("status", "OK"), MiniJson.parseObject((String) content.get("text")));
+        }
+    }
+
+    @Test
+    void realBridgeExposesAndExecutesTheLocalReasoningToolCatalog() {
+        try (GraphMcpServer server = new GraphMcpServer(GraphToolBridge.empty())) {
+            response(server, request(1, "initialize", Map.of()));
+
+            List<?> tools = list(result(response(
+                    server, request(2, "tools/list", Map.of()))).get("tools"));
+            Set<String> names = tools.stream()
+                    .map(GraphMcpServerTest::object)
+                    .map(tool -> (String) tool.get("name"))
+                    .collect(Collectors.toSet());
+
+            assertTrue(names.containsAll(Set.of(
+                    "graph_reasoning_query",
+                    "ask_graph_verify",
+                    "ask_graph_query",
+                    "ask_graph_explain",
+                    "graph_reason",
+                    "ask_graph_mebn",
+                    "graph_bayes",
+                    "ask_graph_claim",
+                    "ask_graph_synthesize",
+                    "graph_centrality",
+                    "graph_embeddings")));
+
+            Map<String, Object> call = result(response(server, request(3, "tools/call", Map.of(
+                    "name", "graph_reasoning_query",
+                    "arguments", Map.of("operation", "OVERVIEW")))));
+            assertEquals(false, call.get("isError"));
+            Map<String, Object> graphResult = MiniJson.parseObject((String) object(
+                    list(call.get("content")).get(0)).get("text"));
+            assertEquals("OK", graphResult.get("status"));
+            assertEquals("OVERVIEW", graphResult.get("intent"));
+
+            Map<String, Object> capabilitiesCall = result(response(server, request(
+                    4, "tools/call", Map.of(
+                            "name", "graph_reasoning_query",
+                            "arguments", Map.of()))));
+            assertEquals(false, capabilitiesCall.get("isError"));
+            Map<String, Object> capabilities = MiniJson.parseObject((String) object(
+                    list(capabilitiesCall.get("content")).get(0)).get("text"));
+            assertEquals("CAPABILITIES", capabilities.get("intent"));
+            List<?> supported = list(capabilities.get("capabilities"));
+            assertEquals(17, supported.size());
+            assertTrue(supported.stream().map(GraphMcpServerTest::object)
+                    .noneMatch(capability -> "CALCULATE".equals(capability.get("intent"))));
+
+            Map<String, Object> questionCall = result(response(server, request(
+                    5, "tools/call", Map.of(
+                            "name", "graph_reasoning_query",
+                            "arguments", Map.of("question", "Find Orchid")))));
+            assertEquals(false, questionCall.get("isError"));
+            Map<String, Object> search = MiniJson.parseObject((String) object(
+                    list(questionCall.get("content")).get(0)).get("text"));
+            assertEquals("SEARCH", search.get("intent"));
         }
     }
 

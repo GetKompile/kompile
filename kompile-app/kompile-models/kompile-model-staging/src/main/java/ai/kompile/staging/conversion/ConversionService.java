@@ -20,6 +20,7 @@ import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SDZSerializer;
 import org.eclipse.deeplearning4j.vlm.model.loading.OnnxModelCache;
 import org.nd4j.ggml.GGMLModelImport;
+import org.nd4j.common.config.ND4JInferenceWeightDataType;
 import org.nd4j.ggml.convert.ConversionOptions;
 import org.eclipse.deeplearning4j.pipeline.PipelineLoader;
 import org.eclipse.deeplearning4j.safetensors.SafeTensorsPipelineLoader;
@@ -68,6 +69,21 @@ public class ConversionService {
     }
 
     /**
+     * Convert with an explicit GGUF weight storage dtype policy. Ignored for
+     * non-GGUF inputs. Accepted values mirror {@code ConversionOptions.forInference(String)}:
+     * fp32, fp16, bf16, fp8, fp8_e5m2, int8, int4.
+     */
+    public ConversionResult convert(
+            Path inputPath,
+            Path outputPath,
+            String format,
+            String weightDtype) {
+        return convertInternal(
+                inputPath, outputPath, format, StagingCancellation.NONE, false,
+                weightDtype == null || weightDtype.isBlank() ? null : weightDtype.trim());
+    }
+
+    /**
      * Convert to one canonical SDZ while honoring cooperative staging cancellation.
      */
     public ConversionResult convert(
@@ -95,6 +111,19 @@ public class ConversionService {
             String format,
             StagingCancellation cancellation,
             boolean vlmOptimizedImport) {
+        return convertInternal(inputPath, outputPath, format, cancellation, vlmOptimizedImport, null);
+    }
+
+    /** Thread-local weight-dtype handoff for the current conversion; null = default (fp16). */
+    private final ThreadLocal<String> pendingWeightDtype = new ThreadLocal<>();
+
+    private ConversionResult convertInternal(
+            Path inputPath,
+            Path outputPath,
+            String format,
+            StagingCancellation cancellation,
+            boolean vlmOptimizedImport,
+            String weightDtype) {
         long startTime = System.currentTimeMillis();
         List<String> warnings = new ArrayList<>();
         StagingCancellation signal =
@@ -102,6 +131,7 @@ public class ConversionService {
         Path pendingOutput = null;
 
         try {
+            this.pendingWeightDtype.set(weightDtype);
             signal.checkpoint();
             // Validate input
             if (!Files.isRegularFile(inputPath, LinkOption.NOFOLLOW_LINKS)
@@ -193,6 +223,7 @@ public class ConversionService {
             // that was observed in production.
             return ConversionResult.failure(e.getMessage());
         } finally {
+            this.pendingWeightDtype.remove();
             if (pendingOutput != null) {
                 try {
                     Files.deleteIfExists(pendingOutput);
@@ -314,17 +345,33 @@ public class ConversionService {
     }
 
     /**
-     * Import a GGML/GGUF model, fully loading all weights (dequantized to FP16
-     * by default) into a SameDiff graph. Backed by {@link GGMLModelImport} from
-     * nd4j-ggml.
+     * Import a GGML/GGUF model into a SameDiff graph. Weight storage dtype is the
+     * conversion-wide policy (fp16 dense by default; int4/int8 keep GGUF-packed
+     * weights for runtime-quantized matmul). Backed by {@link GGMLModelImport}.
      */
     private SameDiff importGgml(Path inputPath) throws Exception {
         log.debug("Importing GGML/GGUF model from: {}", inputPath);
-        ConversionOptions options = ConversionOptions.builder()
-                .quantizationMode(ConversionOptions.QuantizationMode.DEQUANTIZE_TO_FLOAT16)
-                .preserveTokenizerInfo(true)
-                .useMemoryMapping(true)
-                .build();
+        String weightDtype = this.pendingWeightDtype.get();
+        ConversionOptions options;
+        if (weightDtype == null) {
+            options = ConversionOptions.builder()
+                    .quantizationMode(ConversionOptions.QuantizationMode.DEQUANTIZE_TO_FLOAT16)
+                    .preserveTokenizerInfo(true)
+                    .useMemoryMapping(true)
+                    .build();
+        } else {
+            ND4JInferenceWeightDataType resolved =
+                    ND4JInferenceWeightDataType.fromString(weightDtype);
+            ConversionOptions base = ConversionOptions.forInference(resolved);
+            options = ConversionOptions.builder()
+                    .quantizationMode(base.getQuantizationMode())
+                    .targetDataType(base.getTargetDataType())
+                    .preserveTokenizerInfo(true)
+                    .useMemoryMapping(true)
+                    .build();
+        }
+        log.info("GGUF conversion weight dtype: {}",
+                weightDtype == null ? "fp16 (default)" : weightDtype);
         return GGMLModelImport.importModel(inputPath.toFile(), options);
     }
 

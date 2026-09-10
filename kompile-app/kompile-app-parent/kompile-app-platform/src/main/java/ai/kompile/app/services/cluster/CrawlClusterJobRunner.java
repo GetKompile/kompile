@@ -22,10 +22,13 @@ import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
+import ai.kompile.core.crawl.graph.DistributedGraphExecution;
+import ai.kompile.core.crawl.graph.DistributedGraphRuntimeContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -38,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Runs a delegated {@code crawl} partition on this worker: deserialises {@code metadata.crawlRequestJson}
@@ -47,6 +51,7 @@ import java.util.Optional;
  * doesn't advertise {@code crawl} as a runnable type.
  */
 @Component
+@ConditionalOnBean(UnifiedCrawlService.class)
 public class CrawlClusterJobRunner implements ClusterJobRunner {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlClusterJobRunner.class);
@@ -88,6 +93,7 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
         }
 
         UnifiedCrawlRequest request = objectMapper.readValue(json, UnifiedCrawlRequest.class);
+        attachDistributedGraphRuntime(job, request);
         UnifiedCrawlJob crawlJob = unifiedCrawlService.startJob(request);
         String localJobId = crawlJob.getJobId();
         log.info("CrawlWorker running delegated crawl '{}' as local crawl job '{}'", job.jobId(), localJobId);
@@ -96,17 +102,23 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
         boolean distributed = job.meta("sessionId") != null;
         long lastProgressEmitMs = 0L;
         long lastTranscriptSeq = -1L;
-        while (!isTerminal(status)) {
-            Thread.sleep(POLL_INTERVAL_MS);
-            Optional<UnifiedCrawlJob> current = unifiedCrawlService.getJob(localJobId);
-            status = current.map(j -> j.getStatus().get()).orElse(status);
-            // Stream live progress + new LLM transcripts to the coordinator (distributed partitions, throttled).
-            long now = System.currentTimeMillis();
-            if (distributed && now - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
-                lastProgressEmitMs = now;
-                current.ifPresent(j -> sendProgressToCoordinator(job, j));
-                lastTranscriptSeq = forwardNewTranscripts(job, localJobId, lastTranscriptSeq);
+        try {
+            while (!isTerminal(status)) {
+                Thread.sleep(POLL_INTERVAL_MS);
+                Optional<UnifiedCrawlJob> current = unifiedCrawlService.getJob(localJobId);
+                status = current.map(j -> j.getStatus().get()).orElse(status);
+                // Stream live progress + new LLM transcripts to the coordinator (distributed partitions, throttled).
+                long now = System.currentTimeMillis();
+                if (distributed && now - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
+                    lastProgressEmitMs = now;
+                    current.ifPresent(j -> sendProgressToCoordinator(job, j));
+                    lastTranscriptSeq = forwardNewTranscripts(job, localJobId, lastTranscriptSeq);
+                }
             }
+        } catch (InterruptedException interrupted) {
+            cancelAndAwait(localJobId);
+            Thread.currentThread().interrupt();
+            throw interrupted;
         }
         // Final flush so transcripts from the last batch reach the coordinator before the job ends.
         if (distributed) {
@@ -134,6 +146,7 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("sessionId", job.meta("sessionId"));
         payload.put("workerId", job.meta("workerId") != null ? job.meta("workerId") : job.jobId());
+        payload.put("attempt", parseAttempt(job.meta("attempt")));
         payload.put("snapshot", crawlJob.toProgressSnapshot());
         postJson(normalize(base) + "/api/distributed-crawl/progress", payload, "progress", job.jobId());
     }
@@ -172,6 +185,7 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("sessionId", job.meta("sessionId"));
             payload.put("workerId", job.meta("workerId") != null ? job.meta("workerId") : job.jobId());
+            payload.put("attempt", parseAttempt(job.meta("attempt")));
             payload.put("entries", fresh);
             postJson(normalize(base) + "/api/distributed-crawl/transcripts", payload, "transcripts", job.jobId());
             return max;
@@ -202,6 +216,63 @@ public class CrawlClusterJobRunner implements ClusterJobRunner {
 
     private static String normalize(String url) {
         return url != null && url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
+    private void attachDistributedGraphRuntime(
+            ClusterJobSubmission job, UnifiedCrawlRequest request) {
+        DistributedGraphExecution execution = request.getDistributedGraphExecution();
+        if (execution == null) return;
+        String authority = normalize(job.callbackBaseUrl());
+        String configured = configService != null && configService.getConfiguration() != null
+                ? normalize(configService.getConfiguration().getClusterOrchestratorUrl()) : null;
+        if (authority == null || authority.isBlank()) {
+            throw new IllegalStateException("distributed graph execution requires coordinator callbackBaseUrl");
+        }
+        if (configured != null && !configured.isBlank() && !configured.equals(authority)) {
+            throw new IllegalStateException("distributed graph authority does not match configured orchestrator URL");
+        }
+        String bearer = configService != null && configService.getConfiguration() != null
+                ? configService.getConfiguration().getExternalAuthToken() : null;
+        String lease = job.meta("graphWriterLease");
+        if (bearer == null || bearer.isBlank() || lease == null || lease.isBlank()) {
+            throw new IllegalStateException("distributed graph execution requires bearer token and writer lease");
+        }
+        if (!execution.sessionId().equals(job.meta("sessionId"))
+                || !execution.partitionId().equals(job.meta("workerId"))
+                || execution.attempt() != parseAttempt(job.meta("attempt"))) {
+            throw new IllegalStateException("distributed graph execution metadata mismatch");
+        }
+        request.setDistributedGraphRuntimeContext(new DistributedGraphRuntimeContext(
+                authority, bearer, lease, execution.sessionId(), execution.partitionId(), execution.attempt()));
+    }
+
+    private void cancelAndAwait(String localJobId) {
+        try {
+            unifiedCrawlService.cancelJob(localJobId);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (System.nanoTime() < deadline) {
+                UnifiedCrawlJob.Status status = unifiedCrawlService.getJob(localJobId)
+                        .map(job -> job.getStatus().get())
+                        .orElse(UnifiedCrawlJob.Status.CANCELLED);
+                if (isTerminal(status)) return;
+                try {
+                    Thread.sleep(100L);
+                } catch (InterruptedException ignored) {
+                    // The outer delegated-job thread is already cancelled; continue bounded quiescence polling.
+                }
+            }
+        } catch (RuntimeException cancellationFailure) {
+            log.warn("Could not cancel local crawl job '{}': {}", localJobId, cancellationFailure.getMessage());
+        }
+    }
+
+    private static int parseAttempt(String value) {
+        if (value == null || value.isBlank()) return 1;
+        try {
+            return Math.max(1, Integer.parseInt(value));
+        } catch (NumberFormatException ignored) {
+            return 1;
+        }
     }
 
     private static boolean isTerminal(UnifiedCrawlJob.Status s) {

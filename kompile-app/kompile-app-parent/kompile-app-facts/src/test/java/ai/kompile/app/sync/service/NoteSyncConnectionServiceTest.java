@@ -169,6 +169,7 @@ class NoteSyncConnectionServiceTest {
 
         ArgumentCaptor<NoteSyncConnection> saved = ArgumentCaptor.forClass(NoteSyncConnection.class);
         verify(repository).save(saved.capture());
+        assertFalse(saved.getValue().getEnabled());
         assertEquals("https://github.example/org/repo.git", saved.getValue().getRepositoryUrl());
         assertEquals("https://github.example/org/repo.git", response.getRepositoryUrl());
     }

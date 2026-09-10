@@ -49,7 +49,8 @@ public interface EmailClient {
             int smtpPort,
             String fromAddress,
             String fromName,
-            int pollIntervalSeconds
+            int pollIntervalSeconds,
+            String trustedAuthenticationServer
     ) {
         public static EmailConfig defaults() {
             return new EmailConfig(
@@ -58,7 +59,7 @@ public interface EmailClient {
                     "imaps", true, true,
                     "smtp.gmail.com", 587,
                     null, "KClaw Assistant",
-                    60
+                    60, "mx.google.com"
             );
         }
     }
@@ -76,6 +77,7 @@ public interface EmailClient {
             String replyTo,
             String inReplyTo,
             String references,
+            boolean authenticatedSender,
             List<EmailAttachment> attachments
     ) {}
 

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.DirectSubagentSupervision;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 
 import java.io.IOException;
@@ -26,7 +27,9 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -36,6 +39,9 @@ import java.util.function.Consumer;
  * permission checking, working directory, and cancellation signal.
  */
 public class ToolContext {
+    private static final Set<String> PROVIDER_MEMORY_DIRS = Set.of(
+            ".claude", ".codex", ".gemini", ".qwen", ".opencode");
+
     private final String sessionId;
     private final AgentConfig agent;
     private final PermissionService permissionService;
@@ -45,6 +51,29 @@ public class ToolContext {
     private final ToolRegistry toolRegistry;
     private volatile Consumer<String> outputConsumer;
     private volatile boolean autoApproveAll = false;
+    private DirectSubagentSupervision.Contract subagentSupervision;
+    private boolean supervisedChild;
+    private ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
+    private boolean judgeToolCallScoped;
+
+    public boolean isSupervisedChild() { return supervisedChild; }
+    public ai.kompile.cli.main.chat.enforcer.JudgeControl getJudgeControl() { return judgeControl; }
+    public boolean isJudgeToolCallScoped() { return judgeToolCallScoped; }
+    public void bindJudgeControl(ai.kompile.cli.main.chat.enforcer.JudgeControl control, boolean toolCallScoped) {
+        this.judgeControl = control;
+        this.judgeToolCallScoped = toolCallScoped;
+    }
+
+    public DirectSubagentSupervision.Contract getSubagentSupervision() {
+        return subagentSupervision;
+    }
+
+    public void setSubagentSupervision(
+            DirectSubagentSupervision.Contract contract) {
+        this.subagentSupervision = contract;
+    }
+
+    public void markSupervisedChild() { supervisedChild = true; }
 
     /**
      * File-read snapshots keyed by sessionId + path, shared process-wide. Deliberately static:
@@ -127,6 +156,9 @@ public class ToolContext {
         child.linkAbortCheck(additionalAbortCheck);
         child.setAutoApproveAll(autoApproveAll);
         child.setOutputConsumer(outputConsumer);
+        child.subagentSupervision = subagentSupervision;
+        child.supervisedChild = supervisedChild;
+        child.bindJudgeControl(judgeControl, judgeToolCallScoped);
         return child;
     }
 
@@ -163,6 +195,13 @@ public class ToolContext {
      * if permission is denied.
      */
     public void checkPermission(String permissionKey, String description) throws ToolExecutionException {
+        if (supervisedChild && subagentSupervision != null && subagentSupervision.ceiling() != null) {
+            var level = subagentSupervision.ceiling().permissions().get(permissionKey);
+            if (level != PermissionService.PermissionLevel.ALLOW) {
+                throw new ToolExecutionException("Inherited parent permission ceiling: " + permissionKey
+                        + " (" + level + "); obtain parent approval before delegating this action", true);
+            }
+        }
         if (autoApproveAll) {
             return;
         }
@@ -186,6 +225,81 @@ public class ToolContext {
                     "Access path outside working directory: " + resolved);
         }
         return resolved;
+    }
+
+    /**
+     * Resolve a path for a generic file mutation. Managed memory is not an ordinary
+     * project file: its indexes, typed records, and graph state must stay consistent,
+     * so only the {@code memory} tool (or a specialized state tool such as
+     * {@code todowrite}) may change it.
+     */
+    public Path resolveMutationPath(String path) throws ToolExecutionException {
+        Path candidate = workingDirectory.resolve(path).normalize();
+        Path normalized = candidate.toAbsolutePath().normalize();
+        if (supervisedChild && (isSupervisionConfiguration(normalized)
+                || isSupervisionConfiguration(resolveThroughExistingAncestors(normalized)))) {
+            throw new ToolExecutionException("Subagents cannot modify enforcement or configuration: "
+                    + normalized, true);
+        }
+        if (isManagedMemoryPath(normalized)
+                || isManagedMemoryPath(resolveThroughExistingAncestors(normalized))) {
+            throw new ToolExecutionException(
+                    "Direct file mutation of managed memory is blocked: " + normalized
+                            + ". Use the `memory` MCP tool instead"
+                            + " (`todowrite` for transcript-session task state).",
+                    true);
+        }
+        return resolvePath(path);
+    }
+
+    private boolean isSupervisionConfiguration(Path path) {
+        Path project = workingDirectory.toAbsolutePath().normalize();
+        Path home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+        // Generated-project managed config is rooted at the project, not any source package named config.
+        if (path.startsWith(project.resolve("config")) || path.startsWith(home.resolve(".kompile"))) return true;
+        for (Path part : path) {
+            String name = part.toString().toLowerCase(Locale.ROOT);
+            if (PROVIDER_MEMORY_DIRS.contains(name) || name.equals(".kompile")
+                    || name.equals("agents.md")
+                    || name.equals("claude.md") || name.equals(".mcp.json")
+                    || name.equals("gemini.md") || name.equals(".cursorrules")
+                    || name.equals(".windsurfrules") || name.equals("copilot-instructions.md")
+                    || name.equals("kompile.project.json")
+                    || name.equals("system-prompt.md") || name.equals("system-prompts")) return true;
+        }
+        return false;
+    }
+
+    private static boolean isManagedMemoryPath(Path path) {
+        if (path == null) return false;
+        String previous = null;
+        boolean insideProviderState = false;
+        for (Path part : path) {
+            String name = part.toString().toLowerCase(Locale.ROOT);
+            if ("memory".equals(name)
+                    && (".kompile".equals(previous) || insideProviderState)) {
+                return true;
+            }
+            if (PROVIDER_MEMORY_DIRS.contains(name)) {
+                insideProviderState = true;
+            }
+            previous = name;
+        }
+        return false;
+    }
+
+    /** Follow an existing symlink ancestor so aliases cannot bypass the memory boundary. */
+    private static Path resolveThroughExistingAncestors(Path path) {
+        Path existing = path;
+        while (existing != null && !Files.exists(existing)) {
+            existing = existing.getParent();
+        }
+        if (existing == null) return path;
+        try {
+            return existing.toRealPath().resolve(existing.relativize(path)).normalize();
+        } catch (IOException ignored) {
+            return path;
+        }
     }
 
     /**

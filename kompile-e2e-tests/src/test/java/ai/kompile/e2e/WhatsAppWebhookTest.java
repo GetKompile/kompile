@@ -34,7 +34,7 @@ class WhatsAppWebhookTest {
         client = new DefaultWhatsAppApiClient(httpClient, objectMapper);
         handler = new TestWhatsAppHandler();
         client.addMessageHandler(handler);
-        client.start("test-access-token", "12345678", "my-verify-token");
+        client.start("test-access-token", "12345678", "my-verify-token", "test-app-secret");
     }
 
     @AfterEach

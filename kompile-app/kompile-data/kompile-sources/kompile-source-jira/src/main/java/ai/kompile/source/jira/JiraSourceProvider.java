@@ -37,9 +37,6 @@ public class JiraSourceProvider implements SourceProvider {
     @Value("${kompile.jira.enabled:true}")
     private boolean enabled;
 
-    @Value("${kompile.oauth.atlassian.client-id:}")
-    private String clientId;
-
     private final OAuthConnectionService oauthService;
 
     @Autowired
@@ -92,18 +89,12 @@ public class JiraSourceProvider implements SourceProvider {
 
     @Override
     public boolean requiresAuth() {
-        if (oauthService != null && oauthService.getConnectionStatus("atlassian").isConnected()) {
-            return false;
-        }
-        return true;
+        return oauthService == null || !oauthService.isConnectionUsable("atlassian");
     }
 
     @Override
     public String getAuthType() {
-        if (clientId != null && !clientId.isEmpty()) {
-            return "oauth2";
-        }
-        return "api_key";
+        return oauthConfigured() ? "oauth2" : "api_key";
     }
 
     @Override
@@ -119,7 +110,7 @@ public class JiraSourceProvider implements SourceProvider {
     @Override
     public Map<String, Object> getConfiguration() {
         Map<String, Object> config = new HashMap<>();
-        config.put("oauthConfigured", clientId != null && !clientId.isEmpty());
+        config.put("oauthConfigured", oauthConfigured());
 
         if (oauthService != null) {
             OAuthConnectionStatus status = oauthService.getConnectionStatus("atlassian");
@@ -139,14 +130,19 @@ public class JiraSourceProvider implements SourceProvider {
         return config;
     }
 
+    private boolean oauthConfigured() {
+        return oauthService != null && oauthService.getProviderInfo("atlassian")
+                        .map(info -> info.isConfigured()).orElse(false);
+    }
+
     @Override
     public boolean hasCustomDialog() {
-        return true;
+        return false;
     }
 
     @Override
     public String getCustomDialogComponent() {
-        return "JiraDialogComponent";
+        return null;
     }
 
     @Override
@@ -158,27 +154,27 @@ public class JiraSourceProvider implements SourceProvider {
                         .type(SourceFormField.FieldType.URL)
                         .required(true)
                         .placeholder("https://your-company.atlassian.net")
-                        .pattern("^https?://.+")
-                        .patternError("Please enter a valid Jira URL")
+                        .pattern("^https://[A-Za-z0-9-]+\\.atlassian\\.net/?$")
+                        .patternError("Enter the HTTPS root of an *.atlassian.net Jira Cloud site")
                         .prefixIcon("link")
                         .order(1)
                         .build(),
                 SourceFormField.builder()
                         .id("email")
-                        .label("Email")
+                        .label("Email (API token auth)")
                         .type(SourceFormField.FieldType.EMAIL)
-                        .required(true)
-                        .placeholder("your-email@company.com")
-                        .helpText("Your Atlassian account email")
+                        .required(false)
+                        .placeholder("Optional when Atlassian OAuth is connected")
+                        .helpText("Your Atlassian account email for API-token authentication")
                         .prefixIcon("email")
                         .order(2)
                         .build(),
                 SourceFormField.builder()
                         .id("apiToken")
-                        .label("API Token")
+                        .label("API Token (optional)")
                         .type(SourceFormField.FieldType.PASSWORD)
-                        .required(true)
-                        .helpText("Generate at: id.atlassian.com/manage-profile/security/api-tokens")
+                        .required(false)
+                        .helpText("Leave empty for OAuth, or generate at id.atlassian.com/manage-profile/security/api-tokens")
                         .prefixIcon("key")
                         .order(3)
                         .build(),
@@ -208,12 +204,34 @@ public class JiraSourceProvider implements SourceProvider {
                         .order(6)
                         .build(),
                 SourceFormField.builder()
+                        .id("commentLimit")
+                        .label("Comments per Issue")
+                        .type(SourceFormField.FieldType.NUMBER)
+                        .defaultValue(1000)
+                        .min(0)
+                        .max(1000)
+                        .helpText("Maximum comments loaded per issue; previews are capped at 20")
+                        .order(7)
+                        .group("advanced")
+                        .showWhen(Map.of("includeComments", true))
+                        .build(),
+                SourceFormField.builder()
                         .id("includeAttachments")
                         .label("Include Attachments")
                         .type(SourceFormField.FieldType.TOGGLE)
                         .defaultValue(false)
-                        .helpText("Download and index attachments")
-                        .order(7)
+                        .helpText("Include attachment names and authenticated content links")
+                        .order(8)
+                        .build(),
+                SourceFormField.builder()
+                        .id("maxIssues")
+                        .label("Maximum Issues")
+                        .type(SourceFormField.FieldType.NUMBER)
+                        .defaultValue(250)
+                        .min(1)
+                        .max(10000)
+                        .order(9)
+                        .group("advanced")
                         .build()
         );
     }

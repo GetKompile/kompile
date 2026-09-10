@@ -139,8 +139,18 @@ public class LspServerManager {
     private LspServerConnection startConnection(LspServerConfig cfg, Path root) {
         try {
             LspServerConnection conn = new LspServerConnection(cfg, root, logFileFor(cfg, root));
-            conn.initialize();
-            return conn;
+            try {
+                conn.initialize();
+                return conn;
+            } catch (RuntimeException | Error failure) {
+                // Not pooled yet: neither the idle reaper nor stopAll can reach this child.
+                try {
+                    conn.stop();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
         } catch (IOException e) {
             throw new LspException("failed to launch " + cfg.language() + " server: " + e.getMessage(), e);
         }

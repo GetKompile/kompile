@@ -21,6 +21,7 @@ import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -86,6 +87,8 @@ public class GraphPslProgramBuilder {
 
         List<GraphEntity> entities = new ArrayList<>(graph.entities());
         entities.sort(Comparator.comparing(GraphEntity::id));
+        Collection<GraphRelation> relations = graph.relations();
+        Map<String, Integer> effectiveOutDegrees = effectiveOutDegrees(entities, relations);
 
         int i = 0;
         for (GraphEntity entity : entities) {
@@ -94,14 +97,15 @@ public class GraphPslProgramBuilder {
             entityIdToConstant.put(entity.id(), constant);
             constantToLabel.put(constant, entity.label().isEmpty() ? entity.id() : entity.label());
 
-            double prior = NoisyOrCpt.estimatePrior(entity.confidence(), effectiveOutDegree(graph, entity.id()));
+            double prior = NoisyOrCpt.estimatePrior(entity.confidence(),
+                    effectiveOutDegrees.getOrDefault(entity.id(), 0));
             program.observe(PRIOR, prior, constant);
             program.target(STATE, constant);
         }
 
         Map<String, Double> links = new LinkedHashMap<>();
         Map<String, Double> conflicts = new LinkedHashMap<>();
-        for (GraphRelation relation : graph.relations()) {
+        for (GraphRelation relation : relations) {
             String cs = entityIdToConstant.get(relation.sourceId());
             String ct = entityIdToConstant.get(relation.targetId());
             double strength = clamp01(relation.weight() * relation.confidence());
@@ -143,20 +147,32 @@ public class GraphPslProgramBuilder {
         program.addRule(PslRule.parse(priorWeight + ": " + STATE + "(N) -> " + PRIOR + "(N) ^2"));
     }
 
-    private int effectiveOutDegree(ReasoningGraph graph, String entityId) {
-        int degree = 0;
-        for (GraphRelation relation : graph.relations()) {
+    private Map<String, Integer> effectiveOutDegrees(List<GraphEntity> entities,
+                                                       Collection<GraphRelation> relations) {
+        Map<String, Integer> degrees = new LinkedHashMap<>();
+        for (GraphEntity entity : entities) {
+            degrees.put(entity.id(), 0);
+        }
+
+        for (GraphRelation relation : relations) {
             if (isIdentitySeparationType(relation.type())) {
                 continue;
             }
-            boolean incident = entityId.equals(relation.sourceId())
-                    || ((!relation.directed() || isSymmetricType(relation.type()))
-                    && entityId.equals(relation.targetId()));
-            if (incident && clamp01(relation.weight() * relation.confidence()) >= minEdgeWeight) {
-                degree++;
+            double strength = clamp01(relation.weight() * relation.confidence());
+            if (strength >= minEdgeWeight) {
+                String sourceId = relation.sourceId();
+                String targetId = relation.targetId();
+                if (degrees.containsKey(sourceId)) {
+                    degrees.merge(sourceId, 1, Integer::sum);
+                }
+                if ((!relation.directed() || isSymmetricType(relation.type()))
+                        && !java.util.Objects.equals(sourceId, targetId)
+                        && degrees.containsKey(targetId)) {
+                    degrees.merge(targetId, 1, Integer::sum);
+                }
             }
         }
-        return degree;
+        return degrees;
     }
 
     private static void mergeMax(Map<String, Double> values, String source, String target, double value) {
@@ -171,7 +187,8 @@ public class GraphPslProgramBuilder {
         return key.substring(key.indexOf('\u0000') + 1);
     }
 
-    private static boolean isConflictType(String type) {
+    /** True when the relation type is treated as contradictory evidence by the PSL program. */
+    public static boolean isConflictType(String type) {
         String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
         return normalized.equals("CONTRADICTS")
                 || normalized.equals("CONFLICTS")
@@ -180,7 +197,8 @@ public class GraphPslProgramBuilder {
                 || normalized.equals("OPPOSES");
     }
 
-    private static boolean isIdentitySeparationType(String type) {
+    /** True when the relation type is excluded from the PSL Link/Conflict atoms entirely. */
+    public static boolean isIdentitySeparationType(String type) {
         String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
         return normalized.equals("NOT_SAME_AS")
                 || normalized.equals("NOT_SAME")

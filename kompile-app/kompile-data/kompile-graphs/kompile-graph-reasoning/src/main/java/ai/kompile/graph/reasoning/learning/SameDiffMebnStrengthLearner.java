@@ -18,6 +18,7 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.learning.GradientUpdater;
@@ -27,10 +28,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * SameDiff-backed MEBN noisy-OR edge-strength learner — the <em>production gradient path</em>
@@ -116,6 +120,17 @@ public final class SameDiffMebnStrengthLearner {
     private static final double ADAM_BETA2 = 0.999;
     private static final double ADAM_EPS   = 1e-8;
 
+    /** Package-private test seam for counting caller-owned SameDiff results released per step. */
+    private static final AtomicLong EXECUTION_RESULT_CLOSES = new AtomicLong();
+
+    static void resetExecutionResultCloseCountForTests() {
+        EXECUTION_RESULT_CLOSES.set(0L);
+    }
+
+    static long executionResultCloseCountForTests() {
+        return EXECUTION_RESULT_CLOSES.get();
+    }
+
     private SameDiffMebnStrengthLearner() {}
 
     // ─── Production entry point ────────────────────────────────────────────────
@@ -162,50 +177,72 @@ public final class SameDiffMebnStrengthLearner {
             strengths[i] = e.mfrag().getEdgeStrength(e.parent(), e.child());
         }
 
-        // Adam optimizer: created once; moment state persists across all epochs.
-        Adam adamConfig = new Adam(learningRate, ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
-        GradientUpdater<Adam> adamUpdater = newAdamUpdater(adamConfig, 2L * M);
-        // Live INDArray that Adam reads/writes; kept in sync with strengths[].
-        INDArray sArr = Nd4j.createFromArray(strengths).reshape(1, M).castTo(DataType.DOUBLE);
+        AdamResources adamResources = null;
+        INDArray sArr = null;
+        try {
+            // Adam optimizer: created once; moment state persists across all epochs.
+            Adam adamConfig = new Adam(learningRate, ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
+            adamResources = newAdamUpdater(adamConfig, 2L * M);
+            GradientUpdater<Adam> adamUpdater = adamResources.updater();
+            // Live INDArray that Adam reads/writes; kept in sync with strengths[].
+            sArr = createDoubleRow(strengths, M);
 
-        for (int epoch = 0; epoch < Math.max(1, maxEpochs); epoch++) {
-            // ONE targeted inference call yields the parent posteriors this epoch needs.
-            Set<String> posteriorKeys = requiredPosteriorKeys(edges, observations);
-            Map<String, Double> posteriors = inferSvc.inferVariables(graph, theory, Map.of(), posteriorKeys);
+            for (int epoch = 0; epoch < Math.max(1, maxEpochs); epoch++) {
+                // ONE targeted inference call yields the parent posteriors this epoch needs.
+                Set<String> posteriorKeys = requiredPosteriorKeys(edges, observations);
+                Map<String, Double> posteriors = inferSvc.inferVariables(graph, theory, Map.of(), posteriorKeys);
 
-            // Build [E, M] tensors from the observations and posteriors.
-            // For each edge m, we gather entity rows where the child RV prefix matches.
-            // We use the FULL batch (no subsampling) — the tensor op handles all entities at once.
-            TensorBatch batch = buildTensorBatch(edges, posteriors, observations);
-            if (batch.rowCount() == 0) {
-                break;  // no matching observations
+                // Build [E, M] tensors from the observations and posteriors.
+                // For each edge m, we gather entity rows where the child RV prefix matches.
+                // We use the FULL batch (no subsampling) — the tensor op handles all entities at once.
+                TensorBatch batch = buildTensorBatch(edges, posteriors, observations);
+                try {
+                    if (batch.rowCount() == 0) {
+                        break;  // no matching observations
+                    }
+
+                    // MSE loss at current strengths (for early-exit check).
+                    double loss = computeLoss(strengths, batch);
+                    if (loss < 1e-9) {
+                        break;
+                    }
+
+                    // SameDiff gradient: ∂MSE/∂s for all M edges simultaneously.
+                    double[] gradient = sdGradient(strengths, batch);
+
+                    // Adam step: update sArr in place, then project each element to [0,1].
+                    INDArray gradArr = createDoubleRow(gradient, M);
+                    try {
+                        applyAdam(adamUpdater, sArr, gradArr, epoch);
+                    } finally {
+                        closeOwnedArrays(gradArr);
+                    }
+                    double[] updated = sArr.toDoubleVector();
+                    for (int i = 0; i < M; i++) {
+                        strengths[i] = Math.min(1.0, Math.max(0.0, updated[i]));
+                        sArr.putScalar(i, strengths[i]);
+                    }
+
+                    // Write updated strengths back to the theory.
+                    for (int i = 0; i < M; i++) {
+                        MebnWeightLearner.Edge e = edges.get(i);
+                        e.mfrag().setEdgeStrength(e.parent(), e.child(), strengths[i]);
+                    }
+
+                    log.debug("SameDiffMebnStrengthLearner epoch {}: loss={}", epoch, loss);
+                } finally {
+                    // buildTensorBatch owns these roots; sdGradient borrows them and copies
+                    // constants into its short-lived graph before closing it.
+                    batch.close();
+                }
             }
-
-            // MSE loss at current strengths (for early-exit check).
-            double loss = computeLoss(strengths, batch);
-            if (loss < 1e-9) {
-                break;
+        } finally {
+            // The updater retains m/v views into this root state buffer, so keep the root alive
+            // until training is complete and then release it exactly once.
+            closeOwnedArrays(sArr);
+            if (adamResources != null) {
+                closeOwnedArrays(adamResources.state());
             }
-
-            // SameDiff gradient: ∂MSE/∂s for all M edges simultaneously.
-            double[] gradient = sdGradient(strengths, batch);
-
-            // Adam step: update sArr in place, then project each element to [0,1].
-            INDArray gradArr = Nd4j.createFromArray(gradient).reshape(1, M).castTo(DataType.DOUBLE);
-            applyAdam(adamUpdater, sArr, gradArr, epoch);
-            double[] updated = sArr.toDoubleVector();
-            for (int i = 0; i < M; i++) {
-                strengths[i] = Math.min(1.0, Math.max(0.0, updated[i]));
-                sArr.putScalar(i, strengths[i]);
-            }
-
-            // Write updated strengths back to the theory.
-            for (int i = 0; i < M; i++) {
-                MebnWeightLearner.Edge e = edges.get(i);
-                e.mfrag().setEdgeStrength(e.parent(), e.child(), strengths[i]);
-            }
-
-            log.debug("SameDiffMebnStrengthLearner epoch {}: loss={}", epoch, loss);
         }
 
         return theory;
@@ -223,60 +260,91 @@ public final class SameDiffMebnStrengthLearner {
      * {@link MebnWeightLearner#analyticGradient} to autodiff precision.
      *
      * @param strengths current strength values {@code s[m]}, length M
-     * @param batch     pre-built [E, M] tensor pair (pParent, target)
+     * @param batch     pre-built [E, M] tensor pair (pParent, target), borrowed for this call
      * @return gradient array of length M
      */
     public static double[] sdGradient(double[] strengths, TensorBatch batch) {
         int M = strengths.length;
-        int E = batch.rowCount();
+        SameDiff sd = null;
+        INDArray sArr = null;
+        INDArray pParentGraph = null;
+        INDArray targetGraph = null;
+        INDArray lossArray = null;
+        Map<String, INDArray> grads = null;
+        INDArray cast = null;
+        Throwable operationFailure = null;
+        try {
+            sd = SameDiff.create();
 
-        SameDiff sd = SameDiff.create();
+            // Trainable: s [M]. This array is owned by the graph for this call.
+            sArr = createDoubleRow(strengths, M);
+            SDVariable sVar = sd.var(VAR_S, sArr);
 
-        // Trainable: s [M]
-        INDArray sArr = Nd4j.createFromArray(strengths).reshape(1, M).castTo(DataType.DOUBLE);
-        SDVariable sVar = sd.var(VAR_S, sArr.dup());
+            // Constants: copy the caller-owned TensorBatch roots before SameDiff marks its
+            // constants non-closeable. The graph can therefore close only its own copies.
+            pParentGraph = copyAsDouble(batch.pParent());
+            targetGraph = copyAsDouble(batch.target());
+            SDVariable pParVar  = sd.constant(CONST_PPAR, pParentGraph);
+            SDVariable targetVar = sd.constant(CONST_TGT, targetGraph);
 
-        // Constants: pParent [E, M] and target [E, M]
-        SDVariable pParVar  = sd.constant(CONST_PPAR, batch.pParent().castTo(DataType.DOUBLE));
-        SDVariable targetVar = sd.constant(CONST_TGT,  batch.target().castTo(DataType.DOUBLE));
+            // True noisy-OR forward graph:
+            //   predicted[e,m] = 1 − (1 − leak) · (1 − s[m] · pParent[e,m])
+            //   which equals   = leak + (1 − leak) · s · pParent
 
-        // True noisy-OR forward graph:
-        //   predicted[e,m] = 1 − (1 − leak) · (1 − s[m] · pParent[e,m])
-        //   which equals   = leak + (1 − leak) · s · pParent
+            // Step 1: s[1,M] · pParent[E,M] → [E,M]  (broadcasts s across E rows)
+            SDVariable sPP = sVar.mul("sPP", pParVar);
 
-        // Step 1: s[1,M] · pParent[E,M] → [E,M]  (broadcasts s across E rows)
-        SDVariable sPP = sVar.mul("sPP", pParVar);
+            // Step 2: 1 − s · pParent  → [E,M]
+            SDVariable oneMinusSPP = sPP.rsub("oneMinusSPP", 1.0);
 
-        // Step 2: 1 − s · pParent  → [E,M]
-        SDVariable oneMinusSPP = sPP.rsub("oneMinusSPP", 1.0);
+            // Step 3: (1−leak) · (1 − s · pParent)  → [E,M]
+            SDVariable scaledInhibit = oneMinusSPP.mul("scaledInhibit", 1.0 - LEAKAGE);
 
-        // Step 3: (1−leak) · (1 − s · pParent)  → [E,M]
-        SDVariable scaledInhibit = oneMinusSPP.mul("scaledInhibit", 1.0 - LEAKAGE);
+            // Step 4: predicted = 1 − (1−leak)·(1−s·pParent)  → [E,M]
+            SDVariable predicted = scaledInhibit.rsub(OP_PRED, 1.0);
 
-        // Step 4: predicted = 1 − (1−leak)·(1−s·pParent)  → [E,M]
-        SDVariable predicted = scaledInhibit.rsub(OP_PRED, 1.0);
+            // residual [E, M] = predicted - target
+            SDVariable residual = predicted.sub(OP_RESID, targetVar);
 
-        // residual [E, M] = predicted - target
-        SDVariable residual = predicted.sub(OP_RESID, targetVar);
+            // loss = mean(residual^2) — use var.mean(name) pattern (matching RotatELearner)
+            SDVariable residSq = residual.mul("residSq", residual);
+            residSq.mean(LOSS);   // scalar MSE loss named LOSS
+            sd.setLossVariables(LOSS);
 
-        // loss = mean(residual^2) — use var.mean(name) pattern (matching RotatELearner)
-        SDVariable residSq = residual.mul("residSq", residual);
-        residSq.mean(LOSS);   // scalar MSE loss named LOSS
-        sd.setLossVariables(LOSS);
+            // Standard SameDiff execution returns independent caller-owned output copies.
+            lossArray = sd.outputSingle(Map.of(), LOSS);
+            grads = sd.calculateGradients(Map.of(), VAR_S);
 
-        // Associate the live strength array, run forward pass, then backward.
-        sd.associateArrayWithVariable(sArr, VAR_S);
-        // Forward pass materialises the computation graph; constants are already bound via sd.constant().
-        sd.outputSingle(Map.of(), LOSS);
-        Map<String, INDArray> grads = sd.calculateGradients(Map.of(), VAR_S);
-
-        INDArray gArr = grads.get(VAR_S);
-        if (gArr == null) {
-            return new double[M];
+            INDArray gArr = grads.get(VAR_S);
+            if (gArr == null) {
+                return new double[M];
+            }
+            // Copy the gradient values before releasing the returned gradient and its reshape
+            // alias. The alias is included in result cleanup so its DataBuffer is closed once.
+            INDArray flat = gArr.reshape(M);
+            cast = flat.castTo(DataType.DOUBLE);
+            return cast.toDoubleVector();
+        } catch (RuntimeException | Error e) {
+            operationFailure = e;
+            throw e;
+        } finally {
+            RuntimeException cleanupFailure = closeExecutionResults(
+                    lossArray, grads, cast, sArr, pParentGraph, targetGraph);
+            // close() tears down sessions/plan caches and graph-owned constants. The explicit
+            // guards below are idempotent fallbacks for partial graph construction or older
+            // backends that leave an owned root unregistered after a failed op.
+            cleanupFailure = appendFailure(cleanupFailure, closeSameDiff(sd));
+            // Root cleanup must still run when graph teardown fails; SameDiff may have left
+            // partially-registered roots behind after a failed operation.
+            closeOwnedArrays(sArr, pParentGraph, targetGraph);
+            if (cleanupFailure != null) {
+                if (operationFailure != null) {
+                    operationFailure.addSuppressed(cleanupFailure);
+                } else {
+                    throw cleanupFailure;
+                }
+            }
         }
-        // Gradient shape from SameDiff is [1, M] (matches sArr shape); flatten to [M].
-        INDArray flat = gArr.reshape(M).castTo(DataType.DOUBLE);
-        return flat.toDoubleVector();
     }
 
     // ─── Adam helpers (mirrors RotatELearner pattern) ─────────────────────────
@@ -286,11 +354,17 @@ public final class SameDiffMebnStrengthLearner {
      *
      * @param config   shared Adam hyper-parameter config
      * @param stateLen {@code 2 × parameter-count} (m‖v split)
-     * @return ready Adam updater
+     * @return ready Adam updater and its owned root state buffer
      */
     @SuppressWarnings("unchecked")
-    private static GradientUpdater<Adam> newAdamUpdater(Adam config, long stateLen) {
-        return config.instantiate(Nd4j.zeros(DataType.DOUBLE, 1, stateLen), true);
+    private static AdamResources newAdamUpdater(Adam config, long stateLen) {
+        INDArray state = Nd4j.zeros(DataType.DOUBLE, 1, stateLen);
+        try {
+            return new AdamResources(config.instantiate(state, true), state);
+        } catch (RuntimeException | Error e) {
+            closeOwnedArrays(state);
+            throw e;
+        }
     }
 
     /**
@@ -308,8 +382,14 @@ public final class SameDiffMebnStrengthLearner {
             return;
         }
         INDArray update = grad.castTo(DataType.DOUBLE);
-        updater.applyUpdater(update, iteration, 0);
-        param.subi(update);
+        try {
+            updater.applyUpdater(update, iteration, 0);
+            param.subi(update);
+        } finally {
+            if (update != grad) {
+                closeOwnedArrays(update);
+            }
+        }
     }
 
     // ─── Loss helper (Java, no SameDiff) ──────────────────────────────────────
@@ -409,9 +489,16 @@ public final class SameDiffMebnStrengthLearner {
             }
         }
 
-        INDArray pParND = Nd4j.create(pParArr);
-        INDArray tgtND  = Nd4j.create(tgtArr);
-        return new TensorBatch(pParND, tgtND, pParArr, tgtArr);
+        INDArray pParND = null;
+        INDArray tgtND = null;
+        try {
+            pParND = Nd4j.create(pParArr);
+            tgtND = Nd4j.create(tgtArr);
+            return new TensorBatch(pParND, tgtND, pParArr, tgtArr);
+        } catch (RuntimeException | Error e) {
+            closeOwnedArrays(pParND, tgtND);
+            throw e;
+        }
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -440,9 +527,14 @@ public final class SameDiffMebnStrengthLearner {
      * @param target      ND4J array of shape {@code [E, M]} — child target per entity×edge
      * @param pParentMatrix plain Java mirror (avoids repeated ND4J toDoubleMatrix per loss check)
      * @param targetMatrix  plain Java mirror
+     *
+     * <p>The ND4J roots are owned by this batch. {@link #sdGradient(double[], TensorBatch)} borrows
+     * them and copies graph constants; callers should close the batch when its Java mirrors are no
+     * longer needed.</p>
      */
     public record TensorBatch(INDArray pParent, INDArray target,
-                       double[][] pParentMatrix, double[][] targetMatrix) {
+                       double[][] pParentMatrix, double[][] targetMatrix)
+            implements AutoCloseable {
         public int rowCount() {
             return (int) pParent.size(0);
         }
@@ -450,6 +542,215 @@ public final class SameDiffMebnStrengthLearner {
         static TensorBatch empty(int M) {
             INDArray z = Nd4j.zeros(DataType.DOUBLE, 0, M);
             return new TensorBatch(z, z, new double[0][M], new double[0][M]);
+        }
+
+        /** Release the batch roots once the Java mirrors are no longer needed. */
+        @Override
+        public void close() {
+            closeOwnedArrays(pParent, target);
+        }
+    }
+
+    private record AdamResources(GradientUpdater<Adam> updater, INDArray state) {}
+
+    /** Create an owned compact DOUBLE row without retaining the source array or its view. */
+    private static INDArray createDoubleRow(double[] values, int width) {
+        INDArray source = null;
+        INDArray row = null;
+        try {
+            source = Nd4j.createFromArray(values);
+            row = source.reshape(1, width);
+            return copyAsDouble(row);
+        } finally {
+            // copyAsDouble always returns a separate root, so these construction roots are
+            // safe to release even when the caller is about to bind the returned array.
+            closeOwnedArrays(source, row);
+        }
+    }
+
+    /** Copy a caller-owned array into an independent DOUBLE root for a SameDiff graph. */
+    private static INDArray copyAsDouble(INDArray source) {
+        INDArray cast = source.castTo(DataType.DOUBLE);
+        try {
+            return cast.dup();
+        } finally {
+            if (cast != source) {
+                closeOwnedArrays(cast);
+            }
+        }
+    }
+
+    /**
+     * Release standard-path output/gradient copies without changing closeability or ownership of
+     * views. Identity and DataBuffer de-duplication protects aliases and graph-owned roots.
+     */
+    private static RuntimeException closeExecutionResults(
+            INDArray lossArray,
+            Map<String, INDArray> gradients,
+            INDArray additionalResult,
+            INDArray... protectedRoots) {
+        Set<INDArray> protectedArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> protectedBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (INDArray root : protectedRoots) {
+            if (root == null || !protectedArrays.add(root)) {
+                continue;
+            }
+            DataBuffer data = dataBufferOf(root);
+            if (data != null) {
+                protectedBuffers.add(data);
+            }
+        }
+
+        Set<INDArray> seenArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        RuntimeException failure = null;
+        failure = appendFailure(failure, closeExecutionResult(lossArray,
+                protectedArrays, protectedBuffers, seenArrays, seenBuffers));
+        if (gradients != null) {
+            for (INDArray gradient : gradients.values()) {
+                failure = appendFailure(failure, closeExecutionResult(gradient,
+                        protectedArrays, protectedBuffers, seenArrays, seenBuffers));
+            }
+        }
+        failure = appendFailure(failure, closeExecutionResult(additionalResult,
+                protectedArrays, protectedBuffers, seenArrays, seenBuffers));
+        return failure;
+    }
+
+    private static RuntimeException appendFailure(RuntimeException first, RuntimeException next) {
+        if (next == null) {
+            return first;
+        }
+        if (first == null) {
+            return next;
+        }
+        if (first != next) {
+            first.addSuppressed(next);
+        }
+        return first;
+    }
+
+    private static RuntimeException closeExecutionResult(
+            INDArray array,
+            Set<INDArray> protectedArrays,
+            Set<DataBuffer> protectedBuffers,
+            Set<INDArray> seenArrays,
+            Set<DataBuffer> seenBuffers) {
+        if (array == null || protectedArrays.contains(array) || !seenArrays.add(array)
+                || array.wasClosed()) {
+            return null;
+        }
+        DataBuffer data = dataBufferOf(array);
+        if (data != null && (data.wasClosed() || protectedBuffers.contains(data)
+                || !seenBuffers.add(data))) {
+            return null;
+        }
+        // Returned outputs are already caller-owned. Do not force-close a borrowed view.
+        if (!array.closeable()) {
+            return null;
+        }
+        try {
+            array.close();
+            if (array.wasClosed()) {
+                EXECUTION_RESULT_CLOSES.incrementAndGet();
+            }
+            return null;
+        } catch (RuntimeException e) {
+            return e;
+        }
+    }
+
+    private static DataBuffer dataBufferOf(INDArray array) {
+        try {
+            return array == null ? null : array.data();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    @FunctionalInterface
+    interface SameDiffCloseHookForTests {
+        void close(SameDiff graph);
+    }
+
+    private static final SameDiffCloseHookForTests DEFAULT_SAME_DIFF_CLOSE_HOOK = SameDiff::close;
+    private static volatile SameDiffCloseHookForTests sameDiffCloseHook = DEFAULT_SAME_DIFF_CLOSE_HOOK;
+
+    static void setSameDiffCloseHookForTests(SameDiffCloseHookForTests hook) {
+        sameDiffCloseHook = hook == null ? DEFAULT_SAME_DIFF_CLOSE_HOOK : hook;
+    }
+
+    static void resetSameDiffCloseHookForTests() {
+        sameDiffCloseHook = DEFAULT_SAME_DIFF_CLOSE_HOOK;
+    }
+
+    private static RuntimeException closeSameDiff(SameDiff sd) {
+        if (sd == null) {
+            return null;
+        }
+        RuntimeException failure = null;
+        SameDiff gradient = null;
+        try {
+            gradient = sd.getFunction("grad");
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        // The gradient graph owns its own execution session. Always attempt it first, then
+        // attempt the parent even when gradient lookup/teardown fails.
+        if (gradient != null && gradient != sd) {
+            failure = appendFailure(failure, closeSameDiffPart(gradient));
+        }
+        failure = appendFailure(failure, closeSameDiffPart(sd));
+        return failure;
+    }
+
+    private static RuntimeException closeSameDiffPart(SameDiff graph) {
+        try {
+            sameDiffCloseHook.close(graph);
+            return null;
+        } catch (RuntimeException e) {
+            return e;
+        }
+    }
+
+    /**
+     * Close only roots owned by this class.  Identity de-duplication covers both repeated
+     * references (TensorBatch.empty) and views sharing one DataBuffer (Adam m/v state).
+     */
+    private static void closeOwnedArrays(INDArray... arrays) {
+        Set<INDArray> seenArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (INDArray array : arrays) {
+            if (array == null || !seenArrays.add(array) || array.wasClosed()) {
+                continue;
+            }
+            DataBuffer data;
+            try {
+                data = array.data();
+            } catch (RuntimeException e) {
+                data = null;
+            }
+            if (data != null && (data.wasClosed() || seenBuffers.contains(data))) {
+                continue;
+            }
+            try {
+                // SameDiff constants/variables deliberately mark their buffers non-closeable;
+                // these arrays are local roots owned by this class, so restore closeability only
+                // for the final deterministic release. Attached workspace arrays remain guarded
+                // by closeable() and are left to their workspace owner.
+                if (data != null) {
+                    data.setConstant(false);
+                }
+                array.setCloseable(true);
+                if (array.closeable()) {
+                    if (data != null && !seenBuffers.add(data)) {
+                        continue;
+                    }
+                    array.close();
+                }
+            } catch (RuntimeException e) {
+                log.debug("SameDiffMebnStrengthLearner array cleanup failed: {}", e.getMessage());
+            }
         }
     }
 }

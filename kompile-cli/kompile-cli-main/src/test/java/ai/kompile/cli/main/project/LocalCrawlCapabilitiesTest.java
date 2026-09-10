@@ -39,6 +39,7 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(catalog.path("chunkers").toString().contains("sentence"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("standard-text"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("text-model-text"));
+        assertTrue(catalog.path("pipelineTemplates").toString().contains("chat-model-document"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("vlm-document"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("vision-multimodel"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("ocr-document"));
@@ -68,6 +69,11 @@ class LocalCrawlCapabilitiesTest {
                 .contains("stageDetail"));
         assertTrue(catalog.path("wiringRecipe").path("customDefinition").path("sources").asText()
                 .contains("pipelineDefinitionPath"));
+        assertEquals("CHAT_MODEL",
+                template(catalog, LocalCrawlCapabilities.CHAT_MODEL_PIPELINE)
+                        .path("configuration").path("processorType").asText());
+        assertFalse(template(catalog, LocalCrawlCapabilities.CHAT_MODEL_PIPELINE)
+                .path("credentialsPersistedInCrawl").asBoolean(true));
     }
 
     @Test
@@ -118,6 +124,73 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(nodes.toString().contains("modelRole=visionEncoder"));
         assertTrue(nodes.toString().contains("modelRole=textEmbedding"));
         assertTrue(nodes.toString().contains("modelRole=decoder"));
+
+        Map<?, ?> chatProcessor = LocalCrawlCapabilities.builtinChatModelProcessor();
+        assertEquals("CHAT_MODEL", chatProcessor.get("type"));
+        assertFalse(chatProcessor.containsKey("pipelineDefinition"));
+    }
+
+    @Test
+    void chatProcessorOverridesTheImplicitLocalVlmDefinition() throws Exception {
+        Path image = tempDir.resolve("remote.png");
+        Files.writeString(image, "resolution only");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "pipelines": [{
+                    "pipelineId": "remote-vlm",
+                    "pipelineType": "VLM",
+                    "processor": {"type": "CHAT_MODEL"}
+                  }],
+                  "documents": [{"path": "%s", "pipelineId": "remote-vlm"}]
+                }
+                """.formatted(image.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        assertNull(LocalModelPipelineRunner.validatePipelineDefinitions(tempDir, request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, image);
+
+        assertEquals("CHAT_MODEL", resolved.processor().get("type"));
+        assertFalse(resolved.processor().containsKey("pipelineDefinition"),
+                "remote VLM must not retain the inherited local artifact definition");
+        assertTrue(LocalCrawlCapabilities.usesModelPipeline(resolved));
+        assertTrue(LocalCrawlCapabilities.loaderSupports(resolved.loaderName(), image));
+    }
+
+    @Test
+    void documentChatOverrideReplacesImplicitVlmAndOcrLoaders() throws Exception {
+        Path image = tempDir.resolve("document.png");
+        Files.writeString(image, "resolution only");
+        for (String type : List.of("VLM", "OCR")) {
+            ObjectNode request = mapper.createObjectNode();
+            request.putArray("pipelines").addObject().put("pipelineId", "media").put("pipelineType", type);
+            request.putArray("documents").addObject().put("path", image.toString()).put("pipelineId", "media")
+                    .putObject("processor").put("type", "CHAT_MODEL");
+            LocalCrawlCapabilities.ResolvedPipeline resolved =
+                    LocalCrawlCapabilities.resolve(request, null, tempDir, image);
+            assertEquals("CHAT_MODEL", resolved.processor().get("type"));
+            assertTrue(LocalCrawlCapabilities.loaderSupports(resolved.loaderName(), image), type);
+        }
+    }
+
+    @Test
+    void nativeChatPreservesExplicitInheritedAndDocumentLoaderRestrictions() throws Exception {
+        Path image = tempDir.resolve("restricted.png");
+        Files.writeString(image, "resolution only");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {"pipelines":[
+                   {"pipelineId":"pdf-only","pipelineType":"VLM","loaderName":"pdf"},
+                   {"pipelineId":"remote","registeredPipelineId":"pdf-only","processor":{"type":"CHAT_MODEL"}}
+                ]}
+                """);
+        ObjectNode document = request.putArray("documents").addObject()
+                .put("path", image.toString()).put("pipelineId", "remote");
+        LocalCrawlCapabilities.ResolvedPipeline restricted = LocalCrawlCapabilities.resolve(request, null, tempDir, image);
+        assertEquals("pdf", restricted.loaderName());
+        assertFalse(LocalCrawlCapabilities.loaderSupports(restricted.loaderName(), image));
+        document.put("loaderName", "auto");
+        LocalCrawlCapabilities.ResolvedPipeline overridden = LocalCrawlCapabilities.resolve(request, null, tempDir, image);
+        assertTrue(LocalCrawlCapabilities.loaderSupports(overridden.loaderName(), image));
     }
 
     @Test
@@ -439,6 +512,32 @@ class LocalCrawlCapabilitiesTest {
 
         String error = LocalCrawlCapabilities.validationError(request);
         assertTrue(error.contains("Unsupported pipeline executor type"), error);
+    }
+
+    @Test
+    void registeredChatModelExecutorIsAcceptedAndOverridesLocalVlm() throws Exception {
+        Path image = tempDir.resolve("remote.png");
+        Files.writeString(image, "resolution only");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "pipelineRegistry": {
+                    "executors": [{"executorId":"chat","type":"CHAT_MODEL"}]
+                  },
+                  "pipelines": [{
+                    "pipelineId":"remote-vlm","pipelineType":"VLM","executorId":"chat"
+                  }],
+                  "documents": [{"path":"%s","pipelineId":"remote-vlm"}]
+                }
+                """.formatted(image.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, image);
+
+        assertEquals("CHAT_MODEL", resolved.processor().get("type"));
+        assertEquals("chat", resolved.processor().get("executorId"));
+        assertFalse(resolved.processor().containsKey("pipelineDefinition"));
+        assertTrue(LocalCrawlCapabilities.loaderSupports(resolved.loaderName(), image));
     }
 
     @Test

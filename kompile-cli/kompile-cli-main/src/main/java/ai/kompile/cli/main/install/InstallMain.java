@@ -26,7 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.*;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "install",mixinStandardHelpOptions = false,subcommands = {
+@CommandLine.Command(name = "install", description = "Install Kompile development dependencies and components.", mixinStandardHelpOptions = false, subcommands = {
         InstallGraalvm.class,
         InstallPython.class,
         InstallMaven.class,

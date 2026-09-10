@@ -17,7 +17,9 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.enforcer.DirectionJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
+import ai.kompile.cli.main.chat.workflow.WorkflowPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -63,7 +65,7 @@ public class EnforcerConfigTool implements CliTool {
                 + "The enforcer monitors agent output for banned keywords, patterns, and semantic equivalents. "
                 + "Actions: 'status' (summary), 'get' (full JSON config), "
                 + "'set' (update fields: keyword_mode, max_corrections, semantic_mode, semantic_threshold, "
-                + "embedding_url, inline_rules, archive_diffs, auto_rollback), "
+                + "embedding_url, inline_rules, archive_diffs, auto_rollback, direction_*, workflow_*), "
                 + "'add_keyword'/'remove_keyword' (manage banned keywords), "
                 + "'add_tool_ban'/'remove_tool_ban' (manage banned tools), "
                 + "'set_semantic' (configure semantic matching: mode, threshold, embedding_url, synonym_dictionary), "
@@ -85,7 +87,12 @@ public class EnforcerConfigTool implements CliTool {
         props.putObject("field").put("type", "string")
                 .put("description", "Config field to set (for 'set' action): keyword_mode, max_corrections, "
                         + "semantic_mode, semantic_threshold, embedding_url, inline_rules, "
-                        + "archive_diffs, auto_rollback, agent, rule_file, primary_language");
+                        + "archive_diffs, auto_rollback, agent, rule_file, primary_language, "
+                        + "direction_monitoring, direction_goal, direction_check_every, "
+                        + "direction_max_redirects, direction_confidence_threshold, "
+                        + "direction_cross_turn_limit, direction_report_only, workflow_mode, "
+                        + "workflow_required_skills, workflow_require_plan_before_mutation, "
+                        + "workflow_max_corrections");
         props.putObject("value").put("type", "string")
                 .put("description", "Value to set (for 'set' action). Use 'true'/'false' for booleans, numbers as strings.");
 
@@ -175,6 +182,30 @@ public class EnforcerConfigTool implements CliTool {
         }
         sb.append("Archive diffs:   ").append(config.isArchiveDiffs() ? "enabled" : "disabled").append("\n");
         sb.append("Auto-rollback:   ").append(config.isAutoRollbackOnViolation() ? "yes" : "no").append("\n");
+        sb.append("Workflow:        ").append(config.getWorkflowMode()).append("\n");
+        if (!config.getWorkflowRequiredSkills().isEmpty()) {
+            sb.append("Workflow skills: ")
+                    .append(String.join(", ", config.getWorkflowRequiredSkills())).append("\n");
+        }
+        sb.append("Workflow plan:   ")
+                .append(config.isWorkflowRequirePlanBeforeMutation()
+                        ? "required before mutation" : "not required")
+                .append("\n");
+        sb.append("Direction:       ")
+                .append(config.isDirectionMonitoring() ? "enabled" : "disabled");
+        if (config.isDirectionReportOnly()) sb.append(" (report-only)");
+        sb.append("\n");
+        if (config.isDirectionMonitoring()) {
+            sb.append("Direction every: ").append(config.getDirectionCheckEvery())
+                    .append(" iterations; ").append(config.getDirectionMaxRedirects())
+                    .append(" redirects/turn\n");
+            sb.append("Direction act:   confidence >= ")
+                    .append(config.getDirectionConfidenceThreshold())
+                    .append("; cross-turn limit ")
+                    .append(config.getDirectionCrossTurnDriftLimit() == 0
+                            ? "disabled" : config.getDirectionCrossTurnDriftLimit())
+                    .append("\n");
+        }
         if (!config.getBannedKeywords().isEmpty()) {
             sb.append("Banned keywords: ").append(String.join(", ", config.getBannedKeywords())).append("\n");
         }
@@ -230,11 +261,50 @@ public class EnforcerConfigTool implements CliTool {
             case "judge_provider" -> config.setJudgeProvider(value);
             case "judge_model" -> config.setJudgeModel(value);
             case "synonym_dictionary" -> config.setSynonymDictionaryPath(value);
+            case "direction_monitoring" ->
+                    config.setDirectionMonitoring(Boolean.parseBoolean(value));
+            case "direction_goal" ->
+                    config.setDirectionGoal(value.isBlank() ? null : value);
+            case "direction_check_every" ->
+                    config.setDirectionCheckEvery(Math.max(1, Integer.parseInt(value)));
+            case "direction_max_redirects" -> config.setDirectionMaxRedirects(
+                    Math.max(0, Math.min(DirectionJudge.Options.HARD_MAX_REDIRECTS,
+                            Integer.parseInt(value))));
+            case "direction_confidence_threshold" -> {
+                double threshold = Double.parseDouble(value);
+                if (!Double.isFinite(threshold)) {
+                    return ToolResult.error("direction_confidence_threshold must be finite");
+                }
+                config.setDirectionConfidenceThreshold(
+                        Math.max(0.0, Math.min(1.0, threshold)));
+            }
+            case "direction_cross_turn_limit" -> config.setDirectionCrossTurnDriftLimit(
+                    Math.max(0, Math.min(
+                            DirectionJudge.Options.HARD_MAX_CROSS_TURN_DRIFT_LIMIT,
+                            Integer.parseInt(value))));
+            case "direction_report_only" ->
+                    config.setDirectionReportOnly(Boolean.parseBoolean(value));
+            case "workflow_mode" -> {
+                WorkflowPolicy.Mode parsed = WorkflowPolicy.Mode.parse(value);
+                config.setWorkflowMode(parsed.name().toLowerCase(java.util.Locale.ROOT));
+            }
+            case "workflow_required_skills" ->
+                    config.setWorkflowRequiredSkills(parseSkillNames(value));
+            case "workflow_require_plan_before_mutation" ->
+                    config.setWorkflowRequirePlanBeforeMutation(Boolean.parseBoolean(value));
+            case "workflow_max_corrections" -> config.setWorkflowMaxCorrections(
+                    Math.max(0, Math.min(WorkflowPolicy.HARD_MAX_CORRECTIONS,
+                            Integer.parseInt(value))));
             default -> {
                 return ToolResult.error("Unknown field: " + field + ". Valid fields: keyword_mode, "
                         + "max_corrections, semantic_mode, semantic_threshold, embedding_url, "
                         + "inline_rules, archive_diffs, auto_rollback, agent, rule_file, "
-                        + "primary_language, judge_provider, judge_model, synonym_dictionary");
+                        + "primary_language, judge_provider, judge_model, synonym_dictionary, "
+                        + "direction_monitoring, direction_goal, direction_check_every, "
+                        + "direction_max_redirects, direction_confidence_threshold, "
+                        + "direction_cross_turn_limit, direction_report_only, workflow_mode, "
+                        + "workflow_required_skills, workflow_require_plan_before_mutation, "
+                        + "workflow_max_corrections");
             }
         }
 
@@ -437,5 +507,15 @@ public class EnforcerConfigTool implements CliTool {
             return ToolResult.success("Enforcer config deleted.");
         }
         return ToolResult.error("No enforcer config found to delete.");
+    }
+
+    private static List<String> parseSkillNames(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        List<String> skills = new ArrayList<>();
+        for (String item : value.split("[,\\s]+")) {
+            String name = item.trim();
+            if (!name.isEmpty() && !skills.contains(name)) skills.add(name);
+        }
+        return List.copyOf(skills);
     }
 }

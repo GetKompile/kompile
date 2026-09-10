@@ -21,12 +21,19 @@ import ai.kompile.core.graphrag.conformance.GraphConformanceSummary;
 import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
 import ai.kompile.core.graphrag.conformance.OntologyAxiom;
 import ai.kompile.core.graphrag.conformance.OntologyProjectionProvider;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.typing.GraphNodeTypes;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.process.ontology.EntityTypeDefinition;
+import ai.kompile.process.ontology.FieldDefinition;
+import ai.kompile.process.ontology.FieldType;
 import ai.kompile.process.ontology.OntologyConformanceValidator;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.RelationshipTypeDefinition;
@@ -39,9 +46,15 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Bridges the knowledge graph to its governing {@link OntologySchema} — the keystone that makes the
@@ -76,6 +89,12 @@ public class GraphOntologyBindingService
     private final ProcessEngineService processEngineService;
     private final KnowledgeGraphService knowledgeGraphService;
     private final OntologyDerivationService ontologyDerivationService;
+    /**
+     * Serialize schema merges by the durable ontology resource, not merely by fact sheet. Multiple
+     * fact sheets may intentionally share one governing ontology and must not derive competing
+     * versions from the same stale base.
+     */
+    private final Map<String, Object> schemaMergeLocks = new ConcurrentHashMap<>();
 
     public GraphOntologyBindingService(ProcessEngineService processEngineService,
                                        KnowledgeGraphService knowledgeGraphService,
@@ -113,10 +132,14 @@ public class GraphOntologyBindingService
         if (schema == null || schema.getEntityTypes() == null) {
             return List.of();
         }
-        return schema.getEntityTypes().stream()
-                .filter(e -> e != null && e.getName() != null && !e.getName().isBlank())
-                .map(EntityTypeDefinition::getName)
-                .toList();
+        LinkedHashSet<String> allowed = new LinkedHashSet<>();
+        for (EntityTypeDefinition entity : schema.getEntityTypes()) {
+            if (entity == null) continue;
+            if (hasText(entity.getName())) allowed.add(entity.getName());
+            if (entity.getAliases() != null) entity.getAliases().stream()
+                    .filter(GraphOntologyBindingService::hasText).forEach(allowed::add);
+        }
+        return List.copyOf(allowed);
     }
 
     @Override
@@ -125,10 +148,15 @@ public class GraphOntologyBindingService
         if (schema == null || schema.getRelationshipTypes() == null) {
             return List.of();
         }
-        return schema.getRelationshipTypes().stream()
-                .filter(r -> r != null && r.getType() != null && !r.getType().isBlank())
-                .map(RelationshipTypeDefinition::getType)
-                .toList();
+        LinkedHashSet<String> allowed = new LinkedHashSet<>();
+        for (RelationshipTypeDefinition relationship : schema.getRelationshipTypes()) {
+            if (relationship == null) continue;
+            if (hasText(relationship.getType())) allowed.add(relationship.getType());
+            if (hasText(relationship.getCanonicalType())) allowed.add(relationship.getCanonicalType());
+            if (relationship.getObservedTypes() != null) relationship.getObservedTypes().stream()
+                    .filter(GraphOntologyBindingService::hasText).forEach(allowed::add);
+        }
+        return List.copyOf(allowed);
     }
 
     @Override
@@ -142,11 +170,20 @@ public class GraphOntologyBindingService
             if (rel == null || rel.getType() == null || rel.getType().isBlank()) {
                 continue;
             }
-            if (rel.getSourceEntityType() != null && !rel.getSourceEntityType().isBlank()) {
-                axioms.add(new OntologyAxiom(OntologyAxiom.Kind.DOMAIN, rel.getType(), rel.getSourceEntityType()));
-            }
-            if (rel.getTargetEntityType() != null && !rel.getTargetEntityType().isBlank()) {
-                axioms.add(new OntologyAxiom(OntologyAxiom.Kind.RANGE, rel.getType(), rel.getTargetEntityType()));
+            LinkedHashSet<String> predicates = new LinkedHashSet<>();
+            predicates.add(rel.getType());
+            if (hasText(rel.getCanonicalType())) predicates.add(rel.getCanonicalType());
+            if (rel.getObservedTypes() != null) rel.getObservedTypes().stream()
+                    .filter(GraphOntologyBindingService::hasText).forEach(predicates::add);
+            for (String predicate : predicates) {
+                if (hasText(rel.getSourceEntityType())) {
+                    axioms.add(new OntologyAxiom(
+                            OntologyAxiom.Kind.DOMAIN, predicate, rel.getSourceEntityType()));
+                }
+                if (hasText(rel.getTargetEntityType())) {
+                    axioms.add(new OntologyAxiom(
+                            OntologyAxiom.Kind.RANGE, predicate, rel.getTargetEntityType()));
+                }
             }
         }
         return axioms;
@@ -373,10 +410,477 @@ public class GraphOntologyBindingService
         }
     }
 
+    /**
+     * Merge the exact frozen crawl schema into the durable governing ontology before OWL runs.
+     * This preserves authoritative zero-instance types and relationship declarations that cannot be
+     * reconstructed by sampling graph facts. Connection families remain metadata facets and are not
+     * mapped to OWL {@code subPropertyOf}.
+     */
+    public Optional<OntologySchema> mergeFrozenGraphSchema(
+            Long factSheetId, GraphSchema graphSchema) {
+        if (factSheetId == null || graphSchema == null) {
+            return autoProvisionStructuralOntology(factSheetId);
+        }
+        synchronized (ontologyMutationLock(factSheetId)) {
+            return mergeFrozenGraphSchemaLocked(factSheetId, graphSchema);
+        }
+    }
+
+    /**
+     * Run a complete crawl ontology transaction under the same resource lock as the frozen-schema
+     * merge. The post-OWL type/relation induction stages create further ontology versions and must not
+     * interleave when fact sheets share one governing ontology.
+     */
+    public void withOntologyMutationLock(Long factSheetId, Runnable mutation) {
+        Objects.requireNonNull(mutation, "mutation");
+        synchronized (ontologyMutationLock(factSheetId)) {
+            mutation.run();
+        }
+    }
+
+    private Object ontologyMutationLock(Long factSheetId) {
+        Optional<OntologySchema> active = resolveActiveOntology(factSheetId);
+        String lockKey = active.filter(schema -> hasText(schema.getId()))
+                .map(schema -> "ontology:" + schema.getId())
+                .orElse("fact-sheet:" + factSheetId);
+        return schemaMergeLocks.computeIfAbsent(lockKey, ignored -> new Object());
+    }
+
+    private Optional<OntologySchema> mergeFrozenGraphSchemaLocked(
+            Long factSheetId, GraphSchema graphSchema) {
+        try {
+            Optional<OntologySchema> active = resolveActiveOntology(factSheetId)
+                    .map(this::latestOntologyVersion);
+            OntologySchema base;
+            if (active.isPresent()) {
+                base = copyOntology(active.get());
+            } else {
+                try {
+                    base = ontologyDerivationService.deriveStructuralDraft(factSheetId);
+                } catch (RuntimeException noObservedGraphSchema) {
+                    base = OntologySchema.builder()
+                            .name("Crawl graph schema " + factSheetId)
+                            .updatedBy("crawl-schema-prepass")
+                            .build();
+                }
+            }
+
+            List<EntityTypeDefinition> entities = mergeEntityDefinitions(
+                    base.getEntityTypes(), graphSchema);
+            Map<String, String> canonicalEntityNames = entityCanonicalIndex(entities);
+            List<RelationshipTypeDefinition> relationships = mergeRelationshipDefinitions(
+                    base.getRelationshipTypes(), graphSchema, canonicalEntityNames,
+                    entityParentIndex(entities));
+            Map<String, Object> metadata = base.getMetadata() == null
+                    ? new LinkedHashMap<>() : new LinkedHashMap<>(base.getMetadata());
+            metadata.put("crawlGraphSchemaIntegrated", true);
+            metadata.put("crawlGraphSchemaNodeTypes", entities.size());
+            metadata.put("crawlGraphSchemaRelationshipTypes", relationships.size());
+
+            boolean changed = !Objects.equals(base.getEntityTypes(), entities)
+                    || !Objects.equals(base.getRelationshipTypes(), relationships)
+                    || !Objects.equals(base.getMetadata(), metadata);
+            base.setEntityTypes(entities);
+            base.setRelationshipTypes(relationships.isEmpty() ? List.of() : relationships);
+            base.setMetadata(metadata);
+            base.setUpdatedBy("crawl-schema-prepass");
+
+            OntologySchema persisted;
+            if (active.isEmpty()) {
+                persisted = processEngineService.createOntology(base);
+            } else if (changed) {
+                persisted = processEngineService.updateOntology(active.get().getId(), base);
+            } else {
+                bindOntology(factSheetId, active.get().getId(), active.get().getVersion());
+                return active;
+            }
+            bindOntology(factSheetId, persisted.getId(), persisted.getVersion());
+            return Optional.of(persisted);
+        } catch (RuntimeException e) {
+            log.warn("Frozen graph schema merge failed for factSheet={}: {}", factSheetId, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    private static List<EntityTypeDefinition> mergeEntityDefinitions(
+            List<EntityTypeDefinition> existing, GraphSchema graphSchema) {
+        List<EntityTypeDefinition> merged = existing == null
+                ? new ArrayList<>()
+                : existing.stream().filter(Objects::nonNull)
+                        .map(GraphOntologyBindingService::copyEntity).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        Map<String, EntityTypeDefinition> index = entityDefinitionIndex(merged);
+        Map<String, String> canonicalByRaw = new LinkedHashMap<>();
+        if (graphSchema.getNodeTypes() != null) {
+            for (NodeType node : graphSchema.getNodeTypes()) {
+                if (node == null || !hasText(node.getLabel())) continue;
+                String raw = node.getLabel().trim();
+                EntityTypeDefinition definition = index.get(normalize(raw));
+                if (definition == null) {
+                    definition = EntityTypeDefinition.builder()
+                            .name(raw)
+                            .description(node.getDescription())
+                            .aliases(List.of())
+                            .confidence(1.0d)
+                            .fields(toFields(node.getProperties()))
+                            .build();
+                    merged.add(definition);
+                    index.put(normalize(raw), definition);
+                } else {
+                    if (!hasText(definition.getDescription()) && hasText(node.getDescription())) {
+                        definition.setDescription(node.getDescription());
+                    }
+                    definition.setAliases(mergeStrings(definition.getAliases(),
+                            definition.getName().equalsIgnoreCase(raw) ? List.of() : List.of(raw)));
+                    definition.setFields(mergeFields(definition.getFields(), toFields(node.getProperties())));
+                }
+                canonicalByRaw.put(normalize(raw), definition.getName());
+            }
+            canonicalByRaw.clear();
+            canonicalByRaw.putAll(entityCanonicalIndex(merged));
+            for (NodeType node : graphSchema.getNodeTypes()) {
+                if (node == null || !hasText(node.getLabel()) || !hasText(node.getParentType())) continue;
+                EntityTypeDefinition child = index.get(normalize(node.getLabel()));
+                String parent = canonicalByRaw.getOrDefault(
+                        normalize(node.getParentType()), node.getParentType().trim());
+                if (child != null && !child.getName().equalsIgnoreCase(parent)) {
+                    String existingParent = canonicalByRaw.getOrDefault(
+                            normalize(child.getParentType()), child.getParentType());
+                    if (hasText(existingParent)
+                            && !normalize(existingParent).equals(normalize(parent))) {
+                        throw new IllegalArgumentException("Entity type '" + child.getName()
+                                + "' already has parent '" + child.getParentType()
+                                + "'; crawl schema proposed conflicting parent '" + parent + "'");
+                    }
+                    if (!hasText(child.getParentType())) child.setParentType(parent);
+                }
+            }
+        }
+        return List.copyOf(merged);
+    }
+
+    private static List<RelationshipTypeDefinition> mergeRelationshipDefinitions(
+            List<RelationshipTypeDefinition> existing,
+            GraphSchema graphSchema,
+            Map<String, String> canonicalEntityNames,
+            Map<String, String> entityParents) {
+        List<RelationshipTypeDefinition> merged = existing == null
+                ? new ArrayList<>()
+                : existing.stream().filter(Objects::nonNull)
+                        .map(GraphOntologyBindingService::copyRelationship).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        Map<String, RelationshipTypeDefinition> byType = new LinkedHashMap<>();
+        merged.forEach(definition -> indexRelationshipDefinition(byType, definition));
+        Map<String, Set<String>> sources = new LinkedHashMap<>();
+        Map<String, Set<String>> targets = new LinkedHashMap<>();
+        Map<String, Set<String>> patternsByType = new LinkedHashMap<>();
+        if (graphSchema.getPatterns() != null) {
+            graphSchema.getPatterns().forEach(pattern ->
+                    GraphExtractionValidator.parseRelationPattern(pattern).ifPresent(signature -> {
+                        String relationKey = normalize(signature.relationType());
+                        sources.computeIfAbsent(relationKey, ignored -> new LinkedHashSet<>())
+                                .add(canonicalEntityNames.getOrDefault(normalize(signature.sourceType()), signature.sourceType()));
+                        targets.computeIfAbsent(relationKey, ignored -> new LinkedHashSet<>())
+                                .add(canonicalEntityNames.getOrDefault(normalize(signature.targetType()), signature.targetType()));
+                        patternsByType.computeIfAbsent(relationKey, ignored -> new LinkedHashSet<>())
+                                .add(signature.expression());
+                    }));
+        }
+        if (graphSchema.getRelationshipTypes() != null) {
+            for (RelationshipType relation : graphSchema.getRelationshipTypes()) {
+                if (relation == null || !hasText(relation.getType())) continue;
+                String key = normalize(relation.getType());
+                RelationshipTypeDefinition definition = findRelationshipDefinition(byType, relation);
+                if (definition == null) {
+                    definition = RelationshipTypeDefinition.builder()
+                            .type(relation.getType().trim())
+                            .description(relation.getDescription())
+                            .observedTypes(relation.getAliases())
+                            .sourceEntityType(singleValue(sources.get(key)))
+                            .targetEntityType(singleValue(targets.get(key)))
+                            .metadata(relationshipMetadata(null, relation.getConnectionFamily(),
+                                    sources.get(key), targets.get(key), patternsByType.get(key)))
+                            .build();
+                    merged.add(definition);
+                    indexRelationshipDefinition(byType, definition);
+                } else {
+                    if (!hasText(definition.getDescription()) && hasText(relation.getDescription())) {
+                        definition.setDescription(relation.getDescription());
+                    }
+                    List<String> observed = relation.getAliases();
+                    if (!definition.getType().equalsIgnoreCase(relation.getType())) {
+                        observed = mergeStrings(observed, List.of(relation.getType()));
+                    }
+                    definition.setObservedTypes(mergeStrings(
+                            definition.getObservedTypes(), observed));
+                    definition.setSourceEntityType(mergeEndpointConstraint(
+                            definition.getType(), "source", definition.getSourceEntityType(),
+                            sources.get(key), canonicalEntityNames, entityParents));
+                    definition.setTargetEntityType(mergeEndpointConstraint(
+                            definition.getType(), "target", definition.getTargetEntityType(),
+                            targets.get(key), canonicalEntityNames, entityParents));
+                    definition.setMetadata(relationshipMetadata(
+                            definition.getMetadata(), relation.getConnectionFamily(),
+                            sources.get(key), targets.get(key), patternsByType.get(key)));
+                }
+            }
+        }
+        return List.copyOf(merged);
+    }
+
+    private static void indexRelationshipDefinition(
+            Map<String, RelationshipTypeDefinition> index,
+            RelationshipTypeDefinition definition) {
+        if (definition == null) return;
+        if (hasText(definition.getType())) {
+            index.putIfAbsent(normalize(definition.getType()), definition);
+        }
+        if (hasText(definition.getCanonicalType())) {
+            index.putIfAbsent(normalize(definition.getCanonicalType()), definition);
+        }
+        if (definition.getObservedTypes() != null) {
+            definition.getObservedTypes().stream()
+                    .filter(GraphOntologyBindingService::hasText)
+                    .forEach(alias -> index.putIfAbsent(normalize(alias), definition));
+        }
+    }
+
+    private static RelationshipTypeDefinition findRelationshipDefinition(
+            Map<String, RelationshipTypeDefinition> index, RelationshipType relation) {
+        LinkedHashSet<RelationshipTypeDefinition> matches = new LinkedHashSet<>();
+        RelationshipTypeDefinition primary = index.get(normalize(relation.getType()));
+        if (primary != null) matches.add(primary);
+        if (relation.getAliases() != null) {
+            relation.getAliases().stream().filter(GraphOntologyBindingService::hasText)
+                    .map(GraphOntologyBindingService::normalize)
+                    .map(index::get).filter(Objects::nonNull).forEach(matches::add);
+        }
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException("Relationship aliases for '" + relation.getType()
+                    + "' resolve to multiple ontology relationship definitions");
+        }
+        return matches.stream().findFirst().orElse(null);
+    }
+
+    private static Map<String, EntityTypeDefinition> entityDefinitionIndex(
+            List<EntityTypeDefinition> definitions) {
+        Map<String, EntityTypeDefinition> index = new LinkedHashMap<>();
+        for (EntityTypeDefinition definition : definitions) {
+            if (definition == null || !hasText(definition.getName())) continue;
+            index.putIfAbsent(normalize(definition.getName()), definition);
+            if (definition.getAliases() != null) {
+                definition.getAliases().stream().filter(GraphOntologyBindingService::hasText)
+                        .forEach(alias -> index.putIfAbsent(normalize(alias), definition));
+            }
+        }
+        return index;
+    }
+
+    private static Map<String, String> entityCanonicalIndex(List<EntityTypeDefinition> definitions) {
+        Map<String, String> index = new LinkedHashMap<>();
+        entityDefinitionIndex(definitions).forEach((key, value) -> index.put(key, value.getName()));
+        return index;
+    }
+
+    private static Map<String, String> entityParentIndex(List<EntityTypeDefinition> definitions) {
+        Map<String, String> parents = new LinkedHashMap<>();
+        Map<String, String> canonical = entityCanonicalIndex(definitions);
+        for (EntityTypeDefinition definition : definitions) {
+            if (definition == null || !hasText(definition.getName()) || !hasText(definition.getParentType())) {
+                continue;
+            }
+            String parent = canonical.getOrDefault(
+                    normalize(definition.getParentType()), definition.getParentType());
+            parents.put(normalize(definition.getName()), normalize(parent));
+        }
+        return parents;
+    }
+
+    private static EntityTypeDefinition copyEntity(EntityTypeDefinition source) {
+        return EntityTypeDefinition.builder()
+                .name(source.getName()).description(source.getDescription())
+                .aliases(source.getAliases() == null ? null : List.copyOf(source.getAliases()))
+                .localizedLabels(source.getLocalizedLabels() == null ? null : Map.copyOf(source.getLocalizedLabels()))
+                .classification(source.getClassification()).templateSource(source.getTemplateSource())
+                .templateVersion(source.getTemplateVersion()).confidence(source.getConfidence())
+                .fields(source.getFields() == null ? null : new ArrayList<>(source.getFields()))
+                .rules(source.getRules() == null ? null : new ArrayList<>(source.getRules()))
+                .provenance(source.getProvenance() == null ? null : new ArrayList<>(source.getProvenance()))
+                .changeHistory(source.getChangeHistory() == null ? null : new ArrayList<>(source.getChangeHistory()))
+                .parentType(source.getParentType()).build();
+    }
+
+    private static RelationshipTypeDefinition copyRelationship(RelationshipTypeDefinition source) {
+        return RelationshipTypeDefinition.builder()
+                .type(source.getType()).sourceEntityType(source.getSourceEntityType())
+                .targetEntityType(source.getTargetEntityType()).description(source.getDescription())
+                .cardinality(source.getCardinality()).canonicalType(source.getCanonicalType())
+                .observedTypes(source.getObservedTypes() == null ? null : List.copyOf(source.getObservedTypes()))
+                .inverseTypes(source.getInverseTypes() == null ? null : List.copyOf(source.getInverseTypes()))
+                .actionCategories(source.getActionCategories() == null ? null : List.copyOf(source.getActionCategories()))
+                .controlSignatures(source.getControlSignatures() == null ? null : List.copyOf(source.getControlSignatures()))
+                .policyMetadata(source.getPolicyMetadata() == null ? null : Map.copyOf(source.getPolicyMetadata()))
+                .flipWhenSwapped(source.getFlipWhenSwapped())
+                .emitAlreadyCanonical(source.getEmitAlreadyCanonical())
+                .metadata(source.getMetadata() == null ? null : new LinkedHashMap<>(source.getMetadata()))
+                .transitive(source.isTransitive()).build();
+    }
+
+    private static OntologySchema copyOntology(OntologySchema source) {
+        return OntologySchema.builder().id(source.getId()).name(source.getName())
+                .version(source.getVersion()).templateId(source.getTemplateId())
+                .createdAt(source.getCreatedAt()).updatedAt(source.getUpdatedAt())
+                .updatedBy(source.getUpdatedBy())
+                .entityTypes(source.getEntityTypes()).relationshipTypes(source.getRelationshipTypes())
+                .globalRules(source.getGlobalRules()).metadata(source.getMetadata()).build();
+    }
+
+    private static List<FieldDefinition> toFields(List<PropertyType> properties) {
+        if (properties == null) return null;
+        return properties.stream().filter(Objects::nonNull)
+                .filter(property -> hasText(property.getName()))
+                .map(property -> FieldDefinition.builder().name(property.getName())
+                        .type(toFieldType(property.getType())).build()).toList();
+    }
+
+    private static FieldType toFieldType(String type) {
+        if (!hasText(type)) return FieldType.STRING;
+        return switch (normalize(type)) {
+            case "INTEGER" -> FieldType.INTEGER;
+            case "DECIMAL" -> FieldType.DECIMAL;
+            case "BOOLEAN" -> FieldType.BOOLEAN;
+            case "DATE", "YEAR", "YEARMONTH" -> FieldType.DATE;
+            case "DATETIME" -> FieldType.DATETIME;
+            default -> FieldType.STRING;
+        };
+    }
+
+    private static List<FieldDefinition> mergeFields(
+            List<FieldDefinition> existing, List<FieldDefinition> additions) {
+        if (existing == null && additions == null) return null;
+        Map<String, FieldDefinition> merged = new LinkedHashMap<>();
+        if (existing != null) existing.stream().filter(Objects::nonNull)
+                .filter(field -> hasText(field.getName()))
+                .forEach(field -> merged.putIfAbsent(normalize(field.getName()), field));
+        if (additions != null) additions.stream().filter(Objects::nonNull)
+                .filter(field -> hasText(field.getName()))
+                .forEach(field -> merged.putIfAbsent(normalize(field.getName()), field));
+        return List.copyOf(merged.values());
+    }
+
+    private static List<String> mergeStrings(List<String> first, List<String> second) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        if (first != null) first.stream().filter(GraphOntologyBindingService::hasText)
+                .map(String::trim).forEach(values::add);
+        if (second != null) second.stream().filter(GraphOntologyBindingService::hasText)
+                .map(String::trim).forEach(values::add);
+        return List.copyOf(values);
+    }
+
+    private static Map<String, Object> relationshipMetadata(
+            Map<String, Object> existing,
+            String family,
+            Set<String> sources,
+            Set<String> targets,
+            Set<String> patterns) {
+        Map<String, Object> metadata = existing == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(existing);
+        Object existingFamily = metadata.get("connectionFamily");
+        if (hasText(family) && existingFamily != null && hasText(existingFamily.toString())
+                && !normalize(family).equals(normalize(existingFamily.toString()))) {
+            throw new IllegalArgumentException("Relationship connection family conflict: existing='"
+                    + existingFamily + "', proposed='" + family + "'");
+        }
+        if (hasText(family) && existingFamily == null) metadata.put("connectionFamily", family.trim());
+        mergeMetadataStrings(metadata, "sourceEntityTypes", sources);
+        mergeMetadataStrings(metadata, "targetEntityTypes", targets);
+        mergeMetadataStrings(metadata, "endpointPatterns", patterns);
+        return metadata.isEmpty() ? null : metadata;
+    }
+
+    private static void mergeMetadataStrings(
+            Map<String, Object> metadata, String key, Set<String> additions) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        Object current = metadata.get(key);
+        if (current instanceof Iterable<?> iterable) {
+            for (Object value : iterable) {
+                if (value != null && hasText(value.toString())) values.add(value.toString().trim());
+            }
+        } else if (current != null && hasText(current.toString())) {
+            values.add(current.toString().trim());
+        }
+        if (additions != null) {
+            additions.stream().filter(GraphOntologyBindingService::hasText)
+                    .map(String::trim).forEach(values::add);
+        }
+        if (!values.isEmpty()) metadata.put(key, List.copyOf(values));
+    }
+
+    private static String mergeEndpointConstraint(
+            String relationType, String role, String existing, Set<String> proposed,
+            Map<String, String> canonicalEntityNames, Map<String, String> entityParents) {
+        if (proposed == null || proposed.isEmpty()) return existing;
+        if (!hasText(existing)) return singleValue(proposed);
+        boolean compatible = proposed.stream().filter(GraphOntologyBindingService::hasText)
+                .allMatch(value -> isSameOrSubtype(
+                        canonicalEntityNames.getOrDefault(normalize(value), value),
+                        canonicalEntityNames.getOrDefault(normalize(existing), existing),
+                        entityParents));
+        if (!compatible) {
+            throw new IllegalArgumentException("Relationship '" + relationType + "' already has "
+                    + role + " entity type '" + existing + "'; crawl schema proposed " + proposed);
+        }
+        return existing;
+    }
+
+    private static boolean isSameOrSubtype(
+            String actual, String expected, Map<String, String> parents) {
+        String current = normalize(actual);
+        String target = normalize(expected);
+        LinkedHashSet<String> visited = new LinkedHashSet<>();
+        while (visited.add(current)) {
+            if (current.equals(target)) return true;
+            current = parents.get(current);
+            if (current == null) return false;
+        }
+        return false;
+    }
+
+    /** Re-read the latest version after acquiring the ontology-scoped merge lock. */
+    private OntologySchema latestOntologyVersion(OntologySchema resolved) {
+        if (resolved == null || !hasText(resolved.getId())) return resolved;
+        try {
+            return processEngineService.listOntologies().stream()
+                    .filter(candidate -> candidate != null && resolved.getId().equals(candidate.getId()))
+                    .max(Comparator.comparingInt(OntologySchema::getVersion))
+                    .orElse(resolved);
+        } catch (RuntimeException e) {
+            log.debug("Could not refresh latest ontology {} before schema merge: {}",
+                    resolved.getId(), e.getMessage());
+            return resolved;
+        }
+    }
+
+    private static String singleValue(Set<String> values) {
+        return values != null && values.size() == 1 ? values.iterator().next() : null;
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]+", "");
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
     /** {@link OntologyAutoProvisioner} SPI — the crawl's deriveOntology enrichment step calls this. */
     @Override
     public void provisionOntology(long factSheetId) {
         autoProvisionStructuralOntology(factSheetId);
+    }
+
+    @Override
+    public void provisionOntology(long factSheetId, GraphSchema graphSchema) {
+        mergeFrozenGraphSchema(factSheetId, graphSchema);
     }
 
     /** Remove the Lucene graph descriptor that carries the explicit ontology binding. */

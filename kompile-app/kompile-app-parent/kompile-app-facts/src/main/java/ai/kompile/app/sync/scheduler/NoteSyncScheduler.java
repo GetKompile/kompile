@@ -23,6 +23,7 @@ import ai.kompile.app.sync.service.NoteSyncConnectionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Component;
@@ -40,6 +41,7 @@ import java.util.List;
  * Enabled at runtime via NoteSyncConfigService (JSON config, not @ConditionalOnProperty).
  */
 @Component
+@ConditionalOnExpression("'${spring.application.name:}' == 'kompile-app-crawl-manager'")
 public class NoteSyncScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(NoteSyncScheduler.class);

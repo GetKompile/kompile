@@ -31,52 +31,32 @@ class LocalModelPipelineRunnerTest {
     }
 
     @Test
-    void requestScopedModelRuntimeStagesAndInjectsTheSelectedVlmArtifact() throws Exception {
-        Path modelDirectory = tempDir.resolve("data/models/vlm-pipelines/custom-vlm");
-        Files.createDirectories(modelDirectory);
-        Path descriptor = modelDirectory.resolve("pipeline.json");
-        Files.writeString(descriptor, "{}");
-
+    void runtimeResolutionNeverInvokesStagingForAMissingModel() throws Exception {
+        Path stagingMarker = tempDir.resolve("staging-was-invoked");
         Path staging = tempDir.resolve("fake-model-staging");
         Files.writeString(staging, """
                 #!/bin/sh
-                echo 'MODEL_BOOTSTRAP_RESULT:{"modelPath":"%s","modelType":"vlm_pipeline","disposition":"staged"}'
-                """.formatted(descriptor));
+                touch '%s'
+                exit 99
+                """.formatted(stagingMarker));
         assertTrue(staging.toFile().setExecutable(true));
 
         Map<String, Object> modelRuntime = new LinkedHashMap<>();
         modelRuntime.put("autoBootstrap", true);
-        modelRuntime.put("format", "vlm");
-        modelRuntime.put("type", "vlm_pipeline");
         modelRuntime.put("stagingExecutable", staging.toString());
         Map<String, Object> processor = new LinkedHashMap<>();
         processor.put("modelRuntime", modelRuntime);
         LocalCrawlCapabilities.ResolvedPipeline pipeline =
                 new LocalCrawlCapabilities.ResolvedPipeline(
-                        "staged-vlm", "VLM", "pdf", "sentence", 0, 0,
+                        "missing-vlm", "VLM", "pdf", "sentence", 0, 0,
                         Map.of("modelId", "custom-vlm"), processor);
 
-        LocalModelPipelineRunner.ResolvedModelContext resolved =
-                LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, null);
+        IOException failure = assertThrows(IOException.class, () ->
+                LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, null));
 
-        assertEquals(descriptor.toAbsolutePath().normalize().toString(),
-                resolved.resolvedModels().get("default").get("modelPath"));
-        assertEquals("custom-vlm",
-                resolved.resolvedModels().get("default").get("modelId"));
-        Map<String, Object> inventory = LocalProjectModelBootstrap.inventory(tempDir).stream()
-                .filter(model -> "custom-vlm".equals(model.get("id")))
-                .findFirst().orElseThrow();
-        assertEquals(true, inventory.get("ready"));
-        assertEquals("VLM", inventory.get("role"));
-
-        Path manifest = tempDir.resolve("kompile.project.json");
-        String manifestBeforeReadOnlyTest = Files.readString(manifest);
-        LocalModelPipelineRunner.ResolvedModelContext readOnly =
-                LocalModelPipelineRunner.resolveBoundModels(
-                        tempDir, pipeline, null, false);
-        assertEquals(descriptor.toAbsolutePath().normalize().toString(),
-                readOnly.resolvedModels().get("default").get("modelPath"));
-        assertEquals(manifestBeforeReadOnlyTest, Files.readString(manifest));
+        assertTrue(failure.getMessage().contains("model_runtime"), failure.getMessage());
+        assertTrue(Files.notExists(stagingMarker), "runtime execution must never invoke staging");
+        assertTrue(Files.notExists(tempDir.resolve("kompile.project.json")));
     }
 
     @Test
@@ -111,8 +91,29 @@ class LocalModelPipelineRunnerTest {
 
         assertEquals(modelDirectory.toAbsolutePath().normalize().toString(),
                 resolved.resolvedModels().get("vision").get("modelPath"));
-        assertEquals(false, resolved.resolvedModels().get("vision").get("bootstrapped"));
         assertEquals("local", resolved.resolvedModels().get("vision").get("disposition"));
+        assertTrue(Files.notExists(tempDir.resolve("kompile.project.json")));
+    }
+
+    @Test
+    void chatModelBindingNeverResolvesOrStagesALocalArtifact() throws Exception {
+        LocalCrawlCapabilities.ResolvedPipeline pipeline =
+                new LocalCrawlCapabilities.ResolvedPipeline(
+                        "remote-chat", "CHAT_MODEL", "auto", "no-op", 0, 0,
+                        Map.of("modelBindings", Map.of("default", "remote-vision")),
+                        Map.of(
+                                "type", "CHAT_MODEL",
+                                "registeredModelDefinitions", Map.of(
+                                        "remote-vision", Map.of(
+                                                "id", "remote-vision",
+                                                "source", "chat",
+                                                "modelId", "vision-model"))));
+
+        LocalModelPipelineRunner.ResolvedModelContext resolved =
+                LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, null);
+
+        assertTrue(resolved.bindings().isEmpty());
+        assertTrue(resolved.resolvedModels().isEmpty());
         assertTrue(Files.notExists(tempDir.resolve("kompile.project.json")));
     }
 
@@ -134,38 +135,30 @@ class LocalModelPipelineRunnerTest {
     }
 
     @Test
-    void roleBindingsProvisionAndReuseMultipleProjectModels() throws Exception {
+    void roleBindingsResolveAndReuseModelsProvisionedByModelRuntime() throws Exception {
         Path models = tempDir.resolve("data/models/llm");
         Files.createDirectories(models);
         Path generator = models.resolve("generator.gguf");
         Path embedding = models.resolve("embedding.gguf");
         Files.writeString(generator, "generator");
         Files.writeString(embedding, "embedding");
-        Path staging = tempDir.resolve("fake-model-registry-staging");
-        Files.writeString(staging, """
-                #!/bin/sh
-                case "$*" in
-                  *generator-model*) model='%s' ;;
-                  *embedding-model*) model='%s' ;;
-                  *) exit 3 ;;
-                esac
-                printf 'MODEL_BOOTSTRAP_RESULT:{"modelPath":"%%s","modelType":"llm_ggml","disposition":"staged"}\\n' "$model"
-                """.formatted(generator, embedding));
-        assertTrue(staging.toFile().setExecutable(true));
+        Files.writeString(tempDir.resolve("kompile.project.json"), """
+                {"schemaVersion":1,"projectId":"runtime-model-test","name":"runtime-model-test",
+                 "models":[
+                   {"id":"generator-model","modelId":"generator-model","role":"generator",
+                    "path":"data/models/llm/generator.gguf","lifecycle":"ACTIVE",
+                    "metadata":{"artifact.stage":"RUNTIME","registry.type":"llm_ggml"}},
+                   {"id":"embedding-model","modelId":"embedding-model","role":"embedding",
+                    "path":"data/models/llm/embedding.gguf","lifecycle":"ACTIVE",
+                    "metadata":{"artifact.stage":"RUNTIME","registry.type":"llm_ggml"}}
+                 ]}
+                """);
 
         Map<String, Object> registeredModels = new LinkedHashMap<>();
         registeredModels.put("generator-config", Map.of(
-                "id", "generator-config",
-                "modelId", "generator-model",
-                "role", "generator",
-                "source", "catalog",
-                "runtime", Map.of("stagingExecutable", staging.toString())));
+                "id", "generator-config", "modelId", "generator-model", "role", "generator"));
         registeredModels.put("embedding-config", Map.of(
-                "id", "embedding-config",
-                "modelId", "embedding-model",
-                "role", "embedding",
-                "source", "catalog",
-                "runtime", Map.of("stagingExecutable", staging.toString())));
+                "id", "embedding-config", "modelId", "embedding-model", "role", "embedding"));
         LocalCrawlCapabilities.ResolvedPipeline pipeline =
                 new LocalCrawlCapabilities.ResolvedPipeline(
                         "model-bound", "CUSTOM", "text", "no-op", 0, 0,
@@ -183,8 +176,8 @@ class LocalModelPipelineRunnerTest {
                 first.resolvedModels().get("generator").get("modelPath"));
         assertEquals(embedding.toString(),
                 first.resolvedModels().get("embedding").get("modelPath"));
-        assertEquals(false, second.resolvedModels().get("generator").get("bootstrapped"));
-        assertEquals(false, second.resolvedModels().get("embedding").get("bootstrapped"));
+        assertEquals("existing", second.resolvedModels().get("generator").get("disposition"));
+        assertEquals("existing", second.resolvedModels().get("embedding").get("disposition"));
     }
 
     @Test
@@ -203,7 +196,7 @@ class LocalModelPipelineRunnerTest {
         IOException failure = assertThrows(IOException.class, () ->
                 LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, definition));
 
-        assertTrue(failure.getMessage().contains("autoBootstrap is false"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("model_runtime"), failure.getMessage());
     }
 
     @Test

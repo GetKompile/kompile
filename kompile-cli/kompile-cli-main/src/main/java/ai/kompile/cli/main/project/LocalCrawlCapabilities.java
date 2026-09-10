@@ -44,6 +44,8 @@ public final class LocalCrawlCapabilities {
     /** Provider-neutral text -> local model -> text composition template. */
     public static final String TEXT_MODEL_PIPELINE = "text-model-text";
     public static final String TEXT_TO_TEXT_PIPELINE = TEXT_MODEL_PIPELINE;
+    /** Text/image/PDF document extraction through the configured Kompile chat provider. */
+    public static final String CHAT_MODEL_PIPELINE = "chat-model-document";
     public static final String CODE_PIPELINE = "code";
     public static final String VLM_PIPELINE = "vlm-document";
     /** Composed image preprocessing -> vision models -> text composition template. */
@@ -54,8 +56,9 @@ public final class LocalCrawlCapabilities {
     public static final String KEYWORD_ONLY_PIPELINE = "keyword-only";
 
     private static final Set<String> BUILTIN_PIPELINE_TYPES = Set.of(
-            "STANDARD_TEXT", "LLM", "VLM", "OCR", "CODE", "TABLE_AWARE", "KEYWORD_ONLY", "CUSTOM");
-    private static final Set<String> EXECUTOR_TYPES = Set.of("UNIFIED_PIPELINE");
+            "STANDARD_TEXT", "LLM", "CHAT_MODEL", "VLM", "OCR", "CODE", "TABLE_AWARE",
+            "KEYWORD_ONLY", "CUSTOM");
+    private static final Set<String> EXECUTOR_TYPES = Set.of("UNIFIED_PIPELINE", "CHAT_MODEL");
     private static final Pattern PIPELINE_TYPE_PATTERN = Pattern.compile("[A-Za-z][A-Za-z0-9_.:-]*");
     private static final Set<String> SUPPORTED_STEPS = Set.of(
             "LOADING", "MARKDOWN_EXTRACTION", "CHUNKING", "LEXICAL_INDEX");
@@ -88,6 +91,28 @@ public final class LocalCrawlCapabilities {
                 .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec")
                 .set("pipelineDefinition", mapper.valueToTree(builtinTextModelProcessor()
                         .get("pipelineDefinition")));
+        ObjectNode chatModelTemplate = pipelineTemplate(
+                templates, CHAT_MODEL_PIPELINE, "CHAT_MODEL", "auto",
+                "sentence", 2_000, 200,
+                "Text, image, or PDF extraction through the project/global Kompile chat provider.");
+        ObjectNode chatModelConfiguration = chatModelTemplate.putObject("configuration");
+        chatModelConfiguration.put("credentialSource", "project/global chat configuration")
+                .put("modelSelection", "active chat model or caller modelId/modelBindings.default")
+                .put("processorType", ChatModelPipelineRunner.PROCESSOR_TYPE)
+                .putArray("supportedInputTypes")
+                .add("text/*").add("application/pdf").add("image/png").add("image/jpeg")
+                .add("image/gif").add("image/webp");
+        chatModelConfiguration.putArray("pipelineOptionFields")
+                .add("provider").add("modelId").add("modelBindings").add("modelDefinitions")
+                .add("thinking").add("prompt").add("systemPrompt").add("outputFormat")
+                .add("maxInputChars").add("maxResponseChars").add("maxImageBytes")
+                .add("maxPages").add("pageRange").add("pageBatchSize").add("pdfRenderDpi");
+        chatModelConfiguration.put("capabilityProbe", "pipeline action=capabilities provider/model/operation; probe=true sends one bounded synthetic request")
+                .put("modelCapabilities", "UNKNOWN until operation-specific inference; wire image support is not model vision proof");
+        chatModelTemplate.put("executionModel", "mcp-host-chat-provider")
+                .put("credentialsPersistedInCrawl", false)
+                .put("localModelArtifactRequired", false)
+                .put("multimodal", true);
         pipelineTemplate(templates, CODE_PIPELINE, "CODE", "code",
                 "recursive-character", 1_800, 180,
                 "Source code and project files with code validation and boundary-aware chunking.");
@@ -167,6 +192,8 @@ public final class LocalCrawlCapabilities {
         loader(loaders, "table", List.of("table-aware"),
                 List.of("text/csv", "text/tab-separated-values", "text/html", "application/pdf"),
                 "Table-preserving CSV/TSV/HTML loader with layout-preserving PDF text fallback.");
+        loader(loaders, "external-materialized", List.of("external-source"), List.of("text/markdown"),
+                "Reads sanitized source metadata and content materialized by a local external connector.");
 
         ArrayNode chunkers = catalog.putArray("chunkers");
         chunker(chunkers, "recursive-character", List.of("fixed", "local-fixed", "markdown-fixed"),
@@ -238,6 +265,12 @@ public final class LocalCrawlCapabilities {
         wiring.putObject("textModelText")
                 .put("pipelineId", TEXT_MODEL_PIPELINE)
                 .put("contract", "text input + modelBindings.default + local model resolution + text output");
+        wiring.putObject("chatModelDocument")
+                .put("pipelineId", CHAT_MODEL_PIPELINE)
+                .put("contract", "text/image/PDF input + isolated configured chat call + Markdown output")
+                .put("credentialSource", "ChatConfig/CredentialStore; never pipeline JSON")
+                .put("modelOverride", "pipeline.modelId or a source=chat modelBindings.default reference")
+                .put("localAlternative", "Use text-model-text, vlm-document, or another UNIFIED_PIPELINE definition");
         wiring.putObject("visionMultimodel")
                 .put("pipelineId", VISION_PIPELINE)
                 .put("contract", "image preprocessing + role-bound visionEncoder/textEmbedding/decoder models + text output");
@@ -252,6 +285,8 @@ public final class LocalCrawlCapabilities {
                 "Generic OCR pipeline type for an explicitly registered OCR executor or model. It does not automatically select a traditional OCR engine.");
         typeGuide.put("LLM",
                 "Use the text-model-text composition or provide a custom UnifiedPipelineDefinition with a caller-selected model binding.");
+        typeGuide.put("CHAT_MODEL",
+                "Use chat-model-document or processor.type=CHAT_MODEL for an isolated call through the configured direct chat provider. Text is sent directly; PDFs are rendered into bounded image batches.");
         typeGuide.put("COMPOSED_VISION",
                 "Use vision-multimodel for image_preprocess plus role-bound visionEncoder, textEmbedding, and decoder steps; replace it with a custom graph when needed.");
         typeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
@@ -278,6 +313,7 @@ public final class LocalCrawlCapabilities {
                 .put("available", true)
                 .put("callerDefinedUnifiedPipelines", true)
                 .put("execution", "MCP-owned reusable stdio pipeline runtimes; no application server required")
+                .put("remoteChatExecution", "CHAT_MODEL runs in the MCP host using project/global chat credentials without copying secrets into the pipeline")
                 .put("semanticServing", "processingRoute LOCAL_MODEL/serving or graphExtraction.llmProvider=serving")
                 .put("finalReasoningLearning", "portable FOL/PSL/MEBN hybrid-consensus models stored in the folder .kgraph")
                 .put("lifecycle", "leases release after each call; compatible children remain warm for bounded reuse")
@@ -400,13 +436,21 @@ public final class LocalCrawlCapabilities {
         if (pipeline == null) {
             throw new IllegalArgumentException("Unknown local pipelineId: " + pipelineId);
         }
+        Map<String, Object> processor = new LinkedHashMap<>(pipeline.processor());
+        applyExecutorReference(request, document, processor);
+        mergeProcessorOverride(processor, document == null ? null : document.get("processor"));
+        applyDefinitionReference(request, document, processor);
+        // Preset VLM/OCR loaders describe the local artifact runner, not a remote
+        // chat model's input contract. Explicit user loader restrictions still win.
+        String pipelineLoader = "CHAT_MODEL".equals(processor.get("type")) && !pipeline.explicitLoader()
+                ? "auto" : pipeline.loaderName();
         String profileLoader = profile == null ? null : profile.getLoader();
         String profileChunker = profile == null ? null : profile.getChunker();
         String documentLoader = text(document, "loaderName");
         String crawlerLoader = crawlerLoader(document);
         String loader = explicitlySelectedPipeline
-                ? firstNonBlank(documentLoader, crawlerLoader, pipeline.loaderName(), profileLoader, "auto")
-                : firstNonBlank(documentLoader, crawlerLoader, profileLoader, pipeline.loaderName(), "auto");
+                ? firstNonBlank(documentLoader, crawlerLoader, pipelineLoader, profileLoader, "auto")
+                : firstNonBlank(documentLoader, crawlerLoader, profileLoader, pipelineLoader, "auto");
         String chunker = explicitlySelectedPipeline
                 ? firstNonBlank(text(document, "chunkerName"), pipeline.chunkerName(), profileChunker,
                 "recursive-character")
@@ -444,10 +488,6 @@ public final class LocalCrawlCapabilities {
                 "modelRefs", "processingMode")) {
             copyOption(options, document, field);
         }
-        Map<String, Object> processor = new LinkedHashMap<>(pipeline.processor());
-        mergeOptions(processor, document == null ? null : document.get("processor"));
-        applyExecutorReference(request, document, processor);
-        applyDefinitionReference(request, document, processor);
         JsonNode modelRuntime = request == null ? null : request.get("modelRuntime");
         // A request-level runtime is not a model pipeline by itself. Keep ordinary
         // STANDARD_TEXT ingestion on the local loader path unless the resolved
@@ -490,6 +530,7 @@ public final class LocalCrawlCapabilities {
             case "markdown" -> name.endsWith(".md") || name.endsWith(".markdown");
             case "code" -> isCodeFile(file);
             case "excel" -> isExcelFile(file);
+            case "external-materialized" -> name.endsWith(".md");
             case "table" -> name.endsWith(".csv") || name.endsWith(".tsv")
                     || name.endsWith(".html") || name.endsWith(".htm") || name.endsWith(".pdf");
             case "text" -> !name.endsWith(".pdf");
@@ -577,6 +618,9 @@ public final class LocalCrawlCapabilities {
                 "STANDARD_TEXT", "auto", "recursive-character", 2_000, 200, Map.of(), Map.of()));
         pipelines.put(TEXT_MODEL_PIPELINE, new PipelineDefinition(TEXT_MODEL_PIPELINE,
                 "LLM", "text", "sentence", 2_000, 200, Map.of(), builtinTextModelProcessor()));
+        pipelines.put(CHAT_MODEL_PIPELINE, new PipelineDefinition(CHAT_MODEL_PIPELINE,
+                "CHAT_MODEL", "auto", "sentence", 2_000, 200,
+                Map.of(), builtinChatModelProcessor()));
         pipelines.put(CODE_PIPELINE, new PipelineDefinition(CODE_PIPELINE,
                 "CODE", "code", "recursive-character", 1_800, 180,
                 Map.of("separators", List.of("\n\n", "\n", " ")), Map.of()));
@@ -632,6 +676,8 @@ public final class LocalCrawlCapabilities {
                     inherited = pipelines.get(VLM_PIPELINE);
                 } else if ("OCR".equals(type)) {
                     inherited = pipelines.get(OCR_PIPELINE);
+                } else if ("CHAT_MODEL".equals(type)) {
+                    inherited = pipelines.get(CHAT_MODEL_PIPELINE);
                 }
             }
             String defaultLoader = inherited != null ? inherited.loaderName() : "CODE".equals(type) ? "code"
@@ -661,10 +707,11 @@ public final class LocalCrawlCapabilities {
                 if (executor == null) {
                     throw new IllegalArgumentException("Unknown pipeline executorId: " + executorId);
                 }
+                clearForDifferentProcessorType(processor, stringValue(executor.get("type")));
                 processor.putAll(executor);
                 processor.put("executorId", executorId);
             }
-            mergeOptions(processor, definition.get("processor"));
+            mergeProcessorOverride(processor, definition.get("processor"));
             if (!modelsById.isEmpty()) {
                 processor.put("registeredModelDefinitions", Map.copyOf(modelsById));
             }
@@ -678,13 +725,16 @@ public final class LocalCrawlCapabilities {
                 copyMapValue(processor, options, "pipelineDefinition");
                 copyMapValue(processor, options, "pipelineDefinitionPath");
             }
+            boolean explicitLoader = text(definition, "loaderName") != null
+                    || (inherited != null && inherited.explicitLoader());
+            if ("CHAT_MODEL".equals(processor.get("type")) && !explicitLoader) defaultLoader = "auto";
             pipelines.put(id, new PipelineDefinition(id, type,
                     firstNonBlank(text(definition, "loaderName"), defaultLoader),
                     firstNonBlank(text(definition, "chunkerName"),
                             inherited == null ? null : inherited.chunkerName(), "recursive-character"),
                     positiveInt(definition, "chunkSize", defaultSize),
                     nonNegativeInt(definition, "chunkOverlap", defaultOverlap),
-                    Map.copyOf(options), Map.copyOf(processor)));
+                    Map.copyOf(options), Map.copyOf(processor), explicitLoader));
         }
     }
 
@@ -814,11 +864,24 @@ public final class LocalCrawlCapabilities {
         if (registered == null) {
             throw new IllegalArgumentException("Unknown registered pipeline executorId: " + executorId);
         }
-        Map<String, Object> local = new LinkedHashMap<>(processor);
-        processor.clear();
+        clearForDifferentProcessorType(processor, stringValue(registered.get("type")));
         processor.putAll(registered);
-        processor.putAll(local);
         processor.put("executorId", executorId);
+    }
+
+    private static void mergeProcessorOverride(Map<String, Object> processor, JsonNode configured) {
+        if (configured == null || !configured.isObject()) return;
+        clearForDifferentProcessorType(processor, text(configured, "type"));
+        mergeOptions(processor, configured);
+    }
+
+    private static void clearForDifferentProcessorType(
+            Map<String, Object> processor, String configuredType) {
+        String currentType = stringValue(processor.get("type"));
+        if (configuredType != null && currentType != null
+                && !configuredType.equalsIgnoreCase(currentType)) {
+            processor.clear();
+        }
     }
 
     private static void applyDefinitionReference(JsonNode request, JsonNode definition,
@@ -897,6 +960,13 @@ public final class LocalCrawlCapabilities {
         processor.put("type", "UNIFIED_PIPELINE");
         processor.put("pipelineDefinition", definition);
         return Map.copyOf(processor);
+    }
+
+    /** Host-side processor for the configured remote Kompile chat provider. */
+    public static Map<String, Object> builtinChatModelProcessor() {
+        return Map.of(
+                "type", ChatModelPipelineRunner.PROCESSOR_TYPE,
+                "modelSource", "chat");
     }
 
     /**
@@ -1211,6 +1281,7 @@ public final class LocalCrawlCapabilities {
         aliases(aliases, "pdf", "pdf", "pdfbox");
         aliases(aliases, "code", "code", "source-code");
         aliases(aliases, "table", "table", "table-aware");
+        aliases(aliases, "external-materialized", "external-materialized", "external-source");
         return Map.copyOf(aliases);
     }
 
@@ -1267,6 +1338,12 @@ public final class LocalCrawlCapabilities {
             return result;
         }
         return null;
+    }
+
+    private static String stringValue(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isBlank() ? null : text;
     }
 
     private static String text(JsonNode node, String field) {
@@ -1339,6 +1416,13 @@ public final class LocalCrawlCapabilities {
                                       int chunkSize,
                                       int chunkOverlap,
                                       Map<String, Object> options,
-                                      Map<String, Object> processor) {
+                                      Map<String, Object> processor,
+                                      boolean explicitLoader) {
+        private PipelineDefinition(String pipelineId, String pipelineType, String loaderName,
+                                   String chunkerName, int chunkSize, int chunkOverlap,
+                                   Map<String, Object> options, Map<String, Object> processor) {
+            this(pipelineId, pipelineType, loaderName, chunkerName, chunkSize, chunkOverlap,
+                    options, processor, false);
+        }
     }
 }

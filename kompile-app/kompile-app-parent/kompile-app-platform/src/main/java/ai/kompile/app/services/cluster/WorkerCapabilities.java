@@ -52,7 +52,24 @@ public record WorkerCapabilities(
         @JsonProperty("ramPressure") String ramPressure,
         @JsonProperty("gpus") List<GpuInfo> gpus,              // per-device GPU detail
         @JsonProperty("draining") boolean draining,            // operator drained (distinct from "full")
-        @JsonProperty("gcOverheadFraction") double gcOverheadFraction) { // 0..1 recent GC time / wall (Phase 3)
+        @JsonProperty("gcOverheadFraction") double gcOverheadFraction, // 0..1 recent GC time / wall (Phase 3)
+        @JsonProperty("graphRpcProtocolVersion") int graphRpcProtocolVersion,
+        @JsonProperty("distributedGraphWriterProtocolVersion") int distributedGraphWriterProtocolVersion,
+        @JsonProperty("distributedPartitionBarrierVersion") int distributedPartitionBarrierVersion) {
+
+    /** Backward-compatible constructor for callers predating distributed graph protocol fields. */
+    public WorkerCapabilities(String workerId, String baseUrl, String role, List<String> backends,
+                              int gpuDeviceCount, long totalGpuMemoryBytes, int cpuCores,
+                              List<String> supportedJobTypes, int maxConcurrentJobs, int activeJobs,
+                              double cpuLoad, double worstGpuUsedFraction, String cpuPressure, String gpuPressure,
+                              boolean acceptingWork, long advertisedAtEpochMs, double ramUsedFraction,
+                              String ramPressure, List<GpuInfo> gpus, boolean draining,
+                              double gcOverheadFraction) {
+        this(workerId, baseUrl, role, backends, gpuDeviceCount, totalGpuMemoryBytes, cpuCores,
+                supportedJobTypes, maxConcurrentJobs, activeJobs, cpuLoad, worstGpuUsedFraction,
+                cpuPressure, gpuPressure, acceptingWork, advertisedAtEpochMs, ramUsedFraction,
+                ramPressure, gpus, draining, gcOverheadFraction, 0, 0, 0);
+    }
 
     /** Backward-compatible constructor for callers / heartbeats predating {@code gcOverheadFraction} (→ 0). */
     public WorkerCapabilities(String workerId, String baseUrl, String role, List<String> backends,
@@ -63,7 +80,8 @@ public record WorkerCapabilities(
                               String ramPressure, List<GpuInfo> gpus, boolean draining) {
         this(workerId, baseUrl, role, backends, gpuDeviceCount, totalGpuMemoryBytes, cpuCores, supportedJobTypes,
                 maxConcurrentJobs, activeJobs, cpuLoad, worstGpuUsedFraction, cpuPressure, gpuPressure,
-                acceptingWork, advertisedAtEpochMs, ramUsedFraction, ramPressure, gpus, draining, 0.0);
+                acceptingWork, advertisedAtEpochMs, ramUsedFraction, ramPressure, gpus, draining, 0.0,
+                0, 0, 0);
     }
 
     /** Per-GPU device detail for the resources view. */
@@ -98,5 +116,10 @@ public record WorkerCapabilities(
             return false;
         }
         return supportedJobTypes != null && supportedJobTypes.contains(jobType);
+    }
+
+    public boolean supportsDistributedGraphWriter(int minimumVersion) {
+        return graphRpcProtocolVersion >= 2
+                && distributedGraphWriterProtocolVersion >= minimumVersion;
     }
 }

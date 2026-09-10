@@ -35,7 +35,7 @@ public final class HashUtils {
 
     /** Lowercase hex SHA-256 digest of the given bytes. */
     public static String sha256Hex(byte[] data) {
-        return toHex(sha256Digest().digest(data));
+        return toHex(newSha256Digest().digest(data));
     }
 
     /** Lowercase hex SHA-256 digest of the UTF-8 encoding of the given string. */
@@ -48,7 +48,7 @@ public final class HashUtils {
      * are not loaded into memory.
      */
     public static String sha256Hex(Path file) throws IOException {
-        MessageDigest digest = sha256Digest();
+        MessageDigest digest = newSha256Digest();
         try (InputStream in = Files.newInputStream(file);
              DigestInputStream din = new DigestInputStream(in, digest)) {
             byte[] buffer = new byte[8192];
@@ -68,7 +68,11 @@ public final class HashUtils {
         return hexChars > 0 && hexChars < full.length() ? full.substring(0, hexChars) : full;
     }
 
-    private static MessageDigest sha256Digest() {
+    /**
+     * Create an independent incremental SHA-256 digest for callers that must hash
+     * bytes while streaming them into another sink.
+     */
+    public static MessageDigest newSha256Digest() {
         try {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException e) {
@@ -76,7 +80,8 @@ public final class HashUtils {
         }
     }
 
-    private static String toHex(byte[] bytes) {
+    /** Lowercase hexadecimal encoding used by all hash helpers. */
+    public static String toHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) {
             sb.append(Character.forDigit((b >> 4) & 0xF, 16));

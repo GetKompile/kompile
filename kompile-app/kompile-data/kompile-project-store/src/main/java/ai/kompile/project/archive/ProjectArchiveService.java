@@ -763,7 +763,8 @@ public final class ProjectArchiveService {
     private static boolean sensitiveFile(String path, String name) {
         return name.equals(".env") || (name.startsWith(".env.") && !name.equals(".env.example"))
                 || name.endsWith(".secret.json") || name.equals("oauth-settings.json")
-                || name.equals("oauth-encryption.key") || name.equals("credentials")
+                || name.equals("oauth-encryption.key") || name.equals("channel-admin.token")
+                || name.equals("credentials")
                 || name.equals("credentials.json") || name.equals("auth.json")
                 || name.equals(".netrc") || name.equals(".npmrc") || name.equals(".pypirc")
                 || name.equals(".git-credentials") || name.equals("id_rsa")

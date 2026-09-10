@@ -1,7 +1,7 @@
 # Crawl + Knowledge Graph + Reasoning + Staging — System Map
 
 Date: 2026-07-04
-Purpose: pre-flight reference for the FP&A v10 golden-path dogfood run (project init → service start →
+Purpose: pre-flight reference for the domain-planning v10 golden-path dogfood run (project init → service start →
 crawl), mapping the subsystems we will exercise and the known gaps we expect to hit. Built from a
 six-agent sweep of the working tree at HEAD (`ffc966086` + uncommitted app-agent split).
 
@@ -76,7 +76,7 @@ HTML→Jsoup `WebHtmlLoaderImpl`, email→mime4j/libpst extractors. Config: `pro
 (pdfRoutingMode AUTO, fallbackEnabled, backends[] with priority/maxConcurrent/capabilities/backupBackendId,
 servingLaneEnabled/localServingAutoParticipate true).
 
-**LLM extraction**: `GraphExtractionConfig` {schemaPresetId e.g. `fpna-cpg-channel-v1`, schemaMode LENIENT,
+**LLM extraction**: `GraphExtractionConfig` {schemaPresetId e.g. `planning-cpg-channel-v1`, schemaMode LENIENT,
 llmProvider, temperature 0.0, maxTokens 4096, entityResolution true (embedding threshold 0.88),
 minConfidence 0.5, extractionContextBudgetFraction 0.5}. `LlmJsonExtractor` zero-yield guard: anchors on
 `{"entities"` root key + skips `[kompile]`/log-prefixed lines (historical silent 0-entity cascade, fixed,
@@ -230,7 +230,7 @@ this map wrongly said none was found):
   `nd4j.backend.auto.init` (+ `org.nd4j.backend.multi.auto` gate for MultiBackendNativeOpsHolder).
 - `DeviceAwareOpExecutioner` — kompile-gated by `nd4j.multibackend.enabled`.
 - libnd4j allocation-level failover: `CudaMemoryPool::allocateFailover` + non-peer
-  `DataBuffer::allocateSpecial` (both observed live in fpna-v3 embedding-subprocess logs).
+  `DataBuffer::allocateSpecial` (both observed live in planning-v3 embedding-subprocess logs).
 - DSP capture OOM machinery (fields on `Nd4jEnvironmentConfig` → libnd4j env vars):
   `ND4J_DSP_CAPTURE_OOM_MAX_RETRIES/_RETRY_INTERVAL`, `ND4J_DSP_CUBLAS_WORKSPACE_MB`,
   `ND4J_DSP_GRAPH_METADATA_SAFETY_MB`, `ND4J_DSP_PROACTIVE_EVICT`, `ND4J_DSP_LRU_EVICTION`,
@@ -286,10 +286,10 @@ P0/high-interest for this run:
 ## 8. Dogfood run plan & watchlist (on GO)
 
 Sequence: clear `/tmp/embedding-subprocess-javacpp-*` (JavaCPP leak; app stopped) → `kompile project
-service start` on kompile-fpna-v10 (staging :8090 → autoStage 4 manifest models → StagingServingBridge
+service start` on kompile-planning-v10 (staging :8090 → autoStage 4 manifest models → StagingServingBridge
 loads lfm2.5 GGUF → serving :8091 on cuda0 → app :8080 heap 8g → graph-matrix :8094 heap 32g) → doctor +
 `/api/setup/status` → read `UnifiedCrawlRequest` and start the crawl (auto-ingest profile; graph extraction
-schemaPresetId=fpna-cpg-channel-v1, deriveOntology, opencode primary / serving fallback) → monitor.
+schemaPresetId=planning-cpg-channel-v1, deriveOntology, opencode primary / serving fallback) → monitor.
 
 | User concern | Concrete signals to watch |
 |---|---|
@@ -299,8 +299,8 @@ schemaPresetId=fpna-cpg-channel-v1, deriveOntology, opencode primary / serving f
 | Multi-GPU failover (SameDiff) | ND4J-level failover IS configured (§6b: BackendManager priority + `nd4j.backend.memory.fallback` + gpu/cpu memory fractions → 0.9/0.8 caps; `CudaMemoryPool::allocateFailover`; DSP capture-OOM retry/evict) — watch it FIRE under cuda0 pressure (fallback allocations / auto-transfer to cuda1/CPU in BackendManager + subprocess logs); kompile routing above it stays statically pinned (llm/vlm→cuda0, maxDeviceMemory null); learning-subprocess CPU-safe defaults vs CUDA-only jar collision (§6b ⚠️); embedding AIMD backoff vs OOM; GpuResourceManager decisions |
 | CUDA crashes / DSP issues | fresh nd4j-cuda-12.9 (today's rebind fix) — hs_err/SIGSEGV in subprocess logs (`~/.kompile/logs/subprocesses/`); libnd4j op failures; `InferenceBatchPlanner` seqBuckets DSP plan reuse; CUDA-only jar + any CPU-forced lane (gap #4) |
 
-Scaffold state (2026-07-04): kompile-fpna-v10 initialized (SERVER tier, 9 configs, 4-model manifest,
-6 agents, .mcp.json) with 22-doc FP&A corpus; components refreshed from tree (app-main 882MB CUDA exec jar
+Scaffold state (2026-07-04): kompile-planning-v10 initialized (SERVER tier, 9 configs, 4-model manifest,
+6 agents, .mcp.json) with 22-doc domain-planning corpus; components refreshed from tree (app-main 882MB CUDA exec jar
 + staging 743MB exec jar, stale .boot-inf-extracted purged); CLI native rebuilt from tree (+ templates
 resource fix). Nothing started.
 

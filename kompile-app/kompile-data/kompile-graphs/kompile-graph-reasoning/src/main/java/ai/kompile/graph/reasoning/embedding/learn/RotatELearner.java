@@ -22,6 +22,7 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -31,10 +32,13 @@ import org.nd4j.linalg.learning.config.Adam;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * RotatE knowledge-graph embedding learner backed by ND4J SameDiff autodiff.
@@ -139,6 +143,17 @@ public final class RotatELearner implements EmbeddingLearner {
 
     // ── Fields ────────────────────────────────────────────────────────────────
     private final RotatEConfig config;
+
+    /** Package-private test seam for counting caller-owned SameDiff results released per step. */
+    private static final AtomicLong EXECUTION_RESULT_CLOSES = new AtomicLong();
+
+    static void resetExecutionResultCloseCountForTests() {
+        EXECUTION_RESULT_CLOSES.set(0L);
+    }
+
+    static long executionResultCloseCountForTests() {
+        return EXECUTION_RESULT_CLOSES.get();
+    }
 
     /**
      * Constructs a learner with the given hyper-parameters.
@@ -307,80 +322,100 @@ public final class RotatELearner implements EmbeddingLearner {
             }
         }
 
-        INDArray entityReArr = Nd4j.create(eReInit).castTo(DataType.DOUBLE);
-        INDArray entityImArr = Nd4j.create(eImInit).castTo(DataType.DOUBLE);
-        INDArray relPhaseArr = Nd4j.create(relPhaseInit).castTo(DataType.DOUBLE);
+        INDArray entityReArr = null;
+        INDArray entityImArr = null;
+        INDArray relPhaseArr = null;
+        SameDiff sd = null;
+        AdamResources adamRe = null;
+        AdamResources adamIm = null;
+        AdamResources adamPhase = null;
+        Throwable operationFailure = null;
+        try {
+            // double[][] creation already yields DOUBLE roots; avoid temporary cast roots.
+            entityReArr = Nd4j.create(eReInit);
+            entityImArr = Nd4j.create(eImInit);
+            relPhaseArr = Nd4j.create(relPhaseInit);
 
-        // ─── 6. Build SameDiff graph ─────────────────────────────────────────
-        int B = rc.batchSize();
-        int K = rc.negSamples();
-        SameDiff sd = buildGraph(B, K, dim, rc.margin(),
-                entityReArr, entityImArr, relPhaseArr);
+            // ─── 6. Build SameDiff graph ─────────────────────────────────────────
+            int B = rc.batchSize();
+            int K = rc.negSamples();
+            sd = buildGraph(B, K, dim, rc.margin(),
+                    entityReArr, entityImArr, relPhaseArr);
 
-        // ─── 7. Adam optimizers (one ND4J AdamUpdater per parameter matrix) ───
-        // Each updater owns a flat 2·N state view (m‖v) and applies the fused
-        // native Adam op, so the first/second-moment math is no longer hand-rolled.
-        Adam adamConfig = new Adam(rc.learningRate(), ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
-        GradientUpdater<Adam> adamRe    = newAdamUpdater(adamConfig, 2L * numEntities  * dim);
-        GradientUpdater<Adam> adamIm    = newAdamUpdater(adamConfig, 2L * numEntities  * dim);
-        GradientUpdater<Adam> adamPhase = newAdamUpdater(adamConfig, 2L * numRelations * dim);
+            // ─── 7. Adam optimizers (one ND4J AdamUpdater per parameter matrix) ───
+            // Each updater owns a flat 2·N state view (m‖v) and applies the fused
+            // native Adam op, so the first/second-moment math is no longer hand-rolled.
+            Adam adamConfig = new Adam(rc.learningRate(), ADAM_BETA1, ADAM_BETA2, ADAM_EPS);
+            adamRe = newAdamUpdater(adamConfig, 2L * numEntities  * dim);
+            adamIm = newAdamUpdater(adamConfig, 2L * numEntities  * dim);
+            adamPhase = newAdamUpdater(adamConfig, 2L * numRelations * dim);
 
-        // ─── 8. Training loop ────────────────────────────────────────────────
-        Random trainRng = new Random(rc.seed() + 1L);
-        List<int[]> shuffled = new ArrayList<>(triples);
+            // ─── 8. Training loop ────────────────────────────────────────────────
+            Random trainRng = new Random(rc.seed() + 1L);
+            List<int[]> shuffled = new ArrayList<>(triples);
 
-        long[] batchHead = new long[B];
-        long[] batchRel  = new long[B];
-        long[] batchTail = new long[B];
-        long[] batchNeg  = new long[B * K];
-        int pendingCount  = 0;
-        int iteration     = 0;  // 0-based Adam step; AdamUpdater uses (iteration+1) as the bias-correction power
+            long[] batchHead = new long[B];
+            long[] batchRel  = new long[B];
+            long[] batchTail = new long[B];
+            long[] batchNeg  = new long[B * K];
+            int pendingCount  = 0;
+            int iteration     = 0;  // 0-based Adam step; AdamUpdater uses (iteration+1) as the bias-correction power
 
-        for (int epoch = 0; epoch < rc.epochs(); epoch++) {
-            Collections.shuffle(shuffled, trainRng);
+            for (int epoch = 0; epoch < rc.epochs(); epoch++) {
+                Collections.shuffle(shuffled, trainRng);
 
-            for (int[] triple : shuffled) {
-                // Corrupt tail negative samples
-                int startNeg = pendingCount * K;
-                for (int ki = 0; ki < K; ki++) {
-                    int neg;
-                    do {
-                        neg = negSampler.sample(trainRng);
-                    } while (neg == triple[2]);
-                    batchNeg[startNeg + ki] = neg;
+                for (int[] triple : shuffled) {
+                    // Corrupt tail negative samples
+                    int startNeg = pendingCount * K;
+                    for (int ki = 0; ki < K; ki++) {
+                        int neg;
+                        do {
+                            neg = negSampler.sample(trainRng);
+                        } while (neg == triple[2]);
+                        batchNeg[startNeg + ki] = neg;
+                    }
+                    batchHead[pendingCount] = triple[0];
+                    batchRel[pendingCount]  = triple[1];
+                    batchTail[pendingCount] = triple[2];
+                    pendingCount++;
+
+                    if (pendingCount == B) {
+                        executeAndUpdateAdam(sd, entityReArr, entityImArr, relPhaseArr,
+                                adamRe.updater(), adamIm.updater(), adamPhase.updater(),
+                                adamRe.state(), adamIm.state(), adamPhase.state(),
+                                batchHead, batchRel, batchTail, batchNeg,
+                                iteration++);
+                        pendingCount = 0;
+                    }
                 }
-                batchHead[pendingCount] = triple[0];
-                batchRel[pendingCount]  = triple[1];
-                batchTail[pendingCount] = triple[2];
-                pendingCount++;
 
-                if (pendingCount == B) {
+                // Flush partial batch (pad with last entry)
+                if (pendingCount > 0) {
+                    int fillFrom = pendingCount - 1;
+                    for (int i = pendingCount; i < B; i++) {
+                        batchHead[i] = batchHead[fillFrom];
+                        batchRel[i]  = batchRel[fillFrom];
+                        batchTail[i] = batchTail[fillFrom];
+                        System.arraycopy(batchNeg, fillFrom * K, batchNeg, i * K, K);
+                    }
                     executeAndUpdateAdam(sd, entityReArr, entityImArr, relPhaseArr,
-                            adamRe, adamIm, adamPhase,
+                            adamRe.updater(), adamIm.updater(), adamPhase.updater(),
+                            adamRe.state(), adamIm.state(), adamPhase.state(),
                             batchHead, batchRel, batchTail, batchNeg,
                             iteration++);
                     pendingCount = 0;
                 }
             }
 
-            // Flush partial batch (pad with last entry)
-            if (pendingCount > 0) {
-                int fillFrom = pendingCount - 1;
-                for (int i = pendingCount; i < B; i++) {
-                    batchHead[i] = batchHead[fillFrom];
-                    batchRel[i]  = batchRel[fillFrom];
-                    batchTail[i] = batchTail[fillFrom];
-                    System.arraycopy(batchNeg, fillFrom * K, batchNeg, i * K, K);
-                }
-                executeAndUpdateAdam(sd, entityReArr, entityImArr, relPhaseArr,
-                        adamRe, adamIm, adamPhase,
-                        batchHead, batchRel, batchTail, batchNeg,
-                        iteration++);
-                pendingCount = 0;
-            }
+            // TrainedRotatE copies primitive values before the graph and native roots are closed.
+            return new TrainedRotatE(entityIds, relTypes, dim, entityReArr, entityImArr, relPhaseArr);
+        } catch (RuntimeException | Error e) {
+            operationFailure = e;
+            throw e;
+        } finally {
+            cleanupTrainingResources(sd, entityReArr, entityImArr, relPhaseArr,
+                    adamRe, adamIm, adamPhase, operationFailure);
         }
-
-        return new TrainedRotatE(entityIds, relTypes, dim, entityReArr, entityImArr, relPhaseArr);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -393,11 +428,17 @@ public final class RotatELearner implements EmbeddingLearner {
      * @param config   the shared Adam hyper-parameter config
      * @param stateLen state-view length; must be {@code 2 × parameter-count} (the updater splits
      *                 it into the first- and second-moment halves)
-     * @return a ready Adam updater
+     * @return the updater together with its owned root state array
      */
     @SuppressWarnings("unchecked")  // IUpdater#instantiate is declared with a raw GradientUpdater return
-    private static GradientUpdater<Adam> newAdamUpdater(Adam config, long stateLen) {
-        return config.instantiate(Nd4j.zeros(DataType.DOUBLE, 1, stateLen), true);
+    private static AdamResources newAdamUpdater(Adam config, long stateLen) {
+        INDArray state = Nd4j.zeros(DataType.DOUBLE, 1, stateLen);
+        try {
+            return new AdamResources(config.instantiate(state, true), state);
+        } catch (RuntimeException | Error e) {
+            closeOwnedArray(state);
+            throw e;
+        }
     }
 
     /**
@@ -416,31 +457,55 @@ public final class RotatELearner implements EmbeddingLearner {
             SameDiff sd,
             INDArray entityReArr, INDArray entityImArr, INDArray relPhaseArr,
             GradientUpdater<Adam> adamRe, GradientUpdater<Adam> adamIm, GradientUpdater<Adam> adamPhase,
+            INDArray adamReState, INDArray adamImState, INDArray adamPhaseState,
             long[] headIdx, long[] relIdx, long[] tailIdx, long[] negIdx,
             int iteration) {
 
-        // Bind live arrays to graph variables
+        // Bind live arrays to graph variables.
         sd.associateArrayWithVariable(entityReArr, ENTITY_RE);
         sd.associateArrayWithVariable(entityImArr, ENTITY_IM);
         sd.associateArrayWithVariable(relPhaseArr, REL_PHASE);
 
-        // Bind placeholders
-        Map<String, INDArray> placeholders = new HashMap<>(6);
-        placeholders.put(HEAD_IDX, Nd4j.createFromArray(headIdx));
-        placeholders.put(REL_IDX,  Nd4j.createFromArray(relIdx));
-        placeholders.put(TAIL_IDX, Nd4j.createFromArray(tailIdx));
-        placeholders.put(NEG_IDX,  Nd4j.createFromArray(negIdx));
+        // These roots are owned by this call. SameDiff does not close placeholder values when
+        // clearPlaceholders(false) is used, so release them separately in the finally block.
+        INDArray headArray = null;
+        INDArray relArray  = null;
+        INDArray tailArray = null;
+        INDArray negArray  = null;
+        INDArray lossArray = null;
+        Map<String, INDArray> grads = null;
+        Throwable operationFailure = null;
+        try {
+            headArray = Nd4j.createFromArray(headIdx);
+            relArray  = Nd4j.createFromArray(relIdx);
+            tailArray = Nd4j.createFromArray(tailIdx);
+            negArray  = Nd4j.createFromArray(negIdx);
+            Map<String, INDArray> placeholders = new HashMap<>(6);
+            placeholders.put(HEAD_IDX, headArray);
+            placeholders.put(REL_IDX,  relArray);
+            placeholders.put(TAIL_IDX, tailArray);
+            placeholders.put(NEG_IDX,  negArray);
 
-        // Forward pass (we only need the loss for diagnostics; skip storing it)
-        sd.outputSingle(placeholders, LOSS);
+            // outputSingle returns an independent caller-owned output copy on the standard
+            // SameDiff execution path. The loss is only diagnostic but must still be released.
+            lossArray = sd.outputSingle(placeholders, LOSS);
 
-        // Backward pass
-        Map<String, INDArray> grads = sd.calculateGradients(
-                placeholders, ENTITY_RE, ENTITY_IM, REL_PHASE);
+            // calculateGradients returns caller-owned gradient output copies. Keep them live for
+            // Adam and release every returned result in cleanupPlaceholders below.
+            grads = sd.calculateGradients(placeholders, ENTITY_RE, ENTITY_IM, REL_PHASE);
 
-        applyAdam(adamRe,    entityReArr, grads.get(ENTITY_RE),  iteration);
-        applyAdam(adamIm,    entityImArr, grads.get(ENTITY_IM),  iteration);
-        applyAdam(adamPhase, relPhaseArr, grads.get(REL_PHASE),  iteration);
+            applyAdam(adamRe,    entityReArr, grads.get(ENTITY_RE),  iteration);
+            applyAdam(adamIm,    entityImArr, grads.get(ENTITY_IM),  iteration);
+            applyAdam(adamPhase, relPhaseArr, grads.get(REL_PHASE),  iteration);
+        } catch (RuntimeException | Error e) {
+            operationFailure = e;
+            throw e;
+        } finally {
+            cleanupPlaceholders(sd, headArray, relArray, tailArray, negArray,
+                    lossArray, grads, operationFailure,
+                    entityReArr, entityImArr, relPhaseArr,
+                    adamReState, adamImState, adamPhaseState);
+        }
     }
 
     /**
@@ -458,10 +523,280 @@ public final class RotatELearner implements EmbeddingLearner {
         if (grad == null) {
             return;
         }
-        // Match the DOUBLE state view (no-op when grad is already DOUBLE).
+        // Match the DOUBLE state view (no-op when grad is already DOUBLE). A converted gradient
+        // is a temporary owned by this call; the original gradient is released after the update.
         INDArray update = grad.castTo(DataType.DOUBLE);
-        updater.applyUpdater(update, iteration, 0);
-        param.subi(update);
+        try {
+            updater.applyUpdater(update, iteration, 0);
+            param.subi(update);
+        } finally {
+            if (update != grad) {
+                closeOwnedArray(update);
+            }
+        }
+    }
+
+    private record AdamResources(GradientUpdater<Adam> updater, INDArray state) {}
+
+    private static void cleanupPlaceholders(SameDiff graph,
+                                            INDArray headArray, INDArray relArray,
+                                            INDArray tailArray, INDArray negArray,
+                                            INDArray lossArray,
+                                            Map<String, INDArray> gradients,
+                                            Throwable operationFailure,
+                                            INDArray... protectedRoots) {
+        RuntimeException cleanupFailure = closeExecutionResults(
+                lossArray, gradients, concatProtectedRoots(protectedRoots,
+                        headArray, relArray, tailArray, negArray));
+        if (graph != null) {
+            try {
+                graph.clearPlaceholders(false);
+            } catch (RuntimeException e) {
+                cleanupFailure = appendFailure(cleanupFailure, e);
+            }
+        }
+        cleanupFailure = appendFailure(cleanupFailure, closeOwnedArraySafely(headArray));
+        cleanupFailure = appendFailure(cleanupFailure, closeOwnedArraySafely(relArray));
+        cleanupFailure = appendFailure(cleanupFailure, closeOwnedArraySafely(tailArray));
+        cleanupFailure = appendFailure(cleanupFailure, closeOwnedArraySafely(negArray));
+        if (cleanupFailure != null) {
+            if (operationFailure != null) {
+                operationFailure.addSuppressed(cleanupFailure);
+            } else {
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static INDArray[] concatProtectedRoots(INDArray[] roots, INDArray... additional) {
+        INDArray[] all = new INDArray[roots.length + additional.length];
+        System.arraycopy(roots, 0, all, 0, roots.length);
+        System.arraycopy(additional, 0, all, roots.length, additional.length);
+        return all;
+    }
+
+    /**
+     * Release standard-path output/gradient copies without changing closeability or ownership of
+     * views. Identity and DataBuffer de-duplication protects aliases and shared parameter roots.
+     */
+    private static RuntimeException closeExecutionResults(
+            INDArray lossArray,
+            Map<String, INDArray> gradients,
+            INDArray... protectedRoots) {
+        Set<INDArray> protectedArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> protectedBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (INDArray root : protectedRoots) {
+            if (root == null || !protectedArrays.add(root)) {
+                continue;
+            }
+            DataBuffer data = dataBufferOf(root);
+            if (data != null) {
+                protectedBuffers.add(data);
+            }
+        }
+
+        Set<INDArray> seenArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        RuntimeException failure = null;
+        failure = appendFailure(failure, closeExecutionResult(lossArray,
+                protectedArrays, protectedBuffers, seenArrays, seenBuffers));
+        if (gradients != null) {
+            for (INDArray gradient : gradients.values()) {
+                failure = appendFailure(failure, closeExecutionResult(gradient,
+                        protectedArrays, protectedBuffers, seenArrays, seenBuffers));
+            }
+        }
+        return failure;
+    }
+
+    private static RuntimeException closeExecutionResult(
+            INDArray array,
+            Set<INDArray> protectedArrays,
+            Set<DataBuffer> protectedBuffers,
+            Set<INDArray> seenArrays,
+            Set<DataBuffer> seenBuffers) {
+        if (array == null || protectedArrays.contains(array) || !seenArrays.add(array)
+                || array.wasClosed()) {
+            return null;
+        }
+        DataBuffer data = dataBufferOf(array);
+        if (data != null && (data.wasClosed() || protectedBuffers.contains(data)
+                || !seenBuffers.add(data))) {
+            return null;
+        }
+        // Returned outputs are already caller-owned. Do not force-close a borrowed view.
+        if (!array.closeable()) {
+            return null;
+        }
+        try {
+            array.close();
+            if (array.wasClosed()) {
+                EXECUTION_RESULT_CLOSES.incrementAndGet();
+            }
+            return null;
+        } catch (RuntimeException e) {
+            return e;
+        }
+    }
+
+    private static DataBuffer dataBufferOf(INDArray array) {
+        try {
+            return array == null ? null : array.data();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static void cleanupTrainingResources(
+            SameDiff graph,
+            INDArray entityReArr, INDArray entityImArr, INDArray relPhaseArr,
+            AdamResources adamRe, AdamResources adamIm, AdamResources adamPhase,
+            Throwable operationFailure) {
+        RuntimeException cleanupFailure = null;
+
+        // The graph owns the parameter roots and all borrowed execution outputs/gradients. Close
+        // the optional gradient graph before its parent, then keep a guarded root fallback for a
+        // partial graph close or an older backend that reports but swallows buffer-close failures.
+        try {
+            closeGraphAndFunctions(graph);
+        } catch (RuntimeException e) {
+            cleanupFailure = e;
+        }
+        cleanupFailure = appendFailure(cleanupFailure,
+                closeOwnedArraysSafely(entityReArr, entityImArr, relPhaseArr));
+
+        // Adam state roots are not registered with SameDiff and must always be released directly.
+        cleanupFailure = appendFailure(cleanupFailure,
+                closeOwnedArraysSafely(
+                        adamRe == null ? null : adamRe.state(),
+                        adamIm == null ? null : adamIm.state(),
+                        adamPhase == null ? null : adamPhase.state()));
+
+        if (cleanupFailure != null) {
+            if (operationFailure != null) {
+                operationFailure.addSuppressed(cleanupFailure);
+            } else {
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static void closeGraphAndFunctions(SameDiff graph) {
+        if (graph == null) {
+            return;
+        }
+        RuntimeException failure = null;
+        SameDiff gradient = null;
+        try {
+            gradient = graph.getFunction("grad");
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        if (gradient != null && gradient != graph) {
+            try {
+                gradient.close();
+            } catch (RuntimeException e) {
+                failure = appendFailure(failure, e);
+            }
+        }
+        try {
+            graph.close();
+        } catch (RuntimeException e) {
+            failure = appendFailure(failure, e);
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private static RuntimeException closeOwnedArraySafely(INDArray array) {
+        try {
+            closeOwnedArray(array);
+            return null;
+        } catch (RuntimeException e) {
+            return e;
+        }
+    }
+
+    private static RuntimeException closeOwnedArraysSafely(INDArray... arrays) {
+        try {
+            closeOwnedArrays(arrays);
+            return null;
+        } catch (RuntimeException e) {
+            return e;
+        }
+    }
+
+    private static RuntimeException appendFailure(RuntimeException first, RuntimeException next) {
+        if (next == null) {
+            return first;
+        }
+        if (first == null) {
+            return next;
+        }
+        first.addSuppressed(next);
+        return first;
+    }
+
+    /** Close only roots allocated and exclusively owned by this learner/call. */
+    private static void closeOwnedArrays(INDArray... arrays) {
+        Set<INDArray> seenArrays = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<DataBuffer> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+        RuntimeException failure = null;
+        for (INDArray array : arrays) {
+            if (array == null || !seenArrays.add(array) || array.wasClosed()) {
+                continue;
+            }
+            DataBuffer data = null;
+            try {
+                data = array.data();
+            } catch (RuntimeException ignored) {
+                // Let the array close path decide whether a data buffer is available.
+            }
+            if (data != null && (data.wasClosed() || !seenBuffers.add(data))) {
+                continue;
+            }
+            try {
+                closeOwnedArray(array, data);
+            } catch (RuntimeException e) {
+                failure = appendFailure(failure, e);
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private static void closeOwnedArray(INDArray array) {
+        closeOwnedArray(array, null);
+    }
+
+    private static void closeOwnedArray(INDArray array, DataBuffer data) {
+        if (array == null || array.wasClosed()) {
+            return;
+        }
+        if (data == null) {
+            try {
+                data = array.data();
+            } catch (RuntimeException ignored) {
+                // Empty arrays can have no data buffer.
+            }
+        }
+        if (data != null && data.wasClosed()) {
+            return;
+        }
+        // SameDiff marks graph variables/constants non-closeable. These roots are exclusive to the
+        // current owner, so restoring closeability is safe; execution results use the separate
+        // non-force-closing cleanup helper.
+        if (data != null) {
+            data.setConstant(false);
+        }
+        if (!array.closeable()) {
+            array.setCloseable(true);
+        }
+        if (array.closeable() && !array.wasClosed()) {
+            array.close();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -488,11 +823,13 @@ public final class RotatELearner implements EmbeddingLearner {
                                        INDArray entityReArr, INDArray entityImArr,
                                        INDArray relPhaseArr) {
         SameDiff sd = SameDiff.create();
-
+        try {
         // ── Trainable variables ───────────────────────────────────────────────
-        SDVariable entityRe = sd.var(ENTITY_RE, entityReArr.dup());
-        SDVariable entityIm = sd.var(ENTITY_IM, entityImArr.dup());
-        SDVariable relPhase = sd.var(REL_PHASE, relPhaseArr.dup());
+        // The parameter roots are graph-owned for the lifetime of this training call. Avoiding
+        // an initialization dup both preserves the live association and removes an orphan root.
+        SDVariable entityRe = sd.var(ENTITY_RE, entityReArr);
+        SDVariable entityIm = sd.var(ENTITY_IM, entityImArr);
+        SDVariable relPhase = sd.var(REL_PHASE, relPhaseArr);
 
         // ── Placeholders ──────────────────────────────────────────────────────
         SDVariable headIdxVar = sd.placeHolder(HEAD_IDX, DataType.INT64, B);
@@ -567,6 +904,14 @@ public final class RotatELearner implements EmbeddingLearner {
 
         sd.setLossVariables(LOSS);
         return sd;
+        } catch (RuntimeException | Error e) {
+            try {
+                closeGraphAndFunctions(sd);
+            } catch (RuntimeException cleanupFailure) {
+                e.addSuppressed(cleanupFailure);
+            }
+            throw e;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

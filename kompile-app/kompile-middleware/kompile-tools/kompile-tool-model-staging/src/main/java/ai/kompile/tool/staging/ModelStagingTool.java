@@ -389,9 +389,7 @@ public class ModelStagingTool {
             return Map.of("status", "error", "error", "modelId is required");
         }
         try {
-            ModelRegistry registry = registryService.loadRegistry();
-            registry.setActiveModel(input.modelId());
-            registryService.saveRegistry(registry);
+            registryService.updateRegistry(registry -> registry.setActiveModel(input.modelId()));
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");

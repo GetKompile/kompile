@@ -20,7 +20,7 @@ tables, reasoning traces, and tabular KB data; (3) decision-table→rules compil
 Drools (RETE/kie, 9.44.0.Final) powers three `NodeExecutionType` values in the compute-graph
 subsystem: `DROOLS_RULE`, `DROOLS_INFERENCE`, and `DROOLS_DECISION_TABLE`. The engine is a large
 JVM-classpath addition (six KIE/Drools jars), requires two `--initialize-at-run-time` GraalVM native
-flags in every FP&A project POM, uses reflection-based dispatch in the Camel processor, and cannot be
+flags in every domain-planning project POM, uses reflection-based dispatch in the Camel processor, and cannot be
 AOT-compiled safely. We already have native replacements for every semantic the engine provides:
 
 | Drools semantic | Native replacement |
@@ -119,9 +119,9 @@ StepType.DROOLS_*/DROOLS_DECISION_TABLE
 | `inferCategory("drools"/"rules"/"decision table")` | `StepExecutionDispatcherImpl.java:953` | keep label `"rules"` for TABULAR_RULE/FOL_RULE/PSL_RULE |
 | `RulesCommand` (CLI) | `kompile-agent-cli/…/RulesCommand.java:34` | No change needed — it calls REST API only, no KIE imports |
 
-### 2.4 FP&A project native-image footprint
+### 2.4 domain-planning project native-image footprint
 
-Both `kompile-fpna-v3/project/pom.xml:825` and `kompile-fpna-v4/project/pom.xml:821` carry:
+Both `kompile-planning-v3/project/pom.xml:825` and `kompile-planning-v4/project/pom.xml:821` carry:
 
 ```xml
 <buildArg>--initialize-at-run-time=org.drools</buildArg>
@@ -130,7 +130,7 @@ Both `kompile-fpna-v3/project/pom.xml:825` and `kompile-fpna-v4/project/pom.xml:
 <buildArg>-H:IncludeResources=META-INF/services/org\.drools\..*</buildArg>
 ```
 
-These four lines are deleted in the migration. No other FP&A-specific drools references exist; both
+These four lines are deleted in the migration. No other domain-planning-specific drools references exist; both
 projects inherit the dependency transitively through `kompile-app-main`. Once the module is removed
 from the parent BOM and from `kompile-compute-graphs/pom.xml:18`, the transitive dep disappears
 automatically. The native image gains ~30MB (approximate drools+kie jar weight).
@@ -164,8 +164,8 @@ automatically. The native image gains ~30MB (approximate drools+kie jar weight).
 | BOM entry | `kompile-app/pom.xml:688` | DELETE |
 | camel optional dep | `kompile-compute-graph-camel/pom.xml:103` | DELETE |
 | camel-tool optional dep | `kompile-tool-camel/pom.xml:35` | DELETE |
-| FP&A v3 native flags | `kompile-fpna-v3/project/pom.xml:825` | DELETE 4 lines |
-| FP&A v4 native flags | `kompile-fpna-v4/project/pom.xml:821` | DELETE 4 lines |
+| domain-planning v3 native flags | `kompile-planning-v3/project/pom.xml:825` | DELETE 4 lines |
+| domain-planning v4 native flags | `kompile-planning-v4/project/pom.xml:821` | DELETE 4 lines |
 
 ---
 
@@ -460,7 +460,7 @@ Controller: `RulesImportExportController` in `ai.kompile.app.web.controllers.rul
 
 ## 7. Migration Sequencing
 
-The migration must not break FP&A or process-engine at any point. The safe order is:
+The migration must not break domain-planning or process-engine at any point. The safe order is:
 
 ### Phase 1 — Build native replacements (no Drools removal yet)
 
@@ -489,7 +489,7 @@ The migration must not break FP&A or process-engine at any point. The safe order
 6. Migrate `BusinessRulesTool` fields.
 7. Integration test: a process-engine workflow with `StepType.FOL_RULE` completes successfully.
 
-### Phase 3 — Migrate FP&A consumers
+### Phase 3 — Migrate domain-planning consumers
 
 1. Audit any existing `ComputeNode` records in the DB or test fixtures that use `DROOLS_*`
    `NodeExecutionType` values. Add a schema migration that remaps:
@@ -498,8 +498,8 @@ The migration must not break FP&A or process-engine at any point. The safe order
    - `DROOLS_DECISION_TABLE` → `TABULAR_RULE`
    DRL scripts in `ComputeNode.script` stay as-is; `FolNodeExecutor.executeFol()` parses them
    natively using the same DRL-import logic from `DroolsFormatImporter`.
-2. Update `kompile-fpna-v3` and `kompile-fpna-v4` test fixtures if any use `DROOLS_*` types.
-3. Verify full FP&A build and tests pass.
+2. Update `kompile-planning-v3` and `kompile-planning-v4` test fixtures if any use `DROOLS_*` types.
+3. Verify full domain-planning build and tests pass.
 
 ### Phase 4 — Remove Drools module and KIE deps
 
@@ -516,7 +516,7 @@ The migration must not break FP&A or process-engine at any point. The safe order
 8. Remove `resolveDroolsExecutor()` from `StepExecutionDispatcherImpl.java:191`.
 9. Remove `DroolsCamelProcessor` from `kompile-compute-graph-camel` (replaced by `FolCamelProcessor`).
 10. Remove `--initialize-at-run-time=org.drools/org.kie` and `IncludeResources` lines from
-    `kompile-fpna-v3/project/pom.xml:825` and `kompile-fpna-v4/project/pom.xml:821`.
+    `kompile-planning-v3/project/pom.xml:825` and `kompile-planning-v4/project/pom.xml:821`.
 11. Full build + test pass. Native image build should be ~30MB smaller.
 
 ### Phase 5 — Drools format I/O REST + Table UI (optional, addable later)

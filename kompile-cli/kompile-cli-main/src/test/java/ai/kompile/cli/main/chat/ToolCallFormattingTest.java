@@ -544,6 +544,43 @@ class ToolCallFormattingTest {
             assertTrue(output.contains("↳ content:"), "Write completion should expose written content");
             assertTrue(output.contains("public class New {}"), "Written content should be visible");
         }
+
+        /**
+         * Regression: grep results embed their source path per line and the INPUT
+         * names no file, so each output line must be styled through per-line
+         * filename inference (not a single input-derived language hint).
+         */
+        @Test
+        void grepCompletionHighlightsEmbeddedFilenameLines() {
+            String output = new TerminalRenderer(true).renderToolCallComplete("grep",
+                    "{\"pattern\":\"class Foo\"}",
+                    ToolResult.success("grep", "src/App.java:42:public class Foo {"));
+
+            assertTrue(output.contains("↳ content:"), "Grep completion should expose its output");
+            assertTrue(output.contains("\033[1;34mpublic\033[0m"),
+                    "Grep match line should be keyword-styled via its embedded filename: " + output);
+            // ANSI-disabled renderers keep the same content plain.
+            assertTrue(renderer.renderToolCallComplete("grep", "{\"pattern\":\"class Foo\"}",
+                    ToolResult.success("grep", "src/App.java:42:public class Foo {"))
+                    .contains("public class Foo {"), "Content must survive when ANSI is disabled");
+        }
+
+        /** grep_batch output wraps grep bodies under "== [n] /pattern/" headers; same per-line styling. */
+        @Test
+        void grepBatchCompletionHighlightsEmbeddedFilenameLines() {
+            String batchOutput = "1/1 queries succeeded\n\n"
+                    + "== [1] /class Foo/ in src\n"
+                    + "src/App.java:42:public class Foo {";
+            String output = new TerminalRenderer(true).renderToolCallComplete("grep_batch",
+                    "{\"queries\":[{\"pattern\":\"class Foo\"}]}",
+                    ToolResult.success("grep_batch", batchOutput));
+
+            assertTrue(output.contains("↳ content:"), "grep_batch completion should expose its output");
+            assertTrue(output.contains("\033[1;34mpublic\033[0m"),
+                    "grep_batch match line should be keyword-styled via its embedded filename: " + output);
+            assertTrue(output.contains("== [1] /class Foo/ in src"),
+                    "Section header should remain visible (and unstyled): " + output);
+        }
     }
 
     // ===================================================================

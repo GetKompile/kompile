@@ -29,6 +29,11 @@ public interface ChatProvider {
         return true;
     }
 
+    /** Label shown when this provider's API-key credential has a vendor-specific meaning. */
+    default String apiKeyAuthLabel() {
+        return "API key";
+    }
+
     /**
      * Returns the provider-owned model discovery implementation.
      *
@@ -63,6 +68,21 @@ public interface ChatProvider {
      */
     default ProviderCompactionCapabilities compactionCapabilities() {
         return ProviderCompactionCapabilities.forProvider(id());
+    }
+
+    /** Documented fast-mode eligibility; independent of reasoning effort. */
+    default ProviderFastModeCapabilities fastModeCapabilities() {
+        return ProviderFastModeCapabilities.forProvider(id());
+    }
+
+    /** Prompt-prefix caching, usage, affinity, and retention behavior. */
+    default ProviderPromptCacheCapabilities promptCacheCapabilities() {
+        return ProviderPromptCacheCapabilities.forProvider(id());
+    }
+
+    /** Connection, stream-idle and retry limits owned by this provider. */
+    default ProviderConnectivityPolicy connectivityPolicy() {
+        return ProviderConnectivityPolicy.forProvider(id());
     }
 
     default boolean localOnly() {
@@ -125,6 +145,7 @@ final class OpenAiCodexChatProvider extends StaticChatProvider {
     public boolean modelDiscoveryRequiresBaseUrl() {
         return false;
     }
+
 }
 
 final class KompileLocalChatProvider extends StaticChatProvider {

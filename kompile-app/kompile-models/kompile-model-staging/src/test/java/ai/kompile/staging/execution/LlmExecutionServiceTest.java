@@ -5,12 +5,16 @@
  */
 package ai.kompile.staging.execution;
 
+import ai.kompile.staging.web.dto.DecoderConfigRequest;
 import ai.kompile.staging.web.dto.LlmGenerateRequest;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LlmExecutionServiceTest {
@@ -106,5 +110,52 @@ class LlmExecutionServiceTest {
                 () -> LlmExecutionService.validateContinuationChunkTokens(0, 128));
         assertThrows(IllegalArgumentException.class,
                 () -> LlmExecutionService.validateContinuationChunkTokens(64, 0));
+    }
+
+    @Test
+    void effectiveSnapshotResolvesPresetAndDecoderStopFallbackReadOnly() {
+        LlmExecutionService service = new LlmExecutionService();
+        service.updateDecoderConfig(DecoderConfigRequest.builder()
+                .maxContextLength(1536)
+                .stopSequences(List.of("<FIRST>"))
+                .eosTokenId(2)
+                .numHeads(8)
+                .headDim(64)
+                .numKvLayers(12)
+                .build());
+        LlmGenerateRequest request = LlmGenerateRequest.builder()
+                .maxTokens(128)
+                .minTokens(7)
+                .frequencyPenalty(0.2)
+                .presencePenalty(0.3)
+                .presetName("precise")
+                .build();
+
+        LlmExecutionService.ExecutionConfigurationSnapshot first =
+                service.snapshotExecutionConfiguration(request);
+        service.updateDecoderConfig(DecoderConfigRequest.builder()
+                .maxContextLength(1536)
+                .stopSequences(List.of("<SECOND>"))
+                .eosTokenId(2)
+                .numHeads(8)
+                .headDim(64)
+                .numKvLayers(12)
+                .build());
+        LlmExecutionService.ExecutionConfigurationSnapshot second =
+                service.snapshotExecutionConfiguration(request);
+
+        assertEquals(0.3, first.resolvedSamplingConfig().get("temperature"));
+        assertEquals(0.85, first.resolvedSamplingConfig().get("topP"));
+        assertEquals(128, first.requestedSettings().get("maxTokens"));
+        assertEquals(7, first.requestedSettings().get("minTokens"));
+        assertEquals(0.2, first.requestedSettings().get("frequencyPenalty"));
+        assertEquals(0.3, first.requestedSettings().get("presencePenalty"));
+        assertEquals(List.of("<FIRST>"), first.effectiveStopSequences());
+        assertEquals(List.of("<SECOND>"), second.effectiveStopSequences());
+        assertNotEquals(first, second);
+        assertThrows(UnsupportedOperationException.class,
+                () -> first.effectiveStopSequences().add("mutable"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> first.requestedSettings().put("maxTokens", 1));
     }
 }

@@ -185,6 +185,7 @@ sha256_file() {
 
 build_sdx_android_jni_bridge() {
   local source="$SCRIPT_DIR/app/src/main/cpp/sdx_llm_android_jni.cpp"
+  local bridge_java="$SCRIPT_DIR/app/src/main/java/ai/kompile/chat/local/android/model/SdxAndroidLlmNative.java"
   local include_dir="$SDX_LLM_SDK/include"
   local runtime_library="$JNI_OUTPUT_DIR/libsdx_llm.so"
   local output_library="$JNI_OUTPUT_DIR/libjnisdx_llm.so"
@@ -194,10 +195,15 @@ build_sdx_android_jni_bridge() {
   local llvm_nm="$toolchain/llvm-nm"
   local llvm_readelf="$toolchain/llvm-readelf"
   local symbols="$APP_BUILD_ROOT/libjnisdx_llm.dynamic-symbols"
-  local binding
+  local binding java_line
+  local -a android_bindings=()
 
   [[ -f "$source" && ! -L "$source" && -s "$source" ]] || {
     echo "Kompile-owned Android SDX JNI source is missing or unsafe: $source" >&2
+    return 1
+  }
+  [[ -f "$bridge_java" && ! -L "$bridge_java" && -s "$bridge_java" ]] || {
+    echo "Kompile-owned Android SDX JNI declaration is missing or unsafe: $bridge_java" >&2
     return 1
   }
   [[ -s "$include_dir/sdx_llm_c.h" && -s "$runtime_library" ]] || {
@@ -222,12 +228,22 @@ build_sdx_android_jni_bridge() {
     -o "$output_library" -llog -ldl -lm
 
   "$llvm_nm" -D --defined-only "$output_library" >"$symbols"
-  for binding in \
-    nativeCreateRuntime nativeDestroyRuntime nativeAbiVersion nativePrepareGguf \
-    nativeResolveModelBundle nativeLoadCompiledModel nativeUnloadModel \
-    nativeRenderChatPrompt nativeTokenCount nativeParseChatResult \
-    nativeLastResultJson nativeGenerateStreaming nativeReadUtf8 nativeFree \
-    nativeGetLastError; do
+  # SdxAndroidLlmNative is the single source of truth for the ART-facing subset of
+  # sdx_llm_c.h. It intentionally omits raw-model loading, blocking/non-streaming
+  # generation, VLM/audio, info, and detokenization: Android prepares verified GGUF in
+  # its isolated importer process, loads only compiled bundles, and composes chat from
+  # render + streaming generate + parse. Derive the audit list instead of maintaining a
+  # second hand-written copy here.
+  while IFS= read -r java_line; do
+    if [[ "$java_line" =~ public[[:space:]]+static[[:space:]]+native[[:space:]]+[^[:space:]]+[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)\( ]]; then
+      android_bindings+=("${BASH_REMATCH[1]}")
+    fi
+  done <"$bridge_java"
+  [[ "${#android_bindings[@]}" -gt 0 ]] || {
+    echo "Android SDX JNI declaration contains no native methods: $bridge_java" >&2
+    return 1
+  }
+  for binding in "${android_bindings[@]}"; do
     grep -Fq "Java_ai_kompile_chat_local_android_model_SdxAndroidLlmNative_${binding}" \
       "$symbols" || {
       echo "Kompile Android SDX JNI bridge omitted binding: $binding" >&2
@@ -306,6 +322,12 @@ dl4j_source_manifest_sha256() {
     git -C "$DL4J_ROOT" ls-files -z --cached --others --exclude-standard -- "${roots[@]}" "${excludes[@]}" |
       LC_ALL=C sort -z |
       while IFS= read -r -d '' relative; do
+        # Match build-android-accelerator.sh: these TUs require SD_CUDA,
+        # disabled by Android profiles. Shared headers remain receipt inputs.
+        case "$relative" in
+          libnd4j/include/graph/impl/*.cu|libnd4j/include/ops/declarable/helpers/cuda/*.cu)
+            continue ;;
+        esac
         file="$DL4J_ROOT/$relative"
         [[ -f "$file" ]] || continue
         mode="$(stat -c '%a' "$file")"
@@ -342,6 +364,7 @@ dl4j_aot_source_manifest_sha256() {
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native
     nd4j/nd4j-tokenizers/tokenizers-native-preset
     nd4j/nd4j-tokenizers/tokenizers-native
+    nd4j/nd4j-ggml
     nd4j/samediff-llm
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-model
@@ -573,6 +596,7 @@ verify_sdx_aot_sdk_receipt() {
     [nd4j-native]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native"
     [tokenizers-native-preset]="nd4j/nd4j-tokenizers/tokenizers-native-preset"
     [tokenizers-native]="nd4j/nd4j-tokenizers/tokenizers-native"
+    [nd4j-ggml]="nd4j/nd4j-ggml"
     [samediff-llm]="nd4j/samediff-llm"
     [nd4j-sdx]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx"
     [nd4j-sdx-model]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-model"
@@ -685,6 +709,15 @@ verify_sdx_aot_sdk_receipt() {
       }
     done
     base_sdk_actual_sha="$(tree_manifest_sha256 "$base_sdk")"
+  elif (( REUSE_RECEIPTED_PRODUCERS == 1 )) &&
+       [[ "${SDX_AOT_RECEIPT_VALUES[base_sdk_receipt_sha256]}" =~ ^[0-9a-f]{64}$ ]]; then
+    # A published AOT SDK is self-contained: it carries every copied base library,
+    # base-sdk-native-bytes.txt, and the base receipt/tree digests in its own immutable
+    # receipt. Historical publication may legitimately outlive the separately retained
+    # base generation. In explicit historical-reuse mode, continue only with the recorded
+    # tree digest; the copied closure and its base-native digest are verified below.
+    base_sdk_actual_sha="${SDX_AOT_RECEIPT_VALUES[base_sdk_sha256]}"
+    printf 'Historical SDX AOT base generation was pruned; verifying its receipt-bound copied closure.\n'
   else
     echo "SDX AOT base artifact is unavailable or unsafe: $base_sdk" >&2
     return 1
@@ -754,7 +787,8 @@ verify_sdx_aot_sdk_receipt() {
   require_receipt_value "SDX AOT SDK" format "${SDX_AOT_RECEIPT_VALUES[format]}" "9" || return 1
   require_receipt_value "SDX AOT SDK" stage "${SDX_AOT_RECEIPT_VALUES[stage]}" "android-aot-sdk" || return 1
   if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
-    require_receipt_value "SDX AOT SDK" source_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[source_manifest_sha256]}" "$expected_source" || return 1
+    # Exit 42 identifies stale source inputs that the source-build wrapper can repair.
+    require_receipt_value "SDX AOT SDK" source_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[source_manifest_sha256]}" "$expected_source" || return 42
   fi
   require_receipt_value "SDX AOT SDK" fresh_class_builds_sha256 "${SDX_AOT_RECEIPT_VALUES[fresh_class_builds_sha256]}" "$(sha256_file "$fresh_class_builds")" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_reachability_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_manifest_sha256]}" "$(sha256_file "$javacpp_reachability_manifest")" || return 1
@@ -796,7 +830,7 @@ verify_sdx_aot_sdk_receipt() {
     if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
       [[ "$source_sha" == "$(dl4j_aot_module_source_manifest_sha256 "${expected_module_roots[$artifact]}")" ]] || {
         echo "SDX AOT SDK fresh classes were compiled from different $artifact source" >&2
-        return 1
+        return 42
       }
     fi
     seen_fresh_class_builds["$artifact"]=1
@@ -1511,8 +1545,9 @@ if [[ "$RELEASE_CONSUMER" == "1" ]]; then
 fi
 resolve_tensor_g3_aar
 verify_sdx_aot_sdk_receipt || {
+  receipt_status=$?
   echo "Rebuild the SDX Android AOT SDK from the current classes before packaging any APK." >&2
-  exit 1
+  exit "$receipt_status"
 }
 
 echo "Android packaging layout: work_root=${WORK_ROOT:-none} app_build=$APP_BUILD_ROOT jni=$JNI_OUTPUT_DIR output=$OUTPUT_DIR"
@@ -1647,71 +1682,8 @@ if [[ "$SKIP_MAVEN" != "1" ]]; then
     -pl :kompile-chat-local-core -am clean install -DskipTests
 fi
 
-verify_apk() {
-  local apk="$1"
-  local variant="$2"
-  local normalized_variant=""
-  local runtime_aar=""
-  local verifier_args=(
-    --apk "$apk"
-    --variant "$variant"
-    --config "$SCRIPT_DIR/accelerators.json"
-    --android-sdk "$ANDROID_SDK"
-    --android-ndk "$ANDROID_NDK_ARG"
-    --sdx-sdk "$SDX_LLM_SDK"
-    --expected-build-id "$APK_BUILD_ID"
-    --expected-version-code "$APK_VERSION_CODE"
-  )
-  case "$variant" in
-    vulkan) normalized_variant=vulkan ;;
-    hexagon) normalized_variant=hexagon ;;
-    tensorG3) normalized_variant=tensor-g3 ;;
-    tensorG5) normalized_variant=tensor-g5 ;;
-    *) echo "Unsupported APK verification variant: $variant" >&2; exit 1 ;;
-  esac
-  # This is the exact AAR Gradle consumed after refreshing provider-independent
-  # Java/tokenizer layers. Passing an input AAR or app/build fallback can silently
-  # audit stale bytes when --ram-gradle-build relocates the build directory.
-  runtime_aar="$APP_BUILD_ROOT/sdx-normalized-aar/$normalized_variant/sdx-runtime-$normalized_variant.aar"
-  [[ -s "$runtime_aar" ]] || {
-    echo "Normalized runtime AAR used by this Gradle build is missing: $runtime_aar" >&2
-    exit 1
-  }
-  if [[ "$variant" == "tensorG3" &&
-        "$(sha256_file "$runtime_aar")" != "$TENSOR_G3_SOURCE_SHA256" ]]; then
-    echo "Tensor G3 runtime AAR was rewritten after its producer receipt was verified" >&2
-    exit 1
-  fi
-  verifier_args+=(--runtime-aar "$runtime_aar")
-  if [[ "$variant" == "tensorG3" ]]; then
-    verifier_args+=(
-      --expected-source-runtime-aar-sha256 "$TENSOR_G3_SOURCE_SHA256"
-      --expected-runtime-provenance-sha256 "$TENSOR_G3_PROVENANCE_SHA256"
-      --expected-sdx-aot-provenance-sha256 "$SDX_AOT_PROVENANCE_SHA256"
-    )
-  fi
-  "$SCRIPT_DIR/tools/verify-offline-apk.sh" "${verifier_args[@]}"
-}
-
-verify_packaging_provenance_anchors() {
-  [[ -n "$SDX_AOT_PROVENANCE_SHA256" &&
-     -s "$SDX_AOT_RECEIPT" &&
-     "$(sha256_file "$SDX_AOT_RECEIPT")" == "$SDX_AOT_PROVENANCE_SHA256" ]] || {
-    echo "SDX AOT provenance receipt changed during APK packaging" >&2
-    return 1
-  }
-  if [[ "$VARIANT" == tensor-g3 || "$VARIANT" == all ]]; then
-    [[ -n "$TENSOR_G3_SOURCE_SHA256" &&
-       -n "$TENSOR_G3_PROVENANCE_SHA256" &&
-       -s "$TENSOR_G3_AAR" &&
-       -s "$TENSOR_G3_FULL_RECEIPT" &&
-       "$(sha256_file "$TENSOR_G3_AAR")" == "$TENSOR_G3_SOURCE_SHA256" &&
-       "$(sha256_file "$TENSOR_G3_FULL_RECEIPT")" == "$TENSOR_G3_PROVENANCE_SHA256" ]] || {
-      echo "Tensor G3 AAR or provenance receipt changed during APK packaging" >&2
-      return 1
-    }
-  fi
-}
+# Source-safe definitions shared with publication-only retained recovery.
+source "$SCRIPT_DIR/tools/apk-publication.sh"
 
 gradle_tasks=()
 gradle_args=(
@@ -1770,236 +1742,6 @@ fi
 verify_packaging_provenance_anchors || exit 1
 
 mkdir -p "$OUTPUT_DIR"
-stage_apk_exactly() {
-  local source_apk="$1"
-  local staging_apk="$2"
-  local source_digest staged_digest source_digest_after attempt
-
-  # GNU `sync FILE` issues a file-level fsync. Do not use `sync -f FILE` here:
-  # that invokes syncfs for the entire backing filesystem and can report an
-  # unrelated filesystem-wide EIO after this APK inode was already durable.
-  sync "$source_apk"
-  source_digest="$(sha256sum "$source_apk" | cut -d ' ' -f 1)"
-  for attempt in 1 2 3; do
-    rm -f -- "$staging_apk"
-    # Never publish the Gradle output inode itself. A userspace stream into RAM
-    # severs publication from delayed Zip/Gradle writes and Btrfs copy behavior.
-    if ! dd if="$source_apk" of="$staging_apk" bs=16M conv=fsync status=none; then
-      printf 'APK RAM staging copy failed (attempt %d/3): %s\n' "$attempt" "$source_apk" >&2
-      continue
-    fi
-    sync "$staging_apk"
-    staged_digest="$(sha256sum "$staging_apk" | cut -d ' ' -f 1)"
-    source_digest_after="$(sha256sum "$source_apk" | cut -d ' ' -f 1)"
-    if [[ "$source_digest_after" != "$source_digest" ]]; then
-      printf 'Gradle APK changed during publication staging: before=%s after=%s file=%s\n' \
-        "$source_digest" "$source_digest_after" "$source_apk" >&2
-      return 1
-    fi
-    if [[ "$staged_digest" == "$source_digest" ]]; then
-      printf '%s\n' "$staged_digest"
-      return 0
-    fi
-    printf 'APK RAM staging mismatch (attempt %d/3): source=%s staged=%s\n' \
-      "$attempt" "$source_digest" "$staged_digest" >&2
-  done
-  return 1
-}
-
-publish_candidate() {
-  local source_apk="$1"
-  local stable_filename="$2"
-  local variant="$3"
-  local base="${stable_filename%.apk}"
-  local stable_apk="$OUTPUT_DIR/$stable_filename"
-  local ram_staging output_staging digest verified_digest published_digest final_digest
-  local unique_apk unique_hash
-  local source_bytes available_bytes source_real disposable_outputs_real
-  local -a capacity_lines=()
-
-  if [[ ! -d "$APK_STAGING_ROOT" || ! -w "$APK_STAGING_ROOT" ]]; then
-    echo "APK RAM staging root must be an existing writable directory: $APK_STAGING_ROOT" >&2
-    return 1
-  fi
-  mapfile -t capacity_lines < <(df -B1 --output=avail "$APK_STAGING_ROOT")
-  available_bytes="${capacity_lines[1]//[[:space:]]/}"
-  source_bytes="$(stat -c %s "$source_apk")"
-  if [[ ! "$available_bytes" =~ ^[0-9]+$ ]] ||
-      (( available_bytes < source_bytes + 67108864 )); then
-    printf 'APK RAM staging lacks capacity: required=%s available=%s root=%s\n' \
-      "$((source_bytes + 67108864))" "${available_bytes:-unknown}" "$APK_STAGING_ROOT" >&2
-    return 1
-  fi
-
-  ram_staging="$(mktemp "$APK_STAGING_ROOT/.${base}.ram.XXXXXX.apk")"
-  TEMPORARY_FILES+=("$ram_staging")
-  if ! digest="$(stage_apk_exactly "$source_apk" "$ram_staging")"; then
-    echo "Could not stage an exact APK in RAM for verification: $source_apk" >&2
-    return 1
-  fi
-  if ! verify_apk "$ram_staging" "$variant"; then
-    return 1
-  fi
-  sync "$ram_staging"
-  verified_digest="$(sha256sum "$ram_staging" | cut -d ' ' -f 1)"
-  if [[ "$verified_digest" != "$digest" ]]; then
-    printf 'Verified APK bytes changed in RAM: before=%s after=%s\n' \
-      "$digest" "$verified_digest" >&2
-    return 1
-  fi
-  unzip -tq "$ram_staging" >/dev/null || {
-    echo "RAM-staged APK failed its post-verification Zip integrity check: $ram_staging" >&2
-    return 1
-  }
-  verify_packaging_provenance_anchors || return 1
-
-  # The fully verified RAM copy is now the publication source. Remove only the
-  # canonical disposable Gradle APK so multi-gigabyte build output does not leak
-  # or compete with the final fresh output inode. Existing promoted APKs remain
-  # untouched until the replacement has passed every check below.
-  source_real="$(realpath -e -- "$source_apk")" || return 1
-  disposable_outputs_real="$(realpath -m -- "$APP_BUILD_ROOT/outputs")" || return 1
-  if [[ -L "$source_apk" || "$source_real" != "$disposable_outputs_real/"* ]]; then
-    echo "Refusing to remove non-canonical Gradle APK after RAM verification: $source_apk" >&2
-    return 1
-  fi
-  rm -f -- "$source_real"
-  echo "Removed verified disposable Gradle APK: $source_real"
-
-  output_staging="$(mktemp "$OUTPUT_DIR/.${base}.publish.XXXXXX.apk")"
-  TEMPORARY_FILES+=("$output_staging")
-  if ! dd if="$ram_staging" of="$output_staging" bs=16M conv=fsync status=none; then
-    echo "Could not stream the verified APK into a fresh publication inode: $output_staging" >&2
-    return 1
-  fi
-  sync "$output_staging"
-  published_digest="$(sha256sum "$output_staging" | cut -d ' ' -f 1)"
-  if [[ "$published_digest" != "$digest" ]]; then
-    printf 'Published APK copy differs from verified RAM bytes: verified=%s published=%s\n' \
-      "$digest" "$published_digest" >&2
-    return 1
-  fi
-  unzip -tq "$output_staging" >/dev/null || {
-    echo "Published APK staging inode failed its Zip integrity check: $output_staging" >&2
-    return 1
-  }
-
-  unique_apk="$OUTPUT_DIR/${base}-${APK_BUILD_ID}-${digest:0:12}.apk"
-  mv -f -- "$output_staging" "$unique_apk"
-  sync "$unique_apk"
-  final_digest="$(sha256sum "$unique_apk" | cut -d ' ' -f 1)"
-  if [[ "$final_digest" != "$digest" ]]; then
-    printf 'APK changed after final rename: verified=%s final=%s file=%s\n' \
-      "$digest" "$final_digest" "$unique_apk" >&2
-    return 1
-  fi
-  unzip -tq "$unique_apk" >/dev/null || {
-    echo "Final APK failed its Zip integrity check: $unique_apk" >&2
-    return 1
-  }
-
-  unique_hash="$(mktemp "$OUTPUT_DIR/.${base}.candidate-sha256.XXXXXX")"
-  TEMPORARY_FILES+=("$unique_hash")
-  printf '%s  %s\n' "$digest" "$unique_apk" >"$unique_hash"
-  sync "$unique_hash"
-  mv -f -- "$unique_hash" "$unique_apk.sha256"
-
-  local package_name test_source test_candidate test_digest normalized_aar normalized_sha normalized_candidate normalized_tmp
-  local source_aar source_aar_sha provenance provenance_sha aot_sdk aot_provenance aot_provenance_sha candidate_manifest manifest_tmp
-  package_name="none"
-  test_source="none"
-  test_candidate="none"
-  test_digest="none"
-  source_aar="none"
-  source_aar_sha="none"
-  provenance="none"
-  provenance_sha="none"
-  aot_sdk="none"
-  aot_provenance="none"
-  aot_provenance_sha="none"
-  case "$variant" in
-    vulkan) package_name="ai.kompile.chat.local.android.vulkan.debug" ;;
-    hexagon) package_name="ai.kompile.chat.local.android.hexagon.debug" ;;
-    tensorG3)
-      package_name="ai.kompile.chat.local.android.tensorg3.debug"
-      test_source="$APP_BUILD_ROOT/outputs/apk/androidTest/tensorG3/debug/app-tensorG3-debug-androidTest.apk"
-      [[ -s "$test_source" ]] || {
-        echo "Tensor G3 qualification test APK is missing: $test_source" >&2
-        return 1
-      }
-      test_digest="$(sha256_file "$test_source")"
-      test_candidate="$OUTPUT_DIR/${base}-$APK_BUILD_ID-${test_digest:0:12}-androidTest.apk"
-      dd if="$test_source" of="$test_candidate" bs=16M conv=fsync status=none
-      [[ "$(sha256_file "$test_candidate")" == "$test_digest" ]] || {
-        echo "Tensor G3 qualification test APK changed during candidate publication" >&2
-        return 1
-      }
-      source_aar="$(realpath -e -- "$TENSOR_G3_AAR")"
-      source_aar_sha="$TENSOR_G3_SOURCE_SHA256"
-      provenance="$TENSOR_G3_FULL_RECEIPT"
-      provenance_sha="$TENSOR_G3_PROVENANCE_SHA256"
-      aot_sdk="$(realpath -e -- "$SDX_LLM_SDK")"
-      aot_provenance="$SDX_AOT_RECEIPT"
-      aot_provenance_sha="$SDX_AOT_PROVENANCE_SHA256"
-      ;;
-    tensorG5) package_name="ai.kompile.chat.local.android.tensorg5.debug" ;;
-  esac
-  case "$variant" in
-    vulkan) normalized_aar="$APP_BUILD_ROOT/sdx-normalized-aar/vulkan/sdx-runtime-vulkan.aar" ;;
-    hexagon) normalized_aar="$APP_BUILD_ROOT/sdx-normalized-aar/hexagon/sdx-runtime-hexagon.aar" ;;
-    tensorG3) normalized_aar="$APP_BUILD_ROOT/sdx-normalized-aar/tensor-g3/sdx-runtime-tensor-g3.aar" ;;
-    tensorG5) normalized_aar="$APP_BUILD_ROOT/sdx-normalized-aar/tensor-g5/sdx-runtime-tensor-g5.aar" ;;
-  esac
-  normalized_sha="$(sha256_file "$normalized_aar")"
-  normalized_candidate="$OUTPUT_DIR/${base}-${APK_BUILD_ID}-${normalized_sha:0:12}-runtime.aar"
-  normalized_tmp="$(mktemp "$OUTPUT_DIR/.${base}.normalized-runtime.XXXXXX")"
-  TEMPORARY_FILES+=("$normalized_tmp")
-  dd if="$normalized_aar" of="$normalized_tmp" bs=16M conv=fsync status=none
-  [[ "$(sha256_file "$normalized_tmp")" == "$normalized_sha" ]] || {
-    echo "Normalized runtime AAR changed during candidate publication" >&2
-    return 1
-  }
-  mv -f -- "$normalized_tmp" "$normalized_candidate"
-  sync "$normalized_candidate"
-  printf '%s  %s\n' "$normalized_sha" "$normalized_candidate" >"$normalized_candidate.sha256"
-  sync "$normalized_candidate.sha256"
-  candidate_manifest="$unique_apk.candidate"
-  manifest_tmp="$(mktemp "$OUTPUT_DIR/.${base}.candidate-manifest.XXXXXX")"
-  TEMPORARY_FILES+=("$manifest_tmp")
-  {
-    printf 'format=3\n'
-    printf 'variant=%s\n' "$variant"
-    printf 'package=%s\n' "$package_name"
-    printf 'build_id=%s\n' "$APK_BUILD_ID"
-    printf 'version_code=%s\n' "$APK_VERSION_CODE"
-    printf 'candidate_apk=%s\n' "$(realpath -e -- "$unique_apk")"
-    printf 'candidate_sha256=%s\n' "$digest"
-    printf 'stable_apk=%s\n' "$stable_apk"
-    printf 'test_apk=%s\n' "$test_candidate"
-    printf 'test_apk_sha256=%s\n' "$test_digest"
-    printf 'source_runtime_aar=%s\n' "$source_aar"
-    printf 'source_runtime_aar_sha256=%s\n' "$source_aar_sha"
-    printf 'normalized_runtime_aar=%s\n' "$(realpath -e -- "$normalized_candidate")"
-    printf 'normalized_runtime_aar_sha256=%s\n' "$normalized_sha"
-    printf 'runtime_provenance=%s\n' "$provenance"
-    printf 'runtime_provenance_sha256=%s\n' "$provenance_sha"
-    printf 'sdx_aot_sdk=%s\n' "$aot_sdk"
-    printf 'sdx_aot_provenance=%s\n' "$aot_provenance"
-    printf 'sdx_aot_provenance_sha256=%s\n' "$aot_provenance_sha"
-    printf 'host_verification=PASS\n'
-  } >"$manifest_tmp"
-  sync "$manifest_tmp"
-  mv -f -- "$manifest_tmp" "$candidate_manifest"
-  printf '%s  %s\n' "$(sha256_file "$candidate_manifest")" "$candidate_manifest" >"$candidate_manifest.sha256"
-  sync "$candidate_manifest" "$candidate_manifest.sha256"
-  "$SCRIPT_DIR/tools/prune-offline-apk-candidates.sh" \
-    --output "$OUTPUT_DIR" \
-    --base "$base" \
-    --keep-manifest "$candidate_manifest"
-  rm -f -- "$ram_staging"
-  echo "Published host-verified candidate only; stable alias is unchanged: variant=$variant file=$unique_apk manifest=$candidate_manifest sha256=$digest"
-}
-
 if [[ "$VARIANT" == "all" || "$VARIANT" == "vulkan" ]]; then
   publish_candidate \
     "$APP_BUILD_ROOT/outputs/apk/vulkan/debug/app-vulkan-debug.apk" \

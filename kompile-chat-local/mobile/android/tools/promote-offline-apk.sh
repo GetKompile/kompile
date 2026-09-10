@@ -105,7 +105,7 @@ stable_parent="$(realpath -e -- "$stable_parent")"
 declare -A RECEIPT_ALLOWED=()
 declare -A RECEIPT_SEEN=()
 declare -A RECEIPT=()
-for key in   format candidate_manifest candidate_manifest_sha256 candidate_apk candidate_apk_sha256   stable_apk test_apk test_apk_sha256 source_runtime_aar_sha256   runtime_provenance_sha256 sdx_aot_provenance_sha256 build_id package model model_sha256 model_bytes   device_serial device_model device_code board_platform device_abi device_fingerprint   device_sdk physical_transport cold_process_pid warm_process_pid instrumentation_output instrumentation_output_sha256 cold_decode warm_decode   qualification qualified_at_utc; do
+for key in   format candidate_manifest candidate_manifest_sha256 candidate_apk candidate_apk_sha256   stable_apk test_apk test_apk_sha256 source_runtime_aar_sha256   runtime_provenance_sha256 sdx_aot_provenance_sha256 build_id package model model_sha256 model_bytes   tokenizer tokenizer_sha256 tokenizer_bytes tokenizer_config tokenizer_config_sha256 tokenizer_config_bytes   device_serial device_model device_code board_platform device_abi device_fingerprint   device_sdk physical_transport cold_process_pid warm_process_pid instrumentation_output instrumentation_output_sha256 cold_decode warm_decode   qualification qualified_at_utc; do
   RECEIPT_ALLOWED["$key"]=1
 done
 
@@ -126,7 +126,7 @@ for key in "${!RECEIPT_ALLOWED[@]}"; do
 done
 
 verify_checksum_sidecar "$DEVICE_RECEIPT"
-[[ "${RECEIPT[format]}" == 3 ]] || fail "unsupported device receipt format"
+[[ "${RECEIPT[format]}" == 4 ]] || fail "unsupported device receipt format"
 [[ "${RECEIPT[candidate_manifest]}" == "$CANDIDATE_MANIFEST" ]] ||
   fail "device receipt names a different candidate manifest"
 [[ "${RECEIPT[candidate_manifest_sha256]}" == "$candidate_manifest_sha256" ]] ||
@@ -138,17 +138,21 @@ for mapping in   "candidate_apk:candidate_apk"   "candidate_apk_sha256:candidate
     fail "device receipt does not bind candidate field: $receipt_key"
 done
 
-for key in model_sha256 instrumentation_output_sha256; do
+for key in model_sha256 tokenizer_sha256 tokenizer_config_sha256 instrumentation_output_sha256; do
   [[ "${RECEIPT[$key]}" =~ ^[0-9a-f]{64}$ ]] || fail "invalid receipt SHA-256: $key"
 done
-[[ "${RECEIPT[model_bytes]}" =~ ^[0-9]+$ && "${RECEIPT[model_bytes]}" -gt 0 ]] ||
-  fail "invalid receipt model size"
-[[ -s "${RECEIPT[model]}" && -f "${RECEIPT[model]}" ]] ||
-  fail "qualification model named by receipt is unavailable"
-[[ "$(sha256_file "${RECEIPT[model]}")" == "${RECEIPT[model_sha256]}" ]] ||
-  fail "qualification model changed after device validation"
-[[ "$(stat -c %s "${RECEIPT[model]}")" == "${RECEIPT[model_bytes]}" ]] ||
-  fail "qualification model size changed after device validation"
+for asset in model tokenizer tokenizer_config; do
+  bytes_key="${asset}_bytes"
+  sha_key="${asset}_sha256"
+  [[ "${RECEIPT[$bytes_key]}" =~ ^[0-9]+$ && "${RECEIPT[$bytes_key]}" -gt 0 ]] ||
+    fail "invalid receipt $asset size"
+  [[ -s "${RECEIPT[$asset]}" && -f "${RECEIPT[$asset]}" ]] ||
+    fail "qualification $asset named by receipt is unavailable"
+  [[ "$(sha256_file "${RECEIPT[$asset]}")" == "${RECEIPT[$sha_key]}" ]] ||
+    fail "qualification $asset changed after device validation"
+  [[ "$(stat -c %s "${RECEIPT[$asset]}")" == "${RECEIPT[$bytes_key]}" ]] ||
+    fail "qualification $asset size changed after device validation"
+done
 [[ -s "${RECEIPT[instrumentation_output]}" && -f "${RECEIPT[instrumentation_output]}" ]] ||
   fail "instrumentation output named by receipt is unavailable"
 [[ "$(sha256_file "${RECEIPT[instrumentation_output]}")" == "${RECEIPT[instrumentation_output_sha256]}" ]] ||
@@ -214,6 +218,8 @@ printf '%s  %s\n' "$stable_digest" "artifact.apk" >"$stage_sha"
   printf 'runtime_provenance_sha256=%s\n' "${CANDIDATE[runtime_provenance_sha256]}"
   printf 'sdx_aot_provenance_sha256=%s\n' "${CANDIDATE[sdx_aot_provenance_sha256]}"
   printf 'model_sha256=%s\n' "${RECEIPT[model_sha256]}"
+  printf 'tokenizer_sha256=%s\n' "${RECEIPT[tokenizer_sha256]}"
+  printf 'tokenizer_config_sha256=%s\n' "${RECEIPT[tokenizer_config_sha256]}"
   printf 'device_fingerprint=%s\n' "${RECEIPT[device_fingerprint]}"
   printf 'qualification=PASS\n'
 } >"$stage_provenance"

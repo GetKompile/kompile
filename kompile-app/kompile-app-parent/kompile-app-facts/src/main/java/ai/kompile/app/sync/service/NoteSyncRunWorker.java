@@ -8,6 +8,7 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -19,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Executes a committed source-sync run outside the request and scheduling transactions. */
 @Service
+@ConditionalOnExpression("'${spring.application.name:}' == 'kompile-app-crawl-manager'")
 public class NoteSyncRunWorker {
 
     private static final Logger log = LoggerFactory.getLogger(NoteSyncRunWorker.class);

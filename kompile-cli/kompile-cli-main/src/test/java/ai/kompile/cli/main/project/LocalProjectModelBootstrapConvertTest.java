@@ -31,7 +31,10 @@ class LocalProjectModelBootstrapConvertTest {
         Path modelExecutable = tempDir.resolve("kompile-model");
 
         Files.writeString(input, "test model");
-        Files.writeString(modelExecutable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + capturedArguments + "'\n");
+        Files.writeString(modelExecutable, "#!/bin/sh\n"
+                + "printf '%s\\n' \"$@\" > '" + capturedArguments + "'\n"
+                + "for arg in \"$@\"; do case \"$arg\" in --output=*) out=${arg#--output=};; esac; done\n"
+                + "dd if=/dev/zero of=\"$out\" bs=2048 count=1 2>/dev/null\n");
         Files.setPosixFilePermissions(modelExecutable, EnumSet.of(
                 PosixFilePermission.OWNER_READ,
                 PosixFilePermission.OWNER_WRITE,

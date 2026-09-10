@@ -4,6 +4,7 @@ ai.kompile.cli.main.chat.config.GeminiChatProvider
 ai.kompile.cli.main.chat.config.OllamaChatProvider
 ai.kompile.cli.main.chat.config.OpenRouterChatProvider
 ai.kompile.cli.main.chat.config.XaiChatProvider
+ai.kompile.cli.main.chat.config.ZaiChatProvider
 ai.kompile.cli.main.chat.config.GitHubCopilotChatProvider
 ai.kompile.cli.main.chat.config.RadiusChatProvider
 ai.kompile.cli.main.chat.config.DeepSeekChatProvider

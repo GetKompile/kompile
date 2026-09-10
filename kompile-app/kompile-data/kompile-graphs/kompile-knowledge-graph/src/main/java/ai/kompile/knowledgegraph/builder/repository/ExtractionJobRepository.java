@@ -40,6 +40,11 @@ public interface ExtractionJobRepository extends JpaRepository<ExtractionJob, Lo
      */
     Optional<ExtractionJob> findByJobId(String jobId);
 
+    /** Serialize lifecycle/proposal writes with cancellation; only call inside a transaction. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT j FROM ExtractionJob j WHERE j.jobId = :jobId")
+    Optional<ExtractionJob> findByJobIdForUpdate(@Param("jobId") String jobId);
+
     /**
      * Find all jobs for a fact sheet.
      */

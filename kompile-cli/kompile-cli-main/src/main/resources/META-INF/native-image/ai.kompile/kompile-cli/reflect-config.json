@@ -12,6 +12,18 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "ai.kompile.cli.main.chat.config.JudgeDefaults$Selection",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.chat.config.ChatProfiles$Profile",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "ai.kompile.cli.main.chat.config.ChatConfig",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
@@ -878,6 +890,462 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "ai.kompile.cli.main.auth.AuthCommand$SwitchCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Base",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Providers",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$WebLogin",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$OAuthStatus",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$OAuthSettings",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$OAuthSetup",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ConfigureOAuth",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ValidateOAuth",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Login",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ProviderAction",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$OAuthHealth",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Refresh",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$DisconnectOAuth",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ResetOAuth",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Ingest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Connect",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ListConnections",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$ConnectionAction",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Status",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Test",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Enable",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Disable",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Pull",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Sync",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.source.AuthSourceCommand$Delete",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Base",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$NamedAction",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Providers",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$AuthStatus",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Login",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Engines",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$WebLogin",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Connect",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$ListConnections",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Status",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Configure",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Rotate",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Enable",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Disable",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Test",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Run",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$TelegramAction",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$PairingAction",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$Pair",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$PairStatus",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$Approve",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$Cancel",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$Diagnostics",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$Webhook",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Telegram$DeleteWebhook",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.channel.ChannelAuthCommand$Disconnect",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderAuthView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderAuthView$Mode",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderDescriptor",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderDescriptor$Field",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderDescriptor$Capability",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelProviderDescriptor$FieldType",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelChatEngine",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelEngineDescriptor",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelBrowserLoginView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelConnectionRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelConnectionUpdate",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelConnectionView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelConnectionView$RuntimeState",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelTestRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelTestResult",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramPairingStartView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramPairingView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramPairingView$Status",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramPairingView$Candidate",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramPairingApprovalRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramDiagnosticsView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.ChannelCredentialView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.channel.api.TelegramWebhookInfoView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "ai.kompile.cli.main.chat.ChatCommand",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
@@ -885,6 +1353,66 @@
   },
   {
     "name": "ai.kompile.cli.main.chat.CrawlCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$WorkspaceCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$ScopedMutation",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$Add",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$ListServers",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$Get",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$Remove",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$SetEnabled",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$Enable",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpCommand$Disable",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true

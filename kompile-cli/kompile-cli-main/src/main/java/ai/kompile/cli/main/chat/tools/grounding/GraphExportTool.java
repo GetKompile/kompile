@@ -61,7 +61,7 @@ public class GraphExportTool implements CliTool {
     public String description() {
         return "Exports the whole graph for backup or debugging: .kgraph preserves state, ASCII includes "
                 + "properties/connections/schema, and PNG renders the same diagnostics. Use vectors=values for "
-                + "full vector values or bundle=false for one PNG. Optionally scope to a fact sheet.";
+                + "full vector values or bundle=false for one PNG. Optionally scope to a fact sheet or local knowledge base.";
     }
 
     @Override
@@ -81,6 +81,9 @@ public class GraphExportTool implements CliTool {
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Optional project-local knowledge-base id, such as my-project-knowledge.");
         ObjectNode formatProperty = props.putObject("format");
         formatProperty.put("type", "string");
         formatProperty.set("enum", objectMapper.createArrayNode().add("kgraph").add("ascii").add("png"));

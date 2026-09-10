@@ -47,7 +47,8 @@ import java.util.concurrent.Callable;
 @Command(
         name = "train",
         description = "Manage model training jobs.%n%n" +
-                "Start, monitor, and manage training runs against a kompile-app instance.%n%n" +
+                "Running `kompile app train` with no subcommand starts the interactive%n" +
+                "training wizard against a kompile-app instance.%n%n" +
                 "Commands:%n" +
                 "  start     Launch a new training job%n" +
                 "  list      List all training jobs%n" +
@@ -71,8 +72,7 @@ public class TrainCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        new CommandLine(this).usage(System.out);
-        return 0;
+        return new CommandLine(new TrainWizardCmd()).execute();
     }
 
     // ==================== start ====================

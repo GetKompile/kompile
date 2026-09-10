@@ -96,6 +96,116 @@ class IndexDatabaseMigrationTest {
     }
 
     @Test
+    void readOnlyOpenRefusesLegacySchemaWithoutMigratingIt() throws Exception {
+        java.sql.SQLException error = assertThrows(java.sql.SQLException.class,
+                () -> IndexDatabase.openReadOnly(tempDir));
+        assertTrue(error.getMessage().contains("schema version 2"), error.getMessage());
+
+        String url = "jdbc:sqlite:" + tempDir.resolve("index.db").toAbsolutePath();
+        try (Connection conn = DriverManager.getConnection(url);
+             Statement stmt = conn.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery("PRAGMA user_version")) {
+                assertTrue(rs.next());
+                assertEquals(2, rs.getInt(1), "read-only open must not stamp a new schema");
+            }
+            try (ResultSet rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='paths'")) {
+                assertTrue(rs.next());
+                assertEquals(0, rs.getInt(1), "read-only open must not create migration tables");
+            }
+        }
+    }
+
+    @Test
+    void migrationUsesTargetNameWhenLegacyTargetIsEmpty() throws Exception {
+        try (Connection conn = DriverManager.getConnection(
+                "jdbc:sqlite:" + tempDir.resolve("index.db").toAbsolutePath());
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("UPDATE relations SET target_fqn = '' WHERE line = 11");
+        }
+        try (IndexDatabase db = IndexDatabase.open(tempDir)) {
+            db.insertEntities("src/Helper.java", List.of(Map.of("name", "helper",
+                    "fullyQualifiedName", "Helper.helper", "entityType", "METHOD", "language", "java")));
+            db.ensureConnectivity();
+            try (Statement stmt = db.getConnection().createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT hint.fqn, target.fqn FROM relations r "
+                         + "JOIN fqns hint ON hint.id = r.target_hint_id "
+                         + "LEFT JOIN fqns target ON target.id = r.target_id WHERE r.line = 11")) {
+                assertTrue(rs.next());
+                assertEquals("helper", rs.getString(1));
+                assertEquals("Helper.helper", rs.getString(2));
+            }
+        }
+    }
+
+    @Test
+    void readOnlyV5AndV6QueriesDoNotRequireOrCreateTargetHints() throws Exception {
+        // Build real pre-v7 shapes, not just a downgraded user_version stamp.
+        try (IndexDatabase db = IndexDatabase.open(tempDir);
+             Statement stmt = db.getConnection().createStatement()) {
+            db.setIndexGeneration("old-generation");
+            stmt.execute("DROP INDEX idx_rel_target_hint");
+            stmt.execute("ALTER TABLE relations DROP COLUMN target_hint_id");
+            stmt.execute("PRAGMA user_version=6");
+        }
+        for (int version : new int[]{6, 5}) {
+            if (version == 5) {
+                try (Connection conn = DriverManager.getConnection(
+                        "jdbc:sqlite:" + tempDir.resolve("index.db").toAbsolutePath());
+                     Statement stmt = conn.createStatement()) {
+                    stmt.execute("DROP TABLE index_metadata");
+                    stmt.execute("PRAGMA user_version=5");
+                }
+            }
+            try (IndexDatabase db = IndexDatabase.openReadOnly(tempDir)) {
+                assertEquals(version == 6 ? "old-generation" : null, db.getIndexGeneration());
+                assertEquals(2, db.getEntitiesForFile("src/A.java").size());
+                assertFalse(db.getCallers("work", 10).isEmpty());
+                assertEquals(2, ((List<?>) db.getFileGraph("src/A.java").get("outgoingRelations")).size());
+                java.util.ArrayList<Map<String, Object>> edges = new java.util.ArrayList<>();
+                db.visitGraphSnapshot(entity -> { }, edges::add);
+                assertEquals(3, edges.size());
+                assertThrows(java.sql.SQLException.class, () -> db.setIndexGeneration("blocked"));
+                try (Statement stmt = db.getConnection().createStatement()) {
+                    try (ResultSet rs = stmt.executeQuery("PRAGMA user_version")) {
+                        assertTrue(rs.next());
+                        assertEquals(version, rs.getInt(1));
+                    }
+                    try (ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM pragma_table_info('relations') "
+                            + "WHERE name = 'target_hint_id'")) {
+                        assertTrue(rs.next());
+                        assertEquals(0, rs.getInt(1));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void migratedHintsPreserveQualificationAfterTargetDeletionAndReopen() throws Exception {
+        try (IndexDatabase db = IndexDatabase.open(tempDir)) {
+            try (Statement stmt = db.getConnection().createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT hint.fqn FROM relations r "
+                         + "JOIN fqns hint ON hint.id = r.target_hint_id WHERE r.line = 10")) {
+                assertTrue(rs.next());
+                assertEquals("com.example.Beta.work", rs.getString(1));
+            }
+            db.deleteFile("src/B.java");
+        }
+        try (IndexDatabase db = IndexDatabase.open(tempDir)) {
+            db.insertEntities("src/Other.java", List.of(Map.of("name", "work",
+                    "fullyQualifiedName", "com.example.Other.work", "entityType", "METHOD",
+                    "language", "java", "startLine", 1)));
+            db.ensureConnectivity();
+            try (Statement stmt = db.getConnection().createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT target_id FROM relations WHERE line = 10")) {
+                assertTrue(rs.next(), "incoming call site survives target deletion");
+                assertNull(rs.getObject(1), "qualified legacy hint must not bind to Other.work");
+            }
+        }
+    }
+
+    @Test
     void migratesV2DataAndServesQueries() throws Exception {
         try (IndexDatabase db = IndexDatabase.open(tempDir)) {
             // Shape: interned columns present, legacy columns gone.
@@ -104,7 +214,7 @@ class IndexDatabaseMigrationTest {
                  Statement stmt = conn.createStatement()) {
                 try (ResultSet rs = stmt.executeQuery("PRAGMA user_version")) {
                     assertTrue(rs.next());
-                    assertEquals(5, rs.getInt(1), "schema version stamped");
+                    assertEquals(7, rs.getInt(1), "schema version stamped");
                 }
                 try (ResultSet rs = stmt.executeQuery(
                         "SELECT COUNT(*) FROM pragma_table_info('relations') "
@@ -114,9 +224,9 @@ class IndexDatabaseMigrationTest {
                 }
                 try (ResultSet rs = stmt.executeQuery(
                         "SELECT COUNT(*) FROM pragma_table_info('relations') "
-                                + "WHERE name IN ('source_id','target_id','target_name_id')")) {
+                                + "WHERE name IN ('source_id','target_id','target_name_id','target_hint_id')")) {
                     assertTrue(rs.next());
-                    assertEquals(3, rs.getInt(1), "interned symbol columns present");
+                    assertEquals(4, rs.getInt(1), "interned symbol columns present");
                 }
                 try (ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM fqns")) {
                     assertTrue(rs.next());

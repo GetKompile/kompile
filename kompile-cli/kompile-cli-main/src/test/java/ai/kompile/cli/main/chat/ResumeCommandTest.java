@@ -166,7 +166,7 @@ class ResumeCommandTest {
         assertTrue(ResumeCommand.shouldResumeStandardChat(
                 "cli-standard", "kompile", "", null));
         assertTrue(ResumeCommand.shouldResumeStandardChat(
-                "fpna-20260809-0826", "auto", "coder", null));
+                "planning-20260809-0826", "auto", "coder", null));
         assertFalse(ResumeCommand.shouldResumeStandardChat(
                 "cli-standard", "claude", "coder", null));
         assertFalse(ResumeCommand.shouldResumeStandardChat(

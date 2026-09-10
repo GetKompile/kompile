@@ -466,8 +466,7 @@ jobs:
         shell: bash
         run: |
           mvn --batch-mode --no-transfer-progress -pl :kompile-cli-main \
-            -Dtest=CodexAppServerModelDiscoveryTest,ModelDiscoveryHttpTest \
-            -DexcludedGroups=live \
+            -Dtest=ModelDiscoveryHttpTest,SetupWizardRuntimeTest \
             -Dsurefire.failIfNoSpecifiedTests=false \
             test
 

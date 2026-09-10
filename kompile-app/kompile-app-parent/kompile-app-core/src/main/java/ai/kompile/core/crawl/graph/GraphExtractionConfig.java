@@ -112,7 +112,7 @@ public class GraphExtractionConfig {
         // Legacy JSON may still contain this key. It no longer controls graph extraction.
     }
 
-    /** Named schema preset ID to load the standardized graph schema from (e.g., "fpna-cpg-channel-v1"). */
+    /** Named schema preset ID used to load a standardized graph schema. */
     private String schemaPresetId;
 
     /**
@@ -146,6 +146,9 @@ public class GraphExtractionConfig {
 
     /** LLM model name (e.g., "gpt-4o", "claude-3-5-sonnet"); null = provider default */
     private String modelName;
+
+    /** Optional request-scoped provider-native thinking/effort value; null/blank inherits host policy. */
+    private String thinking;
 
     /** LLM temperature for extraction (lower = more deterministic) */
     @Builder.Default

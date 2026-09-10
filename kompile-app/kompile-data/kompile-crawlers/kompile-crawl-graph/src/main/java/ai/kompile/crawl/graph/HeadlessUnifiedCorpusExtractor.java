@@ -8,10 +8,13 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.agent.CliAgentRunner;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.LocalServingBackend;
+import ai.kompile.core.crawl.graph.NativeChatCompletion;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import org.springframework.ai.document.Document;
 
 import java.time.Instant;
@@ -24,19 +27,21 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * UI-independent entry point for the production unified-corpus graph extractor.
  *
  * <p>The scheduled/UI crawl continues to own source scheduling, progress persistence, and its
  * parallel batch lifecycle. Local tools can use this facade after preparing folder-scoped chunks,
- * supplying their own CLI-agent or serving-subprocess bridges. Both paths therefore execute the
+     * supplying their own CLI-agent, native-text-chat or serving-subprocess bridges. Both paths execute the
  * same {@link GraphExtractionOrchestrator} and {@link CrawlLlmDispatcher} rather than maintaining a
  * second semantic extraction implementation.</p>
  */
 public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
 
     private final CrawlLlmDispatcher llmDispatcher;
+    private final NativeChatCompletion nativeChatCompletion;
     private final GraphExtractionOrchestrator orchestrator;
     private final PipelineStepTracker pipelineStepTracker;
     private final ExecutorService extractionPool;
@@ -60,16 +65,42 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
             int parallelism,
             Consumer<UnifiedCrawlJob.LlmCallRecord> llmCallSink,
             Consumer<Map<String, Object>> extractionTraceSink) {
-        if (cliAgentRunner == null && localServingBackend == null) {
+        this(cliAgentRunner, localServingBackend, null, null, parallelism,
+                llmCallSink, extractionTraceSink);
+    }
+
+    public HeadlessUnifiedCorpusExtractor(
+            CliAgentRunner cliAgentRunner,
+            LocalServingBackend localServingBackend,
+            EmbeddingModel topicEmbeddingModel,
+            Function<String, String> languageDetector,
+            int parallelism,
+            Consumer<UnifiedCrawlJob.LlmCallRecord> llmCallSink,
+            Consumer<Map<String, Object>> extractionTraceSink) {
+        this(cliAgentRunner, localServingBackend, null, topicEmbeddingModel, languageDetector,
+                parallelism, llmCallSink, extractionTraceSink);
+    }
+
+    public HeadlessUnifiedCorpusExtractor(
+            CliAgentRunner cliAgentRunner,
+            LocalServingBackend localServingBackend,
+            NativeChatCompletion nativeChatCompletion,
+            EmbeddingModel topicEmbeddingModel,
+            Function<String, String> languageDetector,
+            int parallelism,
+            Consumer<UnifiedCrawlJob.LlmCallRecord> llmCallSink,
+            Consumer<Map<String, Object>> extractionTraceSink) {
+        if (cliAgentRunner == null && localServingBackend == null && nativeChatCompletion == null) {
             throw new IllegalArgumentException(
-                    "A CLI-agent runner or local serving backend is required for headless extraction");
+                    "A CLI-agent runner, local serving backend or native chat bridge is required for headless extraction");
         }
         int effectiveParallelism = Math.max(1, parallelism);
         CrawlDocumentTracker documentTracker = new CrawlDocumentTracker();
         GraphPersistenceHelper persistenceHelper = new GraphPersistenceHelper();
         persistenceHelper.documentTracker = documentTracker;
 
-        this.llmDispatcher = new CrawlLlmDispatcher(cliAgentRunner, localServingBackend);
+        this.nativeChatCompletion = nativeChatCompletion;
+        this.llmDispatcher = new CrawlLlmDispatcher(cliAgentRunner, localServingBackend, nativeChatCompletion);
         this.llmDispatcher.setLlmCallObserver(record -> {
             llmCalls.add(record);
             if (llmCallSink != null) {
@@ -96,6 +127,10 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
             }
         };
         this.orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
+        if (topicEmbeddingModel != null) {
+            this.orchestrator.corpusTopicModel =
+                    new CorpusTopicModel(topicEmbeddingModel, languageDetector);
+        }
         this.orchestrator.memoryMonitor = new CrawlMemoryMonitor();
         this.orchestrator.pipelineStepTracker = pipelineStepTracker;
         this.orchestrator.retainResultGraph = true;
@@ -125,11 +160,76 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                           UnifiedCrawlRequest.RuntimeConfig runtimeConfig,
                           String jobId,
                           Long factSheetId) {
+        return extract(documents, graphExtraction, processingRoute, runtimeConfig,
+                2, jobId, factSheetId);
+    }
+
+    public Result extract(List<Document> documents,
+                          GraphExtractionConfig graphExtraction,
+                          ProcessingRouteConfig processingRoute,
+                          UnifiedCrawlRequest.RuntimeConfig runtimeConfig,
+                          int maxValidationRetries,
+                          String jobId,
+                          Long factSheetId) {
+        return extract(documents, graphExtraction, processingRoute, runtimeConfig,
+                maxValidationRetries, jobId, factSheetId, null);
+    }
+
+    /**
+     * Extract with an optional schema seed loaded from the previous project-local graph archive.
+     * The seed is passed separately from the caller's configuration so the caller object remains
+     * untouched and an explicit configured schema keeps precedence over the implicit seed.
+     */
+    public Result extract(List<Document> documents,
+                          GraphExtractionConfig graphExtraction,
+                          ProcessingRouteConfig processingRoute,
+                          UnifiedCrawlRequest.RuntimeConfig runtimeConfig,
+                          int maxValidationRetries,
+                          String jobId,
+                          Long factSheetId,
+                          GraphSchema persistedSchemaSeed) {
         List<Document> corpus = List.copyOf(Objects.requireNonNull(documents, "documents"));
         llmCalls.clear();
         traceEvents.clear();
         GraphExtractionConfig extractionConfig = graphExtraction != null
                 ? graphExtraction : GraphExtractionConfig.builder().build();
+        if (ProcessingRouteConfig.isNativeChatProvider(extractionConfig.getLlmProvider())) {
+            processingRoute = ProcessingRouteConfig.nativeChatRoute(
+                    extractionConfig.getLlmProvider(), extractionConfig.getModelName(),
+                    extractionConfig.getThinking());
+        }
+        ProcessingRouteConfig.ProcessingBackend selectedBackend = null;
+        if (processingRoute != null && processingRoute.getBackends() != null) {
+            var candidates = processingRoute.getBackends().stream().filter(Objects::nonNull)
+                    .filter(ProcessingRouteConfig.ProcessingBackend::isEnabled)
+                    .filter(backend -> backend.getType() == ProcessingRouteConfig.ProcessingBackendType.CHAT_MODEL
+                            || backend.getCapabilities() == null || backend.getCapabilities().isEmpty()
+                            || backend.getCapabilities().contains("llm"))
+                    .sorted(java.util.Comparator.comparingInt(ProcessingRouteConfig.ProcessingBackend::getPriority));
+            if (!processingRoute.isFallbackEnabled()) candidates = candidates.limit(1);
+            selectedBackend = candidates.findFirst().orElse(null);
+        }
+        boolean nativeChat = selectedBackend != null
+                && selectedBackend.getType() == ProcessingRouteConfig.ProcessingBackendType.CHAT_MODEL;
+        boolean nativeStructuredChat = false;
+        if (nativeChat && nativeChatCompletion != null) {
+            String provider = selectedBackend.getProvider();
+            String model = selectedBackend.getModelName();
+            String thinking = selectedBackend.getThinking();
+            try {
+                nativeStructuredChat = nativeChatCompletion.supportsStructuredChat(provider, model, thinking);
+            } catch (RuntimeException capabilityFailure) {
+                throw new IllegalStateException("CHAT_MODEL structured JSON capability check failed for the selected provider/model",
+                        capabilityFailure);
+            }
+        }
+        llmDispatcher.setNativeStructuredChat(nativeStructuredChat);
+        llmDispatcher.setTextOnlyRoute(nativeChat && !nativeStructuredChat);
+        if (nativeChat && !nativeStructuredChat
+                && orchestrator.shouldDeriveCorpusSchema(extractionConfig)) {
+            throw new IllegalStateException("CHAT_MODEL selected for corpus extraction does not support the validated JSON-schema prepass; "
+                    + "select a provider/model with json_schema capability or configure an authoritative strict schema");
+        }
         String effectiveJobId = jobId == null || jobId.isBlank()
                 ? "local-" + UUID.randomUUID() : jobId;
 
@@ -139,6 +239,7 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                 .graphExtraction(extractionConfig)
                 .processingRoute(processingRoute)
                 .runtimeConfig(runtimeConfig)
+                .maxValidationRetries(Math.max(0, maxValidationRetries))
                 .build();
         UnifiedCrawlJob job = UnifiedCrawlJob.builder()
                 .jobId(effectiveJobId)
@@ -158,7 +259,7 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                 .factSheetId(factSheetId)
                 .build();
         orchestrator.extractGraphFromDocuments(
-                corpus, extractionConfig, graph, job, extractionPool);
+                corpus, extractionConfig, graph, job, extractionPool, persistedSchemaSeed);
 
         boolean failed = job.getErrorCount().get() > 0
                 || job.getGraphExtractionParseFailures().get() > 0;
@@ -172,7 +273,9 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                 job.getGraphExtractionParseFailures().get(),
                 failed,
                 List.copyOf(llmCalls),
-                List.copyOf(traceEvents));
+                List.copyOf(traceEvents),
+                job.getFrozenGraphSchema(),
+                GraphSchemaMetadataProjector.schemaFingerprint(job.getFrozenGraphSchema()));
     }
 
     private void applyRuntimeConfig(UnifiedCrawlRequest.RuntimeConfig config) {
@@ -225,6 +328,19 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                          int parseFailures,
                          boolean failed,
                          List<UnifiedCrawlJob.LlmCallRecord> llmCalls,
-                         List<Map<String, Object>> traceEvents) {
+                         List<Map<String, Object>> traceEvents,
+                         GraphSchema canonicalGraphSchema,
+                         String schemaFingerprint) {
+        /** Backward-compatible constructor for integrations compiled against the original result. */
+        public Result(Graph graph,
+                      List<String> errors,
+                      int chunksProcessed,
+                      int parseFailures,
+                      boolean failed,
+                      List<UnifiedCrawlJob.LlmCallRecord> llmCalls,
+                      List<Map<String, Object>> traceEvents) {
+            this(graph, errors, chunksProcessed, parseFailures, failed, llmCalls, traceEvents,
+                    null, null);
+        }
     }
 }

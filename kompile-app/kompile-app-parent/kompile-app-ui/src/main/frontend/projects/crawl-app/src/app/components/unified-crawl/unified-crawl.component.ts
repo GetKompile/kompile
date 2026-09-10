@@ -79,6 +79,7 @@ import {
   SyncStatusUpdate
 } from '@shared/models/sync-models';
 import { CrawlLauncherDialogComponent, CrawlLauncherDialogData, CrawlLauncherResult } from '@shared/components/unified-crawl/crawl-launcher-dialog/crawl-launcher-dialog.component';
+import { NoteSyncConnectionDialogComponent } from '../note-sync-connection-dialog/note-sync-connection-dialog.component';
 
 @Component({
   selector: 'app-unified-crawl',
@@ -132,6 +133,8 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
   autoSyncUpdating = new Set<number>();
   sourceAuthUpdating = new Set<number>();
   sourceCredentialDrafts: Record<number, string> = {};
+  sourceAuthRequired = false;
+  sourceLoginCode = '';
   readonly defaultAutoSyncCron = '0 */15 * * * *';
 
   // Portable knowledge-base lifecycle, surfaced beside source and graph maintenance.
@@ -198,7 +201,9 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     private cdr: ChangeDetectorRef,
     private router: Router,
     private zone: NgZone
-  ) {}
+  ) {
+    this.sourceAuthRequired = !this.noteSyncService.hasIntegrationBrowserSession();
+  }
 
   ngOnInit() {
     this.subscriptions.add(
@@ -1210,6 +1215,34 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
     this.loadRestorationReadiness();
   }
 
+  openSyncConnectionDialog(): void {
+    const factSheetId = this.activeFactSheet?.id;
+    if (!factSheetId) {
+      this.snackBar.open('Select an active Fact Sheet first.', 'OK', { duration: 3000 });
+      return;
+    }
+    const ref = this.dialog.open(NoteSyncConnectionDialogComponent, {
+      width: '640px',
+      maxWidth: '96vw',
+      data: { factSheetId, mode: 'create' }
+    });
+    this.subscriptions.add(ref.afterClosed().subscribe(created => {
+      if (created) this.loadSyncConnections(factSheetId);
+    }));
+  }
+
+  authenticateSourceBrowser(): void {
+    if (!this.sourceLoginCode.trim()) return;
+    this.subscriptions.add(this.noteSyncService
+      .exchangeIntegrationBrowserSession(this.sourceLoginCode.trim())
+      .subscribe({
+        next: () => window.location.reload(),
+        error: err => this.snackBar.open(
+          err.error?.message || err.error?.error || 'Invalid or expired web login code',
+          'Dismiss', { duration: 5000 })
+      }));
+  }
+
   refreshPortableJobs(): void {
     this.subscriptions.add(this.projectService.listPortableKnowledgeBaseJobs().subscribe({
       next: jobs => {
@@ -1380,7 +1413,11 @@ export class UnifiedCrawlComponent implements OnInit, OnDestroy {
         this.loadRecentSyncRuns();
         this.cdr.markForCheck();
       },
-      error: err => console.error('Failed to load source sync connections:', err.message)
+      error: err => {
+        if (err.status === 401) this.sourceAuthRequired = true;
+        else console.error('Failed to load source sync connections:', err.message);
+        this.cdr.markForCheck();
+      }
     }));
   }
 

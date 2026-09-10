@@ -44,7 +44,7 @@ export interface OntologySchema {
 export interface ProvenanceCitation {
   /** Source type enum value as serialized by the backend (e.g. DOCUMENT, CONVERSATION). */
   sourceType?: string;
-  /** Source identifier, e.g. "FP&A_Close_SOP_v3.2.docx". */
+  /** Source identifier, e.g. "operations-procedure-v3.2.docx". */
   sourceId?: string;
   /** Location within the source, e.g. "§3.2", "cell D60". */
   location?: string;

@@ -51,27 +51,29 @@ public class IndexLockManager {
         ReentrantReadWriteLock rwLock = lockFor(projectId);
         rwLock.writeLock().lock();
 
-        // Cross-process file lock
-        Files.createDirectories(indexDir);
-        Path lockFile = indexDir.resolve("project.lock");
-        FileChannel channel = FileChannel.open(lockFile,
-                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-        FileLock fileLock;
+        FileChannel channel = null;
         try {
-            fileLock = channel.tryLock();
+            Files.createDirectories(indexDir);
+            channel = FileChannel.open(indexDir.resolve("project.lock"),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            FileLock fileLock = channel.tryLock();
             if (fileLock == null) {
-                channel.close();
-                rwLock.writeLock().unlock();
-                throw new IOException("Index is locked by another process. " +
-                        "Another 'kompile code-index' may be running for project '" + projectId + "'.");
+                throw new IOException("Index is locked by another process for project '" + projectId + "'.");
             }
-        } catch (OverlappingFileLockException e) {
-            channel.close();
-            rwLock.writeLock().unlock();
-            throw new IOException("Index is locked by another thread in this process.");
+            return new WriteLockToken(rwLock, channel, fileLock);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                if (channel != null) channel.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            } finally {
+                rwLock.writeLock().unlock();
+            }
+            if (failure instanceof OverlappingFileLockException) {
+                throw new IOException("Index is locked by another thread in this process.", failure);
+            }
+            throw failure;
         }
-
-        return new WriteLockToken(rwLock, channel, fileLock);
     }
 
     /**

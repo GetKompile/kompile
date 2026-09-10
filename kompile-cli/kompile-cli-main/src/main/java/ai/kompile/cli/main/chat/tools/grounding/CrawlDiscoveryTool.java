@@ -11,6 +11,7 @@ import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
+import ai.kompile.cli.main.project.NativeChatModels;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -54,7 +55,8 @@ public final class CrawlDiscoveryTool implements CliTool {
                 + "is configured, otherwise the live distributed surface. Returns source types, pipeline step dependencies, "
                 + "standard pipeline kinds, installed loaders and chunkers, processing routes/backends, "
                 + "capacity, runtime settings, folder-registered models, knowledge bases, registered Kompile code projects, "
-                + "and a concise request-shape guide. "
+                + "and a concise request-shape guide. Native graph chat uses CHAT_MODEL or chat:<provider>; "
+                + "it is host-local, text-only, and distinct from legacy bare-name CLI routing. "
                 + "It also documents the default asynchronous crawl lifecycle: start returns a jobId, "
                 + "crawl_control status is polled using pollAfterMs, and crawl_result is read after terminal state. "
                 + "Use section to limit the response.";
@@ -106,6 +108,12 @@ public final class CrawlDiscoveryTool implements CliTool {
 
         ObjectNode catalog = mapper.createObjectNode();
         catalog.put("section", section);
+        if (matches(section, "pipelines") || matches(section, "runtime")) {
+            catalog.set("hostNativeChat", mapper.valueToTree(Map.of(
+                    "backendType", "CHAT_MODEL", "selector", "chat[:provider]",
+                    "providers", NativeChatModels.providers(),
+                    "note", "Host-local text extraction only; metadata does not prove authentication or inference.")));
+        }
         int[] counts = new int[2];
 
         if (matches(section, "sources")) {
@@ -188,6 +196,11 @@ public final class CrawlDiscoveryTool implements CliTool {
                 .put("executionModel", "managed-unified-runtime")
                 .put("supportedInputTypes", "application/pdf,image/*")
                 .put("definition", "pipelineSpec with an OCR or document-understanding step runner");
+        types.addObject().put("id", "CHAT_MODEL")
+                .put("useWhen", "Text, image, or PDF extraction through the configured direct Kompile chat provider.")
+                .put("executionModel", "mcp-host-chat-provider")
+                .put("supportedInputTypes", "text/*,application/pdf,image/png,image/jpeg,image/gif,image/webp")
+                .put("definition", "processor.type=CHAT_MODEL; credentials remain in chat configuration");
         addPipeline(types, "CODE", "Code-aware loading and chunking.");
         addPipeline(types, "TABLE_AWARE", "Preserve tabular structure during extraction and chunking.");
         addPipeline(types, "KEYWORD_ONLY", "Keyword indexing without embeddings.");
@@ -210,7 +223,8 @@ public final class CrawlDiscoveryTool implements CliTool {
         for (String field : new String[]{
                 "label", "sourceType", "maxDepth", "maxDocuments", "includePatterns",
                 "excludePatterns", "allowedContentTypes", "loaderName", "chunkerName",
-                "chunkSize", "chunkOverlap", "properties", "chunkerOptions"}) {
+                "chunkSize", "chunkOverlap", "properties", "chunkerOptions", "processor",
+                "executorId", "modelBindings", "pipelineDefinitionId", "pipelineDefinitionPath"}) {
             documentFields.add(field);
         }
         ArrayNode configurationFields = shape.putArray("configurationFields");
@@ -225,10 +239,13 @@ public final class CrawlDiscoveryTool implements CliTool {
                 "Use per-document loaderName/chunkerName for exceptions; use pipelines plus routeRules "
                         + "for reusable content classes; use steps to limit crawl phases. Set dryRun=true on "
                         + "crawl_documents to validate the composed request without creating a knowledge base. "
-                        + "All model-backed pipelines use UnifiedPipelineDefinition and an MCP-owned reusable stdio runtime.");
+                        + "Artifact-backed models use UnifiedPipelineDefinition and an MCP-owned reusable stdio runtime; "
+                        + "CHAT_MODEL uses an isolated configured chat call without persisting credentials.");
         ObjectNode typeGuide = shape.putObject("pipelineTypeGuide");
         typeGuide.put("VLM/OCR",
                 "pipelineType + modelId/modelBindings compiled to the canonical unified definition.");
+        typeGuide.put("CHAT_MODEL",
+                "Use chat-model-document or processor.type=CHAT_MODEL. Text is sent directly; PDFs are rendered as bounded image batches for OpenAI-compatible/Responses/Anthropic vision models.");
         typeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
                 "pipelineType + loaderName/chunkerName/options; model steps use the same runtime contract.");
         typeGuide.put("CUSTOM",

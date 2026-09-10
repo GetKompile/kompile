@@ -17,6 +17,7 @@
 package ai.kompile.source.reddit;
 
 import ai.kompile.oauth.service.OAuthConnectionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -31,5 +32,12 @@ public class RedditSourceAutoConfiguration {
     public RedditSourceProvider redditSourceProvider(
             @Autowired(required = false) OAuthConnectionService oauthService) {
         return new RedditSourceProvider(oauthService);
+    }
+
+    @Bean
+    public RedditDocumentLoader redditDocumentLoader(
+            @Autowired(required = false) OAuthConnectionService oauthService,
+            ObjectMapper objectMapper) {
+        return new RedditDocumentLoader(oauthService, objectMapper);
     }
 }

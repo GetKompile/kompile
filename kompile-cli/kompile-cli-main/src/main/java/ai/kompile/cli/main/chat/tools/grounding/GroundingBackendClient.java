@@ -138,13 +138,17 @@ class GroundingBackendClient {
      * @return the status code and response body
      * @throws org.springframework.web.client.RestClientException on transport errors
      */
-    GroundingResponse postMultipartFile(String path, Path file, Integer factSheetId) {
+    GroundingResponse postMultipartFile(
+            String path, Path file, Long factSheetId, boolean requireManaged) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("file", new FileSystemResource(file));
         if (factSheetId != null) {
             body.add("factSheetId", factSheetId.toString());
+        }
+        if (requireManaged) {
+            body.add("requireManaged", "true");
         }
         ResponseEntity<String> resp = restTemplate.postForEntity(
                 baseUrl + path, new HttpEntity<>(body, headers), String.class);

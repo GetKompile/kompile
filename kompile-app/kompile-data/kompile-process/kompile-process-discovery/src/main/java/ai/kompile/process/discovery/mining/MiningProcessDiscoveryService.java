@@ -1185,11 +1185,11 @@ public class MiningProcessDiscoveryService {
             ReasoningTrace trace = ProcessReasoningTraceBuilder.build(
                     suggestion, eventLog, dfg, entailment, causalModel,
                     hybridActivation, bayesianAvgPosterior, tree);
-            suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
-            suggestion.setReasoningTraceArtifactName(
-                    ProcessUnifiedGraphArtifacts.traceArtifactName(suggestion.getId()));
             if (reasoningTraceStore != null) {
                 reasoningTraceStore.save(suggestion.getId(), trace);
+                suggestion.setReasoningTraceId(ProcessReasoningTraceStore.traceId(suggestion.getId()));
+                suggestion.setReasoningTraceArtifactName(
+                        ProcessUnifiedGraphArtifacts.traceArtifactName(suggestion.getId()));
             }
             if (eventPublisher != null) {
                 eventPublisher.publishEvent(new ProcessReasoningTraceEvent(

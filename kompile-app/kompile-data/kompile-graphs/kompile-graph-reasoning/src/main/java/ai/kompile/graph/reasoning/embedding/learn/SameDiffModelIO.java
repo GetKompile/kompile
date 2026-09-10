@@ -164,26 +164,36 @@ public final class SameDiffModelIO {
      * @return a {@link LoadedSgns} with the restored entity/context matrices and id mapping
      */
     public static LoadedSgns loadSgns(Path dir) {
+        SameDiff sd = null;
+        Throwable operationFailure = null;
         try {
             MappingMeta meta = parseMappingJson(
                     Files.readString(dir.resolve(MAPPING_FILE), StandardCharsets.UTF_8));
 
-            SameDiff sd = SameDiff.load(dir.resolve(MODEL_FILE).toFile(), true);
+            sd = SameDiff.load(dir.resolve(MODEL_FILE).toFile(), true);
 
-            // Read variable arrays from the loaded graph
+            // Read variable arrays from the loaded graph. These arrays are borrowed from the
+            // graph; copy primitive Java values before closing it and never close them directly.
             INDArray entityArr  = sd.getArrForVarName("entityW");
             INDArray contextArr = sd.getArrForVarName("contextW");
             if (entityArr == null || contextArr == null) {
                 throw new IllegalStateException(
                         "SameDiffModelIO.loadSgns: 'entityW' or 'contextW' not found in " + dir);
             }
+            double[][] entityMatrix = entityArr.toDoubleMatrix();
+            double[][] contextMatrix = contextArr.toDoubleMatrix();
 
-            return new LoadedSgns(
-                    meta.entityIds, meta.dim,
-                    entityArr.toDoubleMatrix(),
-                    contextArr.toDoubleMatrix());
+            return new LoadedSgns(meta.entityIds, meta.dim, entityMatrix, contextMatrix);
         } catch (IOException e) {
-            throw new UncheckedIOException("SameDiffModelIO.loadSgns failed", e);
+            UncheckedIOException failure =
+                    new UncheckedIOException("SameDiffModelIO.loadSgns failed", e);
+            operationFailure = failure;
+            throw failure;
+        } catch (RuntimeException | Error e) {
+            operationFailure = e;
+            throw e;
+        } finally {
+            closeGraphAndFunctions(sd, operationFailure);
         }
     }
 
@@ -250,36 +260,39 @@ public final class SameDiffModelIO {
         try {
             Files.createDirectories(dir);
             // Build a minimal SameDiff graph that carries the three array variables so we can
-            // use the FlatBuffers serialiser to persist arrays exactly.
-            SameDiff sd = SameDiff.create();
-            int ne  = model.numEntities();
-            int nr  = model.numRelations();
-            int dim = model.dim();
+            // use the FlatBuffers serialiser to persist arrays exactly. The graph owns these
+            // roots and closes them on every success or failure path.
+            try (SameDiff sd = SameDiff.create()) {
+                int ne  = model.numEntities();
+                int nr  = model.numRelations();
+                int dim = model.dim();
 
-            double[][] re  = new double[ne][dim];
-            double[][] im  = new double[ne][dim];
-            for (int i = 0; i < ne; i++) {
-                re[i] = model.entityRe(i);
-                im[i] = model.entityIm(i);
+                double[][] re  = new double[ne][dim];
+                double[][] im  = new double[ne][dim];
+                for (int i = 0; i < ne; i++) {
+                    re[i] = model.entityRe(i);
+                    im[i] = model.entityIm(i);
+                }
+                double[][] ph = new double[nr][dim];
+                for (int r = 0; r < nr; r++) {
+                    ph[r] = model.relPhase(r);
+                }
+
+                // Java double creation already yields DOUBLE roots owned by this graph.
+                INDArray reArr = Nd4j.create(re);
+                INDArray imArr = Nd4j.create(im);
+                INDArray phArr = Nd4j.create(ph);
+
+                sd.var("entityRe", reArr);
+                sd.var("entityIm", imArr);
+                sd.var("relPhase", phArr);
+
+                sd.save(dir.resolve(MODEL_FILE).toFile(), true);
+
+                String mappingJson = buildMappingJson(
+                        KIND_ROTATE, model.entityIds(), model.relTypes(), dim);
+                Files.writeString(dir.resolve(MAPPING_FILE), mappingJson, StandardCharsets.UTF_8);
             }
-            double[][] ph = new double[nr][dim];
-            for (int r = 0; r < nr; r++) {
-                ph[r] = model.relPhase(r);
-            }
-
-            INDArray reArr = Nd4j.create(re).castTo(DataType.DOUBLE);
-            INDArray imArr = Nd4j.create(im).castTo(DataType.DOUBLE);
-            INDArray phArr = Nd4j.create(ph).castTo(DataType.DOUBLE);
-
-            sd.var("entityRe", reArr);
-            sd.var("entityIm", imArr);
-            sd.var("relPhase", phArr);
-
-            sd.save(dir.resolve(MODEL_FILE).toFile(), true);
-
-            String mappingJson = buildMappingJson(
-                    KIND_ROTATE, model.entityIds(), model.relTypes(), dim);
-            Files.writeString(dir.resolve(MAPPING_FILE), mappingJson, StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException("SameDiffModelIO.saveRotatE failed", e);
         }
@@ -337,11 +350,13 @@ public final class SameDiffModelIO {
      * @param dir directory containing the checkpoint files
      */
     public static RotatECheckpoint loadRotatECheckpoint(Path dir) {
+        SameDiff sd = null;
+        Throwable operationFailure = null;
         try {
             MappingMeta meta = parseMappingJson(
                     Files.readString(dir.resolve(MAPPING_FILE), StandardCharsets.UTF_8));
 
-            SameDiff sd = SameDiff.load(dir.resolve(MODEL_FILE).toFile(), true);
+            sd = SameDiff.load(dir.resolve(MODEL_FILE).toFile(), true);
 
             INDArray reArr  = sd.getArrForVarName("entityRe");
             INDArray imArr  = sd.getArrForVarName("entityIm");
@@ -355,7 +370,8 @@ public final class SameDiffModelIO {
             int nr  = meta.relTypes.size();
             int dim = meta.dim;
 
-            // Reconstruct the immutable TrainedRotatE via the package-private raw-array bridge
+            // RotatEPersistenceBridge copies Java primitive values from these graph-borrowed
+            // arrays. Do not close reArr/imArr/phArr independently; graph cleanup owns them.
             RotatELearner.TrainedRotatE model = RotatEPersistenceBridge.fromArrays(
                     meta.entityIds, meta.relTypes, dim, reArr, imArr, phArr);
 
@@ -378,7 +394,15 @@ public final class SameDiffModelIO {
                 return new RotatECheckpoint(model, mRe, vRe, mIm, vIm, mPhase, vPhase, 0);
             }
         } catch (IOException e) {
-            throw new UncheckedIOException("SameDiffModelIO.loadRotatECheckpoint failed", e);
+            UncheckedIOException failure =
+                    new UncheckedIOException("SameDiffModelIO.loadRotatECheckpoint failed", e);
+            operationFailure = failure;
+            throw failure;
+        } catch (RuntimeException | Error e) {
+            operationFailure = e;
+            throw e;
+        } finally {
+            closeGraphAndFunctions(sd, operationFailure);
         }
     }
 
@@ -609,7 +633,9 @@ public final class SameDiffModelIO {
     }
 
     private static String flatDoubleArray(INDArray arr) {
-        double[] flat = arr.reshape(-1).toDoubleVector();
+        // toDoubleVector() copies primitive values directly; avoid retaining an unclosed reshape
+        // view while serialising caller-owned Adam state.
+        double[] flat = arr.toDoubleVector();
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < flat.length; i++) {
             if (i > 0) sb.append(',');
@@ -702,7 +728,7 @@ public final class SameDiffModelIO {
     }
 
     private static INDArray toMatrix(double[] flat, int rows, int cols) {
-        return Nd4j.create(flat, new int[]{rows, cols}, 'c').castTo(DataType.DOUBLE);
+        return Nd4j.create(flat, new int[]{rows, cols}, 'c');
     }
 
     /**
@@ -732,5 +758,49 @@ public final class SameDiffModelIO {
         int arrStart = s.indexOf('[', idx + needle.length());
         if (arrStart < 0) return new double[0];
         return parseDoubleArray(s, arrStart);
+    }
+
+    /** Close a graph and its separately-owned gradient function without touching borrowed arrays. */
+    private static void closeGraphAndFunctions(SameDiff graph, Throwable operationFailure) {
+        if (graph == null) {
+            return;
+        }
+        RuntimeException cleanupFailure = null;
+        SameDiff gradient = null;
+        try {
+            gradient = graph.getFunction("grad");
+        } catch (RuntimeException e) {
+            cleanupFailure = e;
+        }
+        if (gradient != null && gradient != graph) {
+            try {
+                gradient.close();
+            } catch (RuntimeException e) {
+                cleanupFailure = appendFailure(cleanupFailure, e);
+            }
+        }
+        try {
+            graph.close();
+        } catch (RuntimeException e) {
+            cleanupFailure = appendFailure(cleanupFailure, e);
+        }
+        if (cleanupFailure != null) {
+            if (operationFailure != null) {
+                operationFailure.addSuppressed(cleanupFailure);
+            } else {
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static RuntimeException appendFailure(RuntimeException first, RuntimeException next) {
+        if (next == null) {
+            return first;
+        }
+        if (first == null) {
+            return next;
+        }
+        first.addSuppressed(next);
+        return first;
     }
 }

@@ -19,11 +19,17 @@ import ai.kompile.cli.common.util.GitRunner;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -34,8 +40,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -46,6 +56,7 @@ public class KompileProjectStore {
     public static final String METADATA_DIR = ".kompile";
     public static final String PROJECT_METADATA_DIR = ".kompile/project";
     public static final String OPEN_STATE_FILE = ".kompile/project/open.json";
+    private static final Map<Path, ReentrantLock> MANIFEST_LOCKS = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper;
 
@@ -226,11 +237,45 @@ public class KompileProjectStore {
 
     public void save(Path root, KompileProjectManifest manifest) {
         Path normalizedRoot = normalizeRoot(root);
+        withManifestLock(normalizedRoot, () -> {
+            saveManifestLocked(normalizedRoot, manifest);
+            return null;
+        });
+        autoCommitIfEnabled(normalizedRoot, manifest);
+    }
+
+    public KompileProjectManifest updateManifest(Path root, Consumer<KompileProjectManifest> update) {
+        Path normalizedRoot = normalizeRoot(root);
+        KompileProjectManifest manifest = withManifestLock(normalizedRoot, () -> {
+            KompileProjectManifest current = load(normalizedRoot);
+            update.accept(current);
+            saveManifestLocked(normalizedRoot, current);
+            return current;
+        });
+        autoCommitIfEnabled(normalizedRoot, manifest);
+        return manifest;
+    }
+
+    private void saveManifestLocked(Path normalizedRoot, KompileProjectManifest manifest) {
         Path manifestPath = manifestPath(normalizedRoot);
         try {
             Files.createDirectories(normalizedRoot);
+            if (Files.isRegularFile(manifestPath)) {
+                mergeConcurrentGraphState(load(normalizedRoot), manifest);
+            }
             manifest.setUpdatedAt(Instant.now());
-            mapper.writeValue(manifestPath.toFile(), manifest);
+            Path temporary = Files.createTempFile(normalizedRoot, ".kompile-project-", ".tmp");
+            try {
+                mapper.writeValue(temporary.toFile(), manifest);
+                try {
+                    Files.move(temporary, manifestPath, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException unsupported) {
+                    Files.move(temporary, manifestPath, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
             syncProjectRegistries(normalizedRoot, manifest);
             syncMarkdownCatalogQuietly(normalizedRoot);
             syncCrawlCatalogQuietly(normalizedRoot);
@@ -239,7 +284,62 @@ public class KompileProjectStore {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to write " + manifestPath + ": " + e.getMessage(), e);
         }
-        autoCommitIfEnabled(normalizedRoot, manifest);
+    }
+
+    private void mergeConcurrentGraphState(KompileProjectManifest current,
+                                           KompileProjectManifest update) {
+        if (current == null || update == null) return;
+        for (KompileCodingProject existing : current.getCodingProjects()) {
+            KompileCodingProject incoming = update.getCodingProjects().stream()
+                    .filter(candidate -> Objects.equals(candidate.getId(), existing.getId())
+                            || Objects.equals(candidate.getCodeProjectId(), existing.getCodeProjectId()))
+                    .findFirst().orElse(null);
+            if (incoming == null) {
+                update.getCodingProjects().add(existing);
+                continue;
+            }
+            Map<String, String> metadata = new LinkedHashMap<>(existing.getMetadata());
+            metadata.putAll(incoming.getMetadata());
+            incoming.setMetadata(metadata);
+            if (incoming.getFactSheetId() == null) incoming.setFactSheetId(existing.getFactSheetId());
+        }
+        for (KompileProjectCrawlProfile existing : current.getCrawlProfiles()) {
+            KompileProjectCrawlProfile incoming = update.getCrawlProfiles().stream()
+                    .filter(candidate -> Objects.equals(candidate.getId(), existing.getId()))
+                    .findFirst().orElse(null);
+            if (incoming == null) {
+                update.getCrawlProfiles().add(existing);
+                continue;
+            }
+            Map<String, String> metadata = new LinkedHashMap<>(existing.getMetadata());
+            metadata.putAll(incoming.getMetadata());
+            incoming.setMetadata(metadata);
+        }
+    }
+
+    private <T> T withManifestLock(Path root, ManifestOperation<T> operation) {
+        Path manifestPath = manifestPath(root).toAbsolutePath().normalize();
+        ReentrantLock processLock = MANIFEST_LOCKS.computeIfAbsent(manifestPath,
+                ignored -> new ReentrantLock());
+        processLock.lock();
+        try {
+            Files.createDirectories(root.resolve(METADATA_DIR));
+            Path lockPath = root.resolve(METADATA_DIR).resolve("project-manifest.lock");
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                return operation.run();
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to lock project manifest: " + e.getMessage(), e);
+        } finally {
+            processLock.unlock();
+        }
+    }
+
+    @FunctionalInterface
+    private interface ManifestOperation<T> {
+        T run();
     }
 
     /**
@@ -356,35 +456,26 @@ public class KompileProjectStore {
 
     public KompileProjectManifest addComponent(Path root, KompileProjectComponent component) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertComponent(manifest, component);
-        save(normalizedRoot, manifest);
+        KompileProjectManifest manifest = updateManifest(normalizedRoot,
+                current -> upsertComponent(current, component));
         createComponentDirectory(normalizedRoot, component);
         return manifest;
     }
 
     public KompileProjectManifest registerCodingProject(Path root, KompileCodingProject codingProject) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertCodingProject(normalizedRoot, manifest, codingProject);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot,
+                manifest -> upsertCodingProject(normalizedRoot, manifest, codingProject));
     }
 
     public KompileProjectManifest registerModel(Path root, KompileProjectModel model) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertModel(manifest, model);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> upsertModel(manifest, model));
     }
 
     public KompileProjectManifest registerPipeline(Path root, KompileProjectPipeline pipeline) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertPipeline(manifest, pipeline);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> upsertPipeline(manifest, pipeline));
     }
 
     public KompileProjectManifest syncProjectRegistries(Path root) {
@@ -905,53 +996,38 @@ public class KompileProjectStore {
 
     public KompileProjectManifest registerScript(Path root, KompileProjectScript script) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertScript(manifest, script);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> upsertScript(manifest, script));
     }
 
     public KompileProjectManifest registerCrawlProfile(Path root, KompileProjectCrawlProfile crawlProfile) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertCrawlProfile(manifest, crawlProfile);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> upsertCrawlProfile(manifest, crawlProfile));
     }
 
     public KompileProjectManifest registerWorkflow(Path root, KompileProjectWorkflow workflow) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        upsertWorkflow(manifest, workflow);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> upsertWorkflow(manifest, workflow));
     }
 
     public KompileProjectManifest setProjectTags(Path root, Collection<String> tags) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        manifest.setTags(normalizeTags(tags));
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> manifest.setTags(normalizeTags(tags)));
     }
 
     public KompileProjectManifest setComponentTags(Path root, String componentId, Collection<String> tags) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        KompileProjectComponent component = findComponent(manifest, componentId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown project component: " + componentId));
-        component.setTags(normalizeTags(tags));
-        component.setUpdatedAt(Instant.now());
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> {
+            KompileProjectComponent component = findComponent(manifest, componentId)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Unknown project component: " + componentId));
+            component.setTags(normalizeTags(tags));
+            component.setUpdatedAt(Instant.now());
+        });
     }
 
     public KompileProjectManifest setLifecycle(Path root, KompileProjectLifecycleState lifecycle) {
         Path normalizedRoot = normalizeRoot(root);
-        KompileProjectManifest manifest = load(normalizedRoot);
-        manifest.setLifecycle(lifecycle);
-        save(normalizedRoot, manifest);
-        return manifest;
+        return updateManifest(normalizedRoot, manifest -> manifest.setLifecycle(lifecycle));
     }
 
     public Path cloneRepository(String remoteUrl, Path targetDir, String branch, boolean gitXetEnabled) {
@@ -1158,7 +1234,10 @@ public class KompileProjectStore {
 
     private void writeGitignore(Path root) {
         Path gitignore = root.resolve(".gitignore");
-        if (Files.exists(gitignore)) return;
+        if (Files.exists(gitignore)) {
+            ensureGitignoreRule(gitignore, "config/channel-admin.token");
+            return;
+        }
         String content = """
                 # Build output
                 target/
@@ -1184,6 +1263,7 @@ public class KompileProjectStore {
                 config/*.secret.json
                 config/oauth-settings.json
                 config/oauth-encryption.key
+                config/channel-admin.token
                 .env*
                 !.env.example
 
@@ -1217,6 +1297,24 @@ public class KompileProjectStore {
             Files.writeString(gitignore, content, StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to write .gitignore: " + e.getMessage(), e);
+        }
+    }
+
+    private static void ensureGitignoreRule(Path gitignore, String rule) {
+        try {
+            String existing = Files.readString(gitignore, StandardCharsets.UTF_8);
+            boolean present = existing.lines().map(String::trim).anyMatch(rule::equals);
+            if (present) {
+                return;
+            }
+            String prefix = existing.isEmpty() || existing.endsWith("\n") ? "" : System.lineSeparator();
+            Files.writeString(
+                    gitignore,
+                    prefix + "# Kompile runtime credentials\n" + rule + "\n",
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to update .gitignore: " + e.getMessage(), e);
         }
     }
 
@@ -2145,7 +2243,8 @@ public class KompileProjectStore {
             modelSnapshot.put("stagingRegistryPath", "data/models/registry.json");
             modelSnapshot.put("models", manifest.getModels());
             mapper.writeValue(modelsRegistry.toFile(), modelSnapshot);
-            mapper.writeValue(stagingRegistry.toFile(), stagingRegistrySnapshot(root, manifest));
+            writeStagingRegistryAtomically(
+                    stagingRegistry, stagingRegistrySnapshot(root, manifest));
 
             Map<String, Object> pipelineSnapshot = new LinkedHashMap<>();
             pipelineSnapshot.put("schemaVersion", manifest.getSchemaVersion());
@@ -2155,6 +2254,43 @@ public class KompileProjectStore {
             mapper.writeValue(pipelinesRegistry.toFile(), pipelineSnapshot);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to sync project model/pipeline registries: " + e.getMessage(), e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void writeStagingRegistryAtomically(
+            Path registryPath, Map<String, Object> snapshot) throws IOException {
+        Path lockPath = registryPath.getParent().resolve(".registry.lock");
+        try (FileChannel channel = FileChannel.open(
+                lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            Map<String, Object> merged = new LinkedHashMap<>(snapshot);
+            Map<String, Object> projectedModels = new LinkedHashMap<>(
+                    (Map<String, Object>) snapshot.getOrDefault("models", Map.of()));
+            if (Files.isRegularFile(registryPath)) {
+                Map<String, Object> current = mapper.readValue(
+                        registryPath.toFile(), new TypeReference<Map<String, Object>>() { });
+                Object currentModels = current.get("models");
+                if (currentModels instanceof Map<?, ?> existing) {
+                    Map<String, Object> preserved = new LinkedHashMap<>();
+                    existing.forEach((key, value) -> preserved.put(String.valueOf(key), value));
+                    preserved.putAll(projectedModels);
+                    projectedModels = preserved;
+                }
+            }
+            merged.put("models", projectedModels);
+            Path temp = Files.createTempFile(registryPath.getParent(), "registry-project-", ".tmp");
+            try {
+                mapper.writeValue(temp.toFile(), merged);
+                try {
+                    Files.move(temp, registryPath, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException unsupported) {
+                    Files.move(temp, registryPath, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temp);
+            }
         }
     }
 
@@ -2192,7 +2328,38 @@ public class KompileProjectStore {
                 ? registryTimestamp(manifest)
                 : model.getUpdatedAt().toString());
         entry.put("metadata", stagingModelMetadata(model));
+        Map<String, Object> tokenizer = stagingTokenizerConfig(model);
+        if (!tokenizer.isEmpty()) {
+            entry.put("tokenizer", tokenizer);
+        }
         return entry;
+    }
+
+    private Map<String, Object> stagingTokenizerConfig(KompileProjectModel model) {
+        Map<String, Object> tokenizer = new LinkedHashMap<>();
+        putBooleanMetadata(tokenizer, "do_lower_case", model, "registry.tokenizerDoLowerCase");
+        putBooleanMetadata(tokenizer, "strip_accents", model, "registry.tokenizerStripAccents");
+        putBooleanMetadata(tokenizer, "add_special_tokens", model, "registry.tokenizerAddSpecialTokens");
+        putBooleanMetadata(tokenizer, "truncation", model, "registry.tokenizerTruncation");
+        putIfNotBlank(tokenizer, "padding", metadataValue(model, "registry.tokenizerPadding"));
+        String maxLength = metadataValue(model, "registry.tokenizerMaxLength");
+        if (maxLength != null) {
+            try {
+                tokenizer.put("max_length", Integer.parseInt(maxLength));
+            } catch (NumberFormatException ignored) {
+                // Omit malformed optional metadata instead of publishing a bad runtime contract.
+            }
+        }
+        return tokenizer;
+    }
+
+    private void putBooleanMetadata(
+            Map<String, Object> target, String outputKey,
+            KompileProjectModel model, String metadataKey) {
+        String value = metadataValue(model, metadataKey);
+        if (value != null && ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value))) {
+            target.put(outputKey, Boolean.parseBoolean(value));
+        }
     }
 
     private String stagingRegistryStatus(Path root, KompileProjectModel model,
@@ -2219,6 +2386,12 @@ public class KompileProjectStore {
 
     private boolean hasMaterializedModelArtifact(Path root, KompileProjectModel model,
                                                  String modelId, String modelFile) {
+        String artifactStage = metadataValue(model, "artifact.stage");
+        String runtimeReady = metadataValue(model, "runtime.ready");
+        if ("SOURCE".equalsIgnoreCase(artifactStage)
+                || "false".equalsIgnoreCase(runtimeReady)) {
+            return false;
+        }
         Path modelsRoot = root.resolve("data/models").toAbsolutePath().normalize();
         Path modelDir = modelsRoot.resolve(stagingModelPath(model, modelId, modelFile)).normalize();
         if (!modelDir.startsWith(modelsRoot)) {
@@ -2317,6 +2490,37 @@ public class KompileProjectStore {
         putIfNotBlank(metadata, "version", model.getVersion());
         putIfNotBlank(metadata, "description", metadataValue(model, "description"));
         putIfNotBlank(metadata, "original_format", metadataValue(model, "registry.originalFormat"));
+        putIfNotBlank(metadata, "embedding_dim", firstNonBlank(
+                metadataValue(model, "registry.embeddingDim"),
+                metadataValue(model, "embedding_dim")));
+        putIfNotBlank(metadata, "max_sequence_length", firstNonBlank(
+                metadataValue(model, "registry.maxSequenceLength"),
+                metadataValue(model, "max_sequence_length")));
+        putIfNotBlank(metadata, "encoder_type", firstNonBlank(
+                metadataValue(model, "registry.encoderType"),
+                metadataValue(model, "encoder_type")));
+        putIfNotBlank(metadata, "pooling_strategy", firstNonBlank(
+                metadataValue(model, "registry.poolingStrategy"),
+                metadataValue(model, "pooling_strategy")));
+        String inputPrefix = rawMetadataValue(model, "registry.inputPrefix");
+        if (inputPrefix == null) {
+            inputPrefix = rawMetadataValue(model, "input_prefix");
+        }
+        if (inputPrefix != null && !inputPrefix.isEmpty()) {
+            metadata.put("input_prefix", inputPrefix);
+        }
+        String normalizeOutput = firstNonBlank(
+                metadataValue(model, "registry.normalizeOutput"),
+                metadataValue(model, "normalize_output"));
+        if (normalizeOutput != null) {
+            metadata.put("normalize_output", Boolean.parseBoolean(normalizeOutput));
+        }
+        List<String> supportedLanguages = splitCsv(firstNonBlank(
+                metadataValue(model, "registry.supportedLanguages"),
+                metadataValue(model, "supported_languages")));
+        if (!supportedLanguages.isEmpty()) {
+            metadata.put("supported_languages", supportedLanguages);
+        }
         putIfNotBlank(metadata, "installed_from", "project");
         putIfNotBlank(metadata, "staging_registry_version", "1.0");
         List<String> components = splitCsv(firstNonBlank(metadataValue(model, "registry.components"),
@@ -2389,6 +2593,10 @@ public class KompileProjectStore {
 
     private String metadataValue(KompileProjectModel model, String key) {
         return model.getMetadata() == null ? null : trimToNull(model.getMetadata().get(key));
+    }
+
+    private String rawMetadataValue(KompileProjectModel model, String key) {
+        return model.getMetadata() == null ? null : model.getMetadata().get(key);
     }
 
     private void putIfNotBlank(Map<String, Object> target, String key, String value) {

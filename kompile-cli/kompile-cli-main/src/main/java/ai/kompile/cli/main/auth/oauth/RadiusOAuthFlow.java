@@ -23,7 +23,6 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
     private static final String CLIENT_ID = "pi-gateway";
     private static final String SCOPE = "gateway offline_access";
     private static final String REDIRECT_URI = "http://127.0.0.1:1456/oauth/callback";
-    private static final long REFRESH_SKEW_MILLIS = 60_000L;
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
@@ -247,7 +246,8 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
             String gateway,
             String context,
             String previousRefreshToken) throws IOException {
-        Map<String, String> metadata = new LinkedHashMap<>();
+        Map<String, String> metadata = new LinkedHashMap<>(
+                ai.kompile.cli.main.auth.OAuthCredentialIdentity.tokenMetadata(PROVIDER_ID, body, null));
         metadata.put("gateway", gateway);
         String scope = OAuthSupport.optionalText(body, "scope");
         if (scope != null) {
@@ -265,7 +265,7 @@ public final class RadiusOAuthFlow implements OAuthProviderFlow {
                 refresh,
                 OAuthSupport.expiryFromNow(
                         OAuthSupport.requiredPositiveLong(body, "expires_in", context),
-                        REFRESH_SKEW_MILLIS),
+                        0L),
                 metadata);
     }
 

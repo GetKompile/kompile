@@ -41,6 +41,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -114,9 +116,20 @@ public class ClusterJobController {
             return ResponseEntity.badRequest().body(Map.of(
                     "ok", false, "error", "no runner for jobType '" + job.jobType() + "'"));
         }
-        jobStatus.put(job.jobId(), "RUNNING");
-        Future<?> f = workerPool.submit(() -> runAndCallback(job, runner.get()));
-        running.put(job.jobId(), f);
+        String existing = jobStatus.putIfAbsent(job.jobId(), "QUEUED");
+        if (existing != null) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "ok", false, "error", "job already exists", "status", existing));
+        }
+        Future<?> f;
+        try {
+            jobStatus.put(job.jobId(), "RUNNING");
+            f = workerPool.submit(() -> runAndCallback(job, runner.get()));
+            running.put(job.jobId(), f);
+        } catch (RuntimeException rejected) {
+            jobStatus.remove(job.jobId());
+            throw rejected;
+        }
         log.info("Accepted delegated job '{}' (type='{}') from orchestrator {}",
                 job.jobId(), job.jobType(), job.callbackBaseUrl());
         return ResponseEntity.accepted().body(Map.of("ok", true, "jobId", job.jobId()));
@@ -136,7 +149,6 @@ public class ClusterJobController {
             Thread.currentThread().interrupt();
             jobStatus.put(job.jobId(), "CANCELLED");
             running.remove(job.jobId());
-            capabilityService.activeDelegatedJobs().decrementAndGet();
             log.info("Delegated job '{}' cancelled", job.jobId());
             return;
         } catch (Exception e) {
@@ -164,6 +176,7 @@ public class ClusterJobController {
                 // Distributed-crawl coordinator callback.
                 payload.put("sessionId", job.meta("sessionId"));
                 payload.put("workerId", job.meta("workerId") != null ? job.meta("workerId") : job.jobId());
+                payload.put("attempt", parseAttempt(job.meta("attempt")));
                 payload.put("success", success);
                 payload.put("message", message);
                 payload.put("resultData", resultData);
@@ -190,6 +203,15 @@ public class ClusterJobController {
             }
         } catch (Exception e) {
             log.error("Callback for job '{}' failed: {}", job.jobId(), e.getMessage());
+        }
+    }
+
+    private static int parseAttempt(String value) {
+        if (value == null || value.isBlank()) return 1;
+        try {
+            return Math.max(1, Integer.parseInt(value));
+        } catch (NumberFormatException ignored) {
+            return 1;
         }
     }
 
@@ -228,9 +250,12 @@ public class ClusterJobController {
     private boolean authorized(String authHeader) {
         String token = configService.getConfiguration().getExternalAuthToken();
         if (token == null || token.isBlank()) {
-            return true;
+            return !configService.getConfiguration().isClusterWorker()
+                    && !configService.getConfiguration().isClusterOrchestrator();
         }
-        return ("Bearer " + token).equals(authHeader);
+        byte[] expected = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
+        byte[] actual = authHeader == null ? new byte[0] : authHeader.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual);
     }
 
     private static String normalize(String url) {

@@ -18,7 +18,9 @@ package ai.kompile.knowledgegraph.matrix.service;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
+import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,8 @@ import org.mockito.quality.Strictness;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -39,6 +43,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies the matrix store restores the extended edge fields carried in the typed
@@ -130,5 +136,107 @@ class MatrixKnowledgeGraphServiceEdgeTest {
                 null, "desc", null, EdgeProvenance.EXTRACTED, null);
         assertEquals(EdgeProvenance.EXTRACTED, edge.getProvenanceType(),
                 "[M-10] typed provenance falls back to the EdgeProvenance param");
+    }
+
+    @Test
+    void coldEdgeLookupUsesPersistedGraphAndPagedStoreWithoutLoadingMatrix() {
+        MatrixGraphNode source = MatrixGraphNode.builder()
+                .nodeId("a").nodeType("ENTITY").title("A").build();
+        when(graphStore.getLoadedGraphIds()).thenReturn(Set.of());
+        when(graphStore.listGraphs()).thenReturn(List.of("factsheet_42"));
+        when(graphStore.getNode("factsheet_42", "a")).thenReturn(Optional.of(source));
+        when(graphStore.getNode("factsheet_42", "b")).thenReturn(Optional.empty());
+        when(graphStore.scanIncidentEdges("factsheet_42", "a",
+                MatrixGraphStore.EdgeDirection.BOTH, 100_000)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(new MatrixGraphStore.StoredEdge(
+                        "a", "b", "CALLS", 1.0, false, "CALLS",
+                        0.9, null, Map.of())), false));
+
+        List<GraphEdge> edges = service.getEdgesForNodeInFactSheet("a", 42L);
+
+        assertEquals(1, edges.size());
+        assertEquals("CALLS", edges.get(0).getRelationType());
+        verify(graphStore, never()).loadGraph(anyString());
+    }
+
+    @Test
+    void directedTargetLookupReturnsIncomingEdge() {
+        when(graphStore.scanIncidentEdges("factsheet_42", "b",
+                MatrixGraphStore.EdgeDirection.BOTH, 100_000)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(new MatrixGraphStore.StoredEdge(
+                        "a", "b", "CALLS", 1.0, false, "CALLS",
+                        0.9, null, Map.of())), false));
+
+        List<GraphEdge> edges = service.getEdgesForNodeInFactSheet("b", 42L);
+
+        assertEquals(1, edges.size());
+        assertEquals("a", edges.get(0).getSourceNodeId());
+        assertEquals("b", edges.get(0).getTargetNodeId());
+    }
+
+    @Test
+    void boundedIncidentLookupHonorsDirectionAndReportsTruncation() {
+        when(graphStore.scanIncidentEdges("factsheet_42", "b",
+                MatrixGraphStore.EdgeDirection.INCOMING, 1)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(
+                        new MatrixGraphStore.StoredEdge("a", "b", "CALLS", 1.0, false,
+                                "CALLS", 0.9, null, Map.of())), true));
+        when(graphStore.scanIncidentEdges("factsheet_42", "b",
+                MatrixGraphStore.EdgeDirection.OUTGOING, 1)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(), false));
+
+        BoundedKnowledgeGraphReader.IncidentEdges incoming = service.getIncidentEdges(
+                "b", 42L, BoundedKnowledgeGraphReader.Direction.INCOMING, 1);
+        BoundedKnowledgeGraphReader.IncidentEdges outgoing = service.getIncidentEdges(
+                "b", 42L, BoundedKnowledgeGraphReader.Direction.OUTGOING, 1);
+
+        assertEquals(1, incoming.edges().size());
+        assertTrue(incoming.truncated());
+        assertTrue(outgoing.edges().isEmpty());
+        assertFalse(outgoing.truncated());
+    }
+
+    @Test
+    void bidirectionalEdgeIsReadableInEitherDirectionFromEitherEndpoint() {
+        MatrixGraphStore.StoredEdge stored = new MatrixGraphStore.StoredEdge(
+                        "a", "b", "RELATED_TO", 1.0, true, "RELATED_TO",
+                        0.9, null, Map.of());
+        when(graphStore.scanIncidentEdges("factsheet_42", "b",
+                MatrixGraphStore.EdgeDirection.OUTGOING, 10)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(stored), false));
+        when(graphStore.scanIncidentEdges("factsheet_42", "a",
+                MatrixGraphStore.EdgeDirection.INCOMING, 10)).thenReturn(
+                new MatrixGraphStore.IncidentEdges(List.of(stored), false));
+
+        assertEquals(1, service.getIncidentEdges("b", 42L,
+                BoundedKnowledgeGraphReader.Direction.OUTGOING, 10).edges().size());
+        assertEquals(1, service.getIncidentEdges("a", 42L,
+                BoundedKnowledgeGraphReader.Direction.INCOMING, 10).edges().size());
+    }
+
+    @Test
+    void scopedPointLookupUsesTheFactSheetGraphEvenWhenAnotherGraphIsHot() {
+        MatrixGraphNode scoped = MatrixGraphNode.builder()
+                .nodeId("shared").nodeType("ENTITY").title("Scoped").factSheetId(42L).build();
+        when(graphStore.getLoadedGraphIds()).thenReturn(Set.of("factsheet_7"));
+        when(graphStore.listGraphs()).thenReturn(List.of("factsheet_7", "factsheet_42"));
+        when(graphStore.getNode("factsheet_42", "shared")).thenReturn(Optional.of(scoped));
+
+        assertEquals("Scoped", service.getNodeInScope("shared", 42L).orElseThrow().getTitle());
+
+        verify(graphStore).getNode("factsheet_42", "shared");
+        verify(graphStore, never()).loadGraph(anyString());
+    }
+
+    @Test
+    void unscopedLookupMergesHotAndPersistedGraphIds() {
+        MatrixGraphNode cold = MatrixGraphNode.builder()
+                .nodeId("cold").nodeType("ENTITY").title("Cold").build();
+        when(graphStore.getLoadedGraphIds()).thenReturn(Set.of("factsheet_7"));
+        when(graphStore.listGraphs()).thenReturn(List.of("factsheet_7", "factsheet_42"));
+        when(graphStore.getNode("factsheet_7", "cold")).thenReturn(Optional.empty());
+        when(graphStore.getNode("factsheet_42", "cold")).thenReturn(Optional.of(cold));
+
+        assertEquals("Cold", service.getNode("cold").orElseThrow().getTitle());
     }
 }

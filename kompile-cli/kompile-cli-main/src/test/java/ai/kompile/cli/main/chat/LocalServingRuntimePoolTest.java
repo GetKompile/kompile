@@ -1,9 +1,11 @@
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -12,6 +14,8 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -20,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+@ResourceLock("local-serving-runtime-pool")
 class LocalServingRuntimePoolTest {
     @TempDir
     Path tempDir;
@@ -100,6 +105,34 @@ class LocalServingRuntimePoolTest {
             assertTrue(changed.isAlive());
         }
         assertEquals(3, starts.get());
+    }
+
+    @Test
+    void standardChatCachePolicyReachesTheRuntimeAndChangesItsCompatibilityKey()
+            throws Exception {
+        List<Map<String, Object>> observedOptions = new ArrayList<>();
+        LocalServingRuntimePool.setStarterForTests(request -> {
+            observedOptions.add(request.runtimeOptions());
+            return result(request);
+        });
+        ChatConfig enabled = new ChatConfig("kompile-local", null, "model", null);
+        ChatConfig disabled = new ChatConfig("kompile-local", null, "model", null);
+        disabled.setPromptCacheRetention("none");
+
+        try (var ignored = LocalServingRuntimePool.acquire(enabled, 5)) {
+            assertTrue(ignored.isAlive());
+        }
+        try (var ignored = LocalServingRuntimePool.acquire(disabled, 5)) {
+            assertTrue(ignored.isAlive());
+        }
+
+        assertEquals(List.of(
+                Map.of("prefixCacheEnabled", true,
+                        "prefixCacheMaxBytes",
+                        LocalServingRuntimePool.STANDARD_CHAT_PREFIX_CACHE_MAX_BYTES),
+                Map.of("prefixCacheEnabled", false)), observedOptions);
+        assertEquals(2, starts.get(),
+                "enabled and disabled prefix caches must not share a resident runtime");
     }
 
     @Test

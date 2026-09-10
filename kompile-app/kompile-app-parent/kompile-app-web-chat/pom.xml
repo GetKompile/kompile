@@ -44,7 +44,17 @@
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-web-shared</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-channel-api</artifactId>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>

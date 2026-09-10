@@ -155,6 +155,12 @@ class GraphProvenanceChunksTest {
         }
 
         @Test
+        void chunkerOriginalDocumentIdIsAccepted() {
+            assertEquals("doc-from-chunker", GraphProvenanceChunks.documentId(
+                    Map.of("original_document_id", "doc-from-chunker")));
+        }
+
+        @Test
         void theCoarseOriginLabelIsNeverMistakenForADocument() {
             // _source is "crawl"/"upload". Reading it as a document id would make every
             // crawl-sourced chunk look like it came from one document, and invalidation of that

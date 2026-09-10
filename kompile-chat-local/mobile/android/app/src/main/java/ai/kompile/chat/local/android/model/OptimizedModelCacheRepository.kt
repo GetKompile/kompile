@@ -10,6 +10,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.StandardCopyOption
+import java.util.Comparator
 import java.util.Properties
 
 internal data class OptimizedModelCacheEntry(
@@ -39,15 +40,35 @@ internal data class OptimizedModelStorageSnapshot(
     }
 }
 
+internal data class ClearedModelStorage(
+    val modelBytes: Long,
+    val dspCacheBytes: Long,
+)
+
+/** One authoritative app-owned storage layout shared by writers, inventory, and clearing. */
+internal object SdxStorageLayout {
+    fun modelCacheRoot(context: Context): File =
+        File(context.applicationContext.noBackupFilesDir, "sdx-model-cache")
+
+    fun dspCacheRoot(context: Context): File =
+        File(context.applicationContext.noBackupFilesDir, "sdx-dsp-cache")
+
+    fun legacyDspCacheRoot(context: Context): File =
+        File(context.applicationContext.codeCacheDir, "sdx-device-compilation")
+
+    fun retainedModelsRoot(context: Context): File =
+        File(context.applicationContext.filesDir, "models")
+}
+
 /** App-facing projection of the authoritative shared SDX cache inventory. */
 internal class OptimizedModelCacheRepository(context: Context) {
     private val applicationContext = context.applicationContext
-    private val cacheDirectory = File(applicationContext.noBackupFilesDir, "sdx-model-cache")
+    private val cacheDirectory = SdxStorageLayout.modelCacheRoot(applicationContext)
     private val cache = SdxModelCache(cacheDirectory.toPath())
     private val labelDirectory = File(applicationContext.filesDir, "models/optimized-catalog")
-    private val retainedModelsDirectory = File(applicationContext.filesDir, "models")
-    private val deviceCompilationDirectory =
-        File(applicationContext.codeCacheDir, "sdx-device-compilation")
+    private val retainedModelsDirectory = SdxStorageLayout.retainedModelsRoot(applicationContext)
+    private val dspCacheDirectory = SdxStorageLayout.dspCacheRoot(applicationContext)
+    private val legacyDspCacheDirectory = SdxStorageLayout.legacyDspCacheRoot(applicationContext)
 
     fun snapshot(targetProfile: String, activeModelPath: String): OptimizedModelStorageSnapshot {
         val target = SdxTargetProfile.fromId(targetProfile)
@@ -82,7 +103,10 @@ internal class OptimizedModelCacheRepository(context: Context) {
                 .thenBy { it.displayName.lowercase() }
         )
         val retainedBytes = regularFileBytes(retainedModelsDirectory)
-        val deviceBytes = regularFileBytes(deviceCompilationDirectory)
+        val deviceBytes = addExact(
+            regularFileBytes(dspCacheDirectory),
+            regularFileBytes(legacyDspCacheDirectory),
+        )
         val totalBytes = addExact(
             inventory.totalPhysicalBytes(),
             retainedBytes,
@@ -96,6 +120,34 @@ internal class OptimizedModelCacheRepository(context: Context) {
             totalModelBytes = totalBytes,
             invalidCacheEntries = inventory.invalidReferenceCount(),
         )
+    }
+
+    fun clearDspDiskCache(): Long {
+        val bytes = addExact(
+            regularFileBytes(dspCacheDirectory),
+            regularFileBytes(legacyDspCacheDirectory),
+        )
+        deleteOwnedTree(dspCacheDirectory)
+        deleteOwnedTree(legacyDspCacheDirectory)
+        return bytes
+    }
+
+    fun clearStoredModelsAndDspCache(): ClearedModelStorage {
+        val modelBytes = addExact(
+            cache.inventory().totalPhysicalBytes(),
+            regularFileBytes(retainedModelsDirectory),
+        )
+        val dspBytes = addExact(
+            regularFileBytes(dspCacheDirectory),
+            regularFileBytes(legacyDspCacheDirectory),
+        )
+        // The runtime/import workers are retired by the ViewModel before this call,
+        // so deleting the complete app-owned cache root cannot race mapped artifacts.
+        deleteOwnedTree(cacheDirectory)
+        deleteOwnedTree(retainedModelsDirectory)
+        deleteOwnedTree(dspCacheDirectory)
+        deleteOwnedTree(legacyDspCacheDirectory)
+        return ClearedModelStorage(modelBytes, dspBytes)
     }
 
     fun remember(
@@ -127,7 +179,7 @@ internal class OptimizedModelCacheRepository(context: Context) {
             setProperty(
                 "profileLabel",
                 "${options.weightOptimization.label} · ${options.kvCacheOptimization.label}",
-            )
+            ) // cache label intentionally shows only the two optimization axes (display width)
             setProperty("lastUsedMillis", System.currentTimeMillis().toString())
         }
         val target = labelFile(prepared.compileKey)
@@ -228,6 +280,22 @@ internal class OptimizedModelCacheRepository(context: Context) {
             }
         }
         return total
+    }
+
+    private fun deleteOwnedTree(root: File) {
+        if (!root.exists()) return
+        val path = root.toPath().toAbsolutePath().normalize()
+        require(!Files.isSymbolicLink(path)) {
+            "App-owned storage root must not be a symlink: $path"
+        }
+        Files.walk(path).use { paths ->
+            paths.sorted(Comparator.reverseOrder()).forEach { candidate ->
+                require(!Files.isSymbolicLink(candidate)) {
+                    "App-owned storage must not contain symlinks: $candidate"
+                }
+                Files.deleteIfExists(candidate)
+            }
+        }
     }
 
     private data class CatalogLabel(

@@ -634,6 +634,7 @@ class AskGraphToolsTest {
             assertNotNull(schema.path("properties").path("nodeId"));
             assertNotNull(schema.path("properties").path("maxDepth"));
             assertNotNull(schema.path("properties").path("maxNodes"));
+            assertEquals("string", schema.path("properties").path("knowledgeBase").path("type").asText());
         }
 
         @Test

@@ -1,1 +1,2 @@
 ai.kompile.cli.main.MainCommand$BuiltInCommandRegistrar
+ai.kompile.cli.main.SpinCommandRegistrar

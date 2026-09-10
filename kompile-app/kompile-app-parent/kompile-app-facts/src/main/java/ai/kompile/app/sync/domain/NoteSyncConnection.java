@@ -122,9 +122,10 @@ public class NoteSyncConnection {
     @Builder.Default
     private Boolean remoteSyncEnabled = true;
 
+    /** Connections stay inert until authentication has been tested and enableConnection succeeds. */
     @Column(nullable = false)
     @Builder.Default
-    private Boolean enabled = true;
+    private Boolean enabled = false;
 
     @Column
     private Instant lastSyncAt;

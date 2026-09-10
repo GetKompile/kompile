@@ -56,7 +56,7 @@ public final class GraphProvenanceChunks {
      */
     static final List<String> DOCUMENT_KEYS = List.of(
             GraphProvenanceKeys.SOURCE_DOCUMENT_ID, "sourceDocumentId", "source_document_id",
-            "documentId", "document_id", "sourceId", "source_id");
+            "documentId", "document_id", "original_document_id", "sourceId", "source_id");
 
     /** Thread-safe for reads; edge metadata is only ever parsed here, never written. */
     private static final ObjectMapper MAPPER = new ObjectMapper();

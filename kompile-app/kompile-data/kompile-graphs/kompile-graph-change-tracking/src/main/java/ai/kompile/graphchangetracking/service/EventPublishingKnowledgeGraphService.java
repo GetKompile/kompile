@@ -703,6 +703,26 @@ public class EventPublishingKnowledgeGraphService implements KnowledgeGraphServi
         return result;
     }
 
+    @Override
+    public GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                       boolean softDelete,
+                                       Duration grace,
+                                       boolean dryRun,
+                                       Long factSheetId) {
+        GraphPruneResult result = delegate.pruneNodes(
+                nodeIds, softDelete, grace, dryRun, factSheetId);
+        if (!dryRun && result.affectedCount() > 0) {
+            try {
+                String mutType = softDelete ? "NODE_SOFT_DELETED" : "NODE_HARD_DELETED";
+                recordAndPublishPruneResult(result, mutType, "NODE", factSheetId);
+            } catch (Exception e) {
+                log.warn("EventPublishingKnowledgeGraphService: event/log failed for scoped pruneNodes: {}",
+                        e.getMessage());
+            }
+        }
+        return result;
+    }
+
     /**
      * Prune (soft-delete or hard-delete) a collection of edges.
      *

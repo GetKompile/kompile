@@ -26,7 +26,6 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
     private static final String EDITOR_VERSION = "vscode/1.107.0";
     private static final String PLUGIN_VERSION = "copilot-chat/0.35.0";
     private static final String API_VERSION = "2026-06-01";
-    private static final long REFRESH_SKEW_MILLIS = 5 * 60 * 1000L;
     private static final Pattern PROXY_ENDPOINT = Pattern.compile("(?:^|;)proxy-ep=([^;]+)");
 
     private final OAuthSupport.HttpTransport http;
@@ -168,9 +167,11 @@ public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
         String token = OAuthSupport.requiredText(body, "token", "GitHub Copilot token exchange");
         long expiresAtSeconds = OAuthSupport.requiredPositiveLong(
                 body, "expires_at", "GitHub Copilot token exchange");
-        long expires = Math.max(
-                System.currentTimeMillis() + 1_000L,
-                expiresAtSeconds * 1000L - REFRESH_SKEW_MILLIS);
+        long now = System.currentTimeMillis();
+        if (expiresAtSeconds > Long.MAX_VALUE / 1000L || expiresAtSeconds * 1000L <= now) {
+            throw new IOException("GitHub Copilot returned an invalid or expired token expiry");
+        }
+        long expires = expiresAtSeconds * 1000L;
         Map<String, String> metadata = new LinkedHashMap<>();
         if (enterpriseDomain != null) {
             metadata.put("enterpriseDomain", enterpriseDomain);

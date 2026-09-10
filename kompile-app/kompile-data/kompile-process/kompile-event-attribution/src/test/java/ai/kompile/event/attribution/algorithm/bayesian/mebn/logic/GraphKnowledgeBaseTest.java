@@ -170,6 +170,31 @@ class GraphKnowledgeBaseTest {
         assertFalse(kb.edgeExistsOfType("s", "t", EdgeType.CITATION.name()));
     }
 
+    @Test
+    void factSheetScopedPredicatesNeverObserveGlobalNodesOrEdges() {
+        GraphNode source = GraphNode.builder().nodeId("s").nodeType(NodeLevel.ENTITY)
+                .title("Source").factSheetId(42L).build();
+        GraphNode target = GraphNode.builder().nodeId("t").nodeType(NodeLevel.ENTITY)
+                .title("Target").factSheetId(7L).build();
+        GraphEdge globalOnly = GraphEdge.builder().sourceNode(source).targetNode(target)
+                .edgeType(EdgeType.USER_DEFINED).weight(0.9).build();
+        when(graphService.getNode("s")).thenReturn(Optional.of(source));
+        when(graphService.getNode("t")).thenReturn(Optional.of(target));
+        when(graphService.getEdgesForNode("s")).thenReturn(List.of(globalOnly));
+        when(graphService.getEdgesForNodeInFactSheet("s", 42L)).thenReturn(List.of());
+        when(graphService.edgeExists("s", "t")).thenReturn(true);
+
+        GraphKnowledgeBase scoped = new GraphKnowledgeBase(graphService, 42L);
+
+        assertTrue(scoped.entityExists("s"));
+        assertFalse(scoped.entityExists("t"));
+        assertFalse(scoped.edgeExists("s", "t"));
+        assertFalse(scoped.edgeExistsOfType("s", "t", EdgeType.USER_DEFINED.name()));
+        verify(graphService, never()).edgeExists("s", "t");
+        verify(graphService, never()).getEdgesForNode("s");
+        verify(graphService, times(1)).getEdgesForNodeInFactSheet("s", 42L);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // METADATA EXTRACTION
     // ═══════════════════════════════════════════════════════════════════════════

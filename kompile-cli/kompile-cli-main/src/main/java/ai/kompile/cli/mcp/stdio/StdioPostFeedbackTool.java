@@ -9,10 +9,12 @@ import ai.kompile.cli.main.chat.enforcer.PostFeedbackDecision;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
+import ai.kompile.cli.main.chat.harness.ResilientJudgeBackend;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -35,6 +37,13 @@ public class StdioPostFeedbackTool {
     private static final int MAX_PROMPT_CHARS = 6_000;
     private static final int MAX_EVIDENCE_CHARS = 36_000;
     private static final int MAX_COMMAND_OUTPUT_CHARS = 12_000;
+    private static final String FORMAT_REPAIR_INSTRUCTION = """
+
+            [FORMAT REPAIR]
+            Return exactly one JSON object using the system prompt's post-feedback schema.
+            Do not add prose, markdown, code fences, comments, or placeholders.
+            [END FORMAT REPAIR]
+            """;
 
     private static final String SYSTEM_PROMPT = """
             You are Kompile Post Feedback, a strict post-run audit judge.
@@ -56,10 +65,22 @@ public class StdioPostFeedbackTool {
 
     private final ObjectMapper objectMapper;
     private final Path workDir;
+    private final BackendFactory backendFactory;
+
+    @FunctionalInterface
+    interface BackendFactory {
+        JudgeBackend create(HarnessConfig config, ObjectMapper objectMapper);
+    }
 
     public StdioPostFeedbackTool(ObjectMapper objectMapper, Path workDir) {
+        this(objectMapper, workDir, JudgeBackendFactory::create);
+    }
+
+    StdioPostFeedbackTool(
+            ObjectMapper objectMapper, Path workDir, BackendFactory backendFactory) {
         this.objectMapper = objectMapper;
         this.workDir = workDir.toAbsolutePath().normalize();
+        this.backendFactory = backendFactory;
     }
 
     public String id() {
@@ -141,6 +162,10 @@ public class StdioPostFeedbackTool {
     }
 
     public ToolResult execute(Map<String, Object> arguments) {
+        if (!HarnessConfig.load(objectMapper).isJudgeGlobalEnabled()) {
+            return ToolResult.error("Judge is globally disabled by "
+                    + HarnessConfig.getConfigFilePath());
+        }
         Map<String, Object> args = arguments != null ? arguments : Map.of();
 
         String originalPrompt = stringArg(args, "original_prompt", "");
@@ -215,14 +240,25 @@ public class StdioPostFeedbackTool {
         }
 
         HarnessConfig config = loadHarnessConfig(args);
-        JudgeBackend backend = JudgeBackendFactory.create(config, objectMapper);
+        JudgeBackend backend = backendFactory.create(config, objectMapper);
         if (backend == null || !backend.isAvailable()) {
             return ToolResult.error("No post_feedback judge backend is available. Configure harness judge settings or pass judge_* overrides.");
         }
 
         try {
             String judgePrompt = buildJudgePrompt(originalPrompt, rules, evidence.toString());
-            String response = backend.generate(judgePrompt, SYSTEM_PROMPT);
+            JudgeBackend.JsonSchema schema = postFeedbackSchema();
+            String response = backend.generateJson(judgePrompt, SYSTEM_PROMPT, schema);
+            if (!ResilientJudgeBackend.isErrorResponse(response)
+                    && !hasParseableJsonObject(response)) {
+                response = backend.generateJson(
+                        judgePrompt + FORMAT_REPAIR_INSTRUCTION, SYSTEM_PROMPT, schema);
+            }
+            if (ResilientJudgeBackend.isErrorResponse(response)) {
+                return ToolResult.error("Post feedback judge backend unavailable: "
+                        + StringUtils.truncate(
+                                response == null ? "empty response" : response, 240));
+            }
             PostFeedbackDecision decision = PostFeedbackDecision.parse(objectMapper, response);
 
             Map<String, Object> metadata = new LinkedHashMap<>();
@@ -238,6 +274,48 @@ public class StdioPostFeedbackTool {
             return ToolResult.error("Post feedback judge failed: " + e.getMessage());
         } finally {
             backend.close();
+        }
+    }
+
+    private JudgeBackend.JsonSchema postFeedbackSchema() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("status").put("type", "string")
+                .putArray("enum").add("PASS").add("WARN").add("FAIL");
+        properties.putObject("score").put("type", "number")
+                .put("minimum", 0.0).put("maximum", 1.0);
+        stringArray(properties.putObject("findings"));
+        stringArray(properties.putObject("evidence"));
+        stringArray(properties.putObject("next_actions"));
+        properties.putObject("correction_prompt").put("type", "string");
+        properties.putObject("reasoning").put("type", "string");
+        ArrayNode required = schema.putArray("required");
+        required.add("status").add("score").add("findings").add("evidence")
+                .add("next_actions").add("correction_prompt").add("reasoning");
+        return new JudgeBackend.JsonSchema("kompile_post_feedback", schema, true);
+    }
+
+    private static void stringArray(ObjectNode node) {
+        node.put("type", "array").putObject("items").put("type", "string");
+    }
+
+    private boolean hasParseableJsonObject(String response) {
+        if (response == null || response.isBlank()) {
+            return false;
+        }
+        String text = response.trim();
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end < start) {
+            return false;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(text.substring(start, end + 1));
+            return node != null && node.isObject();
+        } catch (Exception ignored) {
+            return false;
         }
     }
 

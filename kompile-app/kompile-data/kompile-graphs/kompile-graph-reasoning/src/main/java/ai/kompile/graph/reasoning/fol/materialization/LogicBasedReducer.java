@@ -246,16 +246,19 @@ public final class LogicBasedReducer {
             if (reachableWithout(adj, subject, object, subject, object)) {
                 // This edge is redundant — remove from working store and adjacency
                 String atomKey = predicate + "(" + subject + ", " + object + ")";
+                List<Fact> sourceFacts = working.sourceFactsFor(atomKey);
                 Fact retracted = working.retract(atomKey).orElse(null);
                 if (retracted == null) {
                     // Try without spaces
                     atomKey = predicate + "(" + subject + "," + object + ")";
+                    sourceFacts = working.sourceFactsFor(atomKey);
                     retracted = working.retract(atomKey).orElse(null);
                 }
                 if (retracted != null) {
                     adj.get(subject).remove(object);
                     removed.add(new RemovedFact(retracted, REDUNDANCY_TRANSITIVE,
-                            "Transitively entailed via another path from " + subject + " to " + object));
+                            "Transitively entailed via another path from " + subject + " to " + object,
+                            sourceFacts));
                 }
             }
         }
@@ -343,9 +346,10 @@ public final class LogicBasedReducer {
             // Check if the candidate is derivable
             if (derivedSink.latest(candidateKey).isPresent()) {
                 // Redundant — remove from working store
+                List<Fact> sourceFacts = working.sourceFactsFor(candidateKey);
                 working.retract(candidateKey);
                 removed.add(new RemovedFact(candidate, REDUNDANCY_RULE,
-                        "Entailed by remaining facts + rules"));
+                        "Entailed by remaining facts + rules", sourceFacts));
             }
         }
 
@@ -376,7 +380,7 @@ public final class LogicBasedReducer {
          */
         public void restore(FactStore target) {
             for (RemovedFact rf : removedFacts) {
-                target.assertFact(rf.fact());
+                rf.sourceFacts().forEach(target::assertFact);
             }
         }
 
@@ -391,7 +395,16 @@ public final class LogicBasedReducer {
      * @param basisMarker     {@link #REDUNDANCY_TRANSITIVE} or {@link #REDUNDANCY_RULE}
      * @param reason          human-readable explanation of why the fact is redundant
      */
-    public record RemovedFact(Fact fact, String basisMarker, String reason) {}
+    public record RemovedFact(Fact fact, String basisMarker, String reason, List<Fact> sourceFacts) {
+        public RemovedFact {
+            sourceFacts = sourceFacts == null || sourceFacts.isEmpty()
+                    ? List.of(fact) : List.copyOf(sourceFacts);
+        }
+
+        public RemovedFact(Fact fact, String basisMarker, String reason) {
+            this(fact, basisMarker, reason, List.of(fact));
+        }
+    }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -415,7 +428,7 @@ public final class LogicBasedReducer {
     /** Copy a fact store into a new independent instance. */
     private static FactStore copyFactStore(FactStore original) {
         FactStore copy = new FactStore();
-        for (Fact f : original.allFacts()) {
+        for (Fact f : original.allSourceFacts()) {
             copy.assertFact(f);
         }
         return copy;

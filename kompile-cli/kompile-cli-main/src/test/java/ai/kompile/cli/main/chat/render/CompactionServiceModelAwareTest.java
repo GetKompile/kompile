@@ -105,6 +105,52 @@ class CompactionServiceModelAwareTest {
     }
 
     @Test
+    void millionTokenWindowDoesNotCompactAtFortyTwoThousandTokens() {
+        CompactionService service = new CompactionService(mapper, 1_050_000);
+        service.configure(true, 0.85d, 128_000, 0);
+
+        assertEquals(136_192, service.effectiveReserveTokens());
+        assertEquals(892_500, service.triggerTokens());
+        assertFalse(service.needsCompaction(42_000));
+        assertFalse(service.needsCompaction(892_499));
+        assertTrue(service.needsCompaction(892_500));
+    }
+
+    @Test
+    void oversizedCatalogOutputLimitCannotConsumeTheInputWindow() {
+        CompactionService service = new CompactionService(mapper, 1_050_000);
+        for (int outputLimit : new int[]{1_050_000, Integer.MAX_VALUE}) {
+            service.configure(true, 0.85d, outputLimit, 0);
+            assertEquals(outputLimit, service.getMaxOutputTokens(),
+                    "retain the advertised capability; only automatic headroom is capped");
+            assertEquals(533_192, service.effectiveReserveTokens());
+            assertEquals(516_808, service.triggerTokens());
+            assertFalse(service.needsCompaction(42_000));
+        }
+    }
+
+    @Test
+    void automaticReserveAlsoLeavesRoomInSmallWindows() {
+        CompactionService service = new CompactionService(mapper, 4_096);
+        service.configure(true, 0.85d, 4_096, 0);
+        assertEquals(2_304, service.effectiveReserveTokens());
+        assertEquals(1_792, service.triggerTokens());
+        assertFalse(service.needsCompaction(1_024));
+
+        service.setMaxTokens(1_024);
+        assertEquals(0, service.effectiveReserveTokens());
+        assertEquals(1_024, service.triggerTokens());
+    }
+
+    @Test
+    void explicitReserveIsNotSubjectToTheAutomaticCap() {
+        CompactionService service = new CompactionService(mapper, 1_050_000);
+        service.configure(true, 0.85d, 1_050_000, 900_000);
+        assertEquals(900_000, service.effectiveReserveTokens());
+        assertEquals(150_000, service.triggerTokens());
+    }
+
+    @Test
     void policyCanBeDisabledAndExplicitlyRetuned() {
         CompactionService service = new CompactionService(mapper, 100_000);
         service.configure(false, 0.75d, 8_192, 10_000);

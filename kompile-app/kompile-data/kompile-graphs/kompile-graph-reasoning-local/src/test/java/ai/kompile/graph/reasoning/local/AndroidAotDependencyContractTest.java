@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AndroidAotDependencyContractTest {
 
     private static final String PATCH_SHA256 =
-            "b31495be262f4a59130ba377641f84ca0c42c5ebcb78b7af1abdfb7ab1c9c202";
+            "309179be37326ce1f0384836bb89c5f598cac6586e0f4d1f0dd3fd9f6ac704a4";
 
     @Test
     void graphNativeImagePinsAndVerifiesUnixFileAttributesAbi() throws Exception {

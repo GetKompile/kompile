@@ -40,6 +40,11 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-channel-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-agent-gateway-core</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -87,7 +92,6 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-oauth2-client</artifactId>
             <version>${project.version}</version>
-            <optional>true</optional>
         </dependency>
 
         <dependency>

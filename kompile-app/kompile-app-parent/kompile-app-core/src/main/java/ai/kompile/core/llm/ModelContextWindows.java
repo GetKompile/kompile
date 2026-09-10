@@ -16,6 +16,8 @@
 
 package ai.kompile.core.llm;
 
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -65,9 +67,11 @@ public final class ModelContextWindows {
             entry("gpt-4-turbo", 128_000, 4_096, true),
             entry("gpt-4", 8_192, 4_096, false),
             entry("gpt-3.5-turbo", 16_385, 4_096, false),
-            // GPT-5 family — metadata observed from the model registries exposed by current
-            // agent CLIs. Provider-specific OpenCode limits are resolved live by the CLI resume
-            // path; these entries cover bare Codex/OpenAI model IDs.
+            // Current GPT-6/GPT-5 family — metadata documented by OpenAI and observed from
+            // provider catalogs. Provider-specific OpenCode limits are resolved live by the CLI
+            // resume path; these entries cover bare Codex/OpenAI model IDs.
+            entry("gpt-6-astra", 1_050_000, 128_000, true),
+            entry("gpt-5.6", 1_050_000, 128_000, true),
             entry("gpt-5.5", 1_050_000, 128_000, true),
             entry("gpt-5.4", 400_000, 128_000, true),
             entry("gpt-5.3", 400_000, 128_000, true),
@@ -144,6 +148,15 @@ public final class ModelContextWindows {
         return spec != null ? spec.contextWindow : DEFAULT_CONTEXT_WINDOW;
     }
 
+    /** Provider-scoped metadata first, then static specs without any unqualified catalog retry. */
+    public static int getContextWindow(String provider, String model) {
+        Optional<Integer> dynamic = lookupProviderMetadata(provider, model)
+                .map(CliModelCatalog.ModelSpec::contextWindow).filter(v -> v > 0);
+        if (dynamic.isPresent()) return dynamic.get();
+        ModelSpec spec = resolve(model);
+        return spec != null ? spec.contextWindow : DEFAULT_CONTEXT_WINDOW;
+    }
+
     /**
      * Look up the max output tokens for a model.
      *
@@ -158,10 +171,44 @@ public final class ModelContextWindows {
         return spec != null ? spec.maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
     }
 
+    /** Provider-scoped output ceiling with the same static-only fallback as the context window. */
+    public static int getMaxOutputTokens(String provider, String model) {
+        Optional<Integer> dynamic = lookupProviderMetadata(provider, model)
+                .map(CliModelCatalog.ModelSpec::maxOutputTokens).filter(v -> v > 0);
+        if (dynamic.isPresent()) return dynamic.get();
+        ModelSpec spec = resolve(model);
+        return spec != null ? spec.maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
+    }
+
     /** True if {@code model} is a known model (in the live CLI catalog or the static fallback table). */
     public static boolean isKnown(String model) {
         if (model == null || model.isBlank()) return false;
         return CliModelCatalog.lookup(model).isPresent() || resolve(model) != null;
+    }
+
+    /** Known in the selected provider's metadata or the static fallback, not another catalog. */
+    public static boolean isKnown(String provider, String model) {
+        return lookupProviderMetadata(provider, model).isPresent() || resolve(model) != null;
+    }
+
+    private static Optional<CliModelCatalog.ModelSpec> lookupProviderMetadata(String provider, String model) {
+        if (provider == null || provider.isBlank()) return CliModelCatalog.lookup(model);
+        Optional<CliModelCatalog.ModelSpec> exact = CliModelCatalog.lookup(provider, model);
+        if (exact.isPresent()) return exact;
+        // Only known native provider aliases may consult their actual upstream provider. Keep
+        // dedicated native metadata ahead of upstream defaults, and never guess from a model id.
+        List<String> aliases = switch (provider.trim().toLowerCase(Locale.ROOT)) {
+            case "openai-codex" -> List.of("codex", "openai");
+            case "codex" -> List.of("openai-codex", "openai");
+            case "claude" -> List.of("anthropic");
+            case "gemini" -> List.of("google");
+            default -> List.of();
+        };
+        for (String alias : aliases) {
+            Optional<CliModelCatalog.ModelSpec> spec = CliModelCatalog.lookup(alias, model);
+            if (spec.isPresent()) return spec;
+        }
+        return Optional.empty();
     }
 
     /**
@@ -186,7 +233,8 @@ public final class ModelContextWindows {
      * Also strips OpenRouter-style provider prefixes (e.g. "anthropic/claude-sonnet-4").
      */
     private static ModelSpec resolve(String model) {
-        String normalized = model.toLowerCase().trim();
+        if (model == null || model.isBlank()) return null;
+        String normalized = model.toLowerCase(Locale.ROOT).trim();
 
         // Strip OpenRouter-style provider prefix
         int slash = normalized.indexOf('/');

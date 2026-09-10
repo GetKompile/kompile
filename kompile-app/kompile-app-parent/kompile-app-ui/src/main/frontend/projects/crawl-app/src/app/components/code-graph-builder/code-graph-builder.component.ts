@@ -800,7 +800,7 @@ export class CodeGraphBuilderComponent implements OnInit, OnDestroy {
       });
   }
 
-  // ──�� Composite: localized graph export ─────────────────────────────────
+  // ── Composite: localized graph export ────────────────────────────────────
 
   exportLocalGraph(): void {
     if (!this.localExportFocus.trim()) {
@@ -838,7 +838,7 @@ export class CodeGraphBuilderComponent implements OnInit, OnDestroy {
       });
   }
 
-  // ─── SVG export ───────────────────────────��────────────────────────
+  // ─── SVG export ───────────────────────────────────────────────────────────
 
   // ─── Test coverage: frameworks ──────────────────────────────────────
 

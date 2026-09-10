@@ -27,6 +27,8 @@ class ToolRegistryTest {
     void baseToolsExposeAccurateMcpAnnotations() {
         assertEquals(McpToolAnnotations.READ_ONLY, new ReadTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.READ_ONLY, new ReadBatchTool().mcpAnnotations());
+        assertEquals(McpToolAnnotations.READ_ONLY, new FileContextTool().mcpAnnotations());
+        assertTrue(new FileNoteTool().mcpAnnotations().destructiveHint());
         assertEquals(McpToolAnnotations.READ_ONLY, new GrepBatchTool().mcpAnnotations());
         assertEquals(McpToolAnnotations.READ_ONLY,
                 new FetchResultBatchTool(new ToolResultReferenceCache()).mcpAnnotations());
@@ -159,6 +161,24 @@ class ToolRegistryTest {
     }
 
     @Test
+    void codeGroupExposesGraphSearchAndSpecialistsReceiveIt() {
+        registry.register(namedTool("read"));
+        registry.register(namedTool("code_graph"));
+        registry.register(namedTool("graph_search"));
+        registry.register(namedTool("graph_reasoning_query"));
+        AgentConfig architect = AgentConfig.builder("architect")
+                .enabledTools(Set.of("read", "code_graph", "graph_search", "graph_reasoning_query"))
+                .build();
+
+        registry.prepareProgressiveTools(architect);
+        List<String> names = directToolNames(registry.buildProgressiveDirectToolDefinitions(architect));
+
+        assertTrue(names.contains("code_graph"));
+        assertTrue(names.contains("graph_search"));
+        assertTrue(names.contains("graph_reasoning_query"));
+    }
+
+    @Test
     void progressiveDefinitionsKeepNewUngroupedToolsBehindOtherGroup() {
         registry.register(namedTool("read"));
         registry.register(namedTool("future_special_tool"));
@@ -175,6 +195,26 @@ class ToolRegistryTest {
                 registry.getDynamicToolManager().activateGroup("other"));
         assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
                 .contains("future_special_tool"));
+    }
+
+    @Test
+    void fileContextIsCoreAndFileNotesActivateWithFileTools() {
+        registry.register(namedTool("read"));
+        registry.register(namedTool("file_context"));
+        registry.register(namedTool("file_note"));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        AgentConfig agent = AgentConfig.builder("local-small")
+                .enabledTools(Set.of("*"))
+                .build();
+
+        assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                .contains("file_context"));
+        assertFalse(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                .contains("file_note"));
+        assertTrue(registry.getDynamicToolManager().activateGroup("files")
+                .contains("file_note"));
+        assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                .contains("file_note"));
     }
 
     @Test

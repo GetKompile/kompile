@@ -2,6 +2,11 @@ package ai.kompile.cli.main.chat.skill;
 
 import ai.kompile.cli.main.chat.tools.SkillManagerTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -15,6 +20,48 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SkillRuntimeContractTest {
+
+    @Test
+    void duplicateProviderSkillsDoNotEmitWarningsButInvalidSkillsStillDo(@TempDir Path project) throws Exception {
+        Path first = project.resolve(".claude/skills/quiet-check/SKILL.md");
+        Path second = project.resolve(".codex/skills/quiet-check/SKILL.md");
+        Path invalid = project.resolve(".codex/skills/invalid/SKILL.md");
+        Files.createDirectories(first.getParent());
+        Files.createDirectories(second.getParent());
+        Files.createDirectories(invalid.getParent());
+        Files.writeString(first, "---\nname: quiet-check\n---\nFirst provider prompt\n");
+        Files.writeString(second, "---\nname: quiet-check\n---\nSecond provider prompt\n");
+        Files.writeString(invalid, "---\nname: ../bad\n---\nInvalid prompt\n");
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CustomSkillLoader.class);
+        Level previousLevel = logger.getLevel();
+        boolean previousAdditive = logger.isAdditive();
+        ListAppender<ILoggingEvent> events = new ListAppender<>();
+        events.start();
+        logger.addAppender(events);
+        logger.setLevel(Level.DEBUG);
+        logger.setAdditive(false);
+        try {
+            for (int reload = 0; reload < 2; reload++) {
+                var skills = new CustomSkillLoader(project).loadAll();
+                assertTrue(skills.get("quiet-check").getPromptTemplate().contains("First provider prompt"));
+            }
+            var projectEvents = events.list.stream()
+                    .filter(event -> event.getFormattedMessage().contains(project.toString()))
+                    .toList();
+            assertTrue(projectEvents.stream().anyMatch(event -> event.getLevel() == Level.DEBUG
+                    && event.getFormattedMessage().contains("Ignoring duplicate provider skill")));
+            assertFalse(projectEvents.stream().anyMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)
+                    && event.getFormattedMessage().contains("duplicate provider skill")));
+            assertTrue(projectEvents.stream().anyMatch(event -> event.getLevel() == Level.WARN
+                    && event.getFormattedMessage().contains("invalid name")));
+        } finally {
+            logger.detachAppender(events);
+            events.stop();
+            logger.setLevel(previousLevel);
+            logger.setAdditive(previousAdditive);
+        }
+    }
 
     @Test
     void customSkillLookupAndSlashInvocationAreCaseInsensitive() {

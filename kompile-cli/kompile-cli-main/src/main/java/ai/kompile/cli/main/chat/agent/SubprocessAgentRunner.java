@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
@@ -46,6 +47,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -87,6 +89,12 @@ public class SubprocessAgentRunner {
     private final String kompileUrl;
     private final int mcpPort;
     private final SystemPromptManager systemPromptManager;
+    private volatile ReminderManager reminderManager;
+
+    /** Optional reminder decoration applied to outbound user prompts. */
+    public void setReminderManager(ReminderManager reminderManager) {
+        this.reminderManager = reminderManager;
+    }
 
     private final TerminalRenderer renderer;
     private final AsciiRenderer ascii;
@@ -97,6 +105,8 @@ public class SubprocessAgentRunner {
     private volatile Process activeProcess;
     private volatile Thread waitingThread;
     private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final Object lifecycleLock = new Object();
     private volatile OutputStream agentStdin;
     private final LinkedBlockingQueue<PassthroughStreamParser.PassthroughEvent> interactiveQueue = new LinkedBlockingQueue<>();
     // Tracks last output timestamp for TUI stall detection
@@ -116,6 +126,8 @@ public class SubprocessAgentRunner {
     // Multi-turn state
     private volatile boolean firstMessageSent = false;
     private volatile String agentSessionId = null;
+    /** Never use provider-global latest/continue fallbacks when another native session may be active. */
+    private volatile boolean exactResumeRequired = false;
 
     // Interactive input — the TUI supplies a callback to get user responses
     private Function<String, String> inputProvider;
@@ -205,6 +217,19 @@ public class SubprocessAgentRunner {
     public void setLaunchOverrides(String modelOverride, String thinkingOverride) {
         this.modelOverride = modelOverride;
         this.thinkingOverride = thinkingOverride;
+    }
+
+    /**
+     * Reuse already-resolved provider-global MCP arguments without mutating shared
+     * project configuration. Used when a detached interactive turn hands new
+     * messages to an isolated managed runner.
+     */
+    public void setManagedCommandPrefixArguments(List<String> arguments) {
+        this.managedCommandPrefixArguments = arguments == null ? List.of() : List.copyOf(arguments);
+    }
+
+    public void setExactResumeRequired(boolean exactResumeRequired) {
+        this.exactResumeRequired = exactResumeRequired;
     }
 
     /**
@@ -370,7 +395,10 @@ public class SubprocessAgentRunner {
         // Stop both the persistent TUI and any ordinary turn process before removing
         // injected state. Previously cleanup only killed the persistent process, so a
         // disabled/quota-exhausted agent could remain alive after the session ended.
-        cancel();
+        synchronized (lifecycleLock) {
+            closed.set(true);
+            cancel();
+        }
         // Kill persistent TUI process if running
         if (tuiProcess != null && tuiProcess.isAlive()) {
             killProcess(tuiProcess);
@@ -429,7 +457,7 @@ public class SubprocessAgentRunner {
     private static String resolveAgentBinaryUncached(String name) {
         // Resolve command name from the registry (matches by name or command),
         // then fall back to using the input directly for unknown agents.
-        String binary = name.toLowerCase();
+        String binary = requiresManagedOneShot(name) ? "dsh" : name.toLowerCase();
         for (AgentProvider agent : CliAgentRegistry.loadAll()) {
             if (agent.getName().equalsIgnoreCase(name)
                     || agent.getCommand().equalsIgnoreCase(name)
@@ -453,6 +481,20 @@ public class SubprocessAgentRunner {
         return null;
     }
 
+    /**
+     * Whether the agent exposes a supported one-shot command instead of a shipped
+     * interactive TUI. DeepSeek Harness currently documents only its headless
+     * profile for terminal automation; custom {@code tui} profiles are not assumed.
+     */
+    public static boolean requiresManagedOneShot(String agentName) {
+        if (agentName == null) return false;
+        String normalized = agentName.trim().toLowerCase(Locale.ROOT);
+        return "dsh".equals(normalized)
+                || "dsh-cli".equals(normalized)
+                || "deepseek-harness".equals(normalized)
+                || "deepseek harness".equals(normalized);
+    }
+
     // ========================================================================
     // Core message execution
     // ========================================================================
@@ -462,6 +504,7 @@ public class SubprocessAgentRunner {
      * Blocks until the subprocess exits (or response stall for TUI agents).
      */
     public String runMessage(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        if (closed.get()) return "";
         // opencode now uses structured JSON output (opencode run --format json)
         // and is handled by the standard subprocess pipeline below.
         String agentBinary = resolveAgentBinary(agent);
@@ -479,10 +522,18 @@ public class SubprocessAgentRunner {
         monitorInterruptReason = null;
         currentToolName = null;
         updateActivity(getAgentDisplayName() + ": starting...");
-        history.logUserMessage(message);
+        String outboundMessage = reminderManager == null
+                ? message : reminderManager.decorateUserTurn(message);
+        history.logUserMessage(outboundMessage);
         metrics.recordUserTurn(message);
+        String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
+        if (reminderContent != null) {
+            emitLine(renderer.renderReminderSection(reminderContent));
+        }
 
-        List<String> agentCmd = buildCommand(agentBinary, message);
+        List<String> agentCmd = buildCommand(agentBinary, outboundMessage);
+        boolean managedOneShot = requiresManagedOneShot(agent);
+        AtomicReference<String> managedOneShotDiagnostic = new AtomicReference<>();
 
         renderer.setActivity(ChatActivityPhase.THINKING, agent);
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
@@ -494,11 +545,14 @@ public class SubprocessAgentRunner {
         AtomicBoolean spinnerStopped = new AtomicBoolean(false);
 
         try {
-            List<String> wrappedCmd = wrapWithPty(agentCmd);
+            // dsh headless has a deliberate stdout/stderr contract: final answer on
+            // stdout, potentially sensitive reasoning on stderr. A PTY would merge
+            // those streams, so run it directly and drain diagnostics separately.
+            List<String> processCommand = managedOneShot ? agentCmd : wrapWithPty(agentCmd);
 
-            ProcessBuilder pb = new ProcessBuilder(wrappedCmd);
+            ProcessBuilder pb = new ProcessBuilder(processCommand);
             pb.directory(new File(workingDir).getAbsoluteFile());
-            pb.redirectErrorStream(true);
+            pb.redirectErrorStream(!managedOneShot);
 
             Map<String, String> env = pb.environment();
             inheritEnv(env, "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
@@ -512,10 +566,19 @@ public class SubprocessAgentRunner {
             }
             env.putAll(extraEnvironment);
 
-            Process process = pb.start();
-            activeProcess = process;
-            agentStdin = process.getOutputStream();
+            final Process process;
+            synchronized (lifecycleLock) {
+                if (closed.get()) return "";
+                process = pb.start();
+                activeProcess = process;
+                agentStdin = process.getOutputStream();
+            }
             interactiveQueue.clear();
+
+            Thread diagnosticReader = managedOneShot
+                    ? startManagedOneShotDiagnosticReader(
+                            process, spinner, managedOneShotDiagnostic)
+                    : null;
 
             Thread outputReader = new Thread(() -> {
                 try {
@@ -588,8 +651,27 @@ public class SubprocessAgentRunner {
                 process.getInputStream().close();
                 outputReader.join(500);
             }
+            if (diagnosticReader != null) {
+                diagnosticReader.join(2000);
+                if (diagnosticReader.isAlive()) {
+                    process.getErrorStream().close();
+                    diagnosticReader.join(500);
+                }
+            }
 
             flushPendingText(pendingText, spinner, spinnerStopped);
+            if (managedOneShot && process.exitValue() != 0) {
+                if (spinnerStopped.compareAndSet(false, true)) {
+                    spinner.stop();
+                    emitLine("");
+                }
+                String diagnostic = managedOneShotDiagnostic.get();
+                String detail = diagnostic == null || diagnostic.isBlank()
+                        ? "exit code " + process.exitValue()
+                        : diagnostic;
+                emitLine(renderer.red("  DeepSeek Harness failed: " + detail));
+                history.logSystem("DeepSeek Harness failed: " + detail);
+            }
             activeProcess = null;
 
         } catch (Exception e) {
@@ -656,8 +738,14 @@ public class SubprocessAgentRunner {
         monitorInterruptReason = null;
         currentToolName = null;
         updateActivity(getAgentDisplayName() + ": starting...");
-        history.logUserMessage(message);
+        String outboundMessage = reminderManager == null
+                ? message : reminderManager.decorateUserTurn(message);
+        history.logUserMessage(outboundMessage);
         metrics.recordUserTurn(message);
+        String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
+        if (reminderContent != null) {
+            emitLine(renderer.renderReminderSection(reminderContent));
+        }
 
         renderer.setActivity(ChatActivityPhase.THINKING, agent);
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
@@ -680,7 +768,7 @@ public class SubprocessAgentRunner {
         try {
             // Launch persistent TUI process on first message
             if (tuiProcess == null || !tuiProcess.isAlive()) {
-                List<String> agentCmd = buildCommand(agentBinary, message);
+                List<String> agentCmd = buildCommand(agentBinary, outboundMessage);
                 List<String> wrappedCmd = wrapWithPty(agentCmd);
 
                 ProcessBuilder pb = new ProcessBuilder(wrappedCmd);
@@ -733,7 +821,7 @@ public class SubprocessAgentRunner {
             tuiPendingText = pendingText;
 
             // Send message via stdin
-            agentStdin.write((message + "\n").getBytes(StandardCharsets.UTF_8));
+            agentStdin.write((outboundMessage + "\n").getBytes(StandardCharsets.UTF_8));
             agentStdin.flush();
             long messageSentAt = System.currentTimeMillis();
             lastOutputTime.set(messageSentAt);
@@ -850,6 +938,34 @@ public class SubprocessAgentRunner {
     // ========================================================================
     // Output parsing
     // ========================================================================
+
+    private Thread startManagedOneShotDiagnosticReader(
+            Process process,
+            TerminalRenderer.SpinnerHandle spinner,
+            AtomicReference<String> diagnostic) {
+        Thread reader = new Thread(() -> {
+            try (BufferedReader stderr = new BufferedReader(new InputStreamReader(
+                    process.getErrorStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = stderr.readLine()) != null) {
+                    String cleaned = stripAnsi(line).trim();
+                    if (cleaned.isEmpty()) continue;
+                    lastOutputTime.set(System.currentTimeMillis());
+                    spinner.setPhase("Thinking");
+                    updateActivity(getAgentDisplayName() + ": thinking...");
+                    if (cleaned.startsWith("dsh:")
+                            && !"dsh: reasoning:".equalsIgnoreCase(cleaned)) {
+                        diagnostic.set(cleaned);
+                    }
+                }
+            } catch (IOException ignored) {
+                // Stream closure is expected during cancellation and shutdown.
+            }
+        }, "deepseek-harness-stderr-reader");
+        reader.setDaemon(true);
+        reader.start();
+        return reader;
+    }
 
     private synchronized void processOutputLine(String line, StringBuilder fullText,
                                     List<String> toolCalls, ChatSessionMetrics metrics,
@@ -979,7 +1095,9 @@ public class SubprocessAgentRunner {
         } else if (event instanceof PassthroughStreamParser.TurnComplete tc) {
             flushPendingText(pendingText, spinner, spinnerStopped);
 
-            if (tc.inputTokens() > 0 || tc.outputTokens() > 0) {
+            boolean hasTokenUsage = tc.inputTokens() > 0 || tc.outputTokens() > 0
+                    || tc.cacheReadTokens() > 0 || tc.cacheCreationTokens() > 0;
+            if (hasTokenUsage) {
                 if (metrics != null) {
                     metrics.recordTokenUsage(tc.inputTokens(), tc.outputTokens(),
                             tc.cacheReadTokens(), tc.cacheCreationTokens());
@@ -992,12 +1110,15 @@ public class SubprocessAgentRunner {
                 if (stats.length() > 0) stats.append(" \u00b7 ");
                 stats.append(String.format("$%.4f", tc.costUsd()));
             }
-            if (tc.inputTokens() > 0 || tc.outputTokens() > 0) {
+            if (hasTokenUsage) {
                 if (stats.length() > 0) stats.append(" \u00b7 ");
                 stats.append(FormatUtils.formatNumber(tc.inputTokens())).append(" in / ")
                      .append(FormatUtils.formatNumber(tc.outputTokens())).append(" out");
                 if (tc.cacheReadTokens() > 0) {
                     stats.append(" \u00b7 ").append(FormatUtils.formatNumber(tc.cacheReadTokens())).append(" cached");
+                }
+                if (tc.cacheCreationTokens() > 0) {
+                    stats.append(" \u00b7 ").append(FormatUtils.formatNumber(tc.cacheCreationTokens())).append(" cache new");
                 }
             }
             if (tc.numTurns() > 0) {
@@ -1416,10 +1537,14 @@ public class SubprocessAgentRunner {
         Path resolvedWorkingDir = Path.of(workingDir);
         AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
                 agent, resolvedWorkingDir, modelOverride, thinkingOverride);
-        List<String> command = buildManagedCommand(agent, binary, message, firstMessageSent,
+        boolean canResume = firstMessageSent && (!exactResumeRequired || agentSessionId != null);
+        List<String> command = buildManagedCommand(agent, binary, message, canResume,
                 agentSessionId, skipPermissions, resolvedWorkingDir, systemPromptManager,
                 selection.model(), selection.thinking());
-        return prependGlobalOptions(command, managedCommandPrefixArguments);
+        // DeepSeek Harness has no verified command-line MCP override contract.
+        return requiresManagedOneShot(agent)
+                ? command
+                : prependGlobalOptions(command, managedCommandPrefixArguments);
     }
 
     /**
@@ -1464,7 +1589,13 @@ public class SubprocessAgentRunner {
         String name = agent.toLowerCase();
         Path resolvedWorkingDir = workingDir != null ? workingDir : Path.of(".");
 
-        if (name.contains("claude")) {
+        if (requiresManagedOneShot(name)) {
+            // Official developer-preview contract: one fresh persisted session,
+            // final answer on stdout, reasoning/errors on stderr, then exit.
+            cmd.add("--profile");
+            cmd.add("headless");
+            cmd.add(message);
+        } else if (name.contains("claude")) {
             cmd.addAll(AgentLaunchDefaults.commandArguments(
                     agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("-p");
@@ -1510,9 +1641,9 @@ public class SubprocessAgentRunner {
             cmd.add("-o");
             cmd.add("stream-json");
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
-            if (firstMessageSent) {
+            if (firstMessageSent && agentSessionId != null) {
                 cmd.add("--resume");
-                cmd.add("latest");
+                cmd.add(agentSessionId);
             }
         } else if (name.contains("qwen")) {
             cmd.addAll(AgentLaunchDefaults.commandArguments(
@@ -1520,8 +1651,9 @@ public class SubprocessAgentRunner {
             cmd.add("-o");
             cmd.add("stream-json");
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
-            if (firstMessageSent) {
-                cmd.add("--continue");
+            if (firstMessageSent && agentSessionId != null) {
+                cmd.add("--resume");
+                cmd.add(agentSessionId);
             }
             cmd.add(message);
         } else if (name.contains("opencode")) {
@@ -1546,8 +1678,9 @@ public class SubprocessAgentRunner {
             cmd.add("-p");
             cmd.add(message);
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
-            if (firstMessageSent) {
-                cmd.add("--continue");
+            if (firstMessageSent && agentSessionId != null) {
+                cmd.add("--session");
+                cmd.add(agentSessionId);
             }
         } else {
             cmd.addAll(AgentLaunchDefaults.commandArguments(

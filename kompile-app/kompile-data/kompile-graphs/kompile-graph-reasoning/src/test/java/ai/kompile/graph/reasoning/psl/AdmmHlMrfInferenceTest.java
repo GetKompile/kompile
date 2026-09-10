@@ -114,6 +114,48 @@ class AdmmHlMrfInferenceTest {
         }
 
         @Test
+        @DisplayName("ADMM residuals use stacked-copy reference counts")
+        void dualResidualUsesStackedReferenceCount() {
+            double[] zNew = {0.2, 0.5};
+            double[] z = {0.0, 0.4};
+            int[] refCount = {1, 3};
+
+            // rho² * (1 * 0.2² + 3 * 0.1²) = 0.28.
+            assertEquals(0.28, AdmmHlMrfInference.dualResidual2(
+                    2.0, zNew, z, refCount), 1.0e-12);
+        }
+
+        @Test
+        @DisplayName("Opposing local dual copies do not cancel in the stacked norm")
+        void dualNormDoesNotAggregateByAtom() {
+            double[][] u = {{1.0}, {-1.0}};
+            int[][] ruleAtomIdx = {{0}, {0}};
+
+            assertEquals(2.0, AdmmHlMrfInference.dualNorm2(
+                    u, new double[0][], ruleAtomIdx, new int[0][]), 1.0e-12);
+        }
+
+        @Test
+        @DisplayName("Positive caller tolerance is honored below configured epsilon")
+        void callerToleranceControlsNormalizedAccuracy() {
+            assertEquals(1.0e-8,
+                    AdmmHlMrfInference.effectiveTolerance(1.0e-8, 1.0e-2), 0.0);
+            assertEquals(1.0e-2,
+                    AdmmHlMrfInference.effectiveTolerance(Double.NaN, 1.0e-2), 0.0);
+
+            PslProgram prog = new PslProgram()
+                    .observe("Prior", 0.81, "n1")
+                    .target("State", "n1")
+                    .addRule("1.0: Prior(N) -> State(N) ^2")
+                    .addRule("1.0: State(N) -> Prior(N) ^2");
+            HlMrfMapInference.Result result = new AdmmHlMrfInference(1.0, 1.0e-2, Double.MAX_VALUE)
+                    .solve(prog, prog.ground(), 25_000, 1.0e-8, 1.0e6);
+
+            assertTrue(result.converged(), "The per-coordinate accuracy gate must prevent epsRel from stopping early");
+            assertEquals(0.81, result.values().get("State(n1)"), 1.0e-5);
+        }
+
+        @Test
         @DisplayName("Negative prior pushes target toward 0")
         void negativePrior() {
             PslProgram prog = new PslProgram()
@@ -126,6 +168,25 @@ class AdmmHlMrfInferenceTest {
 
             double v = result.values().getOrDefault("Risky(n1)", 1.0);
             assertTrue(v < 0.5, "Negative prior should push Risky(n1) below 0.5, got " + v);
+        }
+
+        @Test
+        @DisplayName("Consensus residual reaches the analytic prior optimum")
+        void analyticPriorOptimum() {
+            PslProgram prog = new PslProgram()
+                    .observe("Prior", 0.81, "n1")
+                    .target("State", "n1")
+                    .addRule("1.0: Prior(N) -> State(N) ^2")
+                    .addRule("1.0: State(N) -> Prior(N) ^2");
+
+            HlMrfMapInference.Result result = new AdmmHlMrfInference()
+                    .solve(prog, prog.ground());
+
+            assertTrue(result.converged(), "ADMM should converge on the analytic two-rule fixture");
+            assertEquals(0.81, result.values().get("State(n1)"), 1.0e-5,
+                    "The target must equal the observed prior at the MAP optimum");
+            assertEquals(0.0, result.objective(), 1.0e-10,
+                    "The analytic prior fixture has zero hinge-loss at its optimum");
         }
     }
 
@@ -211,6 +272,206 @@ class AdmmHlMrfInferenceTest {
         }
 
         @Test
+        @DisplayName("Hard LEQ uses the exact non-unit-norm box projection")
+        void nonUnitNormProjection() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{2.0, -1.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.25, RelOp.LEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            double a = result.values().get("A(e1)");
+            double b = result.values().get("B(e1)");
+
+            // Projection of (.5,.5) onto 2a-b=.25 is (.4,.55).
+            assertEquals(0.40, a, 1e-5);
+            assertEquals(0.55, b, 1e-5);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("GEQ negates both the coefficients and positive RHS")
+        void geqPositiveRhs() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    1.0, false, false,
+                    new double[]{1.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    1.4, RelOp.GEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            assertEquals(1.4, result.values().get("A(e1)") + result.values().get("B(e1)"), 1e-5);
+        }
+
+        @Test
+        @DisplayName("Soft equality solves both sides rather than choosing one halfspace")
+        void equalityBothSides() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    1.0, false, true,
+                    new double[]{2.0, -1.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.25, RelOp.EQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            // ADMM minimizes the global soft-equality energy after consensus; with no competing
+            // rule, the zero-loss equality manifold is reached exactly.
+            assertEquals(0.25, 2.0 * result.values().get("A(e1)")
+                    - result.values().get("B(e1)"), 1e-5);
+        }
+
+        @Test
+        @DisplayName("Soft squared LEQ solves the active hinge without hard projection")
+        void softSquaredLeqActive() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    1.0, false, true,
+                    new double[]{1.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.4, RelOp.LEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            // The first local proximal step is active, then consensus drives this single-rule
+            // problem to its zero-loss boundary at the symmetric point (.2, .2).
+            assertEquals(0.2, result.values().get("A(e1)"), 1e-5);
+            assertEquals(0.2, result.values().get("B(e1)"), 1e-5);
+            assertEquals(0.0, rule.distanceToSatisfaction(result.values()), 1e-8);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Observed coordinates remain fixed while free coordinates satisfy equality")
+        void observedAndFreeCoordinates() {
+            PslProgram prog = new PslProgram()
+                    .observe("A", 0.9, "e1")
+                    .target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    1.2, RelOp.EQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            assertEquals(0.9, result.values().get("A(e1)"), 0.0);
+            assertEquals(0.3, result.values().get("B(e1)"), 1e-5);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Hard GEQ keeps observed non-unit coordinates fixed")
+        void hardGeqWithObservedCoordinate() {
+            PslProgram prog = new PslProgram()
+                    .observe("A", 0.6, "e1")
+                    .target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{2.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    1.7, RelOp.GEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            assertEquals(0.6, result.values().get("A(e1)"), 0.0);
+            assertEquals(0.5, result.values().get("B(e1)"), 1e-5);
+            assertEquals(0.0, rule.distanceToSatisfaction(result.values()), 1e-12);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Box-active projection solves the bounded problem, not projection then clipping")
+        void boxActiveProjection() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{2.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.2, RelOp.LEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            assertEquals(0.0, result.values().get("A(e1)"), 1e-5);
+            assertEquals(0.2, result.values().get("B(e1)"), 1e-5);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Hard equality near upper boundary projects endpoint from non-optimal start")
+        void hardEqualityNearUpperBoundary() {
+            PslProgram prog = new PslProgram().target("A", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0}, new String[]{"A(e1)"},
+                    1.0 + 5.0e-13, RelOp.EQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+
+            assertEquals(1.0, result.values().get("A(e1)"), 0.0);
+            assertTrue(Double.isFinite(result.values().get("A(e1)")));
+            assertTrue(rule.distanceToSatisfaction(result.values()) <= 1.0e-12);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Hard halfspace near lower boundary projects its feasible endpoint")
+        void hardHalfspaceNearLowerBoundary() {
+            PslProgram prog = new PslProgram().target("A", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0}, new String[]{"A(e1)"},
+                    -5.0e-13, RelOp.LEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+
+            assertEquals(0.0, result.values().get("A(e1)"), 0.0);
+            assertTrue(Double.isFinite(result.values().get("A(e1)")));
+            assertTrue(rule.distanceToSatisfaction(result.values()) <= 1.0e-12);
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Hard equality root terminates with a zero coefficient")
+        void hardEqualityZeroCoefficient() {
+            PslProgram prog = new PslProgram().target("A", "e1").target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0, 0.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.75, RelOp.EQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+
+            assertEquals(0.75, result.values().get("A(e1)"), 1.0e-12);
+            assertEquals(0.5, result.values().get("B(e1)"), 0.0);
+            assertEquals(0.0, rule.distanceToSatisfaction(result.values()), 1.0e-12);
+            assertTrue(result.values().values().stream().allMatch(Double::isFinite));
+            assertTrue(result.converged());
+        }
+
+        @Test
+        @DisplayName("Hard infeasibility is reported without moving observed evidence")
+        void hardInfeasibleStatus() {
+            PslProgram prog = new PslProgram()
+                    .observe("A", 1.0, "e1")
+                    .target("B", "e1");
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0, 1.0}, new String[]{"A(e1)", "B(e1)"},
+                    0.5, RelOp.LEQ);
+
+            HlMrfMapInference.Result result = solveArithmetic(prog, rule);
+            assertEquals(1.0, result.values().get("A(e1)"), 0.0);
+            assertFalse(result.converged());
+            assertTrue(result.objective() > 0.0);
+        }
+
+        @Test
+        @DisplayName("Hard arithmetic rules are evaluated even when the program has no atoms")
+        void emptyProgramHardArithmeticIsNotSilentlyConverged() {
+            PslProgram prog = new PslProgram();
+            ArithmeticGroundRule rule = new ArithmeticGroundRule(
+                    Double.POSITIVE_INFINITY, true, true,
+                    new double[]{1.0}, new String[]{"Missing(e1)"},
+                    1.0, RelOp.GEQ);
+
+            HlMrfMapInference.Result result = new AdmmHlMrfInference().solve(
+                    prog, List.of(), List.of(rule), 10_000, 1e-8, 1e6);
+            assertFalse(result.converged());
+            assertTrue(result.objective() > 0.0);
+        }
+
+        @Test
         @DisplayName("ADMM result values are all in [0,1]")
         void resultValuesInRange() {
             PslProgram prog = makePropagationProgram();
@@ -220,6 +481,12 @@ class AdmmHlMrfInferenceTest {
                 assertTrue(e.getValue() >= -1e-9 && e.getValue() <= 1.0 + 1e-9,
                         "Value out of [0,1]: " + e.getKey() + "=" + e.getValue());
             }
+        }
+
+        private HlMrfMapInference.Result solveArithmetic(PslProgram program,
+                                                         ArithmeticGroundRule rule) {
+            return new AdmmHlMrfInference().solve(
+                    program, List.of(), List.of(rule), 10_000, 1e-8, 1e6);
         }
     }
 

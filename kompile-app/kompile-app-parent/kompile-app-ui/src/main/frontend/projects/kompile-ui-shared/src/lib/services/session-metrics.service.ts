@@ -100,6 +100,8 @@ export interface ProviderUsageStats {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
   byProvider: Record<string, {
     sessionCount: number;
     inputTokens: number;
@@ -118,7 +120,13 @@ export interface ProviderUsageStats {
 export interface ProjectBreakdown {
   projects: Record<string, {
     sessionCount: number;
-    tokens: { input: number; output: number; total: number; cacheRead: number };
+    tokens: {
+      input: number;
+      output: number;
+      total: number;
+      cacheRead: number;
+      cacheCreation: number;
+    };
     toolCalls: number;
     sessions: SessionMetricsSummary[];
   }>;

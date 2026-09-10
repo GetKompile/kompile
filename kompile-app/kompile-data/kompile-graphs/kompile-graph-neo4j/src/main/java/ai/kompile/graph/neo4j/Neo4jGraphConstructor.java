@@ -24,6 +24,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionMetadata;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
+import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -159,6 +160,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                     ExtractionResult chunkResult = tryParseStandardFormat(jsonResponse, chunk.getId(), doc.getId(), modelName);
 
                     if (chunkResult != null) {
+                        validateStandardResult(chunkResult, schema, currentMode, "chunk " + chunk.getId());
                         chunkExtractions.add(chunkResult);
                     } else {
                         // Fallback to legacy ExtractedGraphDTO format
@@ -205,6 +207,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
         // If we have new-format extractions, run entity resolution and convert
         if (!chunkExtractions.isEmpty()) {
             ExtractionResult resolved = entityResolutionService.resolve(chunkExtractions);
+            validateStandardResult(resolved, schema, currentMode, "resolved extraction");
             Graph resolvedGraph = GraphExtractionValidator.toGraph(resolved);
 
             // Also write resolved entities to Neo4j via legacy path
@@ -288,6 +291,23 @@ public class Neo4jGraphConstructor implements GraphConstructor {
         return finalGraph;
     }
 
+    private static void validateStandardResult(
+            ExtractionResult result,
+            GraphSchema schema,
+            SchemaEnforcementMode enforcementMode,
+            String stage) {
+        if (enforcementMode != SchemaEnforcementMode.STRICT || schema == null) {
+            return;
+        }
+        GraphExtractionValidator.ValidationResult validation =
+                GraphExtractionValidator.validate(
+                        result, GraphExtractionValidationPolicy.defaults(), schema);
+        if (!validation.valid()) {
+            throw new IllegalArgumentException("Standard graph extraction failed strict schema validation at "
+                    + stage + ": " + String.join("; ", validation.errors()));
+        }
+    }
+
     private ExtractionResult tryParseStandardFormat(String jsonResponse, String chunkId, String docId, String model) {
         try {
             // Clean markdown fences if present
@@ -364,10 +384,14 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                 if (nt != null) {
                     if (entity.getMetadata() == null) entity.setMetadata(new HashMap<>());
                     Map<String, Object> filteredProps = new HashMap<>();
-                    Set<String> allowedProps = allowedNodePropsMap.getOrDefault(entity.getNodeLabel(), Collections.emptySet());
-                    for (Map.Entry<String, Object> entry : entity.getMetadata().entrySet()) {
-                        if (allowedProps.contains(entry.getKey())) {
-                            filteredProps.put(entry.getKey(), entry.getValue());
+                    Set<String> allowedProps = allowedNodePropsMap.get(entity.getNodeLabel());
+                    if (allowedProps == null) {
+                        filteredProps.putAll(entity.getMetadata());
+                    } else {
+                        for (Map.Entry<String, Object> entry : entity.getMetadata().entrySet()) {
+                            if (allowedProps.contains(entry.getKey())) {
+                                filteredProps.put(entry.getKey(), entry.getValue());
+                            }
                         }
                     }
                     entity.setMetadata(filteredProps);
@@ -387,10 +411,14 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                 if (rt != null && validEntityIds.contains(rel.getSource()) && validEntityIds.contains(rel.getTarget())) {
                     if (rel.getMetadata() == null) rel.setMetadata(new HashMap<>());
                     Map<String, Object> filteredProps = new HashMap<>();
-                    Set<String> allowedProps = allowedRelPropsMap.getOrDefault(rel.getRelationshipType(), Collections.emptySet());
-                    for (Map.Entry<String, Object> entry : rel.getMetadata().entrySet()) {
-                        if (allowedProps.contains(entry.getKey())) {
-                            filteredProps.put(entry.getKey(), entry.getValue());
+                    Set<String> allowedProps = allowedRelPropsMap.get(rel.getRelationshipType());
+                    if (allowedProps == null) {
+                        filteredProps.putAll(rel.getMetadata());
+                    } else {
+                        for (Map.Entry<String, Object> entry : rel.getMetadata().entrySet()) {
+                            if (allowedProps.contains(entry.getKey())) {
+                                filteredProps.put(entry.getKey(), entry.getValue());
+                            }
                         }
                     }
                     rel.setMetadata(filteredProps);

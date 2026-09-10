@@ -37,7 +37,9 @@ class TerminalRendererTest {
 
             controller.update(ChatActivityPhase.WORKING, "read src/Main.java");
             String initial = output.toString(StandardCharsets.UTF_8);
-            assertTrue(initial.contains("\033]2;⠋ kompile chat — coder · Working · read src/Main.java\007"));
+            assertTrue(initial.contains(
+                    "\033]2;⠋ kompile chat — coder · ⚙ Working · read src/Main.java\007"),
+                    "main tool use must carry the fixed tool icon, not just the spinner");
 
             long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
             while (!output.toString(StandardCharsets.UTF_8).contains("\033]2;⠙ ")
@@ -82,6 +84,52 @@ class TerminalRendererTest {
                     .endsWith("\033]2;kompile chat (local) — gpt-5\007"),
                     "detach must restore the ready title even during teardown");
         } finally {
+            terminal.close();
+        }
+    }
+
+    @Test
+    void terminalTitleShowsProcessOverlayWhenIdleAndClearsAtReady() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LineDisciplineTerminal terminal = new LineDisciplineTerminal(
+                "title-process-test", "xterm", output, StandardCharsets.UTF_8);
+        TerminalTitleController controller = new TerminalTitleController();
+        try {
+            controller.attach(terminal, "kompile chat — coder");
+            output.reset();
+
+            controller.updateProcessActivity(2);
+            assertTrue(output.toString(StandardCharsets.UTF_8).endsWith(
+                    "\033]2;▶ kompile chat — coder · 2 processes\007"),
+                    "running background processes must show in the tab title");
+
+            output.reset();
+            controller.updateProcessActivity(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).endsWith(
+                    "\033]2;▶ kompile chat — coder · 1 process\007"));
+
+            output.reset();
+            controller.updateProcessActivity(0);
+            assertTrue(output.toString(StandardCharsets.UTF_8).endsWith(
+                    "\033]2;kompile chat — coder\007"),
+                    "zero processes must restore the plain ready title");
+
+            // Foreground work owns the title; the overlay must not fight the busy animation.
+            output.reset();
+            controller.updateProcessActivity(3);
+            output.reset(); // drop the idle overlay frame; only the busy frames remain
+            controller.update(ChatActivityPhase.THINKING, "");
+            String busy = output.toString(StandardCharsets.UTF_8);
+            assertFalse(busy.contains("▶ "),
+                    "busy foreground work must suppress the process overlay");
+
+            // When the turn ends the overlay reapplies over the ready title.
+            controller.update(ChatActivityPhase.READY, "");
+            assertTrue(output.toString(StandardCharsets.UTF_8).endsWith(
+                    "\033]2;▶ kompile chat — coder · 3 processes\007"),
+                    "finished foreground work must hand the title back to the overlay");
+        } finally {
+            controller.detach();
             terminal.close();
         }
     }
@@ -281,6 +329,57 @@ class TerminalRendererTest {
     }
 
     @Test
+    void grepResultDetailHighlightsLinesViaEmbeddedFilenames() {
+        TerminalRenderer ansiRenderer = new TerminalRenderer(true);
+        String grepOutput = String.join("\n",
+                "src/App.java:10:public class App {",
+                "src/App.java:11:  int count = 1;",
+                "README");
+
+        // grep input has no file key — per-line inference must kick in.
+        String detail = ansiRenderer.renderToolResultDetail("grep",
+                "{\"pattern\":\"class\"}", ToolResult.success(grepOutput));
+
+        assertTrue(detail.contains("↳ content:"), "content block label: " + detail);
+        assertTrue(detail.contains("\033[1;34mpublic\033[0m"),
+                "java match line keyword-styled: " + detail);
+        assertFalse(detail.contains("\033[1;34mREADME"),
+                "non-code line must stay unstyled: " + detail);
+        assertTrue(AsciiRenderer.stripAnsi(detail).contains("src/App.java:10:public class App {"),
+                "visible text preserved: " + detail);
+    }
+
+    @Test
+    void readBatchResultDetailHighlightsEachFileSection() {
+        TerminalRenderer ansiRenderer = new TerminalRenderer(true);
+        String batchOutput = String.join("\n",
+                "3/3 files read",
+                "",
+                "== src/App.java (2 lines)",
+                "     1\tpublic class App {",
+                "     2\t}",
+                "",
+                "== scripts/main.py (1 line)",
+                "     1\tdef run():",
+                "",
+                "== notes.txt (1 line)",
+                "     1\tmodule.py:8:def shouldStayPlain():");
+
+        String detail = ansiRenderer.renderToolResultDetail("mcp__kompile__read_batch",
+                "{\"files\":[\"src/App.java\",{\"file_path\":\"scripts/main.py\"},\"notes.txt\"]}",
+                ToolResult.success(batchOutput));
+
+        assertTrue(detail.contains("\033[1;34mpublic\033[0m"),
+                "Java section should use its header path as the language hint: " + detail);
+        assertTrue(detail.contains("\033[1;34mdef\033[0m"),
+                "Python section should switch to its own header path: " + detail);
+        int plainSection = detail.indexOf("== notes.txt");
+        assertTrue(plainSection >= 0, "Plain-text section should remain visible: " + detail);
+        assertFalse(detail.substring(plainSection).contains("\033[1;34mdef"),
+                "An unrecognized section must neither inherit the prior hint nor infer one from its body: " + detail);
+    }
+
+    @Test
     void testRenderToolCallCompleteError() {
         ToolResult result = ToolResult.error("subject is required");
         String output = renderer.renderToolCallComplete("todowrite", result);
@@ -293,6 +392,30 @@ class TerminalRendererTest {
         String output = renderer.renderToolCallDenied("bash", "Destructive command");
         assertTrue(output.contains("Bash"));
         assertTrue(output.contains("denied"));
+    }
+
+    // ========================================================================
+    // Reminder section rendering
+    // ========================================================================
+
+    @Test
+    void testRenderReminderSectionEmptyWhenAbsent() {
+        assertEquals("", renderer.renderReminderSection(null));
+        assertEquals("", renderer.renderReminderSection("   "));
+    }
+
+    @Test
+    void testRenderReminderSectionShowsHeaderAndEachReminder() {
+        String section = renderer.renderReminderSection(
+                "The user configured these reminders. Apply them to this prompt:\n"
+                        + "1. [project] Plan before making changes\n"
+                        + "2. [session] Run focused tests");
+
+        assertTrue(section.contains("REMINDERS APPLIED TO THIS PROMPT"));
+        assertTrue(section.contains("1. [project] Plan before making changes"));
+        assertTrue(section.contains("2. [session] Run focused tests"));
+        assertFalse(section.contains("The user configured"),
+                "the block narration duplicates the header and must be dropped");
     }
 
     // ========================================================================

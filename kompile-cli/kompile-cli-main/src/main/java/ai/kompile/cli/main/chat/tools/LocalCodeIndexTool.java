@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.tools.grounding.CodeGraphLearningRunner;
 import ai.kompile.cli.main.codeindex.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,7 +43,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -57,37 +57,20 @@ import java.util.concurrent.TimeUnit;
  */
 public class LocalCodeIndexTool implements CliTool {
 
-    // ── DB caching ─────────────────────────────────────────────────────────
-    // Cache IndexDatabase per project_id across calls to avoid open/close overhead.
-    private static final ConcurrentHashMap<String, IndexDatabase> DB_CACHE = new ConcurrentHashMap<>();
-
-    /**
-     * Get or open a cached IndexDatabase for the given project.
-     */
-    static IndexDatabase getCachedDb(String projectId) throws SQLException {
+    /** Open an operation-owned reader; callers must close it, never share JDBC connections. */
+    static IndexDatabase openReader(String projectId) throws SQLException {
         Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
         if (!Files.exists(indexDir.resolve("index.db"))) return null;
-        return DB_CACHE.computeIfAbsent(projectId, k -> {
-            try {
-                return IndexDatabase.open(indexDir);
-            } catch (SQLException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        return IndexDatabase.openReadOnly(indexDir);
     }
 
-    /**
-     * Close all cached database connections. Called on shutdown.
-     */
-    public static void closeAll() {
-        DB_CACHE.values().forEach(IndexDatabase::close);
-        DB_CACHE.clear();
-    }
+    /** Compatibility shutdown hook: readers now close at the end of each operation. */
+    public static void closeAll() {}
 
     // ── Project resolution + freshness ─────────────────────────────────────
     // Actions that keep their own directory-derived project_id defaults.
     private static final Set<String> PROJECT_RESOLUTION_EXEMPT =
-            Set.of("index", "index_status", "list", "modules");
+            Set.of("index_status", "list", "modules");
 
     // Read actions preceded by a throttled incremental refresh of the index.
     // 'health' and 'stats' stay unrefreshed on purpose — they REPORT staleness.
@@ -127,7 +110,7 @@ public class LocalCodeIndexTool implements CliTool {
                 "with incremental indexing; indexes stay fresh automatically via per-project background " +
                 "watchers and refresh passes. " +
                 "Actions: index (background job by default; waits briefly, then returns a job handle), " +
-                "index_status (background jobs + maintenance state), " +
+                "index_status (background jobs + maintenance state), repair (synchronous SQLite check and in-place FTS repair), " +
                 "search, ranked_search (multi-signal relevance), " +
                 "blended_search (auto-selects strategy: spath for symbols, ranked for names, compressed for broad), " +
                 "signatures (token-compressed file views), impact (blast radius analysis), " +
@@ -159,6 +142,7 @@ public class LocalCodeIndexTool implements CliTool {
         action.put("description", "Action: 'index' (index a directory — runs as a background job by default, " +
                 "waits briefly then returns a job handle), " +
                 "'index_status' (background index jobs + per-project maintenance state), " +
+                "'repair' (synchronous integrity check and in-place FTS repair; never replaces a live database), " +
                 "'search' (find entities), " +
                 "'ranked_search' (multi-signal relevance ranking with intent detection and graph boost), " +
                 "'signatures' (extract compact signatures per file — 70-95% token reduction), " +
@@ -178,7 +162,7 @@ public class LocalCodeIndexTool implements CliTool {
                 "'trace' (BFS call chain traversal — outgoing or incoming), " +
                 "'spring_resolve' (resolve Spring DI bean wiring for an interface)");
         action.putArray("enum")
-                .add("index").add("index_status").add("search").add("ranked_search").add("blended_search")
+                .add("index").add("index_status").add("repair").add("search").add("ranked_search").add("blended_search")
                 .add("signatures").add("impact").add("health").add("routing")
                 .add("spath").add("find").add("replace").add("usages")
                 .add("pagerank").add("clones").add("cochanges").add("unused_exports")
@@ -225,7 +209,7 @@ public class LocalCodeIndexTool implements CliTool {
 
         ObjectNode maxResults = props.putObject("max_results");
         maxResults.put("type", "integer");
-        maxResults.put("description", "Maximum results to return (default: 20)");
+        maxResults.put("description", "Maximum results to return (default: 20; also caps changed files rendered by changed_context)");
 
         ObjectNode include = props.putObject("include_patterns");
         include.put("type", "string");
@@ -283,7 +267,7 @@ public class LocalCodeIndexTool implements CliTool {
 
         ObjectNode maxDepth = props.putObject("max_depth");
         maxDepth.put("type", "integer");
-        maxDepth.put("description", "Maximum BFS depth for impact analysis (default: 0 = unlimited). Used with action='impact'. Also used with action='trace' (default: 5).");
+        maxDepth.put("description", "Maximum BFS depth for impact (default: 0 = unlimited), trace (default: 5), and changed_context (default: 2).");
 
         ObjectNode direction = props.putObject("direction");
         direction.put("type", "string");
@@ -335,8 +319,13 @@ public class LocalCodeIndexTool implements CliTool {
             ProjectIdResolver.Resolution resolution = null;
             if (params instanceof ObjectNode mutableParams
                     && !PROJECT_RESOLUTION_EXEMPT.contains(action)) {
+                Path resolutionDirectory = context.getWorkingDirectory();
+                if ("index".equals(action)) {
+                    String directory = params.path("directory").asText("");
+                    if (!directory.isBlank()) resolutionDirectory = Path.of(directory).toAbsolutePath();
+                }
                 resolution = ProjectIdResolver.resolve(
-                        params.path("project_id").asText(""), context.getWorkingDirectory());
+                        params.path("project_id").asText(""), resolutionDirectory);
                 mutableParams.put("project_id", resolution.projectId());
             }
 
@@ -353,6 +342,7 @@ public class LocalCodeIndexTool implements CliTool {
             ToolResult result = switch (action) {
                 case "index" -> doIndex(indexer, params, cwd, progress);
                 case "index_status" -> doIndexStatus(params);
+                case "repair" -> doRepair(params);
                 case "search" -> doSearch(indexer, params, cwd);
                 case "ranked_search" -> doRankedSearch(params, cwd);
                 case "blended_search" -> doBlendedSearch(params, cwd);
@@ -378,7 +368,7 @@ public class LocalCodeIndexTool implements CliTool {
                 case "changed_context" -> doChangedContext(params, cwd);
                 case "modules" -> doModules(params, cwd);
                 default -> ToolResult.error("Unknown action: " + action +
-                        ". Use 'index', 'index_status', 'search', 'ranked_search', 'blended_search', 'signatures', " +
+                        ". Use 'index', 'index_status', 'repair', 'search', 'ranked_search', 'blended_search', 'signatures', " +
                         "'impact', 'health', 'routing', 'spath', 'find', 'replace', 'usages', " +
                         "'pagerank', 'clones', 'cochanges', 'unused_exports', 'stats', 'list', " +
                         "'callers', 'implementors', 'trace', 'spring_resolve', " +
@@ -429,7 +419,12 @@ public class LocalCodeIndexTool implements CliTool {
         if (!background) {
             LocalCodeIndexer.IndexResult result = indexer.index(dirPath, projectId,
                     includes, excludes, forceReindex, progress);
-            return renderIndexResult(dir, result, null);
+            LocalCodeKGraphPublisher.ProjectionResult projection =
+                    LocalCodeKGraphPublisher.publish(dirPath, projectId, includes, excludes);
+            CodeGraphLearningRunner.ConfiguredResult learning =
+                    new CodeGraphLearningRunner().runConfigured(
+                            dirPath, projection.graphPath(), CodeGraphReasoningConfig.TRIGGER_BUILD);
+            return renderIndexResult(dir, result, projection, null, learning);
         }
 
         // Background job with a bounded sync grace window: small/incremental
@@ -442,9 +437,13 @@ public class LocalCodeIndexTool implements CliTool {
             if (job.status() == BackgroundIndexService.JobStatus.FAILED) {
                 return ToolResult.error("Index job " + job.id() + " failed: " + job.error());
             }
-            return renderIndexResult(dir, job.result(),
-                    "- **Mode**: background job " + job.id() + " (completed in "
-                            + job.runtimeMillis() + " ms)\n");
+            String projectionLine = job.projection() == null
+                    ? "- **KGraph projection**: scheduled on the local background projection lane\n"
+                    : "";
+            return renderIndexResult(dir, job.result(), job.projection(),
+                    "- **Mode**: background index job " + job.id() + " (completed in "
+                            + job.runtimeMillis() + " ms)\n" + projectionLine,
+                    job.learning());
         }
 
         StringBuilder sb = new StringBuilder();
@@ -458,14 +457,16 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("\nPoll with: local_code_index action='index_status' project_id='")
                 .append(projectId).append("'. ");
         sb.append("Searches during the build see the index as it fills; ")
-                .append("wait for completion for exhaustive results.");
+                .append("the local KGraph projection follows independently and cannot block index/search jobs.");
         return ToolResult.success("code_index: " + dir + " (background)", sb.toString(),
                 Map.of("projectId", projectId, "jobId", job.id(),
                         "status", job.status().name()));
     }
 
     private ToolResult renderIndexResult(String dir, LocalCodeIndexer.IndexResult result,
-                                         String modeLine) {
+                                         LocalCodeKGraphPublisher.ProjectionResult projection,
+                                         String modeLine,
+                                         CodeGraphLearningRunner.ConfiguredResult learning) {
         StringBuilder sb = new StringBuilder();
         sb.append("Codebase indexed locally (incremental)\n\n");
         if (modeLine != null) sb.append(modeLine);
@@ -475,6 +476,21 @@ public class LocalCodeIndexTool implements CliTool {
         sb.append("- **Files (skipped)**: ").append(result.filesSkipped()).append("\n");
         sb.append("- **Files (deleted)**: ").append(result.filesDeleted()).append("\n");
         sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
+        if (projection != null) {
+            sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
+            sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
+            sb.append("- **Graph entities**: ").append(projection.graphEntities()).append("\n");
+            sb.append("- **Graph relations**: ").append(projection.graphRelations()).append("\n");
+            if (learning != null) {
+                sb.append("- **Code graph learning**: ").append(learning.status()).append("\n");
+                if (learning.error() != null) {
+                    sb.append("  - Learning failed without invalidating the structural index: ")
+                            .append(learning.error()).append("\n");
+                }
+            } else {
+                sb.append("- **Code graph learning**: pending config check on background lane\n");
+            }
+        }
         if (result.errors() > 0) {
             sb.append("- **Errors**: ").append(result.errors()).append("\n");
         }
@@ -485,10 +501,40 @@ public class LocalCodeIndexTool implements CliTool {
         }
         sb.append("\nSearch with: local_code_index action='search' query='...' project_id='")
                 .append(result.projectId()).append("'");
+        if (projection != null) {
+            sb.append("\nGraph search with: graph_search query='...' knowledgeBase='")
+                    .append(projection.knowledgeBaseId()).append("' code_project_id='")
+                    .append(result.projectId()).append("'");
+            sb.append("\nGraph reasoning with: graph_reasoning_query operation='SEARCH' question='...' knowledgeBase='")
+                    .append(projection.knowledgeBaseId()).append("'");
+        }
 
-        return ToolResult.success("code_index: " + dir, sb.toString(),
-                Map.of("projectId", result.projectId(), "filesProcessed", result.filesProcessed(),
-                        "entitiesFound", result.entitiesFound(), "filesSkipped", result.filesSkipped()));
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("projectId", result.projectId());
+        metadata.put("filesProcessed", result.filesProcessed());
+        metadata.put("entitiesFound", result.entitiesFound());
+        metadata.put("filesSkipped", result.filesSkipped());
+        if (projection != null) {
+            metadata.put("knowledgeBase", projection.knowledgeBaseId());
+            metadata.put("graphPath", projection.graphPath().toString());
+            metadata.put("graphEntities", projection.graphEntities());
+            metadata.put("graphRelations", projection.graphRelations());
+            if (learning != null) {
+                metadata.put("learningStatus", learning.status());
+                if (learning.error() != null) metadata.put("learningError", learning.error());
+            }
+        }
+        return ToolResult.success("code_index: " + dir, sb.toString(), metadata);
+    }
+
+    private ToolResult doRepair(JsonNode params) throws IOException {
+        String projectId = params.path("project_id").asText();
+        var result = ai.kompile.cli.main.codeindex.IndexMaintenance.repair(projectId);
+        String next = result.reindexRequired()
+                ? "\nRun local_code_index action=index with force_reindex=true to restore entities and relations from source."
+                : "";
+        return ToolResult.success("code index repair: " + projectId, result.summary() + next,
+                Map.of("status", result.status(), "reindexRequired", result.reindexRequired()));
     }
 
     private ToolResult doIndexStatus(JsonNode params) {
@@ -505,6 +551,7 @@ public class LocalCodeIndexTool implements CliTool {
         if (!projectId.isEmpty()) {
             String line = service.statusLine(projectId);
             if (line != null) sb.append("- **Maintenance**: ").append(line).append("\n\n");
+            else sb.append("- **Database**: ").append(ai.kompile.cli.main.codeindex.IndexMaintenance.status(projectId)).append("\n\n");
         }
 
         if (jobs.isEmpty()) {
@@ -527,9 +574,23 @@ public class LocalCodeIndexTool implements CliTool {
             if (result != null) {
                 sb.append(" (").append(result.filesProcessed()).append(" files, ")
                         .append(result.entitiesFound()).append(" entities)");
-            } else if (job.error() != null) {
+                if (job.projection() != null) {
+                    sb.append(" — KGraph ").append(job.projection().graphPath());
+                    if (job.learning() != null) {
+                        sb.append(" — learning ").append(job.learning().status().toLowerCase());
+                        if (job.learning().error() != null) {
+                            sb.append(" (").append(job.learning().error()).append(')');
+                        }
+                    } else {
+                        sb.append(" — learning pending config check");
+                    }
+                } else if (job.isDone()) {
+                    sb.append(" — KGraph projection pending on local background lane");
+                }
+            }
+            if (job.error() != null) {
                 sb.append(" — ").append(job.error());
-            } else if (!job.progressLine().isEmpty()) {
+            } else if (result == null && !job.progressLine().isEmpty()) {
                 sb.append(" — ").append(job.progressLine());
             }
             sb.append("\n");
@@ -1635,8 +1696,7 @@ public class LocalCodeIndexTool implements CliTool {
      * Returns a warning string to prepend, or null if everything is fresh.
      */
     private String checkStaleness(String projectId, List<Map<String, Object>> results, String cwd) {
-        try {
-            IndexDatabase db = getCachedDb(projectId);
+        try (IndexDatabase db = openReader(projectId)) {
             if (db == null) return null;
 
             Set<String> resultFiles = new LinkedHashSet<>();
@@ -1845,11 +1905,13 @@ public class LocalCodeIndexTool implements CliTool {
             Map<String, List<Map<String, Object>>> entitiesByFile =
                     db.getEntitiesForFiles(changedFiles, 20);
 
-            int totalEntities = 0;
+            int totalEntities = entitiesByFile.values().stream().mapToInt(List::size).sum();
             sb.append("## Changed Files & Entities\n\n");
+            int renderLimit = Math.max(1, params.path("max_results").asInt(20));
+            int renderedFiles = 0;
             for (String file : changedFiles) {
+                if (renderedFiles++ >= renderLimit) break;
                 List<Map<String, Object>> entities = entitiesByFile.getOrDefault(file, List.of());
-                totalEntities += entities.size();
                 sb.append("### ").append(file);
                 if (entities.isEmpty()) {
                     sb.append(" _(not in index)_\n");
@@ -1864,15 +1926,24 @@ public class LocalCodeIndexTool implements CliTool {
                 }
                 sb.append("\n");
             }
+            if (changedFiles.size() > renderLimit) {
+                sb.append("_... ").append(changedFiles.size() - renderLimit)
+                        .append(" additional changed files omitted from rendering; all remain included in blast-radius analysis._\n\n");
+            }
 
             // Impact analysis across all changed files
             List<String> indexedChanged = new ArrayList<>(entitiesByFile.keySet());
             if (!indexedChanged.isEmpty()) {
                 try {
-                    ImpactAnalyzer.ImpactReport impact =
-                            ImpactAnalyzer.analyzeFiles(indexedChanged, indexDir, 0);
+                    int maxDepth = params.has("max_depth")
+                            ? Math.max(0, params.path("max_depth").asInt(2)) : 2;
+                    ImpactAnalyzer.AggregateImpact impact =
+                            ImpactAnalyzer.analyzeFilesAggregate(indexedChanged, indexDir, maxDepth);
 
                     sb.append("## Blast Radius\n");
+                    sb.append("- **Traversal depth**: ")
+                            .append(maxDepth == 0 ? "unlimited (safety-capped at 20)" : maxDepth)
+                            .append("\n");
                     sb.append("- **Total unique files impacted**: ").append(impact.totalUniqueImpact()).append("\n");
                     if (!impact.allAffectedTests().isEmpty()) {
                         sb.append("- **Affected tests** (").append(impact.allAffectedTests().size()).append("): ");
@@ -1920,6 +1991,7 @@ public class LocalCodeIndexTool implements CliTool {
 
             return ToolResult.success("changed_context: " + changedFiles.size() + " files", sb.toString(),
                     Map.of("changedFiles", changedFiles.size(),
+                            "renderedFiles", Math.min(changedFiles.size(), renderLimit),
                             "totalEntities", totalEntities,
                             "gitRef", gitRef));
         } catch (SQLException e) {

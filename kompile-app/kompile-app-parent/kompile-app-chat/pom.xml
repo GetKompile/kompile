@@ -129,6 +129,15 @@
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
+            <exclusions>
+                <!-- The explicit platform dependency below selects the requested CPU/accelerator
+                     lane. Do not also inherit nd4j-native's unsuffixed platform twin: it can add a
+                     second multi-gigabyte native archive to the Boot exec JAR. -->
+                <exclusion>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>${nd4j.native.backend}</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!-- Platform-classified twin: carries the compute library (libnd4jcpu.so /
              libnd4jcuda.so). Without it the exec jar ships the JavaCPP JNI wrappers but no
@@ -138,6 +147,15 @@
             <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
+            <exclusions>
+                <!-- A classified ND4J backend POM inherits the unsuffixed platform twin. The
+                     selected classifier already carries the platform payload; retaining both can
+                     exceed Spring Boot's executable-JAR offset limit. -->
+                <exclusion>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>${nd4j.native.backend}</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>

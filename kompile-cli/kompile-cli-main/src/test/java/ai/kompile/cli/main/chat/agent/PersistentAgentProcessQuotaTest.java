@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,6 +57,55 @@ class PersistentAgentProcessQuotaTest {
                 assertFalse(process.isAlive(), "quota exhaustion must not leave the judge active");
                 assertTrue(process.failureReason().toLowerCase().contains("limit"),
                         () -> "failure reason should expose quota exhaustion: " + process.failureReason());
+            } finally {
+                process.close();
+            }
+        } finally {
+            Files.deleteIfExists(script);
+        }
+    }
+
+    @Test
+    void stderrClosedAndUnauthorizedMessagesTerminateTheJudgeImmediately() throws Exception {
+        for (String diagnostic : List.of(
+                "Error: closed",
+                "Error closed",
+                "[Error] closed",
+                "Error: 401 Unauthorized from OpenAI")) {
+            assertFatalStderrDiagnostic(diagnostic);
+        }
+    }
+
+    private static void assertFatalStderrDiagnostic(String diagnostic) throws Exception {
+        Path script = Files.createTempFile("kompile-judge-provider-error-", ".sh");
+        try {
+            Files.writeString(script, """
+                    #!/bin/sh
+                    IFS= read -r init
+                    printf '%%s\\n' '{"type":"system","subtype":"init"}'
+                    printf '%%s\\n' '%s' >&2
+                    while IFS= read -r line; do
+                      :
+                    done
+                    """.formatted(diagnostic));
+            assertTrue(script.toFile().setExecutable(true),
+                    "test agent script must be executable");
+
+            PersistentAgentProcess process = PersistentAgentProcess.builder(script.toString())
+                    .skipPermissions(false)
+                    .build();
+            try {
+                process.start(3);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (process.isAlive() && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+
+                assertFalse(process.isAlive(),
+                        () -> "provider failure must not leave the judge active: " + diagnostic);
+                assertTrue(process.failureReason().contains(diagnostic),
+                        () -> "failure reason should preserve the provider diagnostic: "
+                                + process.failureReason());
             } finally {
                 process.close();
             }

@@ -22,16 +22,53 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeLibraryResolverTest {
 
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void classpathNativeCacheChangesWhenAnArtifactIsReplaced() throws Exception {
+        Path cache = temporaryDirectory.resolve("cache");
+        Path artifact = Files.writeString(temporaryDirectory.resolve("backend.jar"), "old1");
+        FileTime fixedTime = FileTime.fromMillis(1_700_000_000_000L);
+        Files.setLastModifiedTime(artifact, fixedTime);
+        Path first = NativeLibraryResolver.versionedClasspathCache(cache, List.of(artifact));
+
+        Files.writeString(artifact, "new2");
+        Files.setLastModifiedTime(artifact, fixedTime);
+        Path second = NativeLibraryResolver.versionedClasspathCache(cache, List.of(artifact));
+
+        assertNotEquals(first, second);
+        assertEquals(cache, first.getParent());
+        assertEquals(cache, second.getParent());
+    }
+
+    @Test
+    void classpathNativeCachePrunesOldFingerprintsToABoundedSet() throws Exception {
+        Path cache = Files.createDirectories(temporaryDirectory.resolve("cache"));
+        for (int index = 0; index < 10; index++) {
+            Path old = Files.createDirectories(cache.resolve("classpath-old-" + index));
+            Files.writeString(old.resolve("libnative.so"), "old-" + index);
+            Files.setLastModifiedTime(old, FileTime.fromMillis(1_000L + index));
+        }
+        Path artifact = Files.writeString(temporaryDirectory.resolve("backend.bin"), "current");
+
+        Path selected = NativeLibraryResolver.versionedClasspathCache(cache, List.of(artifact));
+
+        try (var children = Files.list(cache)) {
+            assertEquals(8L, children.filter(Files::isDirectory).count());
+        }
+        assertEquals(cache, selected.getParent());
+    }
 
     @Test
     void detectsNativeRuntimeWithoutImageInfoReflection() {

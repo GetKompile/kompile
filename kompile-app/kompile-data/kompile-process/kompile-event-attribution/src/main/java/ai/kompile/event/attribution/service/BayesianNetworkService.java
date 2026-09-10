@@ -21,7 +21,9 @@ import ai.kompile.graph.reasoning.domain.MpeResult;
 import ai.kompile.graph.reasoning.domain.SensitivityResult;
 import ai.kompile.graph.reasoning.mebn.type.TypeHierarchy;
 import ai.kompile.core.events.EmpiricalPriorSource;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.ManagedMebnUnifiedGraphArtifacts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +57,7 @@ public class BayesianNetworkService {
 
     private final KnowledgeGraphService graphService;
     private EmpiricalPriorSource empiricalPriors;
+    private ManagedMebnUnifiedGraphArtifacts managedMebn;
 
     @Autowired
     public BayesianNetworkService(KnowledgeGraphService graphService) {
@@ -68,6 +71,11 @@ public class BayesianNetworkService {
     @Autowired(required = false)
     public void setEmpiricalPriors(EmpiricalPriorSource empiricalPriors) {
         this.empiricalPriors = empiricalPriors;
+    }
+
+    @Autowired(required = false)
+    public void setManagedMebn(ManagedMebnUnifiedGraphArtifacts managedMebn) {
+        this.managedMebn = managedMebn;
     }
 
     /**
@@ -265,9 +273,16 @@ public class BayesianNetworkService {
     public BayesianInferenceResult queryWithMTheory(MTheory mTheory,
                                                       Map<String, Integer> evidence,
                                                       TypeHierarchy typeHierarchy) {
+        return queryWithMTheory(mTheory, evidence, typeHierarchy, null);
+    }
+
+    protected BayesianInferenceResult queryWithMTheory(MTheory mTheory,
+                                                        Map<String, Integer> evidence,
+                                                        TypeHierarchy typeHierarchy,
+                                                        Long factSheetId) {
         long startTime = System.currentTimeMillis();
 
-        GraphKnowledgeBase kb = new GraphKnowledgeBase(graphService);
+        GraphKnowledgeBase kb = new GraphKnowledgeBase(graphService, factSheetId);
 
         // Register entity types for quantifier evaluation
         for (EntityType entityType : mTheory.getEntityTypes()) {
@@ -418,6 +433,15 @@ public class BayesianNetworkService {
                                                       Long factSheetId) {
         long startTime = System.currentTimeMillis();
 
+        if (factSheetId != null && factSheetId > 0 && managedMebn != null) {
+            Optional<MTheory> managedTheory = managedMebn.theoryForFactSheet(factSheetId);
+            if (managedTheory.isPresent()) {
+                MTheory queryTheory = restrictManagedTheory(
+                        managedTheory.get(), seedNodeIds, maxDepth, maxNodes, factSheetId);
+                return queryWithMTheory(queryTheory, evidence, typeHierarchy, factSheetId);
+            }
+        }
+
         KgMTheoryBuilder builder = new KgMTheoryBuilder(graphService)
                 .maxDepth(maxDepth)
                 .maxNodes(maxNodes)
@@ -438,6 +462,66 @@ public class BayesianNetworkService {
         }
 
         return queryWithMTheory(mTheory, evidence, typeHierarchy);
+    }
+
+    private MTheory restrictManagedTheory(MTheory fullTheory,
+                                          Collection<String> seedNodeIds,
+                                          int maxDepth,
+                                          int maxNodes,
+                                          Long factSheetId) {
+        int nodeLimit = Math.max(0, Math.min(1_000, maxNodes));
+        int depthLimit = Math.max(0, Math.min(10, maxDepth));
+        Set<String> theoryEntityIds = fullTheory.getEntityTypes().stream()
+                .flatMap(type -> type.getEntityIds().stream())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Set<String> allowed = boundedTheoryEntityIds(
+                theoryEntityIds, seedNodeIds, depthLimit, nodeLimit, factSheetId);
+        return RelationalMTheoryArtifactCodec.restrictToEntityIds(fullTheory, allowed);
+    }
+
+    private Set<String> boundedTheoryEntityIds(Set<String> theoryEntityIds,
+                                               Collection<String> seedNodeIds,
+                                               int maxDepth,
+                                               int maxNodes,
+                                               Long factSheetId) {
+        LinkedHashSet<String> discovered = new LinkedHashSet<>();
+        ArrayDeque<ManagedNodeDepth> queue = new ArrayDeque<>();
+
+        if (seedNodeIds == null || seedNodeIds.isEmpty() || maxNodes == 0) {
+            return discovered;
+        }
+        for (String seedId : seedNodeIds) {
+            if (seedId != null && theoryEntityIds.contains(seedId) && discovered.size() < maxNodes
+                    && discovered.add(seedId)) {
+                queue.addLast(new ManagedNodeDepth(seedId, 0));
+            }
+        }
+
+        while (!queue.isEmpty() && discovered.size() < maxNodes) {
+            ManagedNodeDepth current = queue.removeFirst();
+            if (current.depth() >= maxDepth) continue;
+            List<GraphEdge> edges = factSheetId != null && factSheetId > 0
+                    ? graphService.getEdgesForNodeInFactSheet(current.nodeId(), factSheetId)
+                    : graphService.getEdgesForNode(current.nodeId());
+            if (edges == null || edges.isEmpty()) continue;
+
+            TreeSet<String> neighbors = new TreeSet<>();
+            for (GraphEdge edge : edges) {
+                String sourceId = edge.getSourceNode() != null
+                        ? edge.getSourceNode().getNodeId() : edge.getSourceNodeId();
+                String targetId = edge.getTargetNode() != null
+                        ? edge.getTargetNode().getNodeId() : edge.getTargetNodeId();
+                if (current.nodeId().equals(sourceId) && targetId != null) neighbors.add(targetId);
+                else if (current.nodeId().equals(targetId) && sourceId != null) neighbors.add(sourceId);
+            }
+            for (String neighborId : neighbors) {
+                if (discovered.size() >= maxNodes) break;
+                if (theoryEntityIds.contains(neighborId) && discovered.add(neighborId)) {
+                    queue.addLast(new ManagedNodeDepth(neighborId, current.depth() + 1));
+                }
+            }
+        }
+        return discovered;
     }
 
     /**
@@ -710,4 +794,6 @@ public class BayesianNetworkService {
         }
         return new ArrayList<>();
     }
+
+    private record ManagedNodeDepth(String nodeId, int depth) { }
 }

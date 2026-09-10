@@ -21,7 +21,7 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "headers",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "headers", description = "Install Kompile program header files.", mixinStandardHelpOptions = false)
 public class InstallHeaders implements Callable<Integer> {
 
     public final static String HEADERS_BASE_URL = "https://raw.githubusercontent.com/KonduitAI/kompile-program-repository/main/";

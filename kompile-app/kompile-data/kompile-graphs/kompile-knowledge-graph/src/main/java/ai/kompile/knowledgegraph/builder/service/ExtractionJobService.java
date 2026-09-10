@@ -35,6 +35,8 @@ import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
@@ -72,6 +74,8 @@ public class ExtractionJobService {
     private final GraphStorageRegistry storageRegistry;
     @Autowired
     private final ObjectMapper objectMapper;
+    @Autowired
+    private final EntityManager entityManager;
 
     // Track active jobs for progress updates
     private final Map<String, Consumer<BuildProgress>> progressCallbacks = new ConcurrentHashMap<>();
@@ -128,8 +132,7 @@ public class ExtractionJobService {
      */
     @Transactional
     public ExtractionJob startJob(String jobId, int totalChunks) {
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        ExtractionJob job = runnableJobForUpdate(jobId);
 
         job.setTotalChunks(totalChunks);
         job.start();
@@ -141,6 +144,8 @@ public class ExtractionJobService {
      */
     @Transactional
     public void updateJobProgress(String jobId, int processedChunks, int proposalsCreated) {
+        ExtractionJob current = jobForUpdate(jobId);
+        if (current.isTerminal()) return;
         jobRepository.updateProgress(jobId, processedChunks, proposalsCreated);
 
         // Notify progress callback if registered
@@ -164,8 +169,7 @@ public class ExtractionJobService {
      */
     @Transactional
     public ExtractionJob completeJob(String jobId) {
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        ExtractionJob job = runnableJobForUpdate(jobId);
 
         job.complete();
         ExtractionJob saved = jobRepository.save(job);
@@ -184,8 +188,7 @@ public class ExtractionJobService {
      */
     @Transactional
     public ExtractionJob completeJob(String jobId, int proposalsCreated) {
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        ExtractionJob job = runnableJobForUpdate(jobId);
 
         job.setProposalsCreated(proposalsCreated);
         job.complete();
@@ -205,8 +208,8 @@ public class ExtractionJobService {
      */
     @Transactional
     public ExtractionJob failJob(String jobId, String errorMessage) {
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        ExtractionJob job = jobForUpdate(jobId);
+        if (job.isTerminal()) return job;
 
         job.fail(errorMessage);
         ExtractionJob saved = jobRepository.save(job);
@@ -225,8 +228,7 @@ public class ExtractionJobService {
      */
     @Transactional
     public ExtractionJob cancelJob(String jobId) {
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        ExtractionJob job = jobForUpdate(jobId);
 
         if (job.isTerminal()) {
             throw new IllegalStateException("Cannot cancel terminal job: " + job.getStatus());
@@ -235,6 +237,23 @@ public class ExtractionJobService {
         job.cancel();
         progressCallbacks.remove(jobId);
         return jobRepository.save(job);
+    }
+
+    private ExtractionJob jobForUpdate(String jobId) {
+        ExtractionJob job = jobRepository.findByJobIdForUpdate(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        // A locking query does not refresh an entity already cached by OpenEntityManagerInView.
+        // Reload under the same lock so a remote call's stale RUNNING state cannot undo cancellation.
+        entityManager.refresh(job, LockModeType.PESSIMISTIC_WRITE);
+        return job;
+    }
+
+    private ExtractionJob runnableJobForUpdate(String jobId) {
+        ExtractionJob job = jobForUpdate(jobId);
+        if (job.isTerminal()) {
+            throw new java.util.concurrent.CancellationException("Job is already terminal: " + job.getStatus());
+        }
+        return job;
     }
 
     /**
@@ -258,6 +277,7 @@ public class ExtractionJobService {
      */
     @Transactional
     public List<TripleProposal> createProposals(ExtractionJob job, List<ProposedTriple> triples) {
+        job = runnableJobForUpdate(job.getJobId());
         List<TripleProposal> proposals = new ArrayList<>();
 
         for (ProposedTriple triple : triples) {
@@ -304,9 +324,10 @@ public class ExtractionJobService {
             return 0;
         }
 
-        ExtractionJob job = jobRepository.findByJobId(jobId)
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
-
+        ExtractionJob job = runnableJobForUpdate(jobId);
+        if (!java.util.Objects.equals(factSheetId, job.getFactSheetId())) {
+            throw new IllegalArgumentException("Job belongs to a different fact sheet");
+        }
         List<TripleProposal> created = createProposals(job, triples);
         return created.size();
     }

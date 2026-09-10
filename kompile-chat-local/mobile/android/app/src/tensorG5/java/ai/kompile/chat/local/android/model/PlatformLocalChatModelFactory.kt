@@ -13,10 +13,19 @@ import org.nd4j.dsp.runtime.litertlm.SdxLiteRtLmChatSession
 import java.io.File
 import java.nio.file.Paths
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Consumer
 
 /** Google Tensor G5 direct-NPU implementation; generic NNAPI is never selected. */
 internal object PlatformLocalChatModelFactory {
+    private val activeSessions = AtomicInteger(0)
+
+    fun prepareStorageMutation(@Suppress("UNUSED_PARAMETER") context: Context) {
+        check(activeSessions.get() == 0) {
+            "Tensor G5 still owns a direct LiteRT session; model storage cannot be deleted."
+        }
+    }
 
     fun open(
         context: Context,
@@ -42,26 +51,31 @@ internal object PlatformLocalChatModelFactory {
             )
             val dispatchDirectory = applicationContext.applicationInfo.nativeLibraryDir
                 ?: error("Android native library directory is unavailable")
+            val dspCacheDirectory = SdxStorageLayout.dspCacheRoot(applicationContext)
+            require(dspCacheDirectory.isDirectory || dspCacheDirectory.mkdirs()) {
+                "Unable to create the DSP disk cache: ${dspCacheDirectory.absolutePath}"
+            }
             operation.checkpoint(NativeOperationCheckpoint.LOAD_LITERT_RUNTIME)
             val builder = SdxLiteRtLmChatSession.builder(
                 resolvedModel.runtimeModelPath(),
                 Paths.get(dispatchDirectory)
             )
-                .cacheDirectory(applicationContext.cacheDir.toPath())
+                .cacheDirectory(dspCacheDirectory.toPath())
                 .systemMessage(GraphChatPrompt.systemPrompt())
                 .maxOutputTokens(maxTokens)
                 .sampler(40, 0.9f, temperature, 0)
                 .enableBenchmark(true)
             operation.checkpoint(NativeOperationCheckpoint.CREATE_LITERT_SESSION)
             val session = builder.build()
-            val wrapped = TensorG5Session(
+            operation.complete()
+            activeSessions.incrementAndGet()
+            return TensorG5Session(
                 applicationContext,
                 diagnosticModelPath,
                 session,
-                File(modelPath).name
+                File(modelPath).name,
+                onClosed = { activeSessions.decrementAndGet() },
             )
-            operation.complete()
-            return wrapped
         } catch (failure: Throwable) {
             finishFailed(operation, failure)
             throw failure
@@ -81,9 +95,11 @@ private class TensorG5Session(
     context: Context,
     private val diagnosticModelPath: String,
     private val session: SdxLiteRtLmChatSession,
-    modelName: String
+    modelName: String,
+    private val onClosed: () -> Unit,
 ) : PlatformLocalChatSession {
     private val applicationContext = context.applicationContext
+    private val closed = AtomicBoolean(false)
 
     override val routeName: String = "LOCAL_TENSOR_G5"
     override val modelId: String = "sdx-tensor-g5:$modelName"
@@ -137,6 +153,7 @@ private class TensorG5Session(
     }
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         val operation = NativeOperationJournal(applicationContext).begin(
             modelPath = diagnosticModelPath,
             operation = NativeOperationKind.SDX_MODEL_TEARDOWN,
@@ -145,7 +162,9 @@ private class TensorG5Session(
         try {
             session.close()
             operation.complete()
+            onClosed()
         } catch (failure: Throwable) {
+            closed.set(false)
             finishFailed(operation, failure)
             throw failure
         }

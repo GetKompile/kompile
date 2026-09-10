@@ -7,7 +7,7 @@
  * source attribution, cancel/stop, and error handling.
  */
 
-import { test, expect, StreamController, triggerAngularCD } from './fixtures/kompile.fixture';
+import { test, expect, StreamController, triggerAngularCD } from '../fixtures/kompile.fixture';
 
 /**
  * Helper: select an agent (if not auto-selected), type a message, and send it.
@@ -20,10 +20,13 @@ async function sendChatMessage(page: import('@playwright/test').Page, message: s
   // Wait for agents to populate in the select dropdown.
   await expect(agentSelect.locator('option')).not.toHaveCount(1, { timeout: 10_000 });
 
-  // Select an agent if none auto-selected
+  // Select the first enabled harness persona if none was auto-selected.
   const isDisabled = await input.isDisabled();
   if (isDisabled) {
-    await agentSelect.selectOption({ label: /Claude Code/i });
+    const firstPersona = agentSelect.locator('option:not([disabled])').first();
+    const value = await firstPersona.getAttribute('value');
+    if (!value) throw new Error('No enabled Kompile harness persona is available');
+    await agentSelect.selectOption(value);
   }
 
   await expect(input).toBeEnabled({ timeout: 5_000 });
@@ -397,6 +400,9 @@ test.describe('Chat Streaming — Request Validation', () => {
     // Verify payload
     expect(capturedBody).not.toBeNull();
     expect(capturedBody!['message']).toBe('Payload test');
-    expect(capturedBody!['agentName']).toBeDefined();
+    expect(capturedBody!['agentName']).toBe('coder');
+    expect(capturedBody!['sessionId']).toBeDefined();
+    expect(String(capturedBody!['sessionId'])).not.toHaveLength(0);
+    expect(capturedBody!['enableMemory']).toBe(true);
   });
 });

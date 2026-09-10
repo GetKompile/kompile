@@ -16,12 +16,19 @@
 
 package ai.kompile.graph.neo4j;
 
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
+import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
+import org.springframework.ai.document.Document;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -99,6 +106,86 @@ public class Neo4jGraphRagServiceTest {
             // Assert
             assertEquals(SearchType.LOCAL, localQuery.getSearchType());
             assertEquals(SearchType.GLOBAL, globalQuery.getSearchType());
+        }
+    }
+
+    @Nested
+    @DisplayName("Query Validation Tests")
+    class QueryValidationTests {
+
+        @Test
+        @DisplayName("Should return an empty result for a blank query without embedding")
+        void shouldReturnEmptyResultForBlankQueryWithoutEmbedding() {
+            StubEmbeddingModel embeddingModel = new StubEmbeddingModel(null);
+            Neo4jGraphRagService service = new Neo4jGraphRagService(null, embeddingModel, null, null);
+
+            GraphRagResult result = service.answerQuery(GraphRagQuery.builder().query("  ").build());
+
+            assertEquals("Please provide a valid query.", result.getAnswer());
+            assertEquals("", result.getFormattedContext());
+            assertEquals(0, embeddingModel.singleEmbeddingCalls);
+        }
+
+        @Test
+        @DisplayName("Should reject a zero embedding for a nonblank query")
+        void shouldRejectZeroEmbeddingForNonblankQuery() {
+            StubEmbeddingModel embeddingModel = new StubEmbeddingModel(Nd4j.zeros(3));
+            Neo4jGraphRagService service = new Neo4jGraphRagService(null, embeddingModel, null, null);
+
+            GraphRagResult result = service.answerQuery(GraphRagQuery.builder()
+                    .query("valid query")
+                    .conversationId("")
+                    .build());
+
+            assertEquals("Error generating query embedding. Please try again.", result.getAnswer());
+            assertEquals("", result.getFormattedContext());
+            assertEquals(1, embeddingModel.singleEmbeddingCalls);
+        }
+
+        @Test
+        @DisplayName("Should reject a nonfinite embedding for a nonblank query")
+        void shouldRejectNonfiniteEmbeddingForNonblankQuery() {
+            StubEmbeddingModel embeddingModel = new StubEmbeddingModel(Nd4j.create(new float[]{Float.NaN}));
+            Neo4jGraphRagService service = new Neo4jGraphRagService(null, embeddingModel, null, null);
+
+            GraphRagResult result = service.answerQuery(GraphRagQuery.builder()
+                    .query("valid query")
+                    .conversationId("")
+                    .build());
+
+            assertEquals("Error generating query embedding. Please try again.", result.getAnswer());
+            assertEquals("", result.getFormattedContext());
+            assertEquals(1, embeddingModel.singleEmbeddingCalls);
+        }
+    }
+
+    private static final class StubEmbeddingModel implements EmbeddingModel {
+        private final INDArray embedding;
+        private int singleEmbeddingCalls;
+
+        private StubEmbeddingModel(INDArray embedding) {
+            this.embedding = embedding;
+        }
+
+        @Override
+        public INDArray embed(String text) {
+            singleEmbeddingCalls++;
+            return embedding;
+        }
+
+        @Override
+        public INDArray embed(List<String> texts) {
+            return null;
+        }
+
+        @Override
+        public INDArray embedDocuments(List<Document> documents) {
+            return null;
+        }
+
+        @Override
+        public int dimensions() {
+            return embedding == null ? 0 : (int) embedding.length();
         }
     }
 

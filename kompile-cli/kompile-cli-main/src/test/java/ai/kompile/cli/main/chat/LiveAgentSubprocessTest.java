@@ -844,8 +844,11 @@ class LiveAgentSubprocessTest {
         assertFalse(codeBlock.isBlank());
         assertTrue(codeBlock.contains("java") || codeBlock.contains("Java"),
                 "Code block should mention the language");
-        assertTrue(codeBlock.contains("public class Foo"), "Code block should contain the code");
-        assertTrue(codeBlock.contains("int x = 1"), "Code block should contain all lines");
+        // Content may carry inline syntax styling — compare visible text
+        assertTrue(AsciiRenderer.stripAnsi(codeBlock).contains("public class Foo"),
+                "Code block should contain the code");
+        assertTrue(AsciiRenderer.stripAnsi(codeBlock).contains("int x = 1"),
+                "Code block should contain all lines");
         // Should have line numbers
         assertTrue(codeBlock.contains("1") && codeBlock.contains("2"),
                 "Code block should have line numbers");

@@ -43,18 +43,18 @@ class OntologySchemaTest {
         Instant now = Instant.now();
         OntologySchema schema = OntologySchema.builder()
                 .id("schema-001")
-                .name("FP&A CPG Channel v3.1")
+                .name("Operations Knowledge Model v3.1")
                 .version(3)
-                .templateId("FP&A_CPG_Channel v3.1")
+                .templateId("operations-template-v3.1")
                 .createdAt(now)
                 .updatedAt(now)
                 .updatedBy("user-ontology-admin")
                 .build();
 
         assertThat(schema.getId()).isEqualTo("schema-001");
-        assertThat(schema.getName()).isEqualTo("FP&A CPG Channel v3.1");
+        assertThat(schema.getName()).isEqualTo("Operations Knowledge Model v3.1");
         assertThat(schema.getVersion()).isEqualTo(3);
-        assertThat(schema.getTemplateId()).isEqualTo("FP&A_CPG_Channel v3.1");
+        assertThat(schema.getTemplateId()).isEqualTo("operations-template-v3.1");
         assertThat(schema.getCreatedAt()).isEqualTo(now);
         assertThat(schema.getUpdatedAt()).isEqualTo(now);
         assertThat(schema.getUpdatedBy()).isEqualTo("user-ontology-admin");
@@ -81,10 +81,10 @@ class OntologySchemaTest {
     void builder_withMetadata_preservesMap() {
         OntologySchema schema = OntologySchema.builder()
                 .id("schema-003")
-                .metadata(Map.of("domain", "FP&A", "industry", "CPG"))
+                .metadata(Map.of("domain", "Planning", "industry", "CPG"))
                 .build();
 
-        assertThat(schema.getMetadata()).containsEntry("domain", "FP&A");
+        assertThat(schema.getMetadata()).containsEntry("domain", "Planning");
         assertThat(schema.getMetadata()).containsEntry("industry", "CPG");
     }
 

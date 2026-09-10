@@ -22,9 +22,9 @@ import ai.kompile.cli.main.auth.NativeCliAuth;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.chat.ResumeAllCommand;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
-import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
-import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -41,13 +41,20 @@ import java.util.List;
 
 /**
  * Interactive setup wizard for kompile chat.
- * Presents session mode selection (Standard / Passthrough / Resume) FIRST,
+ * Presents session mode selection (Standard / Passthrough / Resume / Resume All) FIRST,
  * then only asks for provider/credential details if Standard mode is chosen.
  * Passthrough mode delegates to CLI agents (claude, codex, gemini, etc.)
  * which handle their own authentication — no API key collection needed.
  * Uses numbered input for selection - bulletproof across all terminal types.
  */
 public class SetupWizard {
+
+    private static final int RESUME_ALL_ACTIVE_WINDOW_MINUTES = 30;
+    private static final List<String> OPENAI_DOCUMENTED_MODELS = List.of(
+            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna");
+    private static final List<String> OPENAI_CODEX_DOCUMENTED_MODELS = List.of(
+            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+            "gpt-5.3-codex-spark");
 
     private static final String RESET = "\033[0m";
     private static final String BOLD = "\033[1m";
@@ -74,12 +81,62 @@ public class SetupWizard {
     record ProviderSelection(String vendor, String provider, AuthMethod authMethod) {}
 
     /** Authentication route selected for a vendor, including a transient API-key input. */
-    public record AuthenticationSelection(String provider, AuthMethod authMethod, String apiKey) {}
+    public record AuthenticationSelection(String provider, AuthMethod authMethod, String apiKey, String credentialName) {
+        public AuthenticationSelection(String provider, AuthMethod authMethod, String apiKey) {
+            this(provider, authMethod, apiKey, null);
+        }
+    }
+
+    /** Select or create a named account without changing the vendor's global selection. */
+    public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method) {
+        String provider = resolveProviderForAuth(vendor, method);
+        if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
+        if (method == AuthMethod.NATIVE) {
+            System.err.println("Native CLI authentication is externally managed; use a direct subscription route for session isolation.");
+            return null;
+        }
+        try {
+            CredentialStore store = CredentialStore.create();
+            List<CredentialStore.CredentialInfo> credentials = store.list(provider).stream()
+                    .filter(info -> compatibleCredentials(List.of(info), method).size() == 1
+                            || method == AuthMethod.OAUTH && isLegacyOpenAiCodexCredential(store, provider, info))
+                    .toList();
+            List<String> labels = new ArrayList<>(credentials.stream()
+                    .map(info -> info.credentialName() + " — " + info.type()
+                            + (info.identity() == null ? "" : " — " + info.identity())).toList());
+            labels.add("Sign in / add another credential");
+            int choice = selectNumbered(reader, "Authentication for this session:", labels);
+            if (choice < 0) return null;
+            String name;
+            if (choice < credentials.size()) {
+                name = credentials.get(choice).credentialName();
+            } else {
+                name = "session-" + java.util.UUID.randomUUID();
+                if (method == AuthMethod.OAUTH) {
+                    ManagedCredential credential = OAuthCredentialManager.create().login(provider, name, false,
+                            new OAuthProviderFlow.LoginOptions(null, false, null, null), new WizardOAuthInteraction(reader));
+                    name = store.credentialName(provider, credential);
+                } else {
+                    String key = promptApiKey(reader, provider);
+                    if (key == null || key.isBlank()) return null;
+                    store.putApiKey(provider, name, key, false);
+                }
+            }
+            if (name == null) throw new IOException("Cannot identify selected credential");
+            return new AuthenticationSelection(provider, method, null, name);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (IOException e) {
+            System.err.println("Could not select session authentication: " + e.getMessage());
+            return null;
+        }
+    }
 
     /** Exact provider wire value plus the label shown in the setup wizard. */
     public record ThinkingOption(String value, String label) {}
 
-    private record ModelSelection(String model, ModelDiscovery.Result discovery) {}
+    record ModelSelection(String model, ModelDiscovery.Result discovery) {}
 
     private static final List<String> STANDARD_RUNTIME_OPTIONS = List.of(
             "Kompile local model — start the packaged first-party serving subprocess (no full Kompile instance)",
@@ -88,10 +145,21 @@ public class SetupWizard {
             "Kompile instance — connect to one or start the installed kompile-chat service"
     );
 
+    private static final List<String> CHAT_MODE_OPTIONS = List.of(
+            "Standard Chat — REPL with RAG, memory, and tools",
+            "Passthrough — delegate to Claude Code, Codex, Gemini, etc.",
+            "Resume Previous Conversation",
+            "Resume All — launch sessions active in the last "
+                    + RESUME_ALL_ACTIVE_WINDOW_MINUTES + " minutes in new terminals"
+    );
+
+    private static final List<String> CHAT_MODE_VALUES = List.of(
+            "standard", "passthrough", "resume", "resume-all");
+
 
     /**
      * Run the interactive setup wizard.
-     * Returns a valid ChatConfig or null if the user cancels.
+     * Returns a chat configuration, a completed resume-action sentinel, or null on cancellation.
      */
     public static ChatConfig run() {
         return run(ChatConfig.Scope.PROJECT, ChatConfig.defaultProjectRoot());
@@ -129,8 +197,9 @@ public class SetupWizard {
             String chatMode = selectChatMode(reader);
             if (chatMode == null) return null;
 
-            // Handle resume mode - close our terminal first so ResumeTool can own it
-            if ("resume".equals(chatMode)) {
+            // Handle resume actions - close our terminal first so the selected
+            // resume surface (or newly launched terminals) owns the TTY.
+            if ("resume".equals(chatMode) || "resume-all".equals(chatMode)) {
                 try {
                     terminal.close();
                 } catch (Exception e) {
@@ -138,27 +207,44 @@ public class SetupWizard {
                 }
                 terminal = null;
 
-                System.out.println();
-                System.out.println(GREEN + "  Launching Resume Tool..." + RESET);
-                System.out.println();
-                try {
-                    ResumeTool resumeTool = new ResumeTool();
-                    resumeTool.runInteractiveBrowser();
-                    ChatConfig resumeConfig = new ChatConfig(null, null, null, null);
-                    resumeConfig.setChatMode("resume");
-                    return resumeConfig;
-                } catch (IOException e) {
-                    System.err.println("Error launching resume tool: " + e.getMessage());
-                    return null;
+                if ("resume-all".equals(chatMode)) {
+                    System.out.println();
+                    System.out.println(GREEN + "  Resuming sessions active in the last "
+                            + RESUME_ALL_ACTIVE_WINDOW_MINUTES + " minutes..." + RESET);
+                    System.out.println();
+                    if (ResumeAllCommand.executeInline(resumeAllArguments()) != 0) {
+                        return null;
+                    }
+                } else {
+                    System.out.println();
+                    System.out.println(GREEN + "  Launching Resume Tool..." + RESET);
+                    System.out.println();
+                    try {
+                        ResumeTool resumeTool = new ResumeTool();
+                        resumeTool.runInteractiveBrowser();
+                    } catch (IOException e) {
+                        System.err.println("Error launching resume tool: " + e.getMessage());
+                        return null;
+                    }
                 }
+
+                ChatConfig completedAction = new ChatConfig(null, null, null, null);
+                completedAction.setChatMode("resume");
+                return completedAction;
             }
 
-            // Step 2: If passthrough mode, select only the passthrough style and agent.
-            // Passthrough is a direct handoff to the native terminal; model and thinking
-            // selection belong exclusively to the standalone Kompile Chat flow.
+            ProfileSelection profile = selectProjectProfile(reader, projectRoot, chatMode);
+            if (profile.cancelled()) return null;
+            if (profile.config() != null) {
+                ChatConfig selected = profile.config();
+                JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
+                selected.save(targetScope, projectRoot);
+                return selected;
+            }
+
+            // Step 2: Select the passthrough style and agent when no profile was chosen.
             String passthroughAgent = null;
             boolean passthroughManaged = true;
-            Boolean enforcementChoice = null; // null = not asked; the router honors a FALSE
             if ("passthrough".equals(chatMode)) {
                 // Ask managed vs direct first
                 List<String> styles = List.of(
@@ -172,40 +258,6 @@ public class SetupWizard {
                 System.out.println();
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
-
-                if (passthroughManaged) {
-                    // Step 2b: Optional rule enforcement (judge/enforcer).
-                    // The Y/N answer is recorded on the ChatConfig (enforcementEnabled) so the
-                    // router honors it for THIS session — a stale .kompile/enforcer-config.json
-                    // can no longer force enforcement back on after the user answers "N".
-                    System.out.println();
-                    if (promptYesNo(reader,
-                            "Enable rule enforcement (judge/enforcer) for this session?", false)) {
-                        Path enforcerWd = Path.of(System.getProperty("user.dir"))
-                                .toAbsolutePath().normalize();
-                        try {
-                            EnforcerConfig enforcerConfig =
-                                    EnforcerSetupWizard.runWithReader(reader, enforcerWd, passthroughAgent);
-                            if (enforcerConfig != null) {
-                                enforcementChoice = Boolean.TRUE;
-                                System.out.println(GREEN + "  ✓ Enforcement configured ("
-                                        + (enforcerConfig.isKeywordMode() ? "keyword rules" : "LLM judge")
-                                        + ") → .kompile/enforcer-config.json" + RESET);
-                            } else {
-                                enforcementChoice = Boolean.FALSE; // cancelled → no enforcement this run
-                                System.out.println(YELLOW
-                                        + "  Enforcement setup cancelled — continuing without it." + RESET);
-                            }
-                        } catch (Exception e) {
-                            enforcementChoice = Boolean.FALSE;
-                            System.err.println("  Enforcer setup failed: " + e.getMessage());
-                        }
-                    } else {
-                        enforcementChoice = Boolean.FALSE; // explicit opt-out for THIS session
-                    }
-                } else {
-                    enforcementChoice = Boolean.FALSE; // direct style has no managed enforcer layer
-                }
             }
 
             // Step 3: For standard mode, select the runtime before provider details.
@@ -218,15 +270,20 @@ public class SetupWizard {
             String baseUrl = null;
             ModelDiscovery.Result selectedDiscovery = null;
             ProviderSelection providerSelection = null;
+            String credentialName = null;
+            String authScope = existingConfig == null ? "session" : existingConfig.getAuthenticationScope();
 
             if ("standard".equals(chatMode)) {
                 providerSelection = selectStandardProvider(reader);
                 if (providerSelection == null) return null;
-                AuthenticationSelection authentication = authenticate(
-                        reader, providerSelection.vendor(), providerSelection.authMethod());
+                AuthenticationSelection authentication = "global".equals(authScope)
+                        || providerSelection.authMethod() == AuthMethod.NATIVE
+                        ? authenticate(reader, providerSelection.vendor(), providerSelection.authMethod())
+                        : authenticateSession(reader, providerSelection.vendor(), providerSelection.authMethod());
                 if (authentication == null) return null;
                 provider = authentication.provider();
                 apiKey = authentication.apiKey();
+                credentialName = authentication.credentialName();
                 baseUrl = promptBaseUrl(reader, provider);
                 if (existingConfig != null
                         && provider.equalsIgnoreCase(existingConfig.getProvider())
@@ -234,6 +291,11 @@ public class SetupWizard {
                     // A provider switch must not inherit another provider's endpoint, but
                     // re-running setup for the same provider should retain its custom URL.
                     baseUrl = existingConfig.getBaseUrl();
+                }
+                if ("custom".equalsIgnoreCase(provider)
+                        && (baseUrl == null || baseUrl.isBlank())) {
+                    System.err.println("  Custom OpenAI-compatible endpoints require a base URL.");
+                    return null;
                 }
 
                 if (!"kompile".equals(provider)) {
@@ -244,6 +306,8 @@ public class SetupWizard {
                             apiKey,
                             sameProvider ? existingConfig.getModel() : null,
                             baseUrl);
+                    discoveryConfig.setAuthenticationScope(authScope);
+                    if (credentialName != null) discoveryConfig.setCredentialName(credentialName);
                     if (sameProvider && (baseUrl == null || baseUrl.isBlank())) {
                         discoveryConfig.setBaseUrl(existingConfig.getBaseUrl());
                     }
@@ -265,13 +329,28 @@ public class SetupWizard {
             // Build and save config
             String selectedModel = model == null || model.isBlank() ? null : model;
             ChatConfig config = new ChatConfig(provider, apiKey, selectedModel, baseUrl);
+            config.setAuthenticationScope(authScope);
+            if (credentialName != null) config.setCredentialName(credentialName);
+            if (providerSelection != null) {
+                config.setAuthenticationMethod(providerSelection.authMethod().name()
+                        .toLowerCase(java.util.Locale.ROOT).replace('_', '-'));
+            }
             config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
+            if ("standard".equals(chatMode) && config.supportsFastMode()) {
+                System.out.println(YELLOW + "  " + config.fastModeCapabilities().notice() + RESET);
+                int fast = selectNumbered(reader, "Fast mode (higher cost; default off):",
+                        fastModeOptions(provider, selectedModel));
+                if (fast < 0) return null;
+                config.setFastMode(fast == 1);
+            }
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
                 config.setPassthroughAgent(passthroughAgent);
             }
             config.setPassthroughManaged(passthroughManaged);
-            config.setEnforcementEnabled(enforcementChoice);
+            if ("passthrough".equals(chatMode) && !configurePassthroughModel(reader, config)) return null;
+            if (!saveProjectProfile(reader, projectRoot, config)) return null;
+            JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, config);
 
             try {
                 config.save(targetScope, projectRoot);
@@ -284,10 +363,6 @@ public class SetupWizard {
                     System.out.println("  Agent:     " + BOLD + passthroughAgent + RESET);
                     System.out.println("  Style:     " + BOLD
                             + (passthroughManaged ? "Kompile managed" : "Direct") + RESET);
-                    if (passthroughManaged && enforcementChoice != null) {
-                        System.out.println("  Enforcer:  " + BOLD
-                                + (Boolean.TRUE.equals(enforcementChoice) ? "enabled" : "disabled") + RESET);
-                    }
                 } else {
                     String displayedProvider = providerSelection == null
                             ? provider
@@ -335,6 +410,129 @@ public class SetupWizard {
         }
     }
 
+    /** A skipped picker is distinct from cancellation and from a selected launch configuration. */
+    public record ProfileSelection(ChatConfig config, boolean cancelled) {}
+
+    public static ProfileSelection selectProjectProfile(Path projectRoot, String chatMode) {
+        try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
+            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+            return selectProjectProfile(reader, projectRoot, chatMode);
+        } catch (IOException e) {
+            System.err.println("Could not open profile picker: " + e.getMessage());
+            return new ProfileSelection(null, true);
+        }
+    }
+
+    static ProfileSelection selectProjectProfile(LineReader reader, Path projectRoot, String chatMode) {
+        try {
+            List<ChatProfiles.Profile> profiles = ChatProfiles.list(projectRoot, chatMode);
+            if (profiles.isEmpty()) return new ProfileSelection(null, false);
+            Boolean use = profileYesNo(reader, "Use a saved project profile for " + chatMode + "?");
+            if (use == null) return new ProfileSelection(null, true);
+            if (!use) return new ProfileSelection(null, false);
+            List<String> vendors = profiles.stream().map(ChatProfiles.Profile::vendor).distinct().toList();
+            int vendor = selectNumbered(reader, "Select Profile Vendor:", vendors);
+            if (vendor < 0) return new ProfileSelection(null, true);
+            List<ChatProfiles.Profile> choices = profiles.stream()
+                    .filter(profile -> profile.vendor().equals(vendors.get(vendor))).toList();
+            int selected = selectNumbered(reader, "Select Project Profile:", choices.stream()
+                    .map(profile -> profile.name() + " — " + profile.mode() + " / "
+                            + (profile.model() == null ? "native/server default" : profile.model())
+                            + " / thinking: " + (profile.thinking() == null ? "default" : profile.thinking()))
+                    .toList());
+            if (selected < 0) return new ProfileSelection(null, true);
+            ChatProfiles.Profile profile = choices.get(selected);
+            System.out.println("  Using project profile: " + profile.vendor() + " / " + profile.name());
+            return new ProfileSelection(profile.toConfig(), false);
+        } catch (IOException e) {
+            System.err.println("Could not read project profiles: " + e.getMessage());
+            return new ProfileSelection(null, true);
+        }
+    }
+
+    static boolean saveProjectProfile(LineReader reader, Path projectRoot, ChatConfig config) {
+        Boolean save = profileYesNo(reader, "Save these choices as a named project profile?");
+        if (save == null) return false;
+        if (!save) return true;
+        try {
+            String name = reader.readLine("  Profile name (blank to skip): ");
+            if (name == null) return false;
+            if (name.isBlank()) return true;
+            ChatProfiles.Profile profile = ChatProfiles.capture(name, config);
+            if (!ChatProfiles.save(projectRoot, profile, false)) {
+                Boolean replace = profileYesNo(reader,
+                        "Replace existing " + profile.vendor() + " / " + profile.mode() + " / " + name + "?");
+                if (replace == null) return false;
+                if (!replace) return true;
+                ChatProfiles.save(projectRoot, profile, true);
+            }
+            System.out.println("  Profile saved to " + ChatProfiles.path(projectRoot));
+        } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
+            return false;
+        } catch (IOException | IllegalArgumentException e) {
+            System.err.println("Could not save project profile: " + e.getMessage());
+        }
+        return true;
+    }
+
+    /** Strict yes/no with an explicit cancellation result; EOF must never mean consent. */
+    private static Boolean profileYesNo(LineReader reader, String question) {
+        while (true) {
+            String input;
+            try {
+                input = reader.readLine("  " + question + " [y/N]: ");
+            } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
+                return null;
+            }
+            if (input == null) return null;
+            switch (input.trim().toLowerCase(java.util.Locale.ROOT)) {
+                case "y", "yes" -> { return true; }
+                case "", "n", "no" -> { return false; }
+                case "q", "quit", "cancel" -> { return null; }
+                default -> System.out.println("  Please enter yes or no.");
+            }
+        }
+    }
+
+    static boolean supportsPassthroughThinking(String agent, boolean managed) {
+        return !AgentLaunchDefaults.commandArguments(agent, null, "probe",
+                managed ? AgentLaunchDefaults.LaunchMode.MANAGED
+                        : AgentLaunchDefaults.LaunchMode.INTERACTIVE).isEmpty();
+    }
+
+    static boolean configurePassthroughModel(LineReader reader, ChatConfig config) {
+        Boolean customize = profileYesNo(reader, "Choose model/thinking for this CLI agent?");
+        if (customize == null) return false;
+        if (!customize) return true;
+        String agent = config.getPassthroughAgent();
+        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.discoverNative(agent);
+        if (!models.isEmpty()) {
+            List<String> options = new ArrayList<>();
+            options.add("Keep agent defaults");
+            models.forEach(model -> options.add(model.id()));
+            int selected = selectNumbered(reader, "Select Agent Model:", options);
+            if (selected < 0) return false;
+            config.setModel(selected == 0 ? null : models.get(selected - 1).id());
+        } else {
+            // Native CLIs without a catalog own their model IDs; do not substitute an API catalog.
+            String model = reader.readLine("  Native CLI model id (blank keeps agent defaults): ");
+            if (model == null) return false;
+            config.setModel(model.isBlank() ? null : model.trim());
+        }
+        if (supportsPassthroughThinking(agent, config.isPassthroughManaged())) {
+            String thinking = reader.readLine("  Native CLI thinking/effort value (blank keeps agent defaults): ");
+            if (thinking == null) return false;
+            config.setThinking(thinking.isBlank() ? null : thinking.trim());
+        } else {
+            System.out.println("  This CLI/style owns thinking settings; no supported launch override.");
+        }
+        // Validate CLI argument safety before persisting user input.
+        AgentLaunchDefaults.commandArguments(agent, config.getModel(), config.getThinking(),
+                config.isPassthroughManaged() ? AgentLaunchDefaults.LaunchMode.MANAGED
+                        : AgentLaunchDefaults.LaunchMode.INTERACTIVE);
+        return true;
+    }
+
     // ── Selection helpers ───────────────────────────────────────────────────
 
     /**
@@ -342,7 +540,7 @@ public class SetupWizard {
      * Accepts either a number (1-N) or a partial name match.
      * Returns the selected index (0-based), or -1 on cancel.
      */
-    private static int selectNumbered(LineReader reader, String title, List<String> items) {
+    static int selectNumbered(LineReader reader, String title, List<String> items) {
         System.out.println(BOLD + "  " + title + RESET);
         System.out.println();
         for (int i = 0; i < items.size(); i++) {
@@ -384,21 +582,30 @@ public class SetupWizard {
 
     // ── Chat mode selection ─────────────────────────────────────────────────
 
+    static List<String> chatModeOptions() {
+        return CHAT_MODE_OPTIONS;
+    }
+
+    static List<String> chatModeValues() {
+        return CHAT_MODE_VALUES;
+    }
+
+    static String resumeAllArguments() {
+        return "--active-within " + RESUME_ALL_ACTIVE_WINDOW_MINUTES;
+    }
+
     private static String selectChatMode(LineReader reader) {
-        List<String> modes = List.of(
-            "Standard Chat — REPL with RAG, memory, and tools",
-            "Passthrough — delegate to Claude Code, Codex, Gemini, etc.",
-            "Resume Previous Conversation"
-        );
+        List<String> modes = chatModeOptions();
 
         System.out.println();
         int selected = selectNumbered(reader, "Select Chat Mode:", modes);
         if (selected < 0) return null;
 
-        String[] values = {"standard", "passthrough", "resume"};
-        System.out.println("  → " + GREEN + Character.toUpperCase(values[selected].charAt(0)) + values[selected].substring(1) + RESET);
+        String value = chatModeValues().get(selected);
+        System.out.println("  → " + GREEN + Character.toUpperCase(value.charAt(0))
+                + value.substring(1) + RESET);
         System.out.println();
-        return values[selected];
+        return value;
     }
 
     // ── Passthrough agent selection ─────────────────────────────────────────
@@ -464,10 +671,17 @@ public class SetupWizard {
     }
 
     public static List<String> directVendorOrder() {
+        OAuthProviderRegistry oauthRegistry = new OAuthProviderRegistry();
         return java.util.stream.Stream.concat(
                         ChatProviderRegistry.directProviders().stream().map(ChatProvider::id),
-                        new OAuthProviderRegistry().flows().stream()
-                                .map(OAuthProviderFlow::userFacingProviderId))
+                        oauthRegistry.flows().stream()
+                                .map(OAuthProviderFlow::userFacingProviderId)
+                                // OAuth-only integration vendors (Google, Microsoft, Notion,
+                                // Reddit, Atlassian) own no chat provider. They authenticate
+                                // crawl/data sources and are NOT LLM vendors, so they must
+                                // never surface in the chat vendor menus.
+                                .filter(vendor -> vendor != null && !vendor.isBlank()
+                                        && ChatProviderRegistry.find(vendor) != null))
                 .filter(provider -> provider != null && !provider.isBlank())
                 .distinct()
                 .toList();
@@ -476,7 +690,7 @@ public class SetupWizard {
     public static List<String> authOptions(String vendor) {
         List<String> options = new ArrayList<>();
         for (AuthMethod method : authMethods(vendor)) {
-            options.add(authMethodLabel(method));
+            options.add(authMethodLabel(vendor, method));
         }
         return List.copyOf(options);
     }
@@ -541,7 +755,7 @@ public class SetupWizard {
 
     /** Fetch the provider's current model ids and discovery status. */
     public static ModelDiscovery.Result modelDiscovery(String provider) {
-        return ModelDiscoveryHttp.discoverResult(provider, null, null);
+        return ModelDiscoveryHttp.refreshResult(provider, null, null);
     }
 
     /** Fetch live models with the transient credential and current endpoint. */
@@ -551,7 +765,10 @@ public class SetupWizard {
                 && provider != null
                 && provider.equalsIgnoreCase(config.getProvider());
         String baseUrl = sameProvider ? config.getBaseUrl() : null;
-        return ModelDiscoveryHttp.discoverResult(provider, transientApiKey, baseUrl);
+        if (sameProvider && config.getCredentialName() != null) {
+            return ModelDiscoveryHttp.refreshResultWithAuth(provider, config.resolveRequestAuth(), baseUrl);
+        }
+        return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
     }
 
     /** Force a live provider request, bypassing and refreshing the model cache. */
@@ -566,41 +783,59 @@ public class SetupWizard {
                 && provider != null
                 && provider.equalsIgnoreCase(config.getProvider());
         String baseUrl = sameProvider ? config.getBaseUrl() : null;
+        if (sameProvider && config.getCredentialName() != null) {
+            return ModelDiscoveryHttp.refreshResultWithAuth(provider, config.resolveRequestAuth(), baseUrl);
+        }
         return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
     }
 
     public static List<String> modelOptions(String provider) {
-        return modelIds(modelDiscovery(provider), null);
+        return modelIds(provider, modelDiscovery(provider));
     }
 
     /** Fetch live model ids with the transient credential and current endpoint. */
     public static List<String> modelOptions(String provider, String transientApiKey, ChatConfig config) {
         ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
-        String currentModel = config != null
-                && provider != null
-                && provider.equalsIgnoreCase(config.getProvider())
-                ? config.getModel() : null;
-        return modelIds(discovery, currentModel);
+        return modelIds(provider, discovery);
     }
 
     public static List<String> modelOptions(String provider, ChatConfig config) {
         return modelOptions(provider, null, config);
     }
 
-    /** Convert one discovery result to selectable ids, retaining the configured model. */
+    /** Convert one live discovery result to selectable provider model ids. */
     public static List<String> modelOptions(ModelDiscovery.Result discovery, String currentModel) {
-        return modelIds(discovery, currentModel);
+        return modelIds(discovery);
     }
 
-    private static List<String> modelIds(ModelDiscovery.Result discovery, String currentModel) {
-        List<String> ids = new ArrayList<>(discovery == null ? List.of() : discovery.models().stream()
-                .map(LiveModelDiscovery.Model::id)
-                .toList());
-        if (currentModel != null && !currentModel.isBlank()
-                && ids.stream().noneMatch(id -> id.equalsIgnoreCase(currentModel))) {
-            ids.add(currentModel);
+    static List<String> modelOptions(
+            String provider, ModelDiscovery.Result discovery, String currentModel) {
+        return modelIds(provider, discovery);
+    }
+
+    private static List<String> modelIds(ModelDiscovery.Result discovery) {
+        return modelIds(null, discovery);
+    }
+
+    private static List<String> modelIds(String provider, ModelDiscovery.Result discovery) {
+        if (discovery == null || !discovery.isUsable()) {
+            return List.of();
         }
+        List<String> ids = new ArrayList<>(documentedModels(provider));
+        discovery.models().stream()
+                .map(LiveModelDiscovery.Model::id)
+                .filter(id -> ids.stream().noneMatch(existing -> existing.equalsIgnoreCase(id)))
+                .forEach(ids::add);
         return List.copyOf(ids);
+    }
+
+    private static List<String> documentedModels(String provider) {
+        if (provider == null) return List.of();
+        return switch (provider.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "openai" -> OPENAI_DOCUMENTED_MODELS;
+            case "openai-codex" -> OPENAI_CODEX_DOCUMENTED_MODELS;
+            default -> List.of();
+        };
     }
 
     /** Resolve the active wire provider's current authentication route. */
@@ -710,7 +945,9 @@ public class SetupWizard {
         }
         System.out.println("  → " + GREEN + "OpenAI-compatible endpoint" + RESET);
         System.out.println();
-        return new ProviderSelection("custom", "custom", AuthMethod.NONE);
+        AuthMethod authMethod = selectAuthMethod(reader, "custom");
+        return authMethod == null ? null
+                : new ProviderSelection("custom", "custom", authMethod);
     }
 
     private static ProviderSelection selectProvider(LineReader reader, List<String> vendorKeys) {
@@ -740,13 +977,14 @@ public class SetupWizard {
         AuthMethod authMethod;
         if (methods.size() == 1) {
             authMethod = methods.get(0);
-            System.out.println("  Authentication: " + GREEN + authMethodLabel(authMethod) + RESET);
+            System.out.println("  Authentication: " + GREEN
+                    + authMethodLabel(vendor, authMethod) + RESET);
             System.out.println();
         } else {
             int selected = selectNumbered(reader, "Select Authentication:", authOptions(vendor));
             if (selected < 0) return null;
             authMethod = methods.get(selected);
-            System.out.println("  → " + GREEN + authMethodLabel(authMethod) + RESET);
+            System.out.println("  → " + GREEN + authMethodLabel(vendor, authMethod) + RESET);
             System.out.println();
         }
         return authMethod;
@@ -754,7 +992,7 @@ public class SetupWizard {
 
     private static List<AuthMethod> authMethods(String vendor) {
         if ("custom".equalsIgnoreCase(vendor)) {
-            return List.of(AuthMethod.NONE);
+            return List.of(AuthMethod.NONE, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
             return List.of(AuthMethod.NATIVE);
@@ -781,29 +1019,52 @@ public class SetupWizard {
     }
 
     private static boolean supportsApiKey(String vendor) {
+        if ("custom".equalsIgnoreCase(vendor)) return true;
         return new OAuthProviderRegistry().supportsApiKey(vendor);
     }
 
     public static String vendorLabel(String vendor) {
         ChatProvider provider = ChatProviderRegistry.find(vendor);
-        if (provider != null) {
-            return provider.displayName();
-        }
-        return new OAuthProviderRegistry().find(vendor)
+        String label = provider != null
+                ? provider.displayName()
+                : new OAuthProviderRegistry().find(vendor)
                 .map(OAuthProviderFlow::displayName)
                 .orElseGet(() -> ChatProviderRegistry.label(vendor));
+        AgentProvider agent = registryDefinition(vendor);
+        if (agent != null && agent.getModelListCommand() != null
+                && !agent.getModelListCommand().isEmpty()) {
+            return label + " (requires installed '" + agent.getCommand() + "' CLI)";
+        }
+        return label;
+    }
+
+    public static String authMethodLabel(String vendor, AuthMethod authMethod) {
+        if (authMethod == AuthMethod.API_KEY) {
+            ChatProvider provider = ChatProviderRegistry.find(vendor);
+            String label = provider == null ? null : provider.apiKeyAuthLabel();
+            if (label != null && !label.isBlank()) {
+                return label;
+            }
+        }
+        return authMethodLabel(authMethod);
     }
 
     public static String authMethodLabel(AuthMethod authMethod) {
         return switch (authMethod) {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "API key";
-            case NATIVE -> "Native provider authentication";
+            case NATIVE -> "Native CLI authentication (requires installed provider CLI)";
             case NONE -> "None";
         };
     }
 
     // ── Model selection ─────────────────────────────────────────────────────
+
+    /** No paid speed control is offered for an unsupported provider/model. */
+    public static List<String> fastModeOptions(String provider, String model) {
+        return ProviderFastModeCapabilities.forProvider(provider).supports(model)
+                ? List.of("off", "on") : List.of();
+    }
 
     public static List<ThinkingOption> thinkingOptions(String provider, String model) {
         return thinkingOptionsFromDiscovery(provider, model, null);
@@ -944,14 +1205,10 @@ public class SetupWizard {
         return selectModel(reader, provider, null, null);
     }
 
-    private static ModelSelection selectModel(
+    static ModelSelection selectModel(
             LineReader reader, String provider, String transientApiKey, ChatConfig config) {
         ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
-        String currentModel = config != null
-                && provider != null
-                && provider.equalsIgnoreCase(config.getProvider())
-                ? config.getModel() : null;
-        List<String> models = modelIds(discovery, currentModel);
+        List<String> models = modelIds(provider, discovery);
         if (!discovery.message().isBlank()) {
             System.err.println("  " + discovery.message());
         }
@@ -959,6 +1216,22 @@ public class SetupWizard {
             System.err.println("  Model discovery for " + vendorLabel(provider)
                     + " returned " + discovery.status().name().toLowerCase().replace('_', ' ')
                     + (discovery.message().isBlank() ? "." : ": " + discovery.message()));
+
+            // A transport failure must not collapse setup into a blind manual
+            // id prompt when a last known good catalog exists.
+            ModelCatalogSelection.CatalogList fallback =
+                    ModelCatalogSelection.listForPicker(discovery, provider);
+            if (!fallback.models().isEmpty()) {
+                System.out.println(YELLOW + "  " + fallback.banner() + RESET);
+                int selected = selectNumbered(
+                        reader, "Select Model (last known good):", fallback.models());
+                if (selected >= 0) {
+                    String model = fallback.models().get(selected);
+                    System.out.println("  → " + GREEN + model + RESET);
+                    System.out.println();
+                    return new ModelSelection(model, discovery);
+                }
+            }
 
             String manual = promptManual(reader, "  Enter model id manually (blank to cancel): ");
             if (manual != null) {
@@ -1025,7 +1298,8 @@ public class SetupWizard {
                             + (isLegacyOpenAiCodexCredential(store, provider, info)
                             ? ManagedCredential.OAUTH
                             : info.type())
-                            + (info.active() ? " (active)" : ""))
+                            + (info.identity() == null ? "" : " — " + info.identity())
+                            + " (" + info.status() + ")")
                     .toList();
             String prompt = authMethod == AuthMethod.OAUTH
                     ? "Select Subscription:"
@@ -1082,7 +1356,12 @@ public class SetupWizard {
 
     private static OAuthProviderFlow.RequestAuth resolveExistingCredential(String provider) {
         ChatConfig probe = new ChatConfig(provider, null, "credential-probe", null);
-        return probe.resolveRequestAuth();
+        try {
+            return probe.resolveRequestAuth();
+        } catch (ChatConfig.AuthenticationException e) {
+            System.err.println("  " + e.getMessage());
+            return null; // Setup can recover through an explicit new login.
+        }
     }
 
     private static boolean loginWithOAuth(LineReader reader, String provider) {

@@ -106,6 +106,18 @@ class CrawlSourceToolTest {
         assertNotNull(props.path("timeoutSeconds"), "schema must have 'timeoutSeconds'");
     }
 
+    @Test
+    void schemaDescribesProjectLocalStepsFromTheRuntimeCatalog() {
+        CrawlSourceTool tool = new CrawlSourceTool((String) null, om);
+        String description = tool.parameterSchema().path("properties")
+                .path("steps").path("description").asText();
+
+        assertTrue(description.contains("LEXICAL_INDEX"), description);
+        assertTrue(description.contains("LEARNING"), description);
+        assertTrue(description.contains("crawl_discover"), description);
+        assertTrue(tool.description().contains("MARKDOWN_EXTRACTION"), tool.description());
+    }
+
     // ── Input validation ──────────────────────────────────────────────────
 
     @Test
@@ -226,6 +238,27 @@ class CrawlSourceToolTest {
         assertTrue(result.getOutput().contains("GRAPH_EXTRACTION"),
                 "Output must include step name: " + result.getOutput());
         mockServer.verify();
+    }
+
+    @Test
+    void managedSingleSourceForwardsBothProviderAndModel() throws Exception {
+        RestTemplate rt = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(rt);
+        CrawlSourceTool tool = new CrawlSourceTool(new GroundingBackendClient("http://localhost", rt), om);
+        server.expect(requestTo("http://localhost/api/unified-crawl/single-source"))
+                .andExpect(request -> {
+                    JsonNode body = om.readTree(((org.springframework.mock.http.client.MockClientHttpRequest) request)
+                            .getBodyAsString());
+                    assertEquals("codex-cli", body.path("llmProvider").asText());
+                    assertEquals("request-model", body.path("modelName").asText());
+                })
+                .andRespond(withSuccess(persistResponseJson(), MediaType.APPLICATION_JSON));
+        ToolResult result = tool.execute(om.createObjectNode().put("text", "Acme acquired Initech.")
+                .put("provider", "codex-cli").put("model", "request-model"), ctx);
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(tool.parameterSchema().path("properties").path("provider").path("description").asText()
+                .contains("chat:<provider>"));
+        server.verify();
     }
 
     // ── Timed-out (not yet completed, jobId returned) ─────────────────────

@@ -30,19 +30,24 @@ class OntologyConformanceValidatorTest {
 
     private OntologySchema schema() {
         return OntologySchema.builder()
-                .name("FPnA")
+                .name("Planning")
                 .version(1)
                 .entityTypes(List.of(
                         EntityTypeDefinition.builder()
                                 .name("Account")
+                                .aliases(List.of("Ledger"))
                                 .fields(List.of(
                                         FieldDefinition.builder().name("code").required(true).regex("[0-9]{4}").build(),
                                         FieldDefinition.builder().name("balance").min(0.0).max(1000.0).build(),
                                         FieldDefinition.builder().name("currency").enumValues(List.of("USD", "EUR")).build()))
-                                .build()))
+                                .build(),
+                        EntityTypeDefinition.builder()
+                                .name("Report").aliases(List.of("Output")).build()))
                 .relationshipTypes(List.of(
-                        RelationshipTypeDefinition.builder()
-                                .type("FEEDS_INTO").sourceEntityType("Account").targetEntityType("Report")
+                    RelationshipTypeDefinition.builder()
+                                .type("FEEDS_INTO").canonicalType("FEEDS_INTO")
+                                .observedTypes(List.of("ROLLS_UP_TO"))
+                                .sourceEntityType("Account").targetEntityType("Report")
                                 .cardinality(Cardinality.MANY_TO_ONE).build()))
                 .build();
     }
@@ -93,6 +98,35 @@ class OntologyConformanceValidatorTest {
         var r = OntologyConformanceValidator.validateRelationship(schema(), "Account", "FEEDS_INTO", "Report");
         assertTrue(r.allowed());
         assertEquals(Cardinality.MANY_TO_ONE, r.cardinality());
+    }
+
+    @Test
+    void entityAndRelationshipAliasesConformToCanonicalDefinitions() {
+        var entity = OntologyConformanceValidator.validateEntity(
+                schema(), "Ledger", Map.of("code", "1234"));
+        var relation = OntologyConformanceValidator.validateRelationship(
+                schema(), "Ledger", "ROLLS_UP_TO", "Output");
+
+        assertFalse(entity.unknownType());
+        assertTrue(entity.conformant());
+        assertTrue(relation.allowed());
+        assertEquals(Cardinality.MANY_TO_ONE, relation.cardinality());
+    }
+
+    @Test
+    void relationshipDomainAndRangeAcceptEntitySubtypes() {
+        OntologySchema hierarchy = OntologySchema.builder().name("Hierarchy").version(1)
+                .entityTypes(List.of(
+                        EntityTypeDefinition.builder().name("PERSON").build(),
+                        EntityTypeDefinition.builder().name("EMPLOYEE").parentType("PERSON").build(),
+                        EntityTypeDefinition.builder().name("DOCUMENT").build(),
+                        EntityTypeDefinition.builder().name("REPORT").parentType("DOCUMENT").build()))
+                .relationshipTypes(List.of(RelationshipTypeDefinition.builder()
+                        .type("AUTHORED").sourceEntityType("PERSON").targetEntityType("DOCUMENT").build()))
+                .build();
+
+        assertTrue(OntologyConformanceValidator.validateRelationship(
+                hierarchy, "EMPLOYEE", "AUTHORED", "REPORT").allowed());
     }
 
     @Test

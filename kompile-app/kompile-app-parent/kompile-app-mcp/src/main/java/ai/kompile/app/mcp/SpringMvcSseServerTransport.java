@@ -64,6 +64,8 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
     private final Supplier<String> baseUrlSupplier;
     private final String messageEndpoint;
     private final String sseEndpoint;
+    private final long emitterTimeoutMillis;
+    private final boolean redactEndpointLogs;
 
     // Active sessions mapped by session ID
     private final Map<String, SessionTransport> sessions = new ConcurrentHashMap<>();
@@ -82,10 +84,24 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
      */
     public SpringMvcSseServerTransport(ObjectMapper objectMapper, Supplier<String> baseUrlSupplier,
                                         String messageEndpoint, String sseEndpoint) {
+        this(objectMapper, baseUrlSupplier, messageEndpoint, sseEndpoint, 300000L, false);
+    }
+
+    /**
+     * Variant for isolated bearer capabilities whose endpoint must not be written to logs.
+     */
+    public SpringMvcSseServerTransport(ObjectMapper objectMapper, Supplier<String> baseUrlSupplier,
+                                        String messageEndpoint, String sseEndpoint,
+                                        long emitterTimeoutMillis, boolean redactEndpointLogs) {
         this.objectMapper = objectMapper;
         this.baseUrlSupplier = baseUrlSupplier;
         this.messageEndpoint = messageEndpoint;
         this.sseEndpoint = sseEndpoint;
+        if (emitterTimeoutMillis <= 0) {
+            throw new IllegalArgumentException("emitterTimeoutMillis must be positive");
+        }
+        this.emitterTimeoutMillis = emitterTimeoutMillis;
+        this.redactEndpointLogs = redactEndpointLogs;
     }
 
     @Override
@@ -105,8 +121,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
 
         String sessionId = UUID.randomUUID().toString();
 
-        // Create SSE emitter with 5 minute timeout
-        SseEmitter emitter = new SseEmitter(300000L);
+        SseEmitter emitter = new SseEmitter(emitterTimeoutMillis);
 
         // Create the session transport
         SessionTransport sessionTransport = new SessionTransport(sessionId, emitter, objectMapper);
@@ -140,7 +155,11 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
             emitter.send(SseEmitter.event()
                     .name(ENDPOINT_EVENT_TYPE)
                     .data(messageUrl, MediaType.TEXT_PLAIN));
-            log.debug("Sent endpoint event to session {}: {}", sessionId, messageUrl);
+            if (redactEndpointLogs) {
+                log.debug("Sent scoped endpoint event to session {} (URL redacted)", sessionId);
+            } else {
+                log.debug("Sent endpoint event to session {}: {}", sessionId, messageUrl);
+            }
         } catch (IOException e) {
             log.error("Failed to send endpoint event to session {}", sessionId, e);
             removeSession(sessionId);
@@ -189,6 +208,22 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         return sessions.containsKey(sessionId);
     }
 
+    /** Open the optional server-to-client stream for an existing Streamable HTTP session. */
+    public SseEmitter openStreamableHttpStream(String sessionId) {
+        SessionTransport sessionTransport = sessions.get(sessionId);
+        if (sessionTransport == null) {
+            throw new IllegalArgumentException("Unknown session: " + sessionId);
+        }
+        SseEmitter stream = new SseEmitter(emitterTimeoutMillis);
+        if (!sessionTransport.claimCommonStreamEmitter(stream)) {
+            throw new IllegalStateException("Streamable MCP common stream is already open");
+        }
+        stream.onCompletion(() -> sessionTransport.clearCommonStreamEmitter(stream));
+        stream.onTimeout(() -> sessionTransport.clearCommonStreamEmitter(stream));
+        stream.onError(ignored -> sessionTransport.clearCommonStreamEmitter(stream));
+        return stream;
+    }
+
     /**
      * Get the number of active sessions.
      */
@@ -215,8 +250,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
 
         String sessionId = UUID.randomUUID().toString();
 
-        // Create SSE emitter with 5 minute timeout
-        SseEmitter emitter = new SseEmitter(300000L);
+        SseEmitter emitter = new SseEmitter(emitterTimeoutMillis);
 
         // Create the session transport with Streamable HTTP mode
         SessionTransport sessionTransport = new SessionTransport(sessionId, emitter, objectMapper);
@@ -224,10 +258,10 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         sessions.put(sessionId, sessionTransport);
 
         // Set up emitter callbacks
-        emitter.onCompletion(() -> {
-            log.debug("Streamable HTTP connection completed for session: {}", sessionId);
-            removeSession(sessionId);
-        });
+        // Completing one HTTP response must not delete the logical MCP session; subsequent
+        // requests reuse it via Mcp-Session-Id until DELETE, error, timeout, or capability revoke.
+        emitter.onCompletion(() ->
+                log.debug("Streamable HTTP response completed for session: {}", sessionId));
 
         emitter.onTimeout(() -> {
             log.debug("Streamable HTTP connection timed out for session: {}", sessionId);
@@ -245,8 +279,8 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
             sessionTransport.setSession(session);
         }
 
-        // Set this emitter as the response emitter
-        sessionTransport.setResponseEmitter(emitter);
+        // The initial request owns the sole response emitter until its initialize response is sent.
+        sessionTransport.claimResponseEmitter(emitter);
 
         // Process the initial message
         try {
@@ -284,7 +318,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         }
 
         // Each request gets its own emitter for the response
-        SseEmitter responseEmitter = new SseEmitter(300000L);
+        SseEmitter responseEmitter = new SseEmitter(emitterTimeoutMillis);
 
         try {
             McpSchema.JSONRPCMessage message = parseJsonRpcMessage(messageBody);
@@ -304,19 +338,30 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                 return responseEmitter;
             }
 
-            // Set the response emitter for this request
-            sessionTransport.setResponseEmitter(responseEmitter);
+            // A session has one in-flight response emitter. Reject overlap instead of routing
+            // one request's JSON-RPC response to another request's HTTP stream.
+            if (!sessionTransport.claimResponseEmitter(responseEmitter)) {
+                responseEmitter.completeWithError(
+                        new IllegalStateException("Concurrent streamable MCP requests are not supported"));
+                throw new IllegalStateException("Concurrent streamable MCP requests are not supported");
+            }
+            responseEmitter.onCompletion(
+                    () -> sessionTransport.clearResponseEmitter(responseEmitter));
+            responseEmitter.onTimeout(
+                    () -> sessionTransport.clearResponseEmitter(responseEmitter));
+            responseEmitter.onError(
+                    ignored -> sessionTransport.clearResponseEmitter(responseEmitter));
 
             McpServerSession session = sessionTransport.getSession();
             if (session != null) {
                 session.handle(message).subscribe(
                     v -> {
                         log.debug("Message processed for session {}", sessionId);
-                        sessionTransport.setResponseEmitter(null);
+                        sessionTransport.clearResponseEmitter(responseEmitter);
                     },
                     ex -> {
                         log.error("Error processing message for session {}: {}", sessionId, ex.getMessage());
-                        sessionTransport.setResponseEmitter(null);
+                        sessionTransport.clearResponseEmitter(responseEmitter);
                         try {
                             responseEmitter.completeWithError(ex);
                         } catch (Exception signalEx) {
@@ -327,7 +372,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
             }
         } catch (JsonProcessingException e) {
             log.error("Failed to parse message for session {}", sessionId, e);
-            sessionTransport.setResponseEmitter(null);
+            sessionTransport.clearResponseEmitter(responseEmitter);
             try {
                 responseEmitter.completeWithError(e);
             } catch (Exception signalEx) {
@@ -447,6 +492,7 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         private final AtomicBoolean closed = new AtomicBoolean(false);
         private boolean streamableHttp = false;
         private volatile SseEmitter responseEmitter = null;
+        private volatile SseEmitter commonStreamEmitter = null;
 
         SessionTransport(String sessionId, SseEmitter emitter, ObjectMapper objectMapper) {
             this.sessionId = sessionId;
@@ -466,8 +512,40 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
             this.streamableHttp = streamableHttp;
         }
 
-        void setResponseEmitter(SseEmitter responseEmitter) {
-            this.responseEmitter = responseEmitter;
+        synchronized boolean claimResponseEmitter(SseEmitter candidate) {
+            if (responseEmitter != null) {
+                return false;
+            }
+            responseEmitter = candidate;
+            return true;
+        }
+
+        synchronized void clearResponseEmitter(SseEmitter expected) {
+            if (responseEmitter == expected) {
+                responseEmitter = null;
+            }
+        }
+
+        synchronized SseEmitter currentResponseEmitter() {
+            return responseEmitter;
+        }
+
+        synchronized boolean claimCommonStreamEmitter(SseEmitter candidate) {
+            if (commonStreamEmitter != null) {
+                return false;
+            }
+            commonStreamEmitter = candidate;
+            return true;
+        }
+
+        synchronized void clearCommonStreamEmitter(SseEmitter expected) {
+            if (commonStreamEmitter == expected) {
+                commonStreamEmitter = null;
+            }
+        }
+
+        synchronized SseEmitter currentCommonStreamEmitter() {
+            return commonStreamEmitter;
         }
 
         @Override
@@ -483,7 +561,11 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                             .without(SerializationFeature.INDENT_OUTPUT)
                             .writeValueAsString(message);
 
-                    SseEmitter targetEmitter = responseEmitter != null ? responseEmitter : emitter;
+                    SseEmitter requestEmitter = currentResponseEmitter();
+                    SseEmitter commonEmitter = currentCommonStreamEmitter();
+                    SseEmitter targetEmitter = requestEmitter != null
+                            ? requestEmitter
+                            : commonEmitter != null ? commonEmitter : emitter;
                     log.info("Sending MCP SSE response for session {} ({} bytes)", sessionId, json.length());
                     targetEmitter.send(SseEmitter.event()
                             .name(MESSAGE_EVENT_TYPE)
@@ -491,11 +573,13 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                     log.info("Sent MCP SSE response for session {}", sessionId);
 
                     // For Streamable HTTP, complete the response emitter after sending
-                    if (responseEmitter != null) {
+                    if (requestEmitter != null) {
                         try {
-                            responseEmitter.complete();
+                            requestEmitter.complete();
                         } catch (Exception e) {
                             log.debug("Error completing response emitter for session {}: {}", sessionId, e.getMessage());
+                        } finally {
+                            clearResponseEmitter(requestEmitter);
                         }
                     }
                 } catch (IOException e) {
@@ -518,6 +602,14 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
+                SseEmitter response = currentResponseEmitter();
+                SseEmitter common = currentCommonStreamEmitter();
+                if (response != null) {
+                    response.complete();
+                }
+                if (common != null) {
+                    common.complete();
+                }
                 try {
                     emitter.complete();
                 } catch (Exception e) {

@@ -155,7 +155,7 @@ monotone in engine E) preserve inspectability.
 
 **R6. The paper.** The ablation table the harness already emits (retrieval-only vs algebraic fold
 vs learned, MRR/recall@k/nDCG) IS the core experiment. Add: WebQSP/CWQ or an enterprise-messy-data
-benchmark (FP&A fixture), the G1 opinion-accumulation story, and the trace-reproducibility
+benchmark (domain-planning fixture), the G1 opinion-accumulation story, and the trace-reproducibility
 property (likelihood recomputable from the OpinionTree). Title-shaped claim: "calibrated answer
 synthesis over multi-engine neurosymbolic reasoning signals on LLM-built enterprise knowledge
 graphs." Knowledge Vault is the citation anchor; NeuPSL and GNN-RAG the contrasts.

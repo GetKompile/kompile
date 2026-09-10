@@ -71,8 +71,10 @@ public final class NativeCliAuth {
             Process process = new ProcessBuilder(command).inheritIO().start();
             return process.waitFor();
         } catch (IOException e) {
-            System.err.println("Could not start native authentication for "
-                    + providerId + ": " + e.getMessage());
+            String binary = command.isEmpty() ? providerId : command.get(0);
+            System.err.println("Could not start native authentication for " + providerId
+                    + ". Install the '" + binary
+                    + "' CLI, ensure it is on PATH, and retry. Details: " + e.getMessage());
             return 1;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

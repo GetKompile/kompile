@@ -92,6 +92,11 @@ private val sdxRuntimeWorkerRetiring = AtomicBoolean(false)
 internal fun sdxRuntimeProcessName(packageName: String): String =
     packageName + RUNTIME_PROCESS_SUFFIX
 
+/** Prove the disposable SDX worker is gone before app-owned model/cache deletion. */
+internal fun retireSdxRuntimeWorkerForStorageMutation(context: Context) {
+    SdxRuntimeConnection.retireForStorageMutation(context.applicationContext)
+}
+
 internal data class SdxRuntimeWorkerState(
     val pid: Int,
     val startTimeTicks: Long,
@@ -163,6 +168,10 @@ private fun requireFrameworkOnlyRuntimeWireBundle(bundle: Bundle, description: S
 
 /** Main-process proxy. Native model state exists only in [SdxRuntimeService]. */
 internal object SdxPlatformChatSession {
+
+    fun prepareStorageMutation(context: Context) {
+        retireSdxRuntimeWorkerForStorageMutation(context)
+    }
 
     fun open(
         context: Context,
@@ -904,6 +913,20 @@ private class SdxRuntimeConnection private constructor(
     }
 
     companion object {
+        fun retireForStorageMutation(context: Context) {
+            val connection = bind(context)
+            val state = try {
+                connection.requireRemoteState()
+            } catch (failure: Throwable) {
+                connection.close()
+                throw failure
+            }
+            check(state.pid != Process.myPid()) {
+                "SDX runtime service was not isolated: runtime pid=${state.pid} app pid=${Process.myPid()}"
+            }
+            connection.retireAndAwait(state.pid, state.startTimeTicks)
+        }
+
         fun bindForNewSession(context: Context): Pair<SdxRuntimeConnection, SdxRuntimeWorkerState> {
             var lastFailure: Throwable? = null
             repeat(MAX_CLEAN_WORKER_BIND_ATTEMPTS) { bindAttempt ->

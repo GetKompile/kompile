@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.codeindex;
 
+import ai.kompile.cli.main.chat.tools.grounding.CodeGraphLearningRunner;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -31,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -83,11 +86,17 @@ import java.util.concurrent.atomic.AtomicReference;
  *       (default 30000); outside it, busy projects just annotate.</li>
  *   <li>{@code KOMPILE_CODE_INDEX_BACKSTOP_SECONDS} — backstop sweep period
  *       (default 300; 0 disables).</li>
+ *   <li>{@code KOMPILE_CODE_INDEX_LEARNING_DEBOUNCE_MS} — quiet period before
+ *       configured graph learning (default 250).</li>
+ *   <li>{@code KOMPILE_CODE_INDEX_LEARNING_MAX_WAIT_MS} — maximum learning
+ *       debounce wait under continuous updates (default 2000).</li>
  * </ul>
  */
 public final class BackgroundIndexService {
 
     private static final long WRITE_DEBOUNCE_MS = 750;
+    private static final long LEARNING_DEBOUNCE_MS = 250;
+    private static final long LEARNING_MAX_WAIT_MS = 2_000;
     private static final long ROOT_CACHE_TTL_MS = 60_000;
     private static final long ACTIVE_PROJECT_WINDOW_MS = TimeUnit.HOURS.toMillis(1);
     private static final int COMPLETED_JOB_RETENTION = 32;
@@ -128,6 +137,8 @@ public final class BackgroundIndexService {
         private volatile JobStatus status = JobStatus.QUEUED;
         private volatile String progressLine = "";
         private volatile LocalCodeIndexer.IndexResult result;
+        private volatile LocalCodeKGraphPublisher.ProjectionResult projection;
+        private volatile CodeGraphLearningRunner.ConfiguredResult learning;
         private volatile String error;
 
         IndexJob(String id, String projectId, String rootPath, boolean force) {
@@ -147,6 +158,8 @@ public final class BackgroundIndexService {
         public Instant finishedAt() { return finishedAt; }
         public String progressLine() { return progressLine; }
         public LocalCodeIndexer.IndexResult result() { return result; }
+        public LocalCodeKGraphPublisher.ProjectionResult projection() { return projection; }
+        public CodeGraphLearningRunner.ConfiguredResult learning() { return learning; }
         public String error() { return error; }
         public boolean isDone() {
             return status == JobStatus.COMPLETED || status == JobStatus.FAILED;
@@ -166,6 +179,8 @@ public final class BackgroundIndexService {
     private static final class ProjectState {
         final String projectId;
         volatile Path root;
+        volatile String includePatterns;
+        volatile String excludePatterns;
         volatile IndexFileWatcher watcher;
         volatile boolean watcherFailed;
         final AtomicBoolean watcherStartQueued = new AtomicBoolean();
@@ -178,7 +193,13 @@ public final class BackgroundIndexService {
         /** writeSeq value covered by the last completed refresh. */
         volatile long cleanSeq;
         volatile boolean refreshQueued;
-        volatile String lastNote;
+        volatile boolean projectionDirty;
+        volatile boolean projectionQueued;
+        volatile boolean projectionRunning;
+        volatile boolean projectionRescheduleRequested;
+        final ArrayDeque<IndexJob> projectionJobs = new ArrayDeque<>();
+        List<IndexJob> runningProjectionJobs = List.of();
+        final AtomicReference<String> lastNote = new AtomicReference<>();
         volatile long lastRefreshCompletedMs;
         volatile IndexJob activeJob;
 
@@ -195,9 +216,29 @@ public final class BackgroundIndexService {
         }
     }
 
+    private static final class LearningBatch {
+        final Path graphPath;
+        Path projectRoot;
+        final List<IndexJob> pendingJobs = new ArrayList<>();
+        List<IndexJob> runningJobs = List.of();
+        ScheduledFuture<?> scheduled;
+        boolean dirty;
+        boolean running;
+        long firstDirtyMs;
+        long lastDirtyMs;
+
+        LearningBatch(Path graphPath) { this.graphPath = graphPath; }
+    }
+
     private final LocalCodeIndexer indexer = new LocalCodeIndexer();
     private final ScheduledThreadPoolExecutor executor;
+    private final ScheduledThreadPoolExecutor projectionExecutor;
+    private final ScheduledThreadPoolExecutor learningExecutor;
+    private volatile ProjectionPublisher projectionPublisher = LocalCodeKGraphPublisher::publish;
+    private volatile ConfiguredLearning configuredLearning = BackgroundIndexService::runConfiguredLearning;
     private final ConcurrentHashMap<String, ProjectState> projects = new ConcurrentHashMap<>();
+    /** Canonical projection graph path → one serialized/coalesced learning batch. */
+    private final ConcurrentHashMap<Path, LearningBatch> learningBatches = new ConcurrentHashMap<>();
     private final ArrayDeque<IndexJob> recentJobs = new ArrayDeque<>();
     private final AtomicLong jobCounter = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -216,6 +257,26 @@ public final class BackgroundIndexService {
         ex.allowCoreThreadTimeOut(true);
         ex.setRemoveOnCancelPolicy(true);
         this.executor = ex;
+
+        ScheduledThreadPoolExecutor projections = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread t = new Thread(r, "code-index-projection");
+            t.setDaemon(true);
+            return t;
+        });
+        projections.setKeepAliveTime(30, TimeUnit.SECONDS);
+        projections.allowCoreThreadTimeOut(true);
+        projections.setRemoveOnCancelPolicy(true);
+        this.projectionExecutor = projections;
+
+        ScheduledThreadPoolExecutor learning = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread t = new Thread(r, "code-index-learning");
+            t.setDaemon(true);
+            return t;
+        });
+        learning.setKeepAliveTime(30, TimeUnit.SECONDS);
+        learning.allowCoreThreadTimeOut(true);
+        learning.setRemoveOnCancelPolicy(true);
+        this.learningExecutor = learning;
     }
 
     private void startBackstop() {
@@ -227,13 +288,59 @@ public final class BackgroundIndexService {
 
     private void close() {
         if (!closed.compareAndSet(false, true)) return;
+        List<IndexJob> strandedProjectionJobs = new ArrayList<>();
         for (ProjectState state : projects.values()) {
             IndexFileWatcher w = state.watcher;
             if (w != null) {
                 try { w.stop(); } catch (Exception ignored) {}
             }
+            synchronized (state) {
+                strandedProjectionJobs.addAll(state.projectionJobs);
+                strandedProjectionJobs.addAll(state.runningProjectionJobs);
+                state.projectionJobs.clear();
+                state.runningProjectionJobs = List.of();
+            }
         }
+        assignLearningFailure(strandedProjectionJobs, "graph projection cancelled");
+        for (LearningBatch batch : learningBatches.values()) cancelLearningBatch(batch);
+        learningBatches.clear();
         executor.shutdownNow();
+        projectionExecutor.shutdownNow();
+        learningExecutor.shutdownNow();
+    }
+
+    @FunctionalInterface
+    interface ProjectionPublisher {
+        LocalCodeKGraphPublisher.ProjectionResult publish(
+                Path root, String projectId, String includes, String excludes) throws Exception;
+    }
+
+    @FunctionalInterface
+    interface ConfiguredLearning {
+        CodeGraphLearningRunner.ConfiguredResult run(
+                Path projectRoot, Path graphPath, String trigger) throws Exception;
+    }
+
+    /** Package-private test seam for proving projection cannot starve index jobs. */
+    void setProjectionPublisherForTests(ProjectionPublisher publisher) {
+        projectionPublisher = publisher == null ? LocalCodeKGraphPublisher::publish : publisher;
+    }
+
+    /** Package-private test seam for exercising learning scheduling without model calls. */
+    void setConfiguredLearningForTests(ConfiguredLearning learning) {
+        configuredLearning = learning == null
+                ? BackgroundIndexService::runConfiguredLearning : learning;
+    }
+
+    /** Package-private test seam for queueing a published projection directly. */
+    void scheduleLearningForTests(Path root, String projectId, Path graphPath, IndexJob... jobs) {
+        ProjectState state = stateFor(projectId);
+        state.root = root;
+        LocalCodeKGraphPublisher.ProjectionResult projection =
+                new LocalCodeKGraphPublisher.ProjectionResult(graphPath, null, null, 0, 0, 0);
+        List<IndexJob> represented = jobs == null ? List.of() : List.of(jobs);
+        for (IndexJob job : represented) job.projection = projection;
+        scheduleLearning(state, projection, represented);
     }
 
     // ── Configuration ───────────────────────────────────────────────────────
@@ -272,12 +379,13 @@ public final class BackgroundIndexService {
     public IndexJob submitIndexJob(Path root, String projectId, String includes,
                                    String excludes, boolean force) {
         ProjectState state = stateFor(projectId);
-        state.root = root;
-        state.lastTouchedMs = System.currentTimeMillis();
-
         synchronized (state) {
             IndexJob existing = state.activeJob;
             if (existing != null && !existing.isDone()) return existing;
+            state.root = root;
+            state.includePatterns = includes;
+            state.excludePatterns = excludes;
+            state.lastTouchedMs = System.currentTimeMillis();
             IndexJob job = new IndexJob("idx-" + jobCounter.incrementAndGet(),
                     projectId, root.toString(), force);
             state.activeJob = job;
@@ -298,7 +406,10 @@ public final class BackgroundIndexService {
             job.status = JobStatus.COMPLETED;
             state.cleanSeq = Math.max(state.cleanSeq, seqBefore);
             state.lastRefreshCompletedMs = System.currentTimeMillis();
+            rememberIndexedRoot(Path.of(job.rootPath()), job.projectId());
+            scheduleProjection(state, job);
         } catch (Exception e) {
+            if (job.result != null) state.projectionDirty = true;
             job.error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             job.status = JobStatus.FAILED;
             CodeIndexDiagnostics.alert("[code-index] background index failed for '"
@@ -385,17 +496,28 @@ public final class BackgroundIndexService {
         if (projectId == null || projectId.isBlank() || closed.get()) return null;
         if (!enabled()) {
             // Legacy behavior: synchronous throttled inline refresh.
-            return IndexAutoRefresher.maybeRefresh(
+            IndexAutoRefresher.RefreshOutcome outcome = IndexAutoRefresher.refresh(
                     callerIndexer != null ? callerIndexer : indexer, projectId);
+            if (outcome.changed()) {
+                Path root = lookupRoot(projectId);
+                if (root != null) {
+                    try {
+                        Map<String, Object> stats = indexer.getStats(projectId);
+                        LocalCodeKGraphPublisher.publish(root, projectId,
+                                stringValue(stats.get("includePatterns")),
+                                stringValue(stats.get("excludePatterns")));
+                    } catch (Exception e) {
+                        CodeIndexDiagnostics.alert("[code-index] inline KGraph publication failed for '"
+                                + projectId + "': " + diagnosticMessage(e));
+                    }
+                }
+            }
+            return outcome.note();
         }
         try {
             ProjectState state = stateFor(projectId);
             state.lastTouchedMs = System.currentTimeMillis();
-            if (state.root == null) {
-                Path root = lookupRoot(projectId);
-                if (root == null) return null; // not indexed yet — nothing to maintain
-                state.root = root;
-            }
+            if (state.root == null && !loadStateMetadata(state)) return null;
 
             // Watcher registration walks the tree — never pay that on a read.
             boolean watching = isWatching(projectId);
@@ -428,7 +550,7 @@ public final class BackgroundIndexService {
             return inProgress == null ? note : note + "\n" + inProgress;
         } catch (Exception e) {
             CodeIndexDiagnostics.alert("[code-index] background freshness skipped for '"
-                    + projectId + "': " + e.getMessage());
+                    + projectId + "': " + diagnosticMessage(e));
             return null;
         }
     }
@@ -452,9 +574,7 @@ public final class BackgroundIndexService {
     }
 
     private String consumeNote(ProjectState state) {
-        String note = state.lastNote;
-        if (note != null) state.lastNote = null;
-        return note;
+        return state.lastNote.getAndSet(null);
     }
 
     // ── Write notifications ─────────────────────────────────────────────────
@@ -471,17 +591,19 @@ public final class BackgroundIndexService {
             String projectId = projectForPath(file.toAbsolutePath().normalize());
             if (projectId == null) return;
             ProjectState state = stateFor(projectId);
-            if (state.root == null) state.root = lookupRoot(projectId);
+            if (state.root == null && !loadStateMetadata(state)) return;
             state.lastTouchedMs = System.currentTimeMillis();
             state.lastLocalWriteMs = state.lastTouchedMs;
             state.writeSeq.incrementAndGet();
             scheduleRefresh(state, 0);
         } catch (Exception e) {
-            CodeIndexDiagnostics.alert("[code-index] write notification dropped: " + e.getMessage());
+            CodeIndexDiagnostics.alert("[code-index] write notification dropped: "
+                    + diagnosticMessage(e));
         }
     }
 
-    private String projectForPath(Path file) {
+    String projectForPath(Path file) {
+        Path candidateFile = canonicalPath(file);
         Map<Path, String> cache = rootCache;
         long now = System.currentTimeMillis();
         if (now - rootCacheBuiltMs > ROOT_CACHE_TTL_MS) {
@@ -491,7 +613,7 @@ public final class BackgroundIndexService {
         int bestDepth = -1;
         for (Map.Entry<Path, String> entry : cache.entrySet()) {
             Path root = entry.getKey();
-            if (file.startsWith(root) && root.getNameCount() > bestDepth) {
+            if (candidateFile.startsWith(root) && root.getNameCount() > bestDepth) {
                 best = entry.getValue();
                 bestDepth = root.getNameCount();
             }
@@ -509,8 +631,13 @@ public final class BackgroundIndexService {
                 Object rootPath = meta.get("rootPath");
                 if (projectId == null || rootPath == null) continue;
                 try {
-                    fresh.put(Path.of(rootPath.toString()).toAbsolutePath().normalize(),
-                            projectId.toString());
+                    Path root = canonicalPath(Path.of(rootPath.toString()));
+                    if (!Files.isDirectory(root)) continue;
+                    String candidate = projectId.toString();
+                    String existing = fresh.get(root);
+                    if (existing == null || preferRootOwner(root, candidate, existing)) {
+                        fresh.put(root, candidate);
+                    }
                 } catch (Exception ignored) {}
             }
         } catch (IOException e) {
@@ -521,6 +648,47 @@ public final class BackgroundIndexService {
         rootCache = fresh;
         rootCacheBuiltMs = now;
         return fresh;
+    }
+
+    /** Make a completed local index immediately visible to same-process write hooks. */
+    private synchronized void rememberIndexedRoot(Path rootPath, String projectId) {
+        if (rootPath == null || projectId == null || projectId.isBlank()) return;
+        Path root = canonicalPath(rootPath);
+        Map<Path, String> fresh = new LinkedHashMap<>(rootCache);
+        fresh.entrySet().removeIf(entry -> projectId.equals(entry.getValue())
+                && !root.equals(entry.getKey()));
+        String existing = fresh.get(root);
+        if (existing == null || preferRootOwner(root, projectId, existing)) {
+            fresh.put(root, projectId);
+        }
+        rootCache = fresh;
+        rootCacheBuiltMs = System.currentTimeMillis();
+    }
+
+    private static boolean preferRootOwner(Path root, String candidate, String existing) {
+        try {
+            String canonical = ProjectIdResolver.resolve(null, root).projectId();
+            if (candidate.equals(canonical)) return true;
+            if (existing.equals(canonical)) return false;
+        } catch (RuntimeException ignored) {
+            // Fall through to a deterministic choice when project metadata is unreadable.
+        }
+        return candidate.compareTo(existing) < 0;
+    }
+
+    private static Path canonicalPath(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        try {
+            return absolute.toRealPath();
+        } catch (IOException missing) {
+            Path parent = absolute.getParent();
+            if (parent != null) {
+                try {
+                    return parent.toRealPath().resolve(absolute.getFileName()).normalize();
+                } catch (IOException ignored) { }
+            }
+            return absolute;
+        }
     }
 
     // ── Incremental refresh scheduling ──────────────────────────────────────
@@ -560,10 +728,24 @@ public final class BackgroundIndexService {
             state.refreshRunning = true;
         }
         try {
-            String note = IndexAutoRefresher.maybeRefresh(indexer, state.projectId, throttleMs);
+            IndexAutoRefresher.RefreshOutcome outcome = IndexAutoRefresher.refresh(
+                    indexer, state.projectId, throttleMs,
+                    state.includePatterns, state.excludePatterns);
+            String note = outcome.note();
             if (note != null) {
-                state.lastNote = note.replace("[index auto-refreshed:",
-                        "[index auto-refreshed in background:");
+                state.lastNote.set(note.replace("[index auto-refreshed:",
+                        "[index auto-refreshed in background:"));
+            }
+            if (!outcome.successful()) {
+                if (throttleMs == 0) state.cleanSeq = Math.max(state.cleanSeq, seqBefore);
+                state.lastRefreshCompletedMs = System.currentTimeMillis();
+                return;
+            }
+            boolean backstopCheck = throttleMs == IndexAutoRefresherDefaultInterval.VALUE;
+            if (state.root != null && (outcome.changed()
+                    || throttleMs == 0 && !outcome.fileFailures()
+                    || state.projectionDirty || backstopCheck)) {
+                scheduleProjection(state, null);
             }
             // A bypass pass (throttle 0) always runs, so it certifies every
             // write it saw as indexed. A throttled pass may have been skipped
@@ -573,9 +755,12 @@ public final class BackgroundIndexService {
             }
             state.lastRefreshCompletedMs = System.currentTimeMillis();
         } catch (Exception e) {
+            state.projectionDirty = true;
             CodeIndexDiagnostics.alert("[code-index] background refresh failed for '"
-                    + state.projectId + "': " + e.getMessage());
-            // Don't wedge waiters on a persistently failing project.
+                    + state.projectId + "': " + diagnosticMessage(e));
+            // A persistent projection failure must not keep the project dirty and
+            // reschedule the same alert every debounce interval. A later write or
+            // periodic backstop will retry without wedging reads in the meantime.
             state.cleanSeq = Math.max(state.cleanSeq, seqBefore);
         } finally {
             synchronized (state) {
@@ -583,6 +768,289 @@ public final class BackgroundIndexService {
                 state.notifyAll();
             }
             if (state.dirty()) scheduleRefresh(state, 0);
+        }
+    }
+
+    // ── KGraph projection scheduling ───────────────────────────────────────
+
+    /**
+     * Projection is local but independent from SQLite index maintenance. A slow
+     * archive rewrite must never occupy either index worker or the watcher
+     * debounce thread. Repeated writes coalesce into one follow-up projection.
+     */
+    private void scheduleProjection(ProjectState state, IndexJob job) {
+        if (closed.get()) {
+            if (job != null && job.learning == null) {
+                job.learning = learningFailure("graph projection cancelled");
+            }
+            return;
+        }
+        synchronized (state) {
+            state.projectionDirty = true;
+            if (job != null && !state.projectionJobs.contains(job)) {
+                state.projectionJobs.addLast(job);
+            }
+            if (state.projectionRunning) {
+                state.projectionRescheduleRequested = true;
+                return;
+            }
+            if (state.projectionQueued) return;
+            state.projectionQueued = true;
+        }
+        try {
+            projectionExecutor.execute(() -> runProjection(state));
+        } catch (RuntimeException failure) {
+            synchronized (state) {
+                state.projectionQueued = false;
+                state.notifyAll();
+            }
+            CodeIndexDiagnostics.alert("[code-index] graph projection scheduling failed for '"
+                    + state.projectId + "': " + diagnosticMessage(failure));
+        }
+    }
+
+    private void scheduleLearning(ProjectState state,
+                                  LocalCodeKGraphPublisher.ProjectionResult projection,
+                                  List<IndexJob> jobs) {
+        Path graphPath = canonicalPath(projection.graphPath());
+        LearningBatch batch = learningBatches.computeIfAbsent(graphPath, LearningBatch::new);
+        List<IndexJob> stranded = List.of();
+        synchronized (batch) {
+            if (closed.get()) {
+                stranded = jobs == null ? List.of() : List.copyOf(jobs);
+            } else {
+                batch.projectRoot = state.root;
+                long now = System.currentTimeMillis();
+                if (batch.firstDirtyMs == 0) batch.firstDirtyMs = now;
+                batch.lastDirtyMs = now;
+                batch.dirty = true;
+                if (jobs != null) {
+                    for (IndexJob job : jobs) {
+                        if (job != null && !batch.pendingJobs.contains(job)) {
+                            batch.pendingJobs.add(job);
+                        }
+                    }
+                }
+                if (!batch.running && batch.scheduled == null && !scheduleLearningTaskLocked(batch)) {
+                    stranded = drainPendingJobs(batch);
+                }
+            }
+        }
+        if (!stranded.isEmpty()) assignLearningFailure(stranded, "learning lane closed");
+    }
+
+    private boolean scheduleLearningTaskLocked(LearningBatch batch) {
+        if (!batch.dirty || batch.scheduled != null || closed.get()) return true;
+        long now = System.currentTimeMillis();
+        if (batch.firstDirtyMs == 0) batch.firstDirtyMs = now;
+        if (batch.lastDirtyMs == 0) batch.lastDirtyMs = batch.firstDirtyMs;
+        long quiet = Math.max(0, learningDebounceMs());
+        long maximum = Math.max(quiet, learningMaxWaitMs());
+        long quietDeadline = batch.lastDirtyMs + quiet;
+        long maximumDeadline = batch.firstDirtyMs + maximum;
+        long delay = Math.max(0, Math.min(quietDeadline, maximumDeadline) - now);
+        try {
+            batch.scheduled = learningExecutor.schedule(
+                    () -> runLearning(batch), delay, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (RuntimeException failure) {
+            batch.scheduled = null;
+            batch.dirty = false;
+            batch.firstDirtyMs = 0;
+            batch.lastDirtyMs = 0;
+            CodeIndexDiagnostics.alert("[code-index] graph learning scheduling failed for '"
+                    + batch.graphPath + "': " + diagnosticMessage(failure));
+            return false;
+        }
+    }
+
+    private void runLearning(LearningBatch batch) {
+        final Path projectRoot;
+        final List<IndexJob> jobs;
+        boolean due = false;
+        List<IndexJob> stranded = List.of();
+        synchronized (batch) {
+            batch.scheduled = null;
+            if (closed.get() || !batch.dirty) return;
+            long now = System.currentTimeMillis();
+            long quiet = Math.max(0, learningDebounceMs());
+            long maximum = Math.max(quiet, learningMaxWaitMs());
+            long quietDeadline = batch.lastDirtyMs + quiet;
+            long maximumDeadline = batch.firstDirtyMs + maximum;
+            if (now < Math.min(quietDeadline, maximumDeadline)) {
+                if (!scheduleLearningTaskLocked(batch)) stranded = drainPendingJobs(batch);
+                projectRoot = null;
+                jobs = List.of();
+            } else {
+                due = true;
+                batch.running = true;
+                batch.dirty = false;
+                batch.firstDirtyMs = 0;
+                batch.lastDirtyMs = 0;
+                projectRoot = batch.projectRoot;
+                jobs = new ArrayList<>(batch.pendingJobs);
+                batch.pendingJobs.clear();
+                batch.runningJobs = jobs;
+            }
+        }
+        if (!stranded.isEmpty()) {
+            assignLearningFailure(stranded, "learning lane closed");
+        }
+        if (!due) return;
+
+        CodeGraphLearningRunner.ConfiguredResult result;
+        try {
+            if (projectRoot == null) throw new IOException("project root unavailable");
+            result = configuredLearning.run(projectRoot, batch.graphPath,
+                    CodeGraphReasoningConfig.TRIGGER_BUILD);
+            if (result == null) result = learningFailure("configured learning returned no result");
+            if (result.error() != null && !closed.get()) {
+                CodeIndexDiagnostics.alert("[code-index] configured code-graph learning failed for '"
+                        + batch.graphPath + "': " + result.error());
+            }
+        } catch (Exception failure) {
+            boolean interrupted = closed.get() || Thread.currentThread().isInterrupted()
+                    || failure instanceof InterruptedException
+                    || failure instanceof java.nio.channels.ClosedByInterruptException;
+            result = learningFailure(interrupted ? "learning interrupted" : diagnosticMessage(failure));
+            if (!interrupted) {
+                CodeIndexDiagnostics.alert("[code-index] configured code-graph learning failed for '"
+                        + batch.graphPath + "': " + diagnosticMessage(failure));
+            }
+        }
+        for (IndexJob job : jobs) {
+            if (job.learning == null) job.learning = result;
+        }
+
+        stranded = List.of();
+        synchronized (batch) {
+            batch.runningJobs = List.of();
+            batch.running = false;
+            if (!closed.get() && "SUPERSEDED".equals(result.status())) {
+                batch.dirty = true;
+                long now = System.currentTimeMillis();
+                if (batch.firstDirtyMs == 0) batch.firstDirtyMs = now;
+                if (batch.lastDirtyMs == 0) batch.lastDirtyMs = now;
+            }
+            if (closed.get()) {
+                stranded = drainPendingJobs(batch);
+            } else if (batch.dirty || !batch.pendingJobs.isEmpty()) {
+                if (!scheduleLearningTaskLocked(batch)) {
+                    stranded = drainPendingJobs(batch);
+                }
+            }
+        }
+        if (!stranded.isEmpty()) assignLearningFailure(stranded, "learning lane closed");
+    }
+
+    private static List<IndexJob> drainPendingJobs(LearningBatch batch) {
+        List<IndexJob> jobs = new ArrayList<>(batch.pendingJobs);
+        batch.pendingJobs.clear();
+        batch.dirty = false;
+        batch.firstDirtyMs = 0;
+        batch.lastDirtyMs = 0;
+        return jobs;
+    }
+
+    private void cancelLearningBatch(LearningBatch batch) {
+        List<IndexJob> jobs;
+        synchronized (batch) {
+            if (batch.scheduled != null) batch.scheduled.cancel(false);
+            jobs = new ArrayList<>(batch.pendingJobs);
+            jobs.addAll(batch.runningJobs);
+            batch.pendingJobs.clear();
+            batch.runningJobs = List.of();
+            batch.scheduled = null;
+            batch.dirty = false;
+            batch.firstDirtyMs = 0;
+            batch.lastDirtyMs = 0;
+            batch.running = false;
+        }
+        assignLearningFailure(jobs, "learning cancelled");
+    }
+
+    private static void assignLearningFailure(List<IndexJob> jobs, String message) {
+        if (jobs == null || jobs.isEmpty()) return;
+        CodeGraphLearningRunner.ConfiguredResult failure = learningFailure(message);
+        for (IndexJob job : jobs) {
+            if (job != null && job.learning == null) job.learning = failure;
+        }
+    }
+
+    private static CodeGraphLearningRunner.ConfiguredResult learningFailure(String message) {
+        return new CodeGraphLearningRunner.ConfiguredResult(null, message);
+    }
+
+    private static CodeGraphLearningRunner.ConfiguredResult runConfiguredLearning(
+            Path projectRoot, Path graphPath, String trigger) {
+        return new CodeGraphLearningRunner().runConfigured(projectRoot, graphPath, trigger);
+    }
+
+    private long learningDebounceMs() {
+        return longConfig("KOMPILE_CODE_INDEX_LEARNING_DEBOUNCE_MS", LEARNING_DEBOUNCE_MS);
+    }
+
+    private long learningMaxWaitMs() {
+        return longConfig("KOMPILE_CODE_INDEX_LEARNING_MAX_WAIT_MS", LEARNING_MAX_WAIT_MS);
+    }
+
+    private void runProjection(ProjectState state) {
+        final long seqBefore;
+        final List<IndexJob> targetJobs;
+        synchronized (state) {
+            state.projectionQueued = false;
+            if (!state.projectionDirty || state.root == null) {
+                state.notifyAll();
+                return;
+            }
+            state.projectionRunning = true;
+            seqBefore = state.writeSeq.get();
+            targetJobs = new ArrayList<>(state.projectionJobs);
+            state.projectionJobs.clear();
+            state.runningProjectionJobs = targetJobs;
+        }
+
+        boolean successful = false;
+        try {
+            LocalCodeKGraphPublisher.ProjectionResult projection = projectionPublisher.publish(
+                    state.root, state.projectId, state.includePatterns, state.excludePatterns);
+            for (IndexJob targetJob : targetJobs) targetJob.projection = projection;
+            if (projection != null && projection.graphPath() != null) {
+                scheduleLearning(state, projection, targetJobs);
+            }
+            successful = true;
+        } catch (Exception failure) {
+            boolean interrupted = closed.get() || Thread.currentThread().isInterrupted()
+                    || failure instanceof InterruptedException
+                    || failure instanceof java.nio.channels.ClosedByInterruptException
+                    || failure instanceof java.nio.channels.FileLockInterruptionException;
+            if (!interrupted) {
+                CodeIndexDiagnostics.alert("[code-index] background KGraph publication failed for '"
+                        + state.projectId + "': " + diagnosticMessage(failure));
+            }
+        } finally {
+            boolean rerun;
+            synchronized (state) {
+                if (!successful && !closed.get() && !targetJobs.isEmpty()) {
+                    for (int i = targetJobs.size() - 1; i >= 0; i--) {
+                        state.projectionJobs.addFirst(targetJobs.get(i));
+                    }
+                }
+                boolean changedDuringProjection = state.writeSeq.get() != seqBefore
+                        || state.projectionRescheduleRequested;
+                if (successful && !changedDuringProjection) {
+                    state.projectionDirty = false;
+                }
+                state.projectionRunning = false;
+                state.runningProjectionJobs = List.of();
+                rerun = changedDuringProjection;
+                state.projectionRescheduleRequested = false;
+                state.notifyAll();
+            }
+            // Retry immediately only when new indexed work arrived during a
+            // successful/failed projection. Persistent failures otherwise wait
+            // for the periodic backstop or a later write instead of spinning.
+            if (rerun && !closed.get()) scheduleProjection(state, null);
         }
     }
 
@@ -620,7 +1088,7 @@ public final class BackgroundIndexService {
             evictWatchersOverCap(state.projectId);
             try {
                 IndexFileWatcher watcher = indexer.createWatcher(root, state.projectId,
-                        silentStream());
+                        state.includePatterns, state.excludePatterns, silentStream());
                 watcher.setListener(new IndexFileWatcher.WatchListener() {
                     @Override
                     public void onFilesChanged(Set<String> changedPaths) {
@@ -630,9 +1098,11 @@ public final class BackgroundIndexService {
 
                     @Override
                     public void onIndexUpdated(LocalCodeIndexer.IndexResult result) {
-                        int reindexed = Math.max(0,
+                        int attempted = Math.max(0,
                                 result.filesProcessed() - result.filesSkipped());
-                        if (reindexed > 0 || result.filesDeleted() > 0) {
+                        int failed = Math.min(attempted, Math.max(0, result.errors()));
+                        int reindexed = Math.max(0, attempted - failed);
+                        if (reindexed > 0 || result.filesDeleted() > 0 || failed > 0) {
                             StringBuilder note = new StringBuilder(
                                     "[index auto-refreshed in background: ")
                                     .append(reindexed).append(" file")
@@ -640,19 +1110,25 @@ public final class BackgroundIndexService {
                             if (result.filesDeleted() > 0) {
                                 note.append(", ").append(result.filesDeleted()).append(" deleted");
                             }
-                            state.lastNote = note.append(']').toString();
+                            if (failed > 0) {
+                                note.append(", ").append(failed).append(" failed");
+                            }
+                            state.lastNote.set(note.append(']').toString());
+                            if (reindexed > 0 || result.filesDeleted() > 0) {
+                                scheduleProjection(state, null);
+                            }
                         }
-                        finishWatcherPass();
+                        finishWatcherPass(true);
                     }
 
                     @Override
                     public void onError(String message, Exception e) {
-                        finishWatcherPass();
+                        finishWatcherPass(false);
                     }
 
-                    private void finishWatcherPass() {
+                    private void finishWatcherPass(boolean successful) {
                         IndexFileWatcher w = state.watcher;
-                        if (w == null || w.getPendingChanges().isEmpty()) {
+                        if (successful && (w == null || w.getPendingChanges().isEmpty())) {
                             state.cleanSeq = state.writeSeq.get();
                         }
                         state.lastRefreshCompletedMs = System.currentTimeMillis();
@@ -660,6 +1136,7 @@ public final class BackgroundIndexService {
                             state.refreshRunning = false;
                             state.notifyAll();
                         }
+                        if (!successful) scheduleRefresh(state, WRITE_DEBOUNCE_MS);
                     }
                 });
                 watcher.start();
@@ -670,7 +1147,7 @@ public final class BackgroundIndexService {
                 state.watcherFailed = true;
                 CodeIndexDiagnostics.alert("[code-index] watcher unavailable for '"
                         + state.projectId + "' (falling back to periodic refresh): "
-                        + e.getMessage());
+                        + diagnosticMessage(e));
                 return false;
             }
         }
@@ -735,10 +1212,14 @@ public final class BackgroundIndexService {
         } else {
             sb.append("on-demand refresh");
         }
+        if (state.projectionRunning) sb.append("; graph projection running");
+        else if (state.projectionQueued) sb.append("; graph projection queued");
+        else if (state.projectionDirty) sb.append("; graph projection pending");
         if (state.lastRefreshCompletedMs > 0) {
             long ago = (System.currentTimeMillis() - state.lastRefreshCompletedMs) / 1000;
             sb.append("; last background pass ").append(ago).append("s ago");
         }
+        sb.append("; database ").append(IndexMaintenance.status(projectId));
         return sb.toString();
     }
 
@@ -759,6 +1240,33 @@ public final class BackgroundIndexService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private boolean loadStateMetadata(ProjectState state) {
+        try {
+            Map<String, Object> stats = indexer.getStats(state.projectId);
+            Object rootPath = stats.get("rootPath");
+            if (rootPath == null) return false;
+            Path root = Path.of(rootPath.toString()).toAbsolutePath().normalize();
+            if (!Files.isDirectory(root)) return false;
+            state.root = root;
+            state.includePatterns = stringValue(stats.get("includePatterns"));
+            state.excludePatterns = stringValue(stats.get("excludePatterns"));
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String stringValue(Object value) {
+        return value == null || value.toString().isBlank() ? null : value.toString();
+    }
+
+    private static String diagnosticMessage(Throwable error) {
+        String message = error == null ? null : error.getMessage();
+        return message == null || message.isBlank()
+                ? error == null ? "unknown failure" : error.getClass().getSimpleName()
+                : message;
     }
 
     private static PrintStream silentStream() {

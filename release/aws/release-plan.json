@@ -106,7 +106,40 @@
           },
           {
             "name": "amd-zluda",
-            "chip": "amd-zluda"
+            "chip": "amd-zluda",
+            "dl4jLane": "linux-x86_64-zluda",
+            "dl4jVariant": "cuda-12.9",
+            "sdkClassifier": "linux-x86_64-zluda-rocm-7.2.4",
+            "requireSdk": false
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "platform-linux-x86_64-zluda-rocm-10.0.0",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.9.1-devel-ubuntu22.04",
+      "reuseHostForVariants": true,
+      "workloads": ["maven", "distribution"],
+      "artifactRules": {"mode": "all"},
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-zluda-rocm-10.0.0",
+        "requireSdk": false,
+        "variants": [
+          {
+            "name": "cuda-12.9",
+            "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
+            "kompileVariant": "amd-zluda",
+            "requireSdk": false
           }
         ],
         "buildThreads": 48

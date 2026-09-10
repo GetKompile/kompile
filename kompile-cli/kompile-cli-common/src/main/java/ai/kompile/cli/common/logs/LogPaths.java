@@ -21,9 +21,12 @@ import java.io.IOException;
 import ai.kompile.cli.common.KompileHome;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HexFormat;
+import java.util.Locale;
 
 /**
  * Canonical paths for Kompile log aggregation under {@code ~/.kompile/logs}.
@@ -72,6 +75,33 @@ public final class LogPaths {
     /** {@code ~/.kompile/logs/cli} */
     public static File cliRoot() {
         return new File(logsDirectory(), "cli");
+    }
+
+    /** {@code ~/.kompile/logs/transcripts} — stable across project-directory changes on resume. */
+    public static File transcriptsRoot() {
+        return new File(logsDirectory(), "transcripts");
+    }
+
+    /** {@code ~/.kompile/logs/transcripts/<transcriptId>} */
+    public static File transcriptDirectory(String transcriptId) {
+        Path root = transcriptsRoot().toPath().toAbsolutePath().normalize();
+        Path resolved = root.resolve(transcriptPathSegment(transcriptId)).normalize();
+        if (!resolved.startsWith(root) || resolved.equals(root)) {
+            throw new IllegalArgumentException("Invalid transcript log identity");
+        }
+        return resolved.toFile();
+    }
+
+    /** Creates and returns {@code ~/.kompile/logs/transcripts/<transcriptId>}. */
+    public static File ensureTranscriptDirectory(String transcriptId) throws IOException {
+        File dir = transcriptDirectory(transcriptId);
+        ensureDir(dir);
+        return dir;
+    }
+
+    /** Restrict an arbitrary identifier to one safe filesystem path segment. */
+    public static String safePathSegment(String value) {
+        return safe(value, "_unknown");
     }
 
     /** {@code <kompile-home>/logs/subprocesses} where <kompile-home> is project-aware if available. */
@@ -178,6 +208,7 @@ public final class LogPaths {
     public static void ensureRootDirs() throws IOException {
         ensureDir(agentsRoot());
         ensureDir(cliRoot());
+        ensureDir(transcriptsRoot());
         ensureDir(subprocessesRoot());
         ensureDir(crawlsRoot());
     }
@@ -207,7 +238,19 @@ public final class LogPaths {
         if (value == null || value.isBlank()) {
             return fallback;
         }
-        // Restrict to filesystem-safe characters — keep it narrow to avoid path traversal
-        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+        String sanitized = value.replaceAll("[^A-Za-z0-9._-]", "_");
+        return ".".equals(sanitized) || "..".equals(sanitized)
+                ? "_" + sanitized.replace('.', '_') : sanitized;
+    }
+
+    private static String transcriptPathSegment(String value) {
+        if (value == null || value.isBlank()) return "_unknown";
+        String candidate = value.trim();
+        if (candidate.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) {
+            return candidate.toLowerCase(Locale.ROOT);
+        }
+        // Canonical UUIDs stay readable. Legacy/custom IDs use lowercase UTF-8 hex,
+        // which is injective and portable across case-insensitive filesystems.
+        return "~" + HexFormat.of().formatHex(candidate.getBytes(StandardCharsets.UTF_8));
     }
 }

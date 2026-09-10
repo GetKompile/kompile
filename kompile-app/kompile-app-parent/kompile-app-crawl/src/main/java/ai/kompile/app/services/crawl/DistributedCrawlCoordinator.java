@@ -26,6 +26,10 @@ import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest.DistributionConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest.PartitionStrategy;
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +40,11 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.Duration;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -61,6 +70,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 @ConditionalOnBean(ExternalJobSchedulerDelegate.class)
 public class DistributedCrawlCoordinator {
 
+    private static final SecureRandom LEASE_RANDOM = new SecureRandom();
+    private static final Duration WRITER_LEASE_DURATION = Duration.ofMinutes(15);
+    private static final Set<String> RESERVED_WORKER_METADATA = Set.of(
+            "sessionId", "workerId", "workerIndex", "attempt", "externalJobId",
+            "crawlRequestJson", "targetWorkerBaseUrl", "callbackUrl", "graphWriterLease");
+
+    public enum WriterLeaseVerdict {
+        VALID, UNKNOWN_SESSION, UNKNOWN_PARTITION, STALE_ATTEMPT, REVOKED, EXPIRED, INVALID_TOKEN
+    }
+
     private final ExternalJobSchedulerDelegate delegate;
     private final ObjectMapper objectMapper;
     /** Nullable in unit tests; guarded everywhere it's read. */
@@ -80,6 +99,8 @@ public class DistributedCrawlCoordinator {
     /** Optional: live cluster view, so partitioning spreads across the actual workers (capability-aware). */
     @Autowired(required = false)
     private CrawlWorkerRegistry workerRegistry;
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
 
     /** Optional: republishes merged per-worker progress as CrawlProgressEvents so the unified SSE +
      *  step monitor render a distributed crawl as one live job (Phase C). Null in unit tests → no-op. */
@@ -139,6 +160,15 @@ public class DistributedCrawlCoordinator {
         if (distConfig == null) {
             throw new IllegalArgumentException("Distribution config is required for distributed crawl");
         }
+        boolean replacement = request.getRuntimeConfig() != null
+                && Boolean.TRUE.equals(request.getRuntimeConfig().getClearGraphBeforeRun());
+        if (distConfig.getWorkerMetadata() != null) {
+            Set<String> reserved = new LinkedHashSet<>(distConfig.getWorkerMetadata().keySet());
+            reserved.retainAll(RESERVED_WORKER_METADATA);
+            if (!reserved.isEmpty()) {
+                throw new IllegalArgumentException("workerMetadata contains reserved keys: " + reserved);
+            }
+        }
 
         String sessionId = UUID.randomUUID().toString();
         List<UnifiedCrawlSource> sources = request.getSources();
@@ -177,6 +207,10 @@ public class DistributedCrawlCoordinator {
         }
         int workerCount = partitions.size();
 
+        if (replacement) {
+            validateReplacementPreflight(request, pins, workerCount);
+        }
+
         // Phase B: optionally divide the global remote-LLM / backend concurrency across the workers so N
         // partitions don't each open the full concurrency against the same external API (default-off).
         UnifiedCrawlRequest.RuntimeConfig scaledRuntime =
@@ -190,12 +224,22 @@ public class DistributedCrawlCoordinator {
         DistributedCrawlSession session = DistributedCrawlSession.builder()
                 .sessionId(sessionId)
                 .originalRequest(request)
-                .status(DistributedCrawlSession.Status.DISPATCHING)
+                .status(replacement ? DistributedCrawlSession.Status.PREPARING
+                        : DistributedCrawlSession.Status.DISPATCHING)
                 .totalWorkers(workerCount)
                 .startedAt(Instant.now())
                 .build();
 
+        GraphGeneration.Ref sharedGeneration = null;
+        if (replacement) {
+            sharedGeneration = knowledgeGraphService.beginFactSheetGeneration(
+                    request.getFactSheetId(), sessionId, "distributed:" + sessionId);
+            session.setGraphGeneration(toSnapshot(sharedGeneration, "BUILDING", null));
+            session.setStatus(DistributedCrawlSession.Status.DISPATCHING);
+        }
+
         activeSessions.put(sessionId, session);
+        persist(session, true);
 
         // Dispatch each partition to a worker
         for (int i = 0; i < partitions.size(); i++) {
@@ -203,34 +247,25 @@ public class DistributedCrawlCoordinator {
             String workerId = sessionId + "-worker-" + i;
 
             // Build per-worker request (same config, different sources)
-            UnifiedCrawlRequest workerRequest = UnifiedCrawlRequest.builder()
-                    .name(request.getName() + " [worker " + i + "]")
-                    .factSheetId(request.getFactSheetId())
-                    .factSheetName(request.getFactSheetName())
-                    .sources(partition)
-                    .graphExtraction(request.getGraphExtraction())
-                    .vectorIndex(request.getVectorIndex())
-                    .preprocessing(request.getPreprocessing())
-                    .processingRoute(scaledRoute)
-                    .runtimeConfig(scaledRuntime)
-                    .pipelines(request.getPipelines())
-                    .routeRules(request.getRouteRules())
-                    .defaultPipelineId(request.getDefaultPipelineId())
-                    .distribution(null) // Workers run locally, not distributed further
-                    .build();
+            UnifiedCrawlRequest workerRequest = copyForWorker(
+                    request, partition, request.getName() + " [worker " + i + "]",
+                    scaledRuntime, scaledRoute, sessionId, workerId, i, workerCount, 1,
+                    sharedGeneration);
 
             try {
+                session.addWorker(workerId, partition, i);
+                String graphLease = issueWriterLease(session, workerId, 1);
                 String requestJson = objectMapper.writeValueAsString(workerRequest);
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("sessionId", sessionId);
                 metadata.put("workerId", workerId);
                 metadata.put("workerIndex", i);
+                metadata.put("attempt", 1);
+                metadata.put("externalJobId", workerId);
+                metadata.put("graphWriterLease", graphLease);
                 metadata.put("crawlRequestJson", requestJson);
                 if (pins.get(i) != null) {
                     metadata.put("targetWorkerBaseUrl", pins.get(i).baseUrl());
-                }
-                if (distConfig.getCallbackUrl() != null) {
-                    metadata.put("callbackUrl", distConfig.getCallbackUrl());
                 }
                 if (distConfig.getWorkerMetadata() != null) {
                     metadata.putAll(distConfig.getWorkerMetadata());
@@ -255,28 +290,32 @@ public class DistributedCrawlCoordinator {
                     if (error != null) {
                         log.error("Failed to dispatch worker {} for session {}: {}",
                                 workerIdx, sessionId, error.getMessage());
-                        session.workerFailed(workerId, error.getMessage());
+                        session.workerFailed(workerId, 1, error.getMessage());
+                        failReplacementSession(session, error.getMessage());
                     } else if (ref == null || "FAILED".equals(ref.status())) {
                         String why = ref != null ? ref.message() : "null submission ref";
                         log.error("Worker {} submission rejected for session {}: {}", workerIdx, sessionId, why);
-                        session.workerFailed(workerId, why);
+                        session.workerFailed(workerId, 1, why);
+                        failReplacementSession(session, why);
                     } else {
                         log.info("Worker {} dispatched for session {}: externalId={}",
                                 workerIdx, sessionId, ref.externalId());
-                        session.workerDispatched(workerId, ref.externalId());
+                        session.workerDispatched(workerId, ref.externalId(), workerId, 1);
                     }
                 });
-
-                session.addWorker(workerId, partition);
 
             } catch (Exception e) {
                 log.error("Failed to serialize worker request for session {}: {}",
                         sessionId, e.getMessage());
-                session.workerFailed(workerId, e.getMessage());
+                if (!session.getWorkers().containsKey(workerId)) session.addWorker(workerId, partition);
+                session.workerFailed(workerId, 1, e.getMessage());
+                failReplacementSession(session, e.getMessage());
             }
         }
 
-        session.setStatus(DistributedCrawlSession.Status.RUNNING);
+        if (session.getStatus() == DistributedCrawlSession.Status.DISPATCHING) {
+            session.setStatus(DistributedCrawlSession.Status.RUNNING);
+        }
         persist(session, true);
         return session;
     }
@@ -288,27 +327,58 @@ public class DistributedCrawlCoordinator {
                                       boolean success, String message,
                                       Map<String, Object> resultData) {
         DistributedCrawlSession session = activeSessions.get(sessionId);
+        handleWorkerCallback(sessionId, workerId,
+                session != null ? session.currentAttempt(workerId) : -1,
+                success, message, resultData);
+    }
+
+    public void handleWorkerCallback(String sessionId, String workerId, int attempt,
+                                     boolean success, String message,
+                                     Map<String, Object> resultData) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
         if (session == null) {
             log.warn("Received callback for unknown session: {}", sessionId);
             return;
         }
+        if (isTerminal(session.getStatus())
+                || session.getStatus() == DistributedCrawlSession.Status.CANCELLING
+                || session.getStatus() == DistributedCrawlSession.Status.ABORTING) {
+            log.debug("Ignoring callback for terminal/closing distributed session {}", sessionId);
+            return;
+        }
+        if (!session.isCurrentAttempt(workerId, attempt)) {
+            log.warn("Ignoring stale callback for session {} worker {} attempt {} (current={})",
+                    sessionId, workerId, attempt, session.currentAttempt(workerId));
+            return;
+        }
 
+        synchronized (session) {
         if (success) {
-            session.workerCompleted(workerId, resultData);
+            session.workerCompleted(workerId, attempt, resultData);
             log.info("Worker {} completed for session {} — {}/{} done",
                     workerId, sessionId, session.getCompletedWorkers().get(),
                     session.getTotalWorkers());
         } else if (shouldReassignOnFailure(session, workerId, message, resultData)) {
             log.warn("Worker {} reported a retriable failure for session {} ({}) — reassigning partition",
                     workerId, sessionId, message);
-            reassignWorkerPartition(session, session.getWorkers().get(workerId));
+            if (!reassignWorkerPartition(session, session.getWorkers().get(workerId))) {
+                session.workerFailed(workerId, attempt, "reassignment rejected after failure: " + message);
+                failReplacementSession(session, message);
+            }
         } else {
-            session.workerFailed(workerId, message);
+            session.workerFailed(workerId, attempt, message);
             log.warn("Worker {} failed for session {}: {}", workerId, sessionId, message);
+            failReplacementSession(session, message);
         }
 
         // Check if all workers are done
         if (session.isAllWorkersFinished()) {
+            if (session.getGraphGeneration() != null) {
+                completeReplacementSession(session);
+                persist(session, true);
+                publishAggregateProgress(session);
+                return;
+            }
             session.setStatus(session.getFailedWorkers().get() > 0
                     ? DistributedCrawlSession.Status.PARTIALLY_COMPLETED
                     : DistributedCrawlSession.Status.COMPLETED);
@@ -318,6 +388,7 @@ public class DistributedCrawlCoordinator {
         }
         persist(session, true);
         publishAggregateProgress(session);
+        }
     }
 
     /**
@@ -328,12 +399,23 @@ public class DistributedCrawlCoordinator {
     public void handleWorkerProgress(String sessionId, String workerId,
                                      UnifiedCrawlJob.ProgressSnapshot snapshot) {
         DistributedCrawlSession session = activeSessions.get(sessionId);
-        if (session == null || snapshot == null) {
+        handleWorkerProgress(sessionId, workerId,
+                session != null ? session.currentAttempt(workerId) : -1, snapshot);
+    }
+
+    public void handleWorkerProgress(String sessionId, String workerId, int attempt,
+                                     UnifiedCrawlJob.ProgressSnapshot snapshot) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
+        if (session == null || snapshot == null || !session.isCurrentAttempt(workerId, attempt)) {
             return;
         }
-        session.updateWorkerSnapshot(workerId, snapshot);
-        persist(session, false);
-        publishAggregateProgress(session);
+        synchronized (session) {
+            session.updateWorkerSnapshot(workerId, attempt, snapshot);
+            DistributedCrawlSession.WorkerInfo worker = session.getWorkers().get(workerId);
+            if (worker != null) worker.setLastProgressAt(Instant.now());
+            persist(session, false);
+            publishAggregateProgress(session);
+        }
     }
 
     /** Merge per-worker snapshots and publish as one CrawlProgressEvent (no-op without publisher/aggregator). */
@@ -355,6 +437,93 @@ public class DistributedCrawlCoordinator {
         }
     }
 
+    public boolean isCurrentWorkerAttempt(String sessionId, String workerId, int attempt) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
+        return session != null && session.isCurrentAttempt(workerId, attempt);
+    }
+
+    public WriterLeaseVerdict validateWriterLease(
+            String sessionId, String workerId, int attempt, String rawToken, boolean markWrite) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
+        if (session == null) return WriterLeaseVerdict.UNKNOWN_SESSION;
+        DistributedCrawlSession.WorkerInfo worker = session.getWorkers().get(workerId);
+        if (worker == null) return WriterLeaseVerdict.UNKNOWN_PARTITION;
+        if (!session.isCurrentAttempt(workerId, attempt)) return WriterLeaseVerdict.STALE_ATTEMPT;
+        if (worker.isLeaseRevoked()) return WriterLeaseVerdict.REVOKED;
+        if (worker.getLeaseExpiresAt() == null || worker.getLeaseExpiresAt().isBefore(Instant.now())) {
+            return WriterLeaseVerdict.EXPIRED;
+        }
+        if (rawToken == null || worker.getLeaseTokenHash() == null
+                || !MessageDigest.isEqual(hashLease(rawToken).getBytes(StandardCharsets.US_ASCII),
+                worker.getLeaseTokenHash().getBytes(StandardCharsets.US_ASCII))) {
+            return WriterLeaseVerdict.INVALID_TOKEN;
+        }
+        worker.setLeaseExpiresAt(Instant.now().plus(WRITER_LEASE_DURATION));
+        if (markWrite) worker.setAcceptedGraphWrites(true);
+        return WriterLeaseVerdict.VALID;
+    }
+
+    public Optional<DistributedCrawlPartitionBarrier.Decision> handlePartitionBarrier(
+            String sessionId, String workerId, int attempt,
+            UnifiedCrawlJob.ProgressSnapshot snapshot) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
+        if (session == null || !session.isCurrentAttempt(workerId, attempt)) return Optional.empty();
+        synchronized (session) {
+            DistributedCrawlSession.WorkerInfo worker = session.getWorkers().get(workerId);
+            worker.setLatestSnapshot(snapshot);
+            worker.setLastProgressAt(Instant.now());
+            if (!partitionSucceeded(snapshot)) {
+                worker.setPartitionPhase("LOCAL_GRAPH_FAILED");
+                session.workerFailed(workerId, attempt, "partition reported a hard local graph failure");
+                failReplacementSession(session, "partition hard failure before barrier");
+                return Optional.of(DistributedCrawlPartitionBarrier.Decision.ABORT);
+            }
+            worker.setPartitionPhase("LOCAL_GRAPH_READY");
+            boolean allReady = session.getWorkers().values().stream().allMatch(candidate ->
+                    "LOCAL_GRAPH_READY".equals(candidate.getPartitionPhase())
+                            || candidate.getStatus() == DistributedCrawlSession.WorkerStatus.COMPLETED);
+            if (!allReady) {
+                persist(session, false);
+                return Optional.empty();
+            }
+            if (session.getFinalizerWorkerId() == null) {
+                DistributedCrawlSession.WorkerInfo finalizer = session.getWorkers().values().stream()
+                        .min(Comparator.comparingInt(DistributedCrawlSession.WorkerInfo::getPartitionIndex))
+                        .orElseThrow();
+                session.setFinalizerWorkerId(finalizer.getWorkerId());
+                finalizer.setFinalizer(true);
+            }
+            boolean finalizer = workerId.equals(session.getFinalizerWorkerId());
+            session.getWorkers().values().stream()
+                    .filter(candidate -> !candidate.getWorkerId().equals(session.getFinalizerWorkerId()))
+                    .forEach(candidate -> candidate.setLeaseRevoked(true));
+            persist(session, true);
+            return Optional.of(finalizer
+                    ? DistributedCrawlPartitionBarrier.Decision.RUN_CORPUS_FINALIZATION
+                    : DistributedCrawlPartitionBarrier.Decision.COMPLETE_PARTITION);
+        }
+    }
+
+    private static boolean partitionSucceeded(UnifiedCrawlJob.ProgressSnapshot snapshot) {
+        if (snapshot == null || snapshot.getStatus() == UnifiedCrawlJob.Status.FAILED
+                || snapshot.getStatus() == UnifiedCrawlJob.Status.CANCELLED
+                || snapshot.getStatus() == UnifiedCrawlJob.Status.CANCELLING) return false;
+        if (snapshot.getSourceProgress() != null && snapshot.getSourceProgress().stream().anyMatch(source ->
+                source != null && source.getStatus() == UnifiedCrawlJob.Status.FAILED)) return false;
+        if (snapshot.getPipelineSteps() == null) return true;
+        Set<String> hard = Set.of("LOADING", "GRAPH_PREP", "GRAPH_EXTRACTION", "SURFACING");
+        return snapshot.getPipelineSteps().stream().noneMatch(step ->
+                step != null && hard.contains(step.getStepId())
+                        && step.getStatus() == UnifiedCrawlJob.PipelineStepStatus.FAILED);
+    }
+
+    public void revokeWriterLeases(String sessionId) {
+        DistributedCrawlSession session = activeSessions.get(sessionId);
+        if (session == null) return;
+        session.getWorkers().values().forEach(worker -> worker.setLeaseRevoked(true));
+        persist(session, true);
+    }
+
     /**
      * Re-dispatch a lost worker's partition to another capable worker (Phase E). Reuses the SAME session
      * {@code workerId} key so accounting stays correct — callbacks are idempotent, so a silently-revived
@@ -363,6 +532,9 @@ public class DistributedCrawlCoordinator {
     public boolean reassignWorkerPartition(DistributedCrawlSession session,
                                            DistributedCrawlSession.WorkerInfo worker) {
         if (session == null || worker == null) {
+            return false;
+        }
+        if (session.getGraphGeneration() != null && worker.isAcceptedGraphWrites()) {
             return false;
         }
         UnifiedCrawlRequest original = session.getOriginalRequest();
@@ -398,29 +570,27 @@ public class DistributedCrawlCoordinator {
                     worker.getWorkerId(), worker.getSources().size() - remaining.size(), remaining.size());
         }
         int workerCount = Math.max(1, session.getTotalWorkers());
+        int nextAttempt = Math.max(2, worker.getAttempt() + 1);
         try {
-            UnifiedCrawlRequest workerRequest = UnifiedCrawlRequest.builder()
-                    .name(original.getName() + " [" + worker.getWorkerId() + " reassigned]")
-                    .factSheetId(original.getFactSheetId())
-                    .factSheetName(original.getFactSheetName())
-                    .sources(remaining)
-                    .graphExtraction(original.getGraphExtraction())
-                    .vectorIndex(original.getVectorIndex())
-                    .preprocessing(original.getPreprocessing())
-                    .processingRoute(scaleProcessingRouteForWorker(original.getProcessingRoute(), workerCount))
-                    .runtimeConfig(scaleRuntimeConfigForWorker(original.getRuntimeConfig(), workerCount))
-                    .pipelines(original.getPipelines())
-                    .routeRules(original.getRouteRules())
-                    .defaultPipelineId(original.getDefaultPipelineId())
-                    .distribution(null)
-                    .build();
+            UnifiedCrawlRequest workerRequest = copyForWorker(
+                    original, remaining,
+                    original.getName() + " [" + worker.getWorkerId() + " reassigned]",
+                    scaleRuntimeConfigForWorker(original.getRuntimeConfig(), workerCount),
+                    scaleProcessingRouteForWorker(original.getProcessingRoute(), workerCount),
+                    session.getSessionId(), worker.getWorkerId(), worker.getPartitionIndex(),
+                    workerCount, nextAttempt, generationFromSession(session));
+            String newJobId = worker.getWorkerId() + "-r" + (nextAttempt - 1);
+            session.beginAttempt(worker.getWorkerId(), newJobId, nextAttempt);
+            String graphLease = issueWriterLease(session, worker.getWorkerId(), nextAttempt);
             Map<String, Object> metadata = new HashMap<>();
             metadata.put("sessionId", session.getSessionId());
             metadata.put("workerId", worker.getWorkerId());
+            metadata.put("attempt", nextAttempt);
+            metadata.put("externalJobId", newJobId);
+            metadata.put("graphWriterLease", graphLease);
             metadata.put("crawlRequestJson", objectMapper.writeValueAsString(workerRequest));
             metadata.put("targetWorkerBaseUrl", target.baseUrl());
 
-            String newJobId = worker.getWorkerId() + "-r" + (worker.getReassignmentCount() + 1);
             delegate.submitJob(newJobId, "crawl",
                             "Reassigned distributed crawl " + worker.getWorkerId(),
                             JobResourceProfile.cpuOnly("crawl", "Distributed Crawl Worker", 512 * 1024 * 1024L),
@@ -430,21 +600,42 @@ public class DistributedCrawlCoordinator {
                             String why = err != null ? err.getMessage()
                                     : (ref != null ? ref.message() : "null submission ref");
                             log.warn("Reassignment of partition {} failed: {}", worker.getWorkerId(), why);
-                            session.workerFailed(worker.getWorkerId(), "reassignment failed: " + why);
+                            session.workerFailed(worker.getWorkerId(), nextAttempt,
+                                    "reassignment failed: " + why);
                         } else {
-                            worker.setReassignmentCount(worker.getReassignmentCount() + 1);
-                            worker.setExternalRef(ref.externalId());
-                            worker.setStatus(DistributedCrawlSession.WorkerStatus.RUNNING);
-                            worker.setLastProgressAt(Instant.now());
+                            session.workerDispatched(worker.getWorkerId(), ref.externalId(),
+                                    newJobId, nextAttempt);
                             log.warn("Reassigned partition {} to worker {} (attempt {})",
-                                    worker.getWorkerId(), target.workerId(), worker.getReassignmentCount());
+                                    worker.getWorkerId(), target.workerId(), nextAttempt);
                         }
                         persist(session, true);
                     });
             return true;
         } catch (Exception e) {
             log.warn("Reassignment of partition {} errored: {}", worker.getWorkerId(), e.getMessage());
+            session.workerFailed(worker.getWorkerId(), worker.getAttempt(),
+                    "reassignment errored: " + e.getMessage());
+            persist(session, true);
             return false;
+        }
+    }
+
+    public void handlePartitionLoss(DistributedCrawlSession session,
+                                    DistributedCrawlSession.WorkerInfo worker,
+                                    String reason) {
+        handlePartitionLoss(session, worker, reason, true);
+    }
+
+    void handlePartitionLoss(DistributedCrawlSession session,
+                             DistributedCrawlSession.WorkerInfo worker,
+                             String reason,
+                             boolean allowReassignment) {
+        if (session == null || worker == null) return;
+        synchronized (session) {
+            if (allowReassignment && reassignWorkerPartition(session, worker)) return;
+            session.workerFailed(worker.getWorkerId(), worker.getAttempt(), reason);
+            failReplacementSession(session, reason);
+            persist(session, true);
         }
     }
 
@@ -455,11 +646,15 @@ public class DistributedCrawlCoordinator {
         DistributedCrawlSession session = activeSessions.get(sessionId);
         if (session == null) return false;
 
-        session.setStatus(DistributedCrawlSession.Status.CANCELLED);
+        synchronized (session) {
+        session.setStatus(DistributedCrawlSession.Status.CANCELLING);
+        revokeWriterLeases(sessionId);
         for (DistributedCrawlSession.WorkerInfo worker : session.getWorkers().values()) {
             if (worker.getExternalRef() != null
                     && worker.getStatus() == DistributedCrawlSession.WorkerStatus.RUNNING) {
-                delegate.cancelJob(worker.getWorkerId(), worker.getExternalRef())
+                String externalJobId = worker.getCurrentExternalJobId() != null
+                        ? worker.getCurrentExternalJobId() : worker.getWorkerId();
+                delegate.cancelJob(externalJobId, worker.getExternalRef())
                         .whenComplete((success, err) -> {
                             if (err != null) {
                                 log.debug("Error cancelling worker {}: {}", worker.getWorkerId(), err.getMessage());
@@ -467,8 +662,13 @@ public class DistributedCrawlCoordinator {
                         });
             }
         }
+        if (session.getGraphGeneration() != null) {
+            abortReplacementSession(session, "distributed crawl cancelled");
+        }
+        session.setStatus(DistributedCrawlSession.Status.CANCELLED);
         persist(session, true);
         return true;
+        }
     }
 
     /**
@@ -531,7 +731,8 @@ public class DistributedCrawlCoordinator {
             }
         }
         lastPersistMs.put(session.getSessionId(), now);
-        sessionStore.persistAsync(session);
+        if (force) sessionStore.persist(session);
+        else sessionStore.persistAsync(session);
     }
 
     private static boolean isTerminal(DistributedCrawlSession.Status s) {
@@ -619,7 +820,9 @@ public class DistributedCrawlCoordinator {
             }
             DistributedCrawlSession session = DistributedCrawlSession.fromManifest(m);
             activeSessions.put(session.getSessionId(), session);
-            reconcileWorkers(session);
+            if (!reconcileReplacementLifecycle(session)) {
+                reconcileWorkers(session);
+            }
             resumed++;
         }
         if (resumed > 0) {
@@ -640,7 +843,10 @@ public class DistributedCrawlCoordinator {
             if (w.getExternalRef() != null) {
                 try {
                     ExternalJobSchedulerDelegate.ExternalJobStatus st =
-                            delegate.getJobStatus(w.getWorkerId(), w.getExternalRef()).get(10, TimeUnit.SECONDS);
+                            delegate.getJobStatus(
+                                    w.getCurrentExternalJobId() != null
+                                            ? w.getCurrentExternalJobId() : w.getWorkerId(),
+                                    w.getExternalRef()).get(10, TimeUnit.SECONDS);
                     statusStr = st != null ? st.status() : null;
                 } catch (Exception e) {
                     log.debug("Reconcile: status check for {} failed: {}", w.getWorkerId(), e.getMessage());
@@ -652,22 +858,317 @@ public class DistributedCrawlCoordinator {
                 w.setStatus(DistributedCrawlSession.WorkerStatus.RUNNING);
                 w.setLastProgressAt(Instant.now()); // alive — reset the loss clock for the reaper
             } else if (reassignEnabled) {
-                reassignWorkerPartition(session, w);
+                if (!reassignWorkerPartition(session, w)) {
+                    session.workerFailed(w.getWorkerId(), w.getAttempt(),
+                            "reconcile: partition could not be safely reassigned");
+                    failReplacementSession(session, "worker loss after graph writes");
+                }
             } else {
                 session.workerFailed(w.getWorkerId(),
                         "reconcile: worker not recoverable (status=" + statusStr + ")");
             }
         }
-        if (session.isAllWorkersFinished() && session.getStatus() == DistributedCrawlSession.Status.RUNNING) {
-            session.setStatus(session.getFailedWorkers().get() > 0
-                    ? DistributedCrawlSession.Status.PARTIALLY_COMPLETED
-                    : DistributedCrawlSession.Status.COMPLETED);
-            session.setCompletedAt(Instant.now());
+        if (session.isAllWorkersFinished()) {
+            if (session.getGraphGeneration() != null) {
+                completeReplacementSession(session);
+            } else if (session.getStatus() == DistributedCrawlSession.Status.RUNNING) {
+                session.setStatus(session.getFailedWorkers().get() > 0
+                        ? DistributedCrawlSession.Status.PARTIALLY_COMPLETED
+                        : DistributedCrawlSession.Status.COMPLETED);
+                session.setCompletedAt(Instant.now());
+            }
         }
         persist(session, true);
     }
 
+    private boolean reconcileReplacementLifecycle(DistributedCrawlSession session) {
+        if (session.getGraphGeneration() == null || knowledgeGraphService == null) return false;
+        try {
+            Optional<GraphGenerationJournal.Entry> status = knowledgeGraphService
+                    .getFactSheetGenerationStatus(session.getGraphGeneration().factSheetId());
+            if (status.isPresent()
+                    && status.get().state() == GraphGenerationJournal.State.ACTIVE
+                    && Objects.equals(status.get().pointer().activePhysicalGraphId(),
+                    session.getGraphGeneration().physicalGraphId())) {
+                GraphGeneration.Activation activation = status.get().activation();
+                if (activation != null) {
+                    session.setGraphActivation(new UnifiedCrawlJob.GraphActivationSnapshot(
+                            activation.logicalGraphId(), activation.activePhysicalGraphId(),
+                            activation.previousPhysicalGraphId(), activation.revision(), activation.activatedAt()));
+                }
+                session.setStatus(DistributedCrawlSession.Status.COMPLETED);
+                session.setCompletedAt(Instant.now());
+                persist(session, true);
+                return true;
+            }
+            if (status.isPresent() && status.get().state() == GraphGenerationJournal.State.ABORTED) {
+                session.setGraphGeneration(new UnifiedCrawlJob.GraphGenerationSnapshot(
+                        session.getGraphGeneration().factSheetId(), session.getGraphGeneration().logicalGraphId(),
+                        session.getGraphGeneration().physicalGraphId(), session.getGraphGeneration().generationId(),
+                        session.getGraphGeneration().expectedActivePhysicalGraphId(),
+                        session.getGraphGeneration().expectedRevision(), "ABORTED", status.get().lastError()));
+                session.setStatus(DistributedCrawlSession.Status.FAILED);
+                session.setCompletedAt(Instant.now());
+                persist(session, true);
+                return true;
+            }
+            if (session.getStatus() == DistributedCrawlSession.Status.SEALING) {
+                completeReplacementSession(session);
+                persist(session, true);
+                return isTerminal(session.getStatus());
+            }
+            if (session.getStatus() == DistributedCrawlSession.Status.ABORTING
+                    || session.getStatus() == DistributedCrawlSession.Status.CANCELLING) {
+                abortReplacementSession(session, "coordinator restarted during abort/cancellation");
+                persist(session, true);
+                return true;
+            }
+        } catch (RuntimeException unavailable) {
+            log.warn("Could not reconcile replacement generation {}: {}",
+                    session.getSessionId(), unavailable.getMessage());
+        }
+        return false;
+    }
+
+    public Optional<DistributedCrawlSession> retrySession(String sessionId) {
+        DistributedCrawlSession previous = activeSessions.get(sessionId);
+        if (previous == null || !isTerminal(previous.getStatus()) || previous.getOriginalRequest() == null) {
+            return Optional.empty();
+        }
+        UnifiedCrawlRequest retry = objectMapper.convertValue(
+                objectMapper.valueToTree(previous.getOriginalRequest()), UnifiedCrawlRequest.class);
+        retry.setName((retry.getName() == null ? "Distributed crawl" : retry.getName()) + " (retry)");
+        return Optional.of(startDistributed(retry));
+    }
+
     // ---- Partitioning ----
+
+    /** Deep-copy the complete request, then override only partition-local execution fields. */
+    private UnifiedCrawlRequest copyForWorker(
+            UnifiedCrawlRequest original,
+            List<UnifiedCrawlSource> sources,
+            String name,
+            UnifiedCrawlRequest.RuntimeConfig runtimeConfig,
+            ProcessingRouteConfig processingRoute,
+            String sessionId,
+            String partitionId,
+            int partitionIndex,
+            int partitionCount,
+            int attempt,
+            GraphGeneration.Ref generation) {
+        UnifiedCrawlRequest copy = objectMapper.convertValue(
+                objectMapper.valueToTree(original), UnifiedCrawlRequest.class);
+        copy.setName(name);
+        copy.setSources(sources == null ? List.of() : new ArrayList<>(sources));
+        UnifiedCrawlRequest.RuntimeConfig workerRuntime = runtimeConfig == null
+                ? UnifiedCrawlRequest.RuntimeConfig.builder().build()
+                : objectMapper.convertValue(objectMapper.valueToTree(runtimeConfig),
+                UnifiedCrawlRequest.RuntimeConfig.class);
+        // Phase-1 fail-closed invariant: a worker must never infer replacement mode from its
+        // local/global config while it has distribution=null and still targets a local graph child.
+        workerRuntime.setClearGraphBeforeRun(false);
+        copy.setRuntimeConfig(workerRuntime);
+        copy.setProcessingRoute(processingRoute);
+        copy.setDistribution(null);
+        copy.setDistributedGraphExecution(generation == null ? null : new DistributedGraphExecution(
+                1, sessionId, partitionId, partitionIndex, partitionCount, attempt,
+                "distributed:" + sessionId, copy.getFactSheetId(),
+                generation.logicalGraphId(), generation.physicalGraphId(), generation.generationId(),
+                generation.expectedActivePhysicalGraphId(), generation.expectedRevision(), true, true));
+        return copy;
+    }
+
+    private void validateReplacementPreflight(
+            UnifiedCrawlRequest request, List<WorkerCapabilities> pins, int workerCount) {
+        if (request.getFactSheetId() == null) {
+            throw new IllegalArgumentException("Distributed replacement requires a resolved fact sheet");
+        }
+        if (knowledgeGraphService == null || !knowledgeGraphService.supportsGraphGenerations()) {
+            throw new IllegalArgumentException("Authoritative graph generation service is unavailable");
+        }
+        ResourceSchedulerConfig config = configService != null ? configService.getConfiguration() : null;
+        if (config == null || config.getExternalAuthToken() == null
+                || config.getExternalAuthToken().isBlank()) {
+            throw new IllegalArgumentException("Distributed replacement requires a nonblank cluster token");
+        }
+        if (!config.isClusterSessionPersistenceEnabled() || sessionStore == null) {
+            throw new IllegalArgumentException("Distributed replacement requires durable session persistence");
+        }
+        if (!"cluster".equalsIgnoreCase(delegate.getMode())) {
+            throw new IllegalArgumentException(
+                    "Distributed replacement currently requires the authenticated remote-peer cluster delegate");
+        }
+        if (workerCount <= 0 || pins.size() != workerCount || pins.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("Distributed replacement requires explicitly compatible live workers");
+        }
+        if (pins.stream().anyMatch(worker -> !worker.supportsDistributedGraphWriter(1)
+                || worker.distributedPartitionBarrierVersion() < 1)) {
+            throw new IllegalArgumentException(
+                    "Every replacement worker must advertise graph writer v1 and barrier v1");
+        }
+    }
+
+    private GraphGeneration.Ref generationFromSession(DistributedCrawlSession session) {
+        UnifiedCrawlJob.GraphGenerationSnapshot snapshot = session.getGraphGeneration();
+        return snapshot == null ? null : new GraphGeneration.Ref(
+                snapshot.factSheetId(), snapshot.logicalGraphId(), snapshot.physicalGraphId(),
+                snapshot.generationId(), snapshot.expectedActivePhysicalGraphId(),
+                snapshot.expectedRevision());
+    }
+
+    private void completeReplacementSession(DistributedCrawlSession session) {
+        if (session.getGraphActivation() != null) {
+            session.setStatus(DistributedCrawlSession.Status.COMPLETED);
+            return;
+        }
+        if (session.getFailedWorkers().get() > 0
+                || session.getFinalizerWorkerId() == null
+                || session.getWorkers().get(session.getFinalizerWorkerId()).getStatus()
+                != DistributedCrawlSession.WorkerStatus.COMPLETED) {
+            abortReplacementSession(session, "replacement partition or finalizer failed");
+            return;
+        }
+        GraphGeneration.Ref generation = generationFromSession(session);
+        try {
+            revokeWriterLeases(session.getSessionId());
+            session.setStatus(DistributedCrawlSession.Status.SEALING);
+            GraphGeneration.Validation validation =
+                    knowledgeGraphService.validateFactSheetGeneration(generation);
+            if (!validation.valid()) {
+                throw new IllegalStateException("distributed replacement validation failed: " + validation.errors());
+            }
+            GraphGeneration.Activation activation = activateDistributedGeneration(session, generation);
+            session.setGraphActivation(new UnifiedCrawlJob.GraphActivationSnapshot(
+                    activation.logicalGraphId(), activation.activePhysicalGraphId(),
+                    activation.previousPhysicalGraphId(), activation.revision(), activation.activatedAt()));
+            session.setGraphGeneration(toSnapshot(generation, "ACTIVE", null));
+            session.setStatus(DistributedCrawlSession.Status.COMPLETED);
+            session.setCompletedAt(Instant.now());
+            publishReplacementCompleted(session);
+        } catch (RuntimeException failure) {
+            abortReplacementSession(session, failure.getMessage());
+        }
+    }
+
+    private void failReplacementSession(DistributedCrawlSession session, String reason) {
+        if (session != null && session.getGraphGeneration() != null
+                && session.getGraphActivation() == null) {
+            abortReplacementSession(session, reason);
+        }
+    }
+
+    private void publishReplacementCompleted(DistributedCrawlSession session) {
+        if (eventPublisher == null || session.getOriginalRequest() == null) return;
+        int entities = session.getWorkers().values().stream()
+                .map(DistributedCrawlSession.WorkerInfo::getLatestSnapshot)
+                .filter(Objects::nonNull)
+                .mapToInt(UnifiedCrawlJob.ProgressSnapshot::getEntitiesExtracted).sum();
+        int relationships = session.getWorkers().values().stream()
+                .map(DistributedCrawlSession.WorkerInfo::getLatestSnapshot)
+                .filter(Objects::nonNull)
+                .mapToInt(UnifiedCrawlJob.ProgressSnapshot::getRelationshipsExtracted).sum();
+        try {
+            eventPublisher.publishEvent(new GraphBuildCompletedEvent(
+                    this, "distributed-" + session.getSessionId(), entities, relationships,
+                    session.getOriginalRequest().getFactSheetId(), Map.of()));
+        } catch (RuntimeException listenerFailure) {
+            log.warn("Distributed replacement {} activated but completion event failed: {}",
+                    session.getSessionId(), listenerFailure.getMessage());
+        }
+    }
+
+    private GraphGeneration.Activation activateDistributedGeneration(
+            DistributedCrawlSession session, GraphGeneration.Ref generation) {
+        String operationId = "distributed:" + session.getSessionId() + ":activate";
+        RuntimeException lastFailure = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return knowledgeGraphService.activateFactSheetGeneration(generation, operationId);
+            } catch (RuntimeException failure) {
+                lastFailure = failure;
+                Optional<GraphGenerationJournal.Entry> status = knowledgeGraphService
+                        .getFactSheetGenerationStatus(generation.factSheetId());
+                if (status.isPresent()
+                        && status.get().state() == GraphGenerationJournal.State.ACTIVE
+                        && Objects.equals(status.get().pointer().activePhysicalGraphId(),
+                        generation.physicalGraphId())
+                        && status.get().activation() != null) {
+                    return status.get().activation();
+                }
+            }
+        }
+        throw lastFailure != null ? lastFailure
+                : new IllegalStateException("distributed replacement activation returned no result");
+    }
+
+    private void abortReplacementSession(DistributedCrawlSession session, String reason) {
+        if (session.getGraphGeneration() == null || session.getGraphActivation() != null
+                || "ABORTED".equals(session.getGraphGeneration().state())) return;
+        session.setStatus(DistributedCrawlSession.Status.ABORTING);
+        revokeWriterLeases(session.getSessionId());
+        GraphGeneration.Ref generation = generationFromSession(session);
+        boolean aborted = false;
+        try {
+            knowledgeGraphService.abortFactSheetGeneration(generation, reason);
+            aborted = true;
+        } catch (RuntimeException abortFailure) {
+            log.error("Could not abort distributed replacement {}: {}",
+                    session.getSessionId(), abortFailure.getMessage(), abortFailure);
+            try {
+                Optional<GraphGenerationJournal.Entry> status = knowledgeGraphService
+                        .getFactSheetGenerationStatus(generation.factSheetId());
+                if (status.isPresent() && status.get().state() == GraphGenerationJournal.State.ABORTED) {
+                    aborted = true;
+                } else if (status.isPresent() && status.get().state() == GraphGenerationJournal.State.ACTIVE
+                        && status.get().activation() != null) {
+                    GraphGeneration.Activation activation = status.get().activation();
+                    session.setGraphActivation(new UnifiedCrawlJob.GraphActivationSnapshot(
+                            activation.logicalGraphId(), activation.activePhysicalGraphId(),
+                            activation.previousPhysicalGraphId(), activation.revision(), activation.activatedAt()));
+                    session.setStatus(DistributedCrawlSession.Status.COMPLETED);
+                    session.setCompletedAt(Instant.now());
+                    return;
+                }
+            } catch (RuntimeException reconciliationFailure) {
+                abortFailure.addSuppressed(reconciliationFailure);
+            }
+        }
+        session.setGraphGeneration(toSnapshot(generation, aborted ? "ABORTED" : "ABORT_UNCERTAIN", reason));
+        session.setStatus(aborted ? DistributedCrawlSession.Status.FAILED
+                : DistributedCrawlSession.Status.ABORTING);
+        session.setCompletedAt(aborted ? Instant.now() : null);
+    }
+
+    private static UnifiedCrawlJob.GraphGenerationSnapshot toSnapshot(
+            GraphGeneration.Ref generation, String state, String error) {
+        return new UnifiedCrawlJob.GraphGenerationSnapshot(
+                generation.factSheetId(), generation.logicalGraphId(), generation.physicalGraphId(),
+                generation.generationId(), generation.expectedActivePhysicalGraphId(),
+                generation.expectedRevision(), state, error);
+    }
+
+    private String issueWriterLease(DistributedCrawlSession session, String workerId, int attempt) {
+        byte[] tokenBytes = new byte[32];
+        LEASE_RANDOM.nextBytes(tokenBytes);
+        String raw = Base64.getUrlEncoder().withoutPadding().encodeToString(tokenBytes);
+        DistributedCrawlSession.WorkerInfo worker = session.getWorkers().get(workerId);
+        if (worker == null || worker.getAttempt() != attempt) {
+            throw new IllegalStateException("Cannot issue lease for stale worker attempt");
+        }
+        worker.setLeaseTokenHash(hashLease(raw));
+        worker.setLeaseExpiresAt(Instant.now().plus(WRITER_LEASE_DURATION));
+        worker.setLeaseRevoked(false);
+        return raw;
+    }
+
+    private static String hashLease(String raw) {
+        try {
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
 
     /**
      * Live workers that can take a {@code crawl} partition right now (advertise crawl support, accepting work,

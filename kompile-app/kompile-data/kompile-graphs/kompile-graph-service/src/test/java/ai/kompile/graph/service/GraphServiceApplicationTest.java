@@ -73,5 +73,11 @@ class GraphServiceApplicationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_OCTET_STREAM))
                 .andExpect(result -> assertTrue(result.getResponse().getContentAsByteArray().length > 0));
+
+        mockMvc.perform(get("/api/graph/unified/import-capabilities"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile").value("EPHEMERAL"))
+                .andExpect(jsonPath("$.managedCompleteness").value(false))
+                .andExpect(jsonPath("$.durability").value("EPHEMERAL"));
     }
 }

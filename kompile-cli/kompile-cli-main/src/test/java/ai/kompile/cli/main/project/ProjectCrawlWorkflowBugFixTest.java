@@ -290,7 +290,7 @@ class ProjectCrawlWorkflowBugFixTest {
                 "--backend", "local",
                 "--preset", "vlm-ocr",
                 "--source", "data/input_documents/uploads",
-                "--schema-preset", "fpna-cpg-channel-v1");
+                "--schema-preset", "example-schema-v1");
         assertEquals(0, exit, "project init should succeed");
 
         KompileProjectManifest manifest = new KompileProjectStore().load(tmp);

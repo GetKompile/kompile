@@ -15,8 +15,10 @@ import ai.kompile.project.KompileProjectStore;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 /** Direct folder-local model acquisition. This path never launches scale-out staging. */
 public final class LocalProjectModelAcquisition {
@@ -50,22 +52,26 @@ public final class LocalProjectModelAcquisition {
             }
             String effectiveId = firstNonBlank(modelId,
                     localPath.getFileName() == null ? "local-model" : localPath.getFileName().toString());
+            Path runtimeArtifact = localRuntimeArtifact(localPath);
+            Path effectivePath = runtimeArtifact == null ? localPath : runtimeArtifact;
             Path tokenizer = Files.isDirectory(localPath)
                     ? existing(localPath.resolve("tokenizer.json"))
-                    : existing(localPath.resolveSibling("tokenizer.json"));
+                    : existing(effectivePath.resolveSibling("tokenizer.json"));
             if (!dryRun) {
                 ManagedModelArtifactCatalog.Definition managed = modelId == null
                         ? null : ManagedModelArtifactCatalog.find(modelId).orElse(null);
-                if (managed != null && Files.isRegularFile(localPath)
-                        && localPath.startsWith(root.resolve("data/models").toAbsolutePath().normalize())
-                        && localPath.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".sdz")
+                if (managed != null && Files.isRegularFile(effectivePath)
+                        && effectivePath.startsWith(root.resolve("data/models").toAbsolutePath().normalize())
+                        && effectivePath.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".sdz")
                         && tokenizer != null) {
-                    registerConverted(root, effectiveId, localPath);
+                    registerConverted(root, effectiveId, effectivePath);
+                } else if (runtimeArtifact != null) {
+                    registerLocalRuntime(root, effectiveId, runtimeArtifact, tokenizer);
                 } else {
                     registerLocalSource(root, effectiveId, localPath, tokenizer);
                 }
             }
-            return new Result(effectiveId, localPath, tokenizer, false, dryRun,
+            return new Result(effectiveId, effectivePath, tokenizer, false, dryRun,
                     "local", null);
         }
         if (modelId == null) {
@@ -159,6 +165,7 @@ public final class LocalProjectModelAcquisition {
         model.setSource(definition.source());
         model.setSourceRepository(definition.repository());
         model.setSourceRevision(definition.revision());
+        model.setVersion(definition.revision());
         model.setPath(root.relativize(modelPath.toAbsolutePath().normalize()).toString());
         Map<String, String> metadata = new LinkedHashMap<>(definition.metadata());
         metadata.put("registry.type", definition.modelType());
@@ -166,6 +173,25 @@ public final class LocalProjectModelAcquisition {
         metadata.put("acquisition", "direct");
         metadata.put("artifact.stage", artifactStage);
         metadata.put("runtime.ready", Boolean.toString("RUNTIME".equals(artifactStage)));
+        if ("RUNTIME".equals(artifactStage)) {
+            metadata.put("registry.framework", "samediff");
+            metadata.put("registry.originalFormat", definition.format());
+            metadata.put("registry.modelFile", modelPath.getFileName().toString());
+            definition.component(definition.tokenizerComponentKey()).ifPresent(component ->
+                    metadata.put("registry.vocabFile", component.localFileName()));
+            metadata.put("registry.tokenizerDoLowerCase", "false");
+            metadata.put("registry.tokenizerStripAccents", "false");
+            metadata.put("registry.tokenizerAddSpecialTokens", "true");
+            metadata.put("registry.tokenizerMaxLength",
+                    definition.metadata().getOrDefault("max_sequence_length", "512"));
+            metadata.put("registry.tokenizerPadding", "max_length");
+            metadata.put("registry.tokenizerTruncation", "true");
+            try {
+                metadata.put("registry.checksum", ManagedModelArtifactDownloader.sha256(modelPath));
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to checksum converted model " + modelPath, e);
+            }
+        }
         model.setMetadata(metadata);
         store.registerModel(root, model);
     }
@@ -189,6 +215,57 @@ public final class LocalProjectModelAcquisition {
         if (tokenizerPath != null) metadata.put("tokenizer", tokenizerPath.toString());
         model.setMetadata(metadata);
         store.registerModel(root, model);
+    }
+
+    private static void registerLocalRuntime(
+            Path root, String modelId, Path modelPath, Path tokenizerPath) {
+        KompileProjectStore store = new KompileProjectStore();
+        ensureProject(store, root);
+        KompileProjectModel model = new KompileProjectModel();
+        model.setId(modelId);
+        model.setModelId(modelId);
+        model.setRegistryModelId(modelId);
+        String name = modelPath.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        boolean ggml = name.endsWith(".gguf") || name.endsWith(".ggml");
+        model.setRole(ggml ? "LLM" : "MODEL");
+        model.setSource("LOCAL");
+        Path absolute = modelPath.toAbsolutePath().normalize();
+        model.setPath(absolute.startsWith(root) ? root.relativize(absolute).toString() : absolute.toString());
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("acquisition", "direct");
+        metadata.put("artifact.stage", "RUNTIME");
+        metadata.put("runtime.ready", "true");
+        metadata.put("format", ggml ? (name.endsWith(".gguf") ? "GGUF" : "GGML") : "SAMEDIFF");
+        metadata.put("registry.type", ggml ? "llm_ggml" : "model");
+        metadata.put("registry.modelFile", modelPath.getFileName().toString());
+        if (tokenizerPath != null) {
+            metadata.put("tokenizer", tokenizerPath.toString());
+            metadata.put("registry.vocabFile", tokenizerPath.getFileName().toString());
+        }
+        model.setMetadata(metadata);
+        store.registerModel(root, model);
+    }
+
+    private static Path localRuntimeArtifact(Path localPath) throws IOException {
+        if (Files.isRegularFile(localPath) && runtimeForm(localPath)) {
+            return localPath.toAbsolutePath().normalize();
+        }
+        if (!Files.isDirectory(localPath)) {
+            return null;
+        }
+        try (Stream<Path> files = Files.walk(localPath, 2)) {
+            return files.filter(Files::isRegularFile)
+                    .filter(LocalProjectModelAcquisition::runtimeForm)
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .findFirst().map(path -> path.toAbsolutePath().normalize()).orElse(null);
+        }
+    }
+
+    private static boolean runtimeForm(Path path) {
+        String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        return name.endsWith(".gguf") || name.endsWith(".ggml")
+                || name.endsWith(".sdz") || name.endsWith(".sdnb")
+                || name.endsWith(".fb");
     }
 
     private static void ensureProject(KompileProjectStore store, Path root) {

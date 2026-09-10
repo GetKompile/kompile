@@ -7,6 +7,7 @@
     kgr_detach_thread;
     kgr_dispatch;
     kgr_free;
+    kgr_last_error;
     kgr_open;
     kgr_save;
     kgr_tear_down_isolate;

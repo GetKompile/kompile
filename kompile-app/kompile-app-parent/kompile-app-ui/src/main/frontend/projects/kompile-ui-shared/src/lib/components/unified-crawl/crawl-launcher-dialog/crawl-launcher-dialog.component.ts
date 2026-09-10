@@ -176,7 +176,7 @@ export class CrawlLauncherDialogComponent implements OnInit, OnDestroy {
   graphLlmProvider = 'default';
   graphModelName = '';
   graphAvailableModels: { id: string; name: string }[] = [];
-  graphSchemaPresetId = 'fpna-cpg-channel-v1';
+  graphSchemaPresetId = '';
   graphEntityTypes: string[] = ['PERSON', 'ORGANIZATION', 'CONCEPT', 'TECHNOLOGY'];
   graphRelTypes: string[] = [];
   graphSchemaMode = 'LENIENT';

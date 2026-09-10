@@ -46,7 +46,8 @@ public class IndexFileWatcher {
     private static final Set<String> IGNORED_DIRS = Set.of(
             ".git", ".svn", ".hg", "node_modules", "__pycache__", ".gradle",
             "target", "build", "dist", "out", ".idea", ".vscode", ".settings",
-            "vendor", ".tox", ".mypy_cache", ".pytest_cache", ".angular",
+            ".kompile", ".claude", ".codex", ".gemini", ".opencode", ".cursor",
+            "vendor", "venv", ".venv", ".tox", ".mypy_cache", ".pytest_cache", ".angular",
             ".next", ".nuxt", "coverage", ".cache", "bin", "obj"
     );
 
@@ -56,8 +57,11 @@ public class IndexFileWatcher {
     private final Path rootDir;
     private final String projectId;
     private final LocalCodeIndexer indexer;
+    private final String includePatterns;
+    private final String excludePatterns;
     private final PrintStream out;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final Object changeLock = new Object();
     private final Set<String> changedFiles = ConcurrentHashMap.newKeySet();
     private final Map<WatchKey, Path> keyPathMap = new ConcurrentHashMap<>();
 
@@ -83,9 +87,16 @@ public class IndexFileWatcher {
 
     public IndexFileWatcher(Path rootDir, String projectId,
                             LocalCodeIndexer indexer, PrintStream out) {
+        this(rootDir, projectId, indexer, null, null, out);
+    }
+
+    public IndexFileWatcher(Path rootDir, String projectId, LocalCodeIndexer indexer,
+                            String includePatterns, String excludePatterns, PrintStream out) {
         this.rootDir = rootDir.toAbsolutePath().normalize();
         this.projectId = projectId;
         this.indexer = indexer;
+        this.includePatterns = includePatterns;
+        this.excludePatterns = excludePatterns;
         this.out = out;
     }
 
@@ -143,7 +154,9 @@ public class IndexFileWatcher {
      * Get files that have changed since the last re-index.
      */
     public Set<String> getPendingChanges() {
-        return Collections.unmodifiableSet(new HashSet<>(changedFiles));
+        synchronized (changeLock) {
+            return Collections.unmodifiableSet(new HashSet<>(changedFiles));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -174,6 +187,7 @@ public class IndexFileWatcher {
                 @SuppressWarnings("unchecked")
                 WatchEvent<Path> pathEvent = (WatchEvent<Path>) event;
                 Path child = dir.resolve(pathEvent.context());
+                if ("kompile.project.json".equals(child.getFileName().toString())) continue;
 
                 if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(child)) {
                     // New directory — register it for watching
@@ -186,10 +200,12 @@ public class IndexFileWatcher {
                 if (Files.isRegularFile(child) || kind == StandardWatchEventKinds.ENTRY_DELETE) {
                     try {
                         String relPath = rootDir.relativize(child).toString();
-                        changedFiles.add(relPath);
-                        long now = System.currentTimeMillis();
-                        lastChangeTime = now;
-                        if (firstChangeTime == 0) firstChangeTime = now;
+                        synchronized (changeLock) {
+                            changedFiles.add(relPath);
+                            long now = System.currentTimeMillis();
+                            lastChangeTime = now;
+                            if (firstChangeTime == 0) firstChangeTime = now;
+                        }
                     } catch (IllegalArgumentException ignored) {
                         // Path not relative to root — skip
                     }
@@ -215,11 +231,14 @@ public class IndexFileWatcher {
                 break;
             }
 
-            if (changedFiles.isEmpty() || lastChangeTime == 0) continue;
-
-            long now = System.currentTimeMillis();
-            long sinceLast = now - lastChangeTime;
-            long sinceFirst = now - firstChangeTime;
+            long sinceLast;
+            long sinceFirst;
+            synchronized (changeLock) {
+                if (changedFiles.isEmpty() || lastChangeTime == 0) continue;
+                long now = System.currentTimeMillis();
+                sinceLast = now - lastChangeTime;
+                sinceFirst = now - firstChangeTime;
+            }
 
             // Trigger if: quiet for DEBOUNCE_MS, or changes coalescing > MAX_COALESCE_MS
             if (sinceLast >= DEBOUNCE_MS || sinceFirst >= MAX_COALESCE_MS) {
@@ -229,10 +248,13 @@ public class IndexFileWatcher {
     }
 
     private void triggerIncrementalIndex() {
-        Set<String> pending = new HashSet<>(changedFiles);
-        changedFiles.clear();
-        lastChangeTime = 0;
-        firstChangeTime = 0;
+        Set<String> pending;
+        synchronized (changeLock) {
+            pending = new HashSet<>(changedFiles);
+            changedFiles.clear();
+            lastChangeTime = 0;
+            firstChangeTime = 0;
+        }
 
         if (pending.isEmpty()) return;
 
@@ -241,7 +263,8 @@ public class IndexFileWatcher {
 
         try {
             LocalCodeIndexer.IndexResult result = indexer.index(
-                    rootDir, projectId, null, null, new PrintStream(java.io.OutputStream.nullOutputStream()));
+                    rootDir, projectId, includePatterns, excludePatterns,
+                    new PrintStream(java.io.OutputStream.nullOutputStream()));
             if (l != null) l.onIndexUpdated(result);
             out.println("[watch] Re-indexed " + pending.size() + " changed file(s), " +
                     result.entitiesFound() + " entities total");
@@ -261,6 +284,13 @@ public class IndexFileWatcher {
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                 String dirName = dir.getFileName().toString();
                 if (IGNORED_DIRS.contains(dirName)) return FileVisitResult.SKIP_SUBTREE;
+                String relative = rootDir.relativize(dir).toString().replace('\\', '/');
+                if (relative.equals("data/crawls") || relative.startsWith("data/crawls/")
+                        || relative.equals("data/code-projects") || relative.startsWith("data/code-projects/")
+                        || relative.equals("data/graph") || relative.startsWith("data/graph/")
+                        || relative.equals("data/markdown") || relative.startsWith("data/markdown/")) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
                 try {
                     WatchKey key = dir.register(watchService,
                             StandardWatchEventKinds.ENTRY_CREATE,

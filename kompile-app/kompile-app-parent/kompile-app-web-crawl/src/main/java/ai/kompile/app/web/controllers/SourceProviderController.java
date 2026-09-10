@@ -124,7 +124,7 @@ public class SourceProviderController {
                 createCategoryMeta("cloud", "Cloud Storage", "cloud", 3,
                         "Cloud storage services like Google Drive, OneDrive"),
                 createCategoryMeta("collaboration", "Collaboration Tools", "groups", 4,
-                        "Team tools like Confluence, Jira, Notion, Slack")
+                        "Installed team sources such as Confluence, Slack, Discord, and email")
         );
 
         return ResponseEntity.ok(categories);

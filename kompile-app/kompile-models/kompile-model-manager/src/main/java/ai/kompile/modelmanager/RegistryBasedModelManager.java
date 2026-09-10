@@ -34,8 +34,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -842,23 +844,17 @@ public class RegistryBasedModelManager {
     private KompileModelManager.ModelBundle loadModelBundle(String modelId, ModelEntry entry) throws IOException {
         // FIRST: Check if files already exist locally (downloaded via UI or CLI)
         KompileModelManager.ModelBundle localBundle = loadBundleFromLocalCache(modelId, entry);
+        boolean localChecksumMismatch = false;
         if (localBundle != null) {
             // Verify checksum matches if registry has one (detects optimized/updated models)
             if (entry.checksum != null && !entry.checksum.isBlank()) {
                 if (!verifyLocalChecksum(localBundle.getModelPath(), entry.checksum)) {
-                    if (stagingUrl == null) {
+                    localChecksumMismatch = true;
+                    if (loadedArchivePath == null && stagingUrl == null) {
                         throw new IOException("Local model checksum mismatch for " + modelId
-                                + " and no remote source is configured");
+                                + " and no archive or remote source is configured");
                     }
-                    logger.info("Model {} checksum mismatch - remote version is different (possibly optimized). Re-downloading.", modelId);
-                    // Delete old files and re-download
-                    try {
-                        Files.deleteIfExists(localBundle.getModelPath());
-                        Files.deleteIfExists(localBundle.getVocabularyPath());
-                    } catch (IOException e) {
-                        logger.warn("Failed to delete old model files: {}", e.getMessage());
-                    }
-                    // Fall through to re-download from staging
+                    logger.info("Model {} checksum mismatch; trying configured archive/remote fallback.", modelId);
                 } else {
                     return localBundle;
                 }
@@ -874,6 +870,16 @@ public class RegistryBasedModelManager {
 
         // If from remote staging, download files
         if (stagingUrl != null) {
+            if (localChecksumMismatch && localBundle != null) {
+                // Delete only immediately before the selected remote fallback. Archive extraction
+                // gets the first chance to recover without destroying the existing local bundle.
+                try {
+                    Files.deleteIfExists(localBundle.getModelPath());
+                    Files.deleteIfExists(localBundle.getVocabularyPath());
+                } catch (IOException e) {
+                    logger.warn("Failed to delete stale local model files: {}", e.getMessage());
+                }
+            }
             return loadBundleFromStaging(modelId, entry);
         }
 
@@ -990,10 +996,8 @@ public class RegistryBasedModelManager {
             if (modelEntry == null) {
                 modelEntry = zip.getEntry(modelId + "/" + modelFile);
             }
-            if (modelEntry != null && !Files.exists(modelPath)) {
-                try (InputStream is = zip.getInputStream(modelEntry)) {
-                    Files.copy(is, modelPath);
-                }
+            if (modelEntry != null) {
+                extractArchiveEntry(zip, modelEntry, modelPath);
             }
 
             // Extract vocab file
@@ -1001,20 +1005,40 @@ public class RegistryBasedModelManager {
             if (vocabEntry == null) {
                 vocabEntry = zip.getEntry(modelId + "/" + vocabFile);
             }
-            if (vocabEntry != null && !Files.exists(vocabPath)) {
-                try (InputStream is = zip.getInputStream(vocabEntry)) {
-                    Files.copy(is, vocabPath);
-                }
+            if (vocabEntry != null) {
+                extractArchiveEntry(zip, vocabEntry, vocabPath);
             }
         }
 
         if (!Files.exists(modelPath) || !Files.exists(vocabPath)) {
             return null;
         }
+        if (entry.checksum != null && !entry.checksum.isBlank()
+                && !verifyLocalChecksum(modelPath, entry.checksum)) {
+            throw new IOException("Archive model checksum mismatch for " + modelId);
+        }
 
         TokenizerConfig config = createTokenizerConfig(entry);
         Map<String, Object> metadata = modelMetadataMap(entry.metadata);
         return new KompileModelManager.ModelBundle(modelId, modelPath, vocabPath, metadata, config);
+    }
+
+    private static void extractArchiveEntry(ZipFile zip, ZipEntry entry, Path target)
+            throws IOException {
+        Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
+        try {
+            try (InputStream input = zip.getInputStream(entry)) {
+                Files.copy(input, temp, StandardCopyOption.REPLACE_EXISTING);
+            }
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
     }
 
     private KompileModelManager.ModelBundle loadBundleFromStaging(String modelId, ModelEntry entry) throws IOException {

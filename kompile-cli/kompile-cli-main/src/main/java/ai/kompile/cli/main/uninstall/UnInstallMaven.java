@@ -22,7 +22,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "maven",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "maven", description = "Remove the managed Maven runtime.", mixinStandardHelpOptions = false)
 public class UnInstallMaven implements Callable<Integer> {
     public UnInstallMaven() {
     }

@@ -16,11 +16,13 @@
 
 package ai.kompile.cli.main.coordination;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -41,6 +43,15 @@ public class ProcessCoordEntry {
     @JsonProperty("agentName")
     private String agentName;
 
+    @JsonProperty("roleName")
+    private String roleName;
+
+    @JsonProperty("kind")
+    private String kind;
+
+    @JsonProperty("resourceClass")
+    private String resourceClass;
+
     @JsonProperty("command")
     private String command;
 
@@ -55,6 +66,12 @@ public class ProcessCoordEntry {
 
     @JsonProperty("startedAt")
     private Instant startedAt;
+
+    @JsonProperty("endedAt")
+    private Instant endedAt;
+
+    @JsonProperty("exitCode")
+    private Integer exitCode;
 
     @JsonProperty("lastHeartbeat")
     private Instant lastHeartbeat;
@@ -84,7 +101,35 @@ public class ProcessCoordEntry {
     /**
      * Returns true if this entry has exceeded its TTL based on the last heartbeat.
      */
+    @JsonIgnore
     public boolean isStale() {
-        return Instant.now().isAfter(lastHeartbeat.plusSeconds(ttlSeconds));
+        Instant heartbeat = lastHeartbeat != null
+                ? lastHeartbeat
+                : endedAt != null ? endedAt : startedAt;
+        if (heartbeat == null) return true;
+        int ttl = ttlSeconds > 0 ? ttlSeconds : 120;
+        return Instant.now().isAfter(heartbeat.plusSeconds(ttl));
+    }
+
+    @JsonIgnore
+    public boolean isRunningState() {
+        if (state == null || state.isBlank()) return true;
+        String normalized = state.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("RUNNING")
+                || normalized.equals("STARTING")
+                || normalized.equals("ACTIVE");
+    }
+
+    @JsonIgnore
+    public boolean isTerminalState() {
+        return !isRunningState();
+    }
+
+    /** Elapsed runtime, frozen at the terminal timestamp when one exists. */
+    @JsonIgnore
+    public Duration getDuration() {
+        if (startedAt == null) return Duration.ZERO;
+        Instant end = endedAt != null ? endedAt : Instant.now();
+        return end.isBefore(startedAt) ? Duration.ZERO : Duration.between(startedAt, end);
     }
 }

@@ -24,6 +24,9 @@ import ai.kompile.knowledgegraph.matrix.algorithms.MatrixGraphAlgorithms;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
+import ai.kompile.knowledgegraph.service.BoundedKnowledgeGraphReader;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -31,6 +34,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -52,12 +56,25 @@ import java.util.stream.Collectors;
  */
 @Service
 @Slf4j
-public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
+public class MatrixKnowledgeGraphService implements KnowledgeGraphService, BoundedKnowledgeGraphReader {
 
     @Autowired
     private MatrixGraphStore graphStore;
     @Autowired
     private ObjectMapper objectMapper;
+    /**
+     * Deliberately off in Spring runtimes until lifecycle mutation is centralized behind one
+     * authoritative store/CAS writer. Tests and explicitly embedded single-process callers use the
+     * constructor below, which enables the in-process foundation.
+     */
+    @Value("${kompile.graph.generations.enabled:false}")
+    private boolean graphGenerationsEnabled;
+
+    /** Small metadata-only cache; graph payloads remain in the matrix/vector store. */
+    private volatile Set<String> persistedGraphIds = Set.of();
+    private volatile long persistedGraphIdsExpiresAtNanos;
+    private volatile boolean persistedGraphIdsInitialized;
+    private static final long PERSISTED_GRAPH_IDS_TTL_NANOS = Duration.ofSeconds(5).toNanos();
 
     public MatrixKnowledgeGraphService() {}
 
@@ -65,6 +82,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     public MatrixKnowledgeGraphService(MatrixGraphStore graphStore, ObjectMapper objectMapper) {
         this.graphStore = graphStore;
         this.objectMapper = objectMapper;
+        this.graphGenerationsEnabled = true;
     }
 
     /**
@@ -74,6 +92,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      * graph (instead of one global in-memory blob keyed by this constant).
      */
     private static final String DEFAULT_GRAPH_ID = "default-knowledge-graph";
+    private static final int MAX_INCIDENT_EDGE_RESULT = Math.max(1,
+            Integer.getInteger("kompile.graph.maxIncidentEdges", 100_000));
 
     /**
      * Resolve the matrix-store graph id for a fact sheet. The graph IS the fact sheet — each fact sheet's
@@ -83,13 +103,101 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      * Null falls back to the legacy id only for un-scoped legacy callers during the transition.
      */
     static String graphIdForFactSheet(Long factSheetId) {
-        return factSheetId != null ? "factsheet_" + factSheetId : DEFAULT_GRAPH_ID;
+        if (factSheetId == null) return DEFAULT_GRAPH_ID;
+        String logical = logicalGraphIdForFactSheet(factSheetId);
+        return GraphGenerationContext.resolve(factSheetId, logical);
+    }
+
+    private static String logicalGraphIdForFactSheet(long factSheetId) {
+        return "factsheet_" + factSheetId;
+    }
+
+    @Override
+    public boolean supportsGraphGenerations() {
+        return graphGenerationsEnabled && graphStore.supportsGraphGenerations();
+    }
+
+    @Override
+    public GraphGeneration.Ref beginFactSheetGeneration(long factSheetId, String generationId) {
+        requireGraphGenerationsEnabled();
+        return graphStore.beginGeneration(
+                factSheetId, logicalGraphIdForFactSheet(factSheetId), generationId);
+    }
+
+    @Override
+    public GraphGeneration.Validation validateFactSheetGeneration(GraphGeneration.Ref generation) {
+        requireGenerationReference(generation);
+        return graphStore.validateGeneration(generation);
+    }
+
+    @Override
+    public GraphGeneration.Activation activateFactSheetGeneration(GraphGeneration.Ref generation) {
+        requireGenerationReference(generation);
+        return graphStore.activateGeneration(generation);
+    }
+
+    @Override
+    public void abortFactSheetGeneration(GraphGeneration.Ref generation) {
+        requireGenerationReference(generation);
+        graphStore.abortGeneration(generation);
+    }
+
+    @Override
+    public GraphGeneration.Activation rollbackFactSheetGeneration(
+            long factSheetId, long expectedRevision) {
+        requireGraphGenerationsEnabled();
+        return graphStore.rollbackGeneration(
+                factSheetId, logicalGraphIdForFactSheet(factSheetId), expectedRevision);
+    }
+
+    private void requireGenerationReference(GraphGeneration.Ref generation) {
+        requireGraphGenerationsEnabled();
+        Objects.requireNonNull(generation, "generation");
+        if (!logicalGraphIdForFactSheet(generation.factSheetId()).equals(generation.logicalGraphId())) {
+            throw new IllegalArgumentException("Generation logical graph does not match its fact sheet");
+        }
+    }
+
+    private void requireGraphGenerationsEnabled() {
+        if (!supportsGraphGenerations()) {
+            throw new UnsupportedOperationException(
+                    "Graph generations require an authoritative local store and explicit enablement");
+        }
     }
 
     /** All segmented graph ids currently in the store (per-fact-sheet graphs + the legacy default). */
     private List<String> allGraphIds() {
-        Set<String> ids = graphStore.getLoadedGraphIds();
-        return (ids == null || ids.isEmpty()) ? List.of(DEFAULT_GRAPH_ID) : new ArrayList<>(ids);
+        Set<String> loaded = graphStore.getLoadedGraphIds();
+        LinkedHashSet<String> ids = loaded == null ? new LinkedHashSet<>() : new LinkedHashSet<>(loaded);
+        ids.addAll(cachedPersistedGraphIds());
+        GraphGenerationContext.current().ifPresent(generation -> {
+            ids.remove(generation.logicalGraphId());
+            ids.add(generation.physicalGraphId());
+        });
+        if (ids.isEmpty()) return List.of(DEFAULT_GRAPH_ID);
+        List<String> ordered = new ArrayList<>(ids);
+        Collections.sort(ordered);
+        return ordered;
+    }
+
+    private Set<String> cachedPersistedGraphIds() {
+        long now = System.nanoTime();
+        if (persistedGraphIdsInitialized && now - persistedGraphIdsExpiresAtNanos < 0) {
+            return persistedGraphIds;
+        }
+        synchronized (this) {
+            now = System.nanoTime();
+            if (persistedGraphIdsInitialized && now - persistedGraphIdsExpiresAtNanos < 0) {
+                return persistedGraphIds;
+            }
+            List<String> persisted = graphStore.listGraphs();
+            persistedGraphIds = persisted == null
+                    ? Set.of()
+                    : Collections.unmodifiableSet(new LinkedHashSet<>(persisted));
+            persistedGraphIdsExpiresAtNanos = now + PERSISTED_GRAPH_IDS_TTL_NANOS;
+            persistedGraphIdsInitialized = true;
+            return persistedGraphIds;
+        }
     }
 
     /**
@@ -99,7 +207,11 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
      * Returns {@link #DEFAULT_GRAPH_ID} as a last resort so callers always have a usable id.
      */
     private String graphIdHolding(String nodeId) {
-        for (String gid : graphStore.getLoadedGraphIds()) {
+        Optional<GraphGeneration.Ref> generation = GraphGenerationContext.current();
+        if (generation.isPresent()) {
+            return generation.get().physicalGraphId();
+        }
+        for (String gid : allGraphIds()) {
             if (graphStore.getNode(gid, nodeId).isPresent()) {
                 return gid;
             }
@@ -109,7 +221,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     /** Find a node by id across all segmented graphs. */
     private Optional<MatrixGraphNode> findNodeAnyGraph(String nodeId) {
-        for (String gid : graphStore.getLoadedGraphIds()) {
+        for (String gid : allGraphIds()) {
             Optional<MatrixGraphNode> n = graphStore.getNode(gid, nodeId);
             if (n.isPresent()) {
                 return n;
@@ -121,7 +233,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     /** All nodes across every segmented graph (for the un-scoped, cross-fact-sheet queries). */
     private List<MatrixGraphNode> allNodesAcrossGraphs() {
         List<MatrixGraphNode> all = new ArrayList<>();
-        for (String gid : graphStore.getLoadedGraphIds()) {
+        for (String gid : allGraphIds()) {
             all.addAll(graphStore.getAllNodes(gid));
         }
         return all;
@@ -532,6 +644,14 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     @Override
+    public Optional<GraphNode> getNodeInScope(String nodeId, Long factSheetId) {
+        String graphId = factSheetId == null ? graphIdHolding(nodeId) : graphIdForFactSheet(factSheetId);
+        return graphStore.getNode(graphId, nodeId)
+                .filter(n -> isUserNodeType(n.getNodeType()))
+                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())));
+    }
+
+    @Override
     public Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType) {
         String nodeId = nodeType.name().toLowerCase() + "_" + externalId;
         return getNode(nodeId);
@@ -638,7 +758,13 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                             s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(),
                             s.label(), s.description(), s.metaJson(), s.provenance(),
                             s.factSheetId());
-                    created++;
+                    if (edgeExists(s.sourceNodeId(), s.targetNodeId(),
+                            s.edgeType(), s.label(), s.factSheetId())) {
+                        created++;
+                    } else {
+                        log.warn("createEdgesBatch: edge write was not visible for {}->{}",
+                                s.sourceNodeId(), s.targetNodeId());
+                    }
                 }
             } catch (Exception e) {
                 log.debug("createEdgesBatch: skipped edge {}->{} — {}", s.sourceNodeId(), s.targetNodeId(), e.getMessage());
@@ -775,7 +901,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         MatrixGraphStore.ScanPage<MatrixGraphNode> page =
                 graphStore.scanNodes(graphIdForFactSheet(factSheetId), cursor, pageSize);
         List<GraphNode> nodes = page.items().stream()
-                .filter(n -> factSheetId != null && factSheetId.equals(n.getFactSheetId()))
+                .filter(n -> n.getFactSheetId() == null || Objects.equals(factSheetId, n.getFactSheetId()))
                 .filter(n -> isUserNodeType(n.getNodeType()))
                 .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
                 .collect(Collectors.toList());
@@ -818,8 +944,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesForNodeInFactSheet(String nodeId, Long factSheetId) {
-        // The matrix store doesn't track factSheetId on edges; return all edges for the node.
-        return getEdgesForNode(nodeId);
+        return requireCompleteIncidentEdges(getIncidentEdges(
+                nodeId, factSheetId, Direction.BOTH, MAX_INCIDENT_EDGE_RESULT), nodeId);
     }
 
     @Override
@@ -1359,25 +1485,63 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphEdge> getEdgesForNode(String nodeId) {
-        // Iterate per stored edge type so the real EdgeType + semantic relationType are preserved
-        // (rather than flattening every edge to USER_DEFINED).
-        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphIdHolding(nodeId));
-        if (graphOpt.isEmpty()) {
-            return Collections.emptyList();
+        return requireCompleteIncidentEdges(getIncidentEdges(
+                nodeId, null, Direction.BOTH, MAX_INCIDENT_EDGE_RESULT), nodeId);
+    }
+
+    private List<GraphEdge> getEdgesForNodeInGraph(String nodeId, String graphId) {
+        return requireCompleteIncidentEdges(getIncidentEdgesInGraph(
+                nodeId, graphId, Direction.BOTH, MAX_INCIDENT_EDGE_RESULT), nodeId);
+    }
+
+    private static List<GraphEdge> requireCompleteIncidentEdges(IncidentEdges result, String nodeId) {
+        if (result.truncated()) {
+            throw new IllegalStateException("Incident-edge result exceeds safety limit for node "
+                    + nodeId + "; use the bounded storage-backed query API");
         }
-        AdjacencyMatrixGraph graph = graphOpt.get();
-        List<GraphEdge> result = new ArrayList<>();
+        return result.edges();
+    }
+
+    @Override
+    public IncidentEdges getIncidentEdges(
+            String nodeId, Long factSheetId, Direction direction, int maxEdges) {
+        Direction effectiveDirection = direction == null ? Direction.BOTH : direction;
+        int effectiveLimit = Math.min(Math.max(0, maxEdges), MAX_INCIDENT_EDGE_RESULT);
+        if (factSheetId != null) {
+            return getIncidentEdgesInGraph(
+                    nodeId, graphIdForFactSheet(factSheetId), effectiveDirection, effectiveLimit);
+        }
+
+        List<GraphEdge> result = new ArrayList<>(Math.min(effectiveLimit, 1_000));
         Set<String> seen = new HashSet<>();
-        for (String edgeTypeStr : graph.getEdgeTypes()) {
-            for (Map.Entry<String, Double> neighbor : graph.getNeighbors(nodeId, edgeTypeStr)) {
-                String key = neighbor.getKey() + "::" + edgeTypeStr;
-                if (seen.add(key)) {
-                    result.add(buildEdgeWithRelation(graph, nodeId, neighbor.getKey(),
-                            edgeTypeStr, neighbor.getValue()));
-                }
+        List<String> graphIds = allGraphIds();
+        for (int i = 0; i < graphIds.size(); i++) {
+            String graphId = graphIds.get(i);
+            if (graphStore.getNode(graphId, nodeId).isEmpty()) continue;
+            int remaining = Math.max(0, effectiveLimit - result.size());
+            IncidentEdges batch = getIncidentEdgesInGraph(
+                    nodeId, graphId, effectiveDirection, remaining);
+            for (GraphEdge edge : batch.edges()) {
+                if (seen.add(edge.getEdgeId())) result.add(edge);
+            }
+            if (batch.truncated()) {
+                return new IncidentEdges(result, true);
             }
         }
-        return result;
+        return new IncidentEdges(result, false);
+    }
+
+    private IncidentEdges getIncidentEdgesInGraph(
+            String nodeId, String graphId, Direction direction, int maxEdges) {
+        MatrixGraphStore.EdgeDirection storeDirection = switch (direction) {
+            case OUTGOING -> MatrixGraphStore.EdgeDirection.OUTGOING;
+            case INCOMING -> MatrixGraphStore.EdgeDirection.INCOMING;
+            case BOTH -> MatrixGraphStore.EdgeDirection.BOTH;
+        };
+        MatrixGraphStore.IncidentEdges stored = graphStore.scanIncidentEdges(
+                graphId, nodeId, storeDirection, maxEdges);
+        return new IncidentEdges(
+                stored.edges().stream().map(this::createEdgeObject).toList(), stored.truncated());
     }
 
     @Override
@@ -1534,16 +1698,11 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
 
     @Override
     public List<GraphNode> getConnectedNodes(String nodeId, int depth) {
-        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphIdHolding(nodeId));
-        if (graphOpt.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        AdjacencyMatrixGraph graph = graphOpt.get();
+        String graphId = graphIdHolding(nodeId);
         Set<String> visited = new HashSet<>();
-        List<MatrixGraphNode> result = new ArrayList<>();
+        List<GraphNode> result = new ArrayList<>();
 
-        Optional<MatrixGraphNode> startOpt = graph.getNode(nodeId);
+        Optional<MatrixGraphNode> startOpt = graphStore.getNode(graphId, nodeId);
         if (startOpt.isEmpty()) {
             return Collections.emptyList();
         }
@@ -1556,23 +1715,21 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             NodeWithDepth current = queue.poll();
 
             if (current.depth > 0) {
-                graph.getNode(current.nodeId).ifPresent(result::add);
+                graphStore.getNode(graphId, current.nodeId).ifPresent(node ->
+                        result.add(convertToGraphNode(node, extractExternalId(node.getNodeId()))));
             }
 
             if (current.depth < depth) {
-                List<Map.Entry<String, Double>> neighbors = graph.getNeighbors(current.nodeId, null);
-                for (Map.Entry<String, Double> neighbor : neighbors) {
-                    if (!visited.contains(neighbor.getKey())) {
-                        visited.add(neighbor.getKey());
-                        queue.add(new NodeWithDepth(neighbor.getKey(), current.depth + 1));
+                for (GraphEdge edge : getEdgesForNodeInGraph(current.nodeId, graphId)) {
+                    String neighbor = current.nodeId.equals(edge.getSourceNodeId())
+                            ? edge.getTargetNodeId() : edge.getSourceNodeId();
+                    if (neighbor != null && visited.add(neighbor)) {
+                        queue.add(new NodeWithDepth(neighbor, current.depth + 1));
                     }
                 }
             }
         }
-
-        return result.stream()
-                .map(n -> convertToGraphNode(n, extractExternalId(n.getNodeId())))
-                .collect(Collectors.toList());
+        return result;
     }
 
     @Override
@@ -2506,6 +2663,15 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                                        boolean softDelete,
                                        Duration grace,
                                        boolean dryRun) {
+        return pruneNodes(nodeIds, softDelete, grace, dryRun, null);
+    }
+
+    @Override
+    public GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                       boolean softDelete,
+                                       Duration grace,
+                                       boolean dryRun,
+                                       Long factSheetId) {
         if (nodeIds == null || nodeIds.isEmpty()) {
             return GraphPruneResult.empty(dryRun);
         }
@@ -2515,27 +2681,35 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         }
         if (softDelete) {
             String nowStr = String.valueOf(System.currentTimeMillis());
+            List<String> affected = new ArrayList<>();
             for (String nodeId : ids) {
-                String gid = graphIdHolding(nodeId);
+                String gid = factSheetId != null ? graphIdForFactSheet(factSheetId)
+                        : graphIdHolding(nodeId);
                 graphStore.getNode(gid, nodeId).ifPresent(n -> {
                     if (n.getMetadata() == null) n.setMetadata(new HashMap<>());
                     n.getMetadata().put("_stale", true);
                     n.getMetadata().put("_staleAt", nowStr);
                     graphStore.updateNode(gid, n);
+                    affected.add(nodeId);
                 });
             }
-            return GraphPruneResult.ofSoftDelete(ids, false);
+            return GraphPruneResult.ofSoftDelete(affected, false);
         } else {
             int deleted = 0;
+            List<String> affected = new ArrayList<>();
             for (String nodeId : ids) {
                 try {
-                    graphStore.removeNode(graphIdHolding(nodeId), nodeId);
-                    deleted++;
+                    String gid = factSheetId != null ? graphIdForFactSheet(factSheetId)
+                            : graphIdHolding(nodeId);
+                    if (graphStore.removeNode(gid, nodeId)) {
+                        deleted++;
+                        affected.add(nodeId);
+                    }
                 } catch (Exception e) {
                     log.warn("pruneNodes: could not remove node {}: {}", nodeId, e.getMessage());
                 }
             }
-            return new GraphPruneResult(ids, deleted, deleted, false);
+            return new GraphPruneResult(affected, deleted, deleted, false);
         }
     }
 

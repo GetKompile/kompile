@@ -24,7 +24,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "python",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "python", description = "Install the managed Python runtime.", mixinStandardHelpOptions = false)
 public class InstallPython implements Callable<Integer> {
 
     public final static String PYTHON_URL = "https://repo.anaconda.com/miniconda/Miniconda3-py39_4.9.2-Linux-x86_64.sh";

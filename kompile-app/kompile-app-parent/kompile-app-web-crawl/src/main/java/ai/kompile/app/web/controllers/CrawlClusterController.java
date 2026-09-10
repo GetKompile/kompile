@@ -31,6 +31,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 import java.util.List;
 import java.util.Map;
@@ -79,7 +81,9 @@ public class CrawlClusterController {
 
     /** The live cluster view — capabilities of every known worker (orchestrator side). */
     @GetMapping("/workers")
-    public ResponseEntity<List<WorkerCapabilities>> liveWorkers() {
+    public ResponseEntity<List<WorkerCapabilities>> liveWorkers(
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).build();
         return ResponseEntity.ok(registry.liveWorkers(System.currentTimeMillis()));
     }
 
@@ -97,7 +101,9 @@ public class CrawlClusterController {
 
     /** This node's own current capabilities (what it can do + live load). */
     @GetMapping("/capabilities")
-    public ResponseEntity<WorkerCapabilities> localCapabilities() {
+    public ResponseEntity<WorkerCapabilities> localCapabilities(
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) return ResponseEntity.status(401).build();
         return ResponseEntity.ok(capabilityService.localCapabilities());
     }
 
@@ -133,7 +139,12 @@ public class CrawlClusterController {
 
     /** Orchestrator side: a worker's delegated-job statuses (proxies to its {@code /local/jobs}). */
     @GetMapping("/workers/{workerId}/jobs")
-    public ResponseEntity<Map<String, Object>> workerJobs(@PathVariable String workerId) {
+    public ResponseEntity<Map<String, Object>> workerJobs(
+            @PathVariable String workerId,
+            @RequestHeader(value = "Authorization", required = false) String auth) {
+        if (!authorized(auth)) {
+            return ResponseEntity.status(401).body(Map.of("ok", false, "error", "unauthorized"));
+        }
         return proxy(workerId, "GET", "/api/cluster/local/jobs");
     }
 
@@ -190,8 +201,11 @@ public class CrawlClusterController {
     private boolean authorized(String authHeader) {
         String token = configService.getConfiguration().getExternalAuthToken();
         if (token == null || token.isBlank()) {
-            return true; // no token configured — open (local/dev)
+            return !configService.getConfiguration().isClusterWorker()
+                    && !configService.getConfiguration().isClusterOrchestrator();
         }
-        return ("Bearer " + token).equals(authHeader);
+        byte[] expected = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
+        byte[] actual = authHeader == null ? new byte[0] : authHeader.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual);
     }
 }

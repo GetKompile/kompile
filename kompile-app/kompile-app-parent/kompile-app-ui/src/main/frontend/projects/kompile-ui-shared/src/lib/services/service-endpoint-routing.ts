@@ -126,7 +126,8 @@ export class ServiceEndpointRouter {
     if (url.origin !== currentOrigin
         || !url.pathname.startsWith('/api/')
         || url.pathname === '/api/service-endpoints'
-        || url.pathname.startsWith('/api/service-endpoints/')) {
+        || url.pathname.startsWith('/api/service-endpoints/')
+        || url.pathname === '/api/channel-integrations/browser-sessions/exchange') {
       return requestUrl;
     }
 
@@ -193,7 +194,57 @@ export class ServiceEndpointRoutingInterceptor implements HttpInterceptor {
 
   intercept(request: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
     const routedUrl = this.router.resolve(request.url);
-    return next.handle(routedUrl === request.url ? request : request.clone({ url: routedUrl }));
+    const path = this.requestPath(routedUrl);
+    if (!this.requiresIntegrationSession(path, request.method)) {
+      return next.handle(routedUrl === request.url ? request : request.clone({ url: routedUrl }));
+    }
+
+    let headers = request.headers;
+    if (this.isMutation(request.method) && !this.usesExternalAuthentication(path)) {
+      headers = headers.set('X-Kompile-Channel-Request', '1');
+      if (typeof sessionStorage !== 'undefined') {
+        const csrf = sessionStorage.getItem('kompile.channel.csrf');
+        if (csrf) headers = headers.set('X-Kompile-Channel-CSRF', csrf);
+      }
+    }
+    return next.handle(request.clone({
+      url: routedUrl,
+      headers,
+      withCredentials: true
+    }));
+  }
+
+  private requestPath(url: string): string {
+    try {
+      const origin = typeof window !== 'undefined' && window.location
+        ? window.location.origin : 'http://localhost';
+      return new URL(url, origin).pathname;
+    } catch {
+      return url;
+    }
+  }
+
+  private requiresIntegrationSession(path: string, method: string): boolean {
+    const integrationPath = [
+      '/api/channel-integrations', '/api/kclaw', '/api/sync', '/api/oauth',
+      '/api/source-providers'
+    ].some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+    const sourceMutation = this.isMutation(method) && [
+      '/api/unified-crawl', '/api/documents'
+    ].some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+    return integrationPath || sourceMutation;
+  }
+
+  private usesExternalAuthentication(path: string): boolean {
+    return path === '/api/channel-integrations/browser-sessions/exchange'
+      || /^\/api\/oauth\/[^/]+\/callback$/.test(path)
+      || path === '/api/sync/webhook/notion'
+      || path === '/api/sync/webhook/notion/verify'
+      || path === '/api/kclaw/channels/webhook/whatsapp';
+  }
+
+  private isMutation(method: string): boolean {
+    return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
   }
 }
 

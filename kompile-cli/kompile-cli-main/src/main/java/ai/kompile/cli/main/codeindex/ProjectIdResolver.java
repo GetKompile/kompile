@@ -36,6 +36,8 @@ import java.nio.file.Path;
  *
  * <ol>
  *   <li><b>explicit</b> — a non-blank {@code project_id} parameter wins as-is;</li>
+ *   <li><b>project-manifest</b> — the nearest {@code kompile.project.json}
+ *       coding project whose root contains the working directory;</li>
  *   <li><b>registration</b> — the nearest {@code .kompile/registration.json}
  *       walking up from the working directory, if a local index exists for
  *       that id;</li>
@@ -56,8 +58,9 @@ public final class ProjectIdResolver {
 
     /**
      * A resolved project id plus how it was determined. {@code source} is one of
-     * {@code explicit}, {@code registration}, {@code index-root},
-     * {@code registration-unindexed}, {@code cwd-name}.
+     * {@code explicit}, {@code project-manifest},
+     * {@code project-manifest-unindexed}, {@code registration},
+     * {@code index-root}, {@code registration-unindexed}, {@code cwd-name}.
      */
     public record Resolution(String projectId, String source, boolean autoResolved) {}
 
@@ -76,13 +79,24 @@ public final class ProjectIdResolver {
      */
     static Resolution resolve(String explicit, Path workingDirectory, Path baseIndexDir) {
         if (explicit != null && !explicit.isBlank()) {
-            return new Resolution(explicit.trim(), "explicit", false);
+            String projectId = explicit.trim();
+            if (!LocalCodeIndexer.isSafeProjectId(projectId)) {
+                throw new IllegalArgumentException("Invalid code-index project id: " + projectId);
+            }
+            return new Resolution(projectId, "explicit", false);
         }
         Path cwd = (workingDirectory != null ? workingDirectory : Path.of("."))
                 .toAbsolutePath().normalize();
 
+        String manifestId = manifestCodeProjectId(cwd);
+        if (manifestId != null) {
+            String source = hasSearchableIndex(baseIndexDir, manifestId)
+                    ? "project-manifest" : "project-manifest-unindexed";
+            return new Resolution(manifestId, source, true);
+        }
+
         String registrationId = registrationProjectId(cwd);
-        if (registrationId != null && Files.isDirectory(baseIndexDir.resolve(registrationId))) {
+        if (registrationId != null && hasSearchableIndex(baseIndexDir, registrationId)) {
             return new Resolution(registrationId, "registration", true);
         }
 
@@ -96,7 +110,61 @@ public final class ProjectIdResolver {
         }
 
         Path name = cwd.getFileName();
-        return new Resolution(name != null ? name.toString() : "default", "cwd-name", true);
+        String fallback = name != null ? name.toString() : "default";
+        if (!LocalCodeIndexer.isSafeProjectId(fallback)) {
+            fallback = fallback.replace('/', '-').replace('\\', '-');
+            if (!LocalCodeIndexer.isSafeProjectId(fallback)) fallback = "default";
+        }
+        return new Resolution(fallback, "cwd-name", true);
+    }
+
+    /**
+     * Resolve the canonical code-project id declared by the nearest project manifest.
+     * A manifest is authoritative even before its structural index has been built: in
+     * that case callers receive an actionable "index first" result for the right id
+     * instead of silently selecting an unrelated duplicate index for the same root.
+     */
+    private static String manifestCodeProjectId(Path start) {
+        Path dir = start;
+        for (int i = 0; i < MAX_REGISTRATION_WALK && dir != null; i++, dir = dir.getParent()) {
+            Path manifest = dir.resolve("kompile.project.json");
+            if (!Files.isRegularFile(manifest)) continue;
+            try {
+                JsonNode projects = MAPPER.readTree(manifest.toFile()).path("codingProjects");
+                if (!projects.isArray()) continue;
+                String bestId = null;
+                Path bestRoot = null;
+                for (JsonNode project : projects) {
+                    String lifecycle = project.path("lifecycle").asText("").trim();
+                    if (!lifecycle.isEmpty() && !"ACTIVE".equalsIgnoreCase(lifecycle)) continue;
+                    String id = project.path("codeProjectId").asText("").trim();
+                    if (id.isEmpty()) id = project.path("id").asText("").trim();
+                    if (!LocalCodeIndexer.isSafeProjectId(id)) continue;
+                    String configuredRoot = project.path("rootPath").asText("").trim();
+                    Path root = configuredRoot.isEmpty()
+                            ? dir
+                            : Path.of(configuredRoot);
+                    if (!root.isAbsolute()) root = dir.resolve(root);
+                    root = root.toAbsolutePath().normalize();
+                    if (!start.startsWith(root)) continue;
+                    if (bestRoot == null || root.getNameCount() > bestRoot.getNameCount()) {
+                        bestId = id;
+                        bestRoot = root;
+                    }
+                }
+                if (bestId != null) return bestId;
+            } catch (Exception ignored) {
+                // Unreadable/corrupt manifest — keep walking for a parent manifest.
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasSearchableIndex(Path baseIndexDir, String projectId) {
+        if (baseIndexDir == null || !LocalCodeIndexer.isSafeProjectId(projectId)) return false;
+        Path projectDir = baseIndexDir.resolve(projectId);
+        return Files.isRegularFile(projectDir.resolve("metadata.json"))
+                && Files.isRegularFile(projectDir.resolve("index.db"));
     }
 
     /**
@@ -109,7 +177,8 @@ public final class ProjectIdResolver {
             try {
                 ProjectRegistration registration = ProjectRegistration.loadFromProject(dir);
                 if (registration != null && registration.getProjectId() != null
-                        && !registration.getProjectId().isBlank()) {
+                        && !registration.getProjectId().isBlank()
+                        && LocalCodeIndexer.isSafeProjectId(registration.getProjectId().trim())) {
                     return registration.getProjectId().trim();
                 }
             } catch (Exception ignored) {
@@ -133,7 +202,8 @@ public final class ProjectIdResolver {
         try (DirectoryStream<Path> projects = Files.newDirectoryStream(baseIndexDir)) {
             for (Path projectDir : projects) {
                 Path metaFile = projectDir.resolve("metadata.json");
-                if (!Files.isRegularFile(metaFile)) continue;
+                if (!Files.isRegularFile(metaFile)
+                        || !Files.isRegularFile(projectDir.resolve("index.db"))) continue;
                 try {
                     JsonNode meta = MAPPER.readTree(metaFile.toFile());
                     String rootPath = meta.path("rootPath").asText("");
@@ -146,7 +216,9 @@ public final class ProjectIdResolver {
                             || (root.getNameCount() == bestRoot.getNameCount()
                                 && indexedAt.compareTo(bestIndexedAt) > 0);
                     if (deeper) {
-                        best = projectDir.getFileName().toString();
+                        String candidate = projectDir.getFileName().toString();
+                        if (!LocalCodeIndexer.isSafeProjectId(candidate)) continue;
+                        best = candidate;
                         bestRoot = root;
                         bestIndexedAt = indexedAt;
                     }

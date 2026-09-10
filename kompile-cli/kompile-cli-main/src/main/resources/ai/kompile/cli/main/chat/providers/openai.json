@@ -8,7 +8,49 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "fastMode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://developers.openai.com/api/docs/guides/fast-mode",
+      "verifiedAt": "2026-09-06",
+      "notice": "Higher per-token cost; model, account, region and capacity determine availability. OpenAI may fall back to standard processing."
+    },
+    "modelPatterns": [
+      "^gpt-5\\.(?:4|5|6)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?$",
+      "^gpt-5\\.6-(?:sol|terra|luna)$",
+      "^gpt-6-astra$"
+    ]
+  },
   "profiles": [
+    {
+      "modelPatterns": [
+        "^gpt-6-astra(?:$|[-.].*)"
+      ],
+      "defaultValue": "medium",
+      "mandatory": false,
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        },
+        {
+          "value": "max",
+          "label": "Max"
+        }
+      ]
+    },
     {
       "modelPatterns": [
         "^gpt-5\\.6(?:$|[-.].*)"

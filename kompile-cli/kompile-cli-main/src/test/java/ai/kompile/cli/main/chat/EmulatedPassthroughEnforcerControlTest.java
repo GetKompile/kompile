@@ -26,8 +26,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the pure decision/rendering helpers behind live in-session enforcer control
- * (/enforcer pause|resume|judgements|status). These cover the logic without standing up a live
+ * Unit tests for the pure decision/rendering helpers behind live in-session judge control
+ * (/judge off|on|judgements|status). These cover the logic without standing up a live
  * REPL: the dispatch gate ({@link EmulatedPassthroughCommand#shouldEnforce}), the status-bar tag
  * ({@link EmulatedPassthroughCommand#enforcerStatusTag}), and the judgement renderer
  * ({@link EmulatedPassthroughCommand#formatJudgementLines}).
@@ -48,13 +48,13 @@ class EmulatedPassthroughEnforcerControlTest {
     }
 
     @Test
-    @DisplayName("enforcerStatusTag: blank when unconfigured, paused suffix when paused")
+    @DisplayName("judge status tag: blank when unconfigured, off suffix when disabled")
     void enforcerStatusTagReflectsState() {
         assertEquals("", EmulatedPassthroughCommand.enforcerStatusTag(false, false));
         assertEquals("", EmulatedPassthroughCommand.enforcerStatusTag(false, true),
                 "no tag when no enforcer, regardless of the paused flag");
-        assertEquals(" · enforcer", EmulatedPassthroughCommand.enforcerStatusTag(true, false));
-        assertEquals(" · enforcer paused", EmulatedPassthroughCommand.enforcerStatusTag(true, true));
+        assertEquals(" · judge", EmulatedPassthroughCommand.enforcerStatusTag(true, false));
+        assertEquals(" · judge off", EmulatedPassthroughCommand.enforcerStatusTag(true, true));
     }
 
     @Test

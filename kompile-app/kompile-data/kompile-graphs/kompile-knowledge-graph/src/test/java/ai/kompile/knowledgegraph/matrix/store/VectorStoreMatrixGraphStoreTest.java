@@ -24,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -33,7 +34,10 @@ import org.springframework.ai.document.Document;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -66,8 +70,13 @@ class VectorStoreMatrixGraphStoreTest {
     @BeforeEach
     void setUp() {
         store = new VectorStoreMatrixGraphStore(vectorStore, new ObjectMapper());
-        // Default stub: add() returns int count, flush returns boolean, delete returns boolean
-        when(vectorStore.add(any())).thenReturn(1);
+        // Default stubs: structural records use stored-only writes; vector-backed nodes use the
+        // explicit embedding path.
+        when(vectorStore.addStoredOnlyDocuments(any())).thenAnswer(invocation -> {
+            List<?> documents = invocation.getArgument(0);
+            return documents == null ? 0 : documents.size();
+        });
+        when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
         when(vectorStore.delete(any())).thenReturn(true);
     }
@@ -80,6 +89,18 @@ class VectorStoreMatrixGraphStoreTest {
                 .description("desc of " + title)
                 .metadata(Map.of())
                 .build();
+    }
+
+    private static Map<String, Object> storedDocument(
+            String id, Map<String, Object> metadata) {
+        return Map.of("id", id, "metadata", metadata);
+    }
+
+    private static String edgeDocumentId(
+            String graphId, String edgeType, String source, String target) {
+        String key = edgeType + "\u0000" + source + "\u0000" + target;
+        return "graph:" + graphId + ":edge:" + Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(key.getBytes(StandardCharsets.UTF_8));
     }
 
     // ─── createGraph ─────────────────────────────────────────────────────────
@@ -100,8 +121,8 @@ class VectorStoreMatrixGraphStoreTest {
         AdjacencyMatrixGraph graph = store.createGraph("g-meta", 99L);
         graph.close();
 
-        // One add() call for the metadata doc
-        verify(vectorStore, atLeastOnce()).add(any());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(any());
+        verify(vectorStore, never()).add(any());
     }
 
     @Test
@@ -140,6 +161,131 @@ class VectorStoreMatrixGraphStoreTest {
         assertTrue(loaded.isEmpty());
     }
 
+    @Test
+    void coldNodeLookupReadsCanonicalMetadataWithoutRehydratingGraph() {
+        when(vectorStore.getVectorDocument("graph:g-cold:node-meta:n1"))
+                .thenReturn(storedDocument("graph:g-cold:node-meta:n1", Map.of(
+                        "type", "graph_node",
+                        "nodeId", "n1",
+                        "nodeType", "PERSON",
+                        "title", "Alice",
+                        "description", "desc")));
+
+        Optional<MatrixGraphNode> loaded = store.getNode("g-cold", "n1");
+
+        assertTrue(loaded.isPresent());
+        assertEquals("Alice", loaded.orElseThrow().getTitle());
+        verify(vectorStore, never()).listVectorDocuments(anyInt(), anyInt());
+    }
+
+    @Test
+    void coldNodeLookupRejectsMismatchedStoredIdentity() {
+        when(vectorStore.getVectorDocument("graph:g-cold:node-meta:requested"))
+                .thenReturn(storedDocument("graph:g-cold:node-meta:requested", Map.of(
+                        "type", "graph_node", "nodeId", "different", "nodeType", "PERSON")));
+
+        assertTrue(store.getNode("g-cold", "requested").isEmpty());
+    }
+
+    @Test
+    void coldNodeScanPagesOnlyCanonicalMetadataDocuments() {
+        when(vectorStore.getVectorDocument("graph:g-scan:meta"))
+                .thenReturn(storedDocument("graph:g-scan:meta", Map.of(
+                        "type", "graph_metadata", "storageVersion", 2, "nodeCount", 1, "edgeCount", 1)));
+        when(vectorStore.listVectorDocuments(0, 2000)).thenReturn(List.of(
+                storedDocument("graph:g-scan:node-meta:n1", Map.of(
+                        "type", "graph_node", "nodeId", "n1", "nodeType", "PERSON", "title", "Alice")),
+                storedDocument("graph:g-scan:node:n1", Map.of(
+                        "type", "graph_node", "nodeId", "n1", "nodeType", "PERSON", "title", "Alice")),
+                storedDocument("graph:g-scan:edge:e1", Map.of(
+                        "type", "graph_edge", "sourceNodeId", "n1", "targetNodeId", "n2",
+                        "edgeType", "RELATED_TO", "weight", 1.0))));
+
+        MatrixGraphStore.ScanPage<MatrixGraphNode> page = store.scanNodes("g-scan", 0, 10);
+
+        assertEquals(List.of("n1"), page.items().stream().map(MatrixGraphNode::getNodeId).toList());
+        assertFalse(page.hasMore());
+    }
+
+    @Test
+    void coldAdjacencyReadsPagedEdgeDocumentsWithoutRehydratingGraph() {
+        Map<String, Object> edge = storedDocument("graph:g-edges:edge:e1", Map.of(
+                "type", "graph_edge",
+                "sourceNodeId", "n1",
+                "targetNodeId", "n2",
+                "edgeType", "CALLS",
+                "relationType", "CALLS",
+                "weight", 0.75,
+                "bidirectional", false));
+        when(vectorStore.listVectorDocuments(0, 2000)).thenReturn(List.of(edge));
+        when(vectorStore.getVectorDocument(anyString())).thenReturn(edge);
+        when(vectorStore.getVectorDocument("graph:g-edges:meta"))
+                .thenReturn(storedDocument("graph:g-edges:meta", Map.of(
+                        "type", "graph_metadata", "storageVersion", 2, "nodeCount", 2, "edgeCount", 1)));
+
+        List<Map.Entry<String, Double>> neighbors = store.getEdges("g-edges", "n1", "CALLS");
+
+        assertEquals(1, neighbors.size());
+        assertEquals("n2", neighbors.get(0).getKey());
+        assertEquals(0.75, neighbors.get(0).getValue());
+        assertTrue(store.hasEdge("g-edges", "n1", "n2", "CALLS"));
+    }
+
+    @Test
+    void coldDefaultEdgeLookupNormalizesNullType() {
+        Map<String, Object> edge = storedDocument("graph:g-default:edge:e1", Map.of(
+                "type", "graph_edge", "sourceNodeId", "n1", "targetNodeId", "n2",
+                "edgeType", AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE, "weight", 1.0));
+        when(vectorStore.getVectorDocument(anyString())).thenReturn(edge);
+
+        assertTrue(store.hasEdge("g-default", "n1", "n2", null));
+    }
+
+    @Test
+    void legacyPagedScanSuppressesBidirectionalReverseDuplicate() {
+        AdjacencyMatrixGraph graph = store.createGraph("g-legacy-page", null);
+        store.addNode("g-legacy-page", node("a", "PERSON", "Alice"));
+        store.addNode("g-legacy-page", node("b", "PERSON", "Bob"));
+        assertTrue(store.addEdge("g-legacy-page", "a", "b", 1.0, "KNOWS", true));
+        when(vectorStore.getVectorDocument("graph:g-legacy-page:meta")).thenReturn(Map.of());
+
+        MatrixGraphStore.ScanPage<MatrixGraphStore.StoredEdge> page =
+                store.scanEdges("g-legacy-page", 0, 10);
+
+        assertEquals(1, page.items().size());
+        assertTrue(page.items().get(0).bidirectional());
+        graph.close();
+    }
+
+    @Test
+    void mixedLegacyAndCanonicalEdgesAreMergedOnReload() {
+        List<Map<String, Object>> documents = new ArrayList<>();
+        documents.add(storedDocument("graph:g-mixed:meta", Map.of(
+                "type", "graph_metadata", "graphId", "g-mixed", "capacity", 8)));
+        documents.add(storedDocument("graph:g-mixed:node-meta:a", Map.of(
+                "type", "graph_node", "nodeId", "a", "nodeType", "PERSON", "matrixIndex", 0)));
+        documents.add(storedDocument("graph:g-mixed:node-meta:b", Map.of(
+                "type", "graph_node", "nodeId", "b", "nodeType", "PERSON", "matrixIndex", 1)));
+        documents.add(storedDocument("graph:g-mixed:node-meta:c", Map.of(
+                "type", "graph_node", "nodeId", "c", "nodeType", "PERSON", "matrixIndex", 2)));
+        Map<String, Object> legacyAdjacency = new HashMap<>();
+        legacyAdjacency.put("id", "graph:g-mixed:adj:LEGACY");
+        legacyAdjacency.put("content", "[{\"source\":0,\"target\":1,\"weight\":1.0}]");
+        legacyAdjacency.put("metadata", Map.of(
+                "type", "adjacency_matrix", "graphId", "g-mixed", "edgeType", "LEGACY"));
+        documents.add(legacyAdjacency);
+        documents.add(storedDocument("graph:g-mixed:edge:canonical", Map.of(
+                "type", "graph_edge", "sourceNodeId", "b", "targetNodeId", "c",
+                "edgeType", "CANONICAL", "weight", 0.5)));
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(documents);
+
+        AdjacencyMatrixGraph loaded = store.loadGraph("g-mixed").orElseThrow();
+
+        assertTrue(loaded.hasEdge("a", "b", "LEGACY"));
+        assertTrue(loaded.hasEdge("b", "c", "CANONICAL"));
+        loaded.close();
+    }
+
     // ─── addNode ─────────────────────────────────────────────────────────────
 
     @Test
@@ -158,11 +304,12 @@ class VectorStoreMatrixGraphStoreTest {
     void addNodePersistsToVectorStore() {
         store.createGraph("g1", null);
         clearInvocations(vectorStore);
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
 
         store.addNode("g1", node("n1", "PERSON", "Alice"));
 
-        verify(vectorStore, atLeastOnce()).add(any());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(any());
+        verify(vectorStore).add(any());
     }
 
     @Test
@@ -173,6 +320,38 @@ class VectorStoreMatrixGraphStoreTest {
 
         int idx = store.addNode("g-auto", node("n1", "CONCEPT", "Test"));
         assertTrue(idx >= 0);
+    }
+
+    @Test
+    void updateNodeRefreshesTextEmbeddingAndPersistsCanonicalMetadata() {
+        store.createGraph("g-vector", null);
+        store.addNode("g-vector", node("n1", "PERSON", "Alice"));
+
+        clearInvocations(vectorStore);
+        store.updateNode("g-vector", node("n1", "PERSON", "Alice Updated"));
+
+        InOrder order = inOrder(vectorStore);
+        order.verify(vectorStore).addStoredOnlyDocuments(any());
+        order.verify(vectorStore).awaitPendingEmbeddings();
+        order.verify(vectorStore).delete(argThat((List<String> ids) ->
+                ids.contains("graph:g-vector:node:n1")));
+        order.verify(vectorStore).add(any());
+        verify(vectorStore, never()).addWithEmbeddings(any(), any());
+        store.loadGraph("g-vector").orElseThrow().close();
+    }
+
+    @Test
+    void updateNodeMetadataDoesNotReplaceOrReembedVectorDocument() {
+        store.createGraph("g-metadata", null);
+        store.addNode("g-metadata", node("n1", "PERSON", "Alice"));
+
+        clearInvocations(vectorStore);
+        store.updateNodeMetadata("g-metadata", node("n1", "PERSON", "Alice"));
+
+        verify(vectorStore).addStoredOnlyDocuments(any());
+        verify(vectorStore, never()).add(any());
+        verify(vectorStore, never()).addWithEmbeddings(any(), any());
+        store.loadGraph("g-metadata").orElseThrow().close();
     }
 
     // ─── updateNode ──────────────────────────────────────────────────────────
@@ -201,6 +380,7 @@ class VectorStoreMatrixGraphStoreTest {
         boolean removed = store.removeNode("g1", "n1");
 
         assertTrue(removed);
+        verify(vectorStore).awaitPendingEmbeddings();
         verify(vectorStore).delete(argThat(ids -> ids instanceof List && ((List<?>) ids).stream().anyMatch(id -> id.toString().contains("n1"))));
     }
 
@@ -212,6 +392,23 @@ class VectorStoreMatrixGraphStoreTest {
         // vectorStore.delete() returns false, so removeNode returns false
         assertFalse(removed);
         verify(vectorStore).delete(any());
+    }
+
+    @Test
+    void removeNodeStillDeletesDurableRecordsWhenEmbeddingBarrierReportsFailure() {
+        store.createGraph("g-failed-barrier", null);
+        store.addNode("g-failed-barrier", node("n1", "PERSON", "Alice"));
+        clearInvocations(vectorStore);
+        doThrow(new RuntimeException("embedding failed"))
+                .when(vectorStore).awaitPendingEmbeddings();
+
+        boolean removed = store.removeNode("g-failed-barrier", "n1");
+
+        assertFalse(removed, "barrier failure must be surfaced through the boolean result");
+        verify(vectorStore).delete(argThat((List<String> ids) ->
+                ids.contains("graph:g-failed-barrier:node:n1")
+                        && ids.contains("graph:g-failed-barrier:node-meta:n1")));
+        store.loadGraph("g-failed-barrier").orElseThrow().close();
     }
 
     // ─── getNode ─────────────────────────────────────────────────────────────
@@ -289,6 +486,42 @@ class VectorStoreMatrixGraphStoreTest {
 
         boolean result = store.removeEdge("g1", "src", "tgt", "WORKS_AT");
         assertTrue(result);
+    }
+
+    @Test
+    void removingReverseOrientationOfCachedBidirectionalEdgeRemovesBothDirections() {
+        AdjacencyMatrixGraph graph = store.createGraph("g-bidi", null);
+        store.addNode("g-bidi", node("src", "PERSON", "Alice"));
+        store.addNode("g-bidi", node("tgt", "PERSON", "Bob"));
+        assertTrue(store.addEdge("g-bidi", "src", "tgt", 1.0, "KNOWS", true));
+        assertTrue(graph.hasEdge("src", "tgt", "KNOWS"));
+        assertTrue(graph.hasEdge("tgt", "src", "KNOWS"));
+
+        assertTrue(store.removeEdge("g-bidi", "tgt", "src", "KNOWS"));
+
+        assertFalse(graph.hasEdge("src", "tgt", "KNOWS"));
+        assertFalse(graph.hasEdge("tgt", "src", "KNOWS"));
+        verify(vectorStore, atLeastOnce()).delete(any());
+        graph.close();
+    }
+
+    @Test
+    void removingOneOfOpposingDirectedEdgesDoesNotDeleteMetadataBearingReverse() {
+        AdjacencyMatrixGraph graph = store.createGraph("g-opposed", null);
+        store.addNode("g-opposed", node("a", "PERSON", "Alice"));
+        store.addNode("g-opposed", node("b", "PERSON", "Bob"));
+        assertTrue(store.addEdge("g-opposed", "a", "b", 1.0, "KNOWS", false));
+        assertTrue(store.addEdge("g-opposed", "b", "a", 0.8, "KNOWS",
+                false, null, 0.7, "reverse evidence"));
+        clearInvocations(vectorStore);
+
+        assertTrue(store.removeEdge("g-opposed", "a", "b", "KNOWS"));
+
+        assertFalse(graph.hasEdge("a", "b", "KNOWS"));
+        assertTrue(graph.hasEdge("b", "a", "KNOWS"));
+        verify(vectorStore).delete(argThat((List<String> ids) ->
+                ids.equals(List.of(edgeDocumentId("g-opposed", "KNOWS", "a", "b")))));
+        graph.close();
     }
 
     // ─── hasEdge ─────────────────────────────────────────────────────────────
@@ -411,6 +644,23 @@ class VectorStoreMatrixGraphStoreTest {
         assertTrue(afterDelete.isEmpty());
     }
 
+    @Test
+    void deleteGraphUsesExactDelimitedGraphIdPrefix() {
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt())).thenReturn(List.of(
+                Map.of("id", "graph:factsheet_1:meta"),
+                Map.of("id", "graph:factsheet_1:node-meta:n1"),
+                Map.of("id", "graph:factsheet_10:meta"),
+                Map.of("id", "graph:factsheet_10:node-meta:n1")));
+
+        assertTrue(store.deleteGraph("factsheet_1"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> deleted = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore).delete(deleted.capture());
+        assertTrue(deleted.getValue().stream().allMatch(id -> id.startsWith("graph:factsheet_1:")));
+        assertTrue(deleted.getValue().stream().noneMatch(id -> id.startsWith("graph:factsheet_10:")));
+    }
+
     // ─── listGraphs ──────────────────────────────────────────────────────────
 
     @Test
@@ -425,6 +675,56 @@ class VectorStoreMatrixGraphStoreTest {
         assertEquals(2, graphs.size());
         assertTrue(graphs.contains("my-graph"));
         assertTrue(graphs.contains("other-graph"));
+    }
+
+    @Test
+    void scanNodesPrefersCanonicalMetadataOverLegacyVectorDocument() {
+        Map<String, Object> graphMeta = Map.of("id", "graph:mixed:meta", "metadata",
+                Map.of("type", "graph_metadata", "graphId", "mixed", "capacity", 8));
+        Map<String, Object> legacy = Map.of("id", "graph:mixed:node:n1", "metadata",
+                Map.of("type", "graph_node", "nodeId", "n1", "matrixIndex", 0,
+                        "nodeType", "PERSON", "title", "Stale title"));
+        Map<String, Object> canonical = Map.of("id", "graph:mixed:node-meta:n1", "metadata",
+                Map.of("type", "graph_node", "nodeId", "n1", "matrixIndex", 0,
+                        "nodeType", "PERSON", "title", "Current title"));
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt()))
+                .thenReturn(List.of(graphMeta, legacy, canonical));
+
+        MatrixGraphStore.ScanPage<MatrixGraphNode> page = store.scanNodes("mixed", 0, 10);
+
+        assertEquals(1, page.items().size());
+        assertEquals("Current title", page.items().get(0).getTitle());
+        store.loadGraph("mixed").orElseThrow().close();
+    }
+
+    @Test
+    void graphLoadingUsesExactDelimitedGraphIdPrefix() {
+        Map<String, Object> selectedMeta = Map.of("id", "graph:factsheet_1:meta", "metadata",
+                Map.of("type", "graph_metadata", "graphId", "factsheet_1", "capacity", 8));
+        Map<String, Object> otherNode = Map.of("id", "graph:factsheet_10:node-meta:n1", "metadata",
+                Map.of("type", "graph_node", "nodeId", "n1", "matrixIndex", 0,
+                        "nodeType", "PERSON", "title", "Wrong graph"));
+        when(vectorStore.listVectorDocuments(anyInt(), anyInt()))
+                .thenReturn(List.of(selectedMeta, otherNode));
+
+        AdjacencyMatrixGraph graph = store.loadGraph("factsheet_1").orElseThrow();
+
+        assertEquals(0, graph.getNodeCount());
+        graph.close();
+    }
+
+    @Test
+    void fullGraphPersistenceAndNodeDeletionShareTheSameMonitor() throws Exception {
+        assertTrue(Modifier.isSynchronized(VectorStoreMatrixGraphStore.class
+                .getMethod("createGraph", String.class, Long.class).getModifiers()));
+        assertTrue(Modifier.isSynchronized(VectorStoreMatrixGraphStore.class
+                .getMethod("saveGraph", AdjacencyMatrixGraph.class).getModifiers()));
+        assertTrue(Modifier.isSynchronized(VectorStoreMatrixGraphStore.class
+                .getMethod("flush").getModifiers()));
+        assertTrue(Modifier.isSynchronized(VectorStoreMatrixGraphStore.class
+                .getMethod("removeNode", String.class, String.class).getModifiers()));
+        assertTrue(Modifier.isSynchronized(VectorStoreMatrixGraphStore.class
+                .getMethod("deleteGraph", String.class).getModifiers()));
     }
 
     // ─── getGraphStatistics ──────────────────────────────────────────────────
@@ -450,7 +750,7 @@ class VectorStoreMatrixGraphStoreTest {
                 node("n2", "PERSON", "Bob"),
                 node("n3", "ORGANIZATION", "Acme")
         );
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
 
         int count = store.addNodesBatch("g1", nodes);
         assertEquals(3, count);
@@ -489,14 +789,54 @@ class VectorStoreMatrixGraphStoreTest {
     void flushSavesAllCachedGraphsAndCallsVectorStoreCommit() {
         store.createGraph("g1", null);
 
-        // Flush will try to save all cached graphs (calls vectorStore.add)
+        // Flush saves cached graph structure without requiring an embedding model.
         // Reset to verify flush calls
         clearInvocations(vectorStore);
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
 
         store.flush();
 
         verify(vectorStore, atLeastOnce()).flushAndCommit();
+    }
+
+    @Test
+    void flushWithoutEmbeddingMatrixNeverReplacesVectorDocumentWithStoredOnlyRecord() {
+        store.createGraph("g-preserve", null);
+        store.addNode("g-preserve", node("n1", "PERSON", "Alice"));
+
+        clearInvocations(vectorStore);
+        store.flush();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> stored = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(stored.capture());
+        verify(vectorStore, never()).add(any());
+        verify(vectorStore, never()).addWithEmbeddings(any(), any());
+        assertTrue(stored.getAllValues().stream().flatMap(List::stream)
+                .noneMatch(document -> document.getId().contains(":node:")),
+                "stored-only flush must not replace the vector-bearing node document");
+        assertTrue(stored.getAllValues().stream().flatMap(List::stream)
+                .anyMatch(document -> document.getId().contains(":node-meta:")));
+    }
+
+    @Test
+    void flushWritesExplicitVectorsOnlyForNonZeroEmbeddingRows() throws Exception {
+        store.createGraph("g-partial", null);
+        store.addNode("g-partial", node("embedded", "PERSON", "Alice"));
+        store.addNode("g-partial", node("unembedded", "PERSON", "Bob"));
+        AdjacencyMatrixGraph graph = store.loadGraph("g-partial").orElseThrow();
+        graph.setNodeEmbeddings(List.of("embedded"),
+                org.nd4j.linalg.factory.Nd4j.create(new float[][]{{0.1f, 0.2f, 0.3f}}));
+
+        clearInvocations(vectorStore);
+        store.saveGraph(graph);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> vectorDocs = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore).addWithEmbeddings(vectorDocs.capture(), any());
+        assertEquals(1, vectorDocs.getValue().size());
+        assertTrue(vectorDocs.getValue().get(0).getId().endsWith(":node:embedded"));
+        graph.close();
     }
 
     // ─── M-7: edge metadata (confidence, bidirectional, description) round-trips ─
@@ -553,7 +893,8 @@ class VectorStoreMatrixGraphStoreTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore, atLeastOnce()).add(captor.capture());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor.capture());
+        verify(vectorStore, never()).add(any());
 
         List<Document> edgeDocs = captor.getAllValues().stream()
                 .flatMap(List::stream)
@@ -570,6 +911,81 @@ class VectorStoreMatrixGraphStoreTest {
                 .noneMatch(doc -> "adjacency_matrix".equals(doc.getMetadata().get("type"))));
     }
 
+    @Test
+    void nullEdgeTypePersistsCanonicalDefaultType() {
+        store.createGraph("g-default-write", null);
+        store.addNode("g-default-write", node("src", "PERSON", "Alice"));
+        store.addNode("g-default-write", node("tgt", "PERSON", "Bob"));
+        clearInvocations(vectorStore);
+
+        assertTrue(store.addEdge("g-default-write", "src", "tgt", 1.0, null, false));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore).addStoredOnlyDocuments(captor.capture());
+        Document edge = captor.getValue().get(0);
+        assertEquals(AdjacencyMatrixGraph.DEFAULT_EDGE_TYPE, edge.getMetadata().get("edgeType"));
+        assertTrue(edge.getId().contains(":edge:"));
+        assertFalse(edge.getId().contains("null"));
+    }
+
+    @Test
+    void saveGraphPersistsEachBidirectionalRelationshipOnceInOriginalOrientation() throws Exception {
+        AdjacencyMatrixGraph graph = store.createGraph("g-bidi-save", null);
+        for (String id : List.of("z", "a", "b", "y")) {
+            store.addNode("g-bidi-save", node(id, "PERSON", id));
+        }
+        assertTrue(store.addEdge("g-bidi-save", "z", "a", 1.0, "KNOWS", true));
+        assertTrue(store.addEdge("g-bidi-save", "b", "y", 1.0, "KNOWS", true));
+        clearInvocations(vectorStore);
+
+        store.saveGraph(graph);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor.capture());
+        List<Document> edges = captor.getAllValues().stream().flatMap(List::stream)
+                .filter(doc -> "graph_edge".equals(doc.getMetadata().get("type"))).toList();
+        assertEquals(2, edges.size());
+        assertTrue(edges.stream().allMatch(doc -> Boolean.TRUE.equals(
+                doc.getMetadata().get("bidirectional"))));
+        assertTrue(edges.stream().anyMatch(doc -> "z".equals(doc.getMetadata().get("sourceNodeId"))
+                && "a".equals(doc.getMetadata().get("targetNodeId"))));
+        assertTrue(edges.stream().anyMatch(doc -> "b".equals(doc.getMetadata().get("sourceNodeId"))
+                && "y".equals(doc.getMetadata().get("targetNodeId"))));
+        Document graphMetadata = captor.getAllValues().stream().flatMap(List::stream)
+                .filter(doc -> "graph_metadata".equals(doc.getMetadata().get("type")))
+                .findFirst().orElseThrow();
+        assertEquals(2L, ((Number) graphMetadata.getMetadata().get("edgeCount")).longValue(),
+                "metadata edgeCount must match persisted logical documents, not sparse directions");
+        graph.close();
+    }
+
+    @Test
+    void removeThenReaddDirectedDoesNotResurrectBidirectionalMetadata() throws Exception {
+        AdjacencyMatrixGraph graph = store.createGraph("g-readd", null);
+        store.addNode("g-readd", node("a", "PERSON", "Alice"));
+        store.addNode("g-readd", node("b", "PERSON", "Bob"));
+        assertTrue(store.addEdge("g-readd", "a", "b", 1.0, "KNOWS",
+                true, null, 0.8, "old bidirectional"));
+        assertTrue(store.removeEdge("g-readd", "a", "b", "KNOWS"));
+        assertTrue(store.addEdge("g-readd", "a", "b", 0.5, "KNOWS", false));
+        clearInvocations(vectorStore);
+
+        store.saveGraph(graph);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor.capture());
+        Document edge = captor.getAllValues().stream().flatMap(List::stream)
+                .filter(doc -> "graph_edge".equals(doc.getMetadata().get("type")))
+                .findFirst().orElseThrow();
+        assertFalse(Boolean.TRUE.equals(edge.getMetadata().get("bidirectional")));
+        assertFalse(edge.getMetadata().containsKey("confidence"));
+        assertFalse(edge.getMetadata().containsKey("description"));
+        graph.close();
+    }
+
     // ─── Restart round-trip ───────────────────────────────────────────────────
 
     /**
@@ -578,7 +994,7 @@ class VectorStoreMatrixGraphStoreTest {
      * <p>Simulates the full persistence round-trip:
      * <ol>
      *   <li>Store a graph with nodes and edges (writes Documents to the mock vector store).</li>
-     *   <li>Capture every {@link Document} that was passed to {@code vectorStore.add()}.</li>
+     *   <li>Capture every structural {@link Document} passed to stored-only persistence.</li>
      *   <li>Convert the captured Spring AI Documents into the format that
      *       {@link VectorStore#listVectorDocuments} returns after a real Lucene round-trip:
      *       a map with top-level {@code "id"} and {@code "content"} keys, plus a nested
@@ -595,7 +1011,7 @@ class VectorStoreMatrixGraphStoreTest {
         ObjectMapper om = new ObjectMapper();
 
         // ── Phase 1: build and persist a graph ───────────────────────────────
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
 
         store.createGraph("restart-graph", 42L);
@@ -610,7 +1026,7 @@ class VectorStoreMatrixGraphStoreTest {
         // ── Phase 2: capture every Document that was added to the vector store ─
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore, atLeastOnce()).add(captor.capture());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor.capture());
 
         // Collect all unique documents (de-duplicated by id, last-write wins).
         Map<String, Document> byId = new HashMap<>();
@@ -621,7 +1037,7 @@ class VectorStoreMatrixGraphStoreTest {
                 }
             }
         }
-        assertFalse(byId.isEmpty(), "No documents were captured — the store never called vectorStore.add()");
+        assertFalse(byId.isEmpty(), "No documents were captured by stored-only graph persistence");
 
         // ── Phase 3: convert to listVectorDocuments format ────────────────────
         // AnseriniVectorStoreImpl.listVectorDocuments returns:
@@ -694,7 +1110,7 @@ class VectorStoreMatrixGraphStoreTest {
         final int DIM = 3;
 
         // ── Phase 1: build graph and store embeddings ─────────────────────────
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
         when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
 
@@ -722,7 +1138,7 @@ class VectorStoreMatrixGraphStoreTest {
         // ── Phase 2: capture Documents ────────────────────────────────────────
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> captor = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore, atLeastOnce()).add(captor.capture());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor.capture());
 
         Map<String, Document> byId = new HashMap<>();
         for (List<Document> batch : captor.getAllValues()) {
@@ -808,7 +1224,7 @@ class VectorStoreMatrixGraphStoreTest {
     @Test
     void restartRoundTrip_flattenDocFixEnablesRehydration() throws Exception {
         // Phase 1: build and persist a graph
-        when(vectorStore.add(any())).thenReturn(1);
+        when(vectorStore.addStoredOnlyDocuments(any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
 
         store.createGraph("rr-graph", 42L);
@@ -821,7 +1237,7 @@ class VectorStoreMatrixGraphStoreTest {
         // Phase 2: capture every Document added to the vector store
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> captor2 = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore, atLeastOnce()).add(captor2.capture());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor2.capture());
 
         Map<String, Document> byId = new HashMap<>();
         for (List<Document> batch : captor2.getAllValues()) {
@@ -829,7 +1245,7 @@ class VectorStoreMatrixGraphStoreTest {
                 if (d.getId() != null) byId.put(d.getId(), d);
             }
         }
-        assertFalse(byId.isEmpty(), "No documents were captured from vectorStore.add()");
+        assertFalse(byId.isEmpty(), "No documents were captured from stored-only persistence");
 
         // Phase 3: convert to Anserini nested format {"id":…,"content":…,"metadata":{…all fields…}}
         List<Map<String, Object>> vsListDocs = new ArrayList<>();
@@ -882,7 +1298,6 @@ class VectorStoreMatrixGraphStoreTest {
         final int REMOVED_COUNT  = 50;
         final int EXPECTED_NODES = TOTAL_ADDED - REMOVED_COUNT; // 200
 
-        when(vectorStore.add(any())).thenReturn(1);
         when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
         when(vectorStore.delete(any())).thenReturn(true);
@@ -921,7 +1336,6 @@ class VectorStoreMatrixGraphStoreTest {
         assertEquals(edgesAdded, expectedEdgeCount, "Edge count in live graph must match added edges");
 
         clearInvocations(vectorStore);
-        when(vectorStore.add(any())).thenReturn(1);
         when(vectorStore.addWithEmbeddings(any(), any())).thenReturn(1);
         when(vectorStore.flushAndCommit()).thenReturn(true);
         store.saveGraph(liveGraph);
@@ -929,7 +1343,7 @@ class VectorStoreMatrixGraphStoreTest {
         // Phase 5: capture saved Documents
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Document>> captor3 = ArgumentCaptor.forClass(List.class);
-        verify(vectorStore, atLeastOnce()).add(captor3.capture());
+        verify(vectorStore, atLeastOnce()).addStoredOnlyDocuments(captor3.capture());
 
         Map<String, Document> byId3 = new HashMap<>();
         for (List<Document> batch : captor3.getAllValues()) {
@@ -938,9 +1352,9 @@ class VectorStoreMatrixGraphStoreTest {
             }
         }
 
-        long nodeDocs = byId3.keySet().stream().filter(id -> id.contains(":node:")).count();
+        long nodeDocs = byId3.keySet().stream().filter(id -> id.contains(":node-meta:")).count();
         assertEquals(EXPECTED_NODES, nodeDocs,
-                "saveNodes must persist exactly " + EXPECTED_NODES + " live nodes (not nextIndex=" + TOTAL_ADDED + ")");
+                "saveNodes must persist exactly " + EXPECTED_NODES + " canonical node metadata records (not nextIndex=" + TOTAL_ADDED + ")");
 
         // Phase 6: wrap in Anserini nested format
         List<Map<String, Object>> vsListDocs3 = new ArrayList<>();

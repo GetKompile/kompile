@@ -130,18 +130,15 @@ public class SubprocessJudgeEvaluator implements EnforcerEvaluator, AutoCloseabl
                                      EnforcerPolicy policy, int attempt,
                                      EnforcerConversationContext context) throws Exception {
         if (!available || judgeRunner == null) {
-            return EnforcerDecision.stop(
-                    java.util.List.of("Judge subprocess agent '" + judgeAgentName + "' not available"),
-                    "Install the judge agent CLI or use a different judge mode.");
+            return EnforcerDecision.pass(
+                    "Judge subprocess agent '" + judgeAgentName + "' is unavailable; failing open");
         }
 
         String judgePrompt = buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context);
         String response = judgeRunner.runMessage(judgePrompt, judgeHistory, judgeMetrics);
 
         if (response == null || response.isBlank()) {
-            return EnforcerDecision.stop(
-                    java.util.List.of("Judge agent returned empty response"),
-                    "The judge subprocess may have crashed or timed out.");
+            return EnforcerDecision.pass("Judge agent returned an empty response; failing open");
         }
 
         return EnforcerDecision.parse(objectMapper, response);

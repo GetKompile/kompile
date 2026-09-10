@@ -5,13 +5,24 @@ import org.junit.jupiter.api.*;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @DisplayName("TokenEncryptionService")
 class TokenEncryptionServiceTest {
+
+    @org.junit.jupiter.api.io.TempDir
+    Path tempDir;
 
     private TokenEncryptionService service;
 
@@ -191,5 +202,130 @@ class TokenEncryptionServiceTest {
     void notInitialized() throws Exception {
         TokenEncryptionService uninitializedService = new TokenEncryptionService();
         assertFalse(uninitializedService.isInitialized());
+    }
+
+    @Test
+    @DisplayName("separate processes reuse the atomically created file key")
+    void fileKeyIsStableAcrossInitializers() throws Exception {
+        TokenEncryptionService first = fileBackedService();
+        TokenEncryptionService second = fileBackedService();
+
+        first.init();
+        String ciphertext = first.encrypt("shared-secret");
+        second.init();
+
+        assertEquals("shared-secret", second.decrypt(ciphertext));
+    }
+
+    @Test
+    @DisplayName("existing file keys are repaired to owner-only permissions before reading")
+    void existingKeyPermissionsAreRepaired() throws Exception {
+        Path keyPath = tempDir.resolve("config/oauth-encryption.key");
+        Files.createDirectories(keyPath.getParent());
+        byte[] keyBytes = new byte[32];
+        new SecureRandom().nextBytes(keyBytes);
+        Files.writeString(keyPath, Base64.getEncoder().encodeToString(keyBytes));
+        try {
+            Files.setPosixFilePermissions(keyPath, Set.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ, PosixFilePermission.OTHERS_READ));
+        } catch (UnsupportedOperationException unsupported) {
+            Assumptions.abort("POSIX permission assertions are not supported on this filesystem");
+        }
+
+        fileBackedService().init();
+
+        assertEquals(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                Files.getPosixFilePermissions(keyPath));
+    }
+
+    @Test
+    @DisplayName("concurrent persona initialization publishes one shared file key")
+    void concurrentInitializersShareOneKey() throws Exception {
+        TokenEncryptionService first = fileBackedService();
+        TokenEncryptionService second = fileBackedService();
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var firstInit = executor.submit(() -> {
+                start.await();
+                first.init();
+                return first;
+            });
+            var secondInit = executor.submit(() -> {
+                start.await();
+                second.init();
+                return second;
+            });
+            start.countDown();
+
+            TokenEncryptionService initializedFirst = firstInit.get(10, TimeUnit.SECONDS);
+            TokenEncryptionService initializedSecond = secondInit.get(10, TimeUnit.SECONDS);
+            assertEquals("shared-secret",
+                    initializedSecond.decrypt(initializedFirst.encrypt("shared-secret")));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("forked personas converge on one file key")
+    void forkedInitializersShareOneKey() throws Exception {
+        Path signal = tempDir.resolve("start.signal");
+        Path firstCiphertext = tempDir.resolve("first.token");
+        Path secondCiphertext = tempDir.resolve("second.token");
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty(
+                "surefire.test.class.path", System.getProperty("java.class.path"));
+        Process first = new ProcessBuilder(java, "-cp", classpath,
+                ProcessProbe.class.getName(), tempDir.toString(), signal.toString(),
+                firstCiphertext.toString(), "first-secret")
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        Process second = new ProcessBuilder(java, "-cp", classpath,
+                ProcessProbe.class.getName(), tempDir.toString(), signal.toString(),
+                secondCiphertext.toString(), "second-secret")
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        Files.createFile(signal);
+
+        assertTrue(first.waitFor(20, TimeUnit.SECONDS));
+        assertTrue(second.waitFor(20, TimeUnit.SECONDS));
+        assertEquals(0, first.exitValue());
+        assertEquals(0, second.exitValue());
+        TokenEncryptionService reader = fileBackedService();
+        reader.init();
+        assertEquals("first-secret", reader.decrypt(Files.readString(firstCiphertext)));
+        assertEquals("second-secret", reader.decrypt(Files.readString(secondCiphertext)));
+    }
+
+    public static final class ProcessProbe {
+        private ProcessProbe() {
+        }
+
+        public static void main(String[] args) throws Exception {
+            Path dataDir = Path.of(args[0]);
+            Path signal = Path.of(args[1]);
+            Path output = Path.of(args[2]);
+            while (!Files.exists(signal)) Thread.sleep(5L);
+            TokenEncryptionService service = new TokenEncryptionService();
+            Field configured = TokenEncryptionService.class.getDeclaredField("configuredKey");
+            configured.setAccessible(true);
+            configured.set(service, "");
+            Field configuredDataDir = TokenEncryptionService.class.getDeclaredField("kompileDataDir");
+            configuredDataDir.setAccessible(true);
+            configuredDataDir.set(service, dataDir.toString());
+            service.init();
+            Files.writeString(output, service.encrypt(args[3]), StandardCharsets.UTF_8);
+        }
+    }
+
+    private TokenEncryptionService fileBackedService() throws Exception {
+        TokenEncryptionService result = new TokenEncryptionService();
+        Field configured = TokenEncryptionService.class.getDeclaredField("configuredKey");
+        configured.setAccessible(true);
+        configured.set(result, "");
+        Field dataDir = TokenEncryptionService.class.getDeclaredField("kompileDataDir");
+        dataDir.setAccessible(true);
+        dataDir.set(result, tempDir.toString());
+        return result;
     }
 }

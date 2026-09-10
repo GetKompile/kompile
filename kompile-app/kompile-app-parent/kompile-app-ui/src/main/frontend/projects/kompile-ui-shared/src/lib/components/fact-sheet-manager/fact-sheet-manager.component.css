@@ -546,6 +546,38 @@
   margin: 0 2px;
 }
 
+.integration-auth-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--status-info-border);
+  border-radius: 6px;
+  background: var(--status-info-bg);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.integration-auth-bar > span {
+  flex: 1 1 auto;
+}
+
+.integration-auth-bar mat-form-field {
+  width: min(280px, 35vw);
+}
+
+@media (max-width: 800px) {
+  .integration-auth-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .integration-auth-bar mat-form-field {
+    width: 100%;
+  }
+}
+
 .ws-status-bar {
   display: flex;
   align-items: center;

@@ -18,6 +18,8 @@ package ai.kompile.loader.slack;
 
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.oauth.service.OAuthConnectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.slack.api.Slack;
 import com.slack.api.methods.MethodsClient;
 import com.slack.api.methods.SlackApiException;
@@ -66,6 +68,14 @@ public class SlackLoaderImpl implements DocumentLoader {
     // Runtime configurable defaults (set via UI/API)
     private String slackToken = "";
     private int defaultLimit = 100;
+    private final OAuthConnectionService oauthService;
+
+    public SlackLoaderImpl() { this(null); }
+
+    @Autowired
+    public SlackLoaderImpl(@Autowired(required = false) OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -116,7 +126,8 @@ public class SlackLoaderImpl implements DocumentLoader {
         if (sourceDescriptor.getMetadata() != null && sourceDescriptor.getMetadata().containsKey("slackToken")) {
             return (String) sourceDescriptor.getMetadata().get("slackToken");
         }
-        return slackToken;
+        if (slackToken != null && !slackToken.isBlank()) return slackToken;
+        return oauthService == null ? null : oauthService.getValidAccessToken("slack");
     }
 
     private int getLimit(DocumentSourceDescriptor sourceDescriptor) {

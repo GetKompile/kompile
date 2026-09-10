@@ -42,6 +42,12 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-crawler-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-oauth2-client</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
 
         <!-- Slack SDK for Java -->
         <dependency>

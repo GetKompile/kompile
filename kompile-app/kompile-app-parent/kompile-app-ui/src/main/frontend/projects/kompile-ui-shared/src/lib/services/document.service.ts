@@ -28,6 +28,8 @@ import {
   AddDiscordRequest,
   DiscordResponse,
   SlackResponse,
+  AddJiraRequest,
+  AddRedditRequest,
   FileUploadResponse,
   FileSourceCrawlResponse,
   SimpleMessageResponse,
@@ -485,8 +487,8 @@ export class DocumentService extends BaseService {
    */
   addConfluenceSource(options: {
     baseUrl: string;
-    email: string;
-    apiToken: string;
+    email?: string;
+    apiToken?: string;
     spaceKey: string;
     includeChildren?: boolean;
     includeAttachments?: boolean;
@@ -503,6 +505,18 @@ export class DocumentService extends BaseService {
       chunkerName: options.chunkerName,
       rebuildIndex: options.rebuildIndex
     }).pipe(catchError(this.handleError));
+  }
+
+  /** Add Jira Cloud issues through Atlassian OAuth or an API token. */
+  addJiraSource(request: AddJiraRequest): Observable<SimpleMessageResponse> {
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/documents/add-jira`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Add Reddit posts/comments through the centrally managed Reddit OAuth connection. */
+  addRedditSource(request: AddRedditRequest): Observable<SimpleMessageResponse> {
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/documents/add-reddit`, request)
+      .pipe(catchError(this.handleError));
   }
 
   /**

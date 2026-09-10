@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScheduledLoopCommandTest {
@@ -22,7 +23,7 @@ class ScheduledLoopCommandTest {
 
     @Test
     @ResourceLock(Resources.SYSTEM_PROPERTIES)
-    void loopSlashCommandManagesProjectScopedLocalSchedules() throws Exception {
+    void loopSlashCommandsKeepSessionAndProjectScopesSeparate() throws Exception {
         String previousHome = System.getProperty("user.home");
         String previousDirectory = System.getProperty("user.dir");
         Path home = tempDir.resolve("home");
@@ -32,6 +33,19 @@ class ScheduledLoopCommandTest {
         System.setProperty("user.home", home.toString());
         System.setProperty("user.dir", project.toString());
 
+        String legacyGlobalId;
+        ScheduledLoopManager legacyGlobal = new ScheduledLoopManager(
+                ignored -> { }, ScheduledLoopManager.stateFileForProject(project));
+        try {
+            ScheduledLoopManager.ScheduledLoop loop =
+                    legacyGlobal.create("3h", "legacy project schedule");
+            assertNotNull(loop);
+            legacyGlobalId = loop.getId();
+            assertTrue(legacyGlobal.pause(legacyGlobalId));
+        } finally {
+            legacyGlobal.shutdown();
+        }
+
         ChatRepl repl = null;
         try {
             ChatConfig config = new ChatConfig(
@@ -39,28 +53,63 @@ class ScheduledLoopCommandTest {
             repl = new ChatRepl(
                     null, null, "loop-command-test", false, "default", false, config);
             ChatCommandRouter router = field(repl, "commandRouter", ChatCommandRouter.class);
+            ScheduledLoopManager sessionLoops = repl.getScheduledLoopManager();
+            ScheduledLoopManager globalLoops = repl.getGlobalScheduledLoopManager();
 
-            assertTrue(router.handleSlashCommand("/loop add 1h review local changes"));
-            ScheduledLoopManager manager = repl.getScheduledLoopManager();
-            assertEquals(1, manager.list().size());
-            ScheduledLoopManager.ScheduledLoop loop = manager.list().get(0);
-            String prefix = loop.getId().substring(0, 4);
+            assertTrue(sessionLoops.list().isEmpty());
+            assertEquals(1, globalLoops.list().size());
+            assertEquals("legacy project schedule", globalLoops.get(legacyGlobalId).getPrompt());
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED,
+                    globalLoops.get(legacyGlobalId).getStatus());
+
+            assertTrue(router.handleSlashCommand("/loop add 1h review this conversation"));
+            assertTrue(router.handleSlashCommand("/loop-global add 2h review project changes"));
+            assertEquals(1, sessionLoops.list().size());
+            assertEquals(2, globalLoops.list().size());
+            ScheduledLoopManager.ScheduledLoop sessionLoop = sessionLoops.list().get(0);
+            ScheduledLoopManager.ScheduledLoop globalLoop = globalLoops.list().get(1);
+            String sessionPrefix = sessionLoop.getId().substring(0, 4);
+            String globalPrefix = globalLoop.getId().substring(0, 4);
 
             assertTrue(router.handleSlashCommand("/loop list"));
-            assertTrue(router.handleSlashCommand("/loop pause " + prefix));
+            assertTrue(router.handleSlashCommand("/loop-global list"));
+            assertTrue(router.handleSlashCommand("/loop pause " + sessionPrefix));
             assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED,
-                    manager.get(prefix).getStatus());
-            assertTrue(router.handleSlashCommand("/loop resume " + prefix));
+                    sessionLoops.get(sessionPrefix).getStatus());
             assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.ACTIVE,
-                    manager.get(prefix).getStatus());
-            assertTrue(router.handleSlashCommand("/loop remove " + prefix));
-            assertTrue(manager.list().isEmpty());
+                    globalLoops.get(globalPrefix).getStatus());
+            assertTrue(router.handleSlashCommand("/loop resume " + sessionPrefix));
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.ACTIVE,
+                    sessionLoops.get(sessionPrefix).getStatus());
+            assertTrue(router.handleSlashCommand("/loop-global pause " + globalPrefix));
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.PAUSED,
+                    globalLoops.get(globalPrefix).getStatus());
+            assertTrue(router.handleSlashCommand("/loop-global resume " + globalPrefix));
+            assertEquals(ScheduledLoopManager.ScheduledLoop.LoopStatus.ACTIVE,
+                    globalLoops.get(globalPrefix).getStatus());
+
+            assertTrue(router.handleSlashCommand("/loop remove " + sessionPrefix));
+            assertTrue(router.handleSlashCommand("/loop add 4h first session clear target"));
+            assertTrue(router.handleSlashCommand("/loop add 5h second session clear target"));
+            assertEquals(2, sessionLoops.list().size());
+            assertTrue(router.handleSlashCommand("/loop clear"));
+            assertTrue(sessionLoops.list().isEmpty());
+            assertEquals(2, globalLoops.list().size(),
+                    "session clear must not remove project-global loops");
+
+            assertTrue(router.handleSlashCommand("/loop-global remove " + globalPrefix));
+            assertTrue(router.handleSlashCommand(
+                    "/loop-global add 4h project clear target"));
+            assertEquals(2, globalLoops.list().size());
+            assertTrue(router.handleSlashCommand("/loop-global clear"));
+            assertTrue(globalLoops.list().isEmpty());
+            assertTrue(Files.isRegularFile(
+                    ScheduledLoopManager.stateFileForSession("loop-command-test")));
             assertTrue(Files.isRegularFile(
                     ScheduledLoopManager.stateFileForProject(project)));
         } finally {
             if (repl != null) {
-                ScheduledLoopManager manager = repl.getScheduledLoopManager();
-                manager.shutdown();
+                repl.close();
                 field(repl, "processManager", BackgroundProcessManager.class).close();
                 DirectLlmClient client = field(repl, "directClient", DirectLlmClient.class);
                 if (client != null) client.close();

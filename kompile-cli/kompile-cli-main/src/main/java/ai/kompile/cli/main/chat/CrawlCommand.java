@@ -10,9 +10,17 @@ import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
+import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.ProjectChatContext;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.cli.main.chat.exec.HeadlessAgentRunner;
+import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.tools.ToolRegistry;
+import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -24,6 +32,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 
@@ -31,7 +40,7 @@ import java.util.concurrent.Callable;
  * Production crawl-and-reason REPL.
  *
  * <p>This command is intentionally attached to the normal CLI. It does not
- * duplicate the FPNA test harness: the app owns model loading and crawl
+ * duplicate external test harnesses: the app owns model loading and crawl
  * execution, while this process owns operator controls, tool policy and
  * durable run checkpoints.</p>
  */
@@ -40,6 +49,8 @@ import java.util.concurrent.Callable;
         description = "Run and supervise a production unified crawl with graph reasoning.",
         mixinStandardHelpOptions = true)
 public final class CrawlCommand implements Callable<Integer> {
+    private static final int DEFAULT_LOCAL_SERVING_STARTUP_TIMEOUT_SECONDS = 180;
+
     @CommandLine.Option(names = "--url", description = "Base URL of the kompile-app server.")
     private String url;
 
@@ -82,12 +93,18 @@ public final class CrawlCommand implements Callable<Integer> {
     private String mode;
 
     @CommandLine.Option(names = "--rag", negatable = true, defaultValue = "true",
+            fallbackValue = "true",
             description = "Enable server-side RAG context.")
     private boolean rag;
 
     @CommandLine.Option(names = "--memory", negatable = true, defaultValue = "true",
+            fallbackValue = "true",
             description = "Persist/use CLI conversation memory.")
     private boolean memory;
+
+    boolean ragEnabled() { return rag; }
+
+    boolean memoryEnabled() { return memory; }
 
     @CommandLine.Option(names = "--request-file",
             description = "JSON file containing the production UnifiedCrawlRequest. Implies --headless.")
@@ -154,6 +171,9 @@ public final class CrawlCommand implements Callable<Integer> {
                 System.err.println("Offline crawl requires --document, --request-file, or --prompt.");
                 return 2;
             }
+            if (requestFile != null && (prompt == null || prompt.isBlank())) {
+                return runDirectOfflineRequest();
+            }
             return runOffline(initialMessage);
         }
 
@@ -176,33 +196,34 @@ public final class CrawlCommand implements Callable<Integer> {
             client.notifyInitialized();
             createChatSession(client);
 
-            ChatRepl repl = new ChatRepl(client, appUrl, sessionId, rag,
-                    serverAgent, memory, null, true);
-            CrawlRunStore store = new CrawlRunStore(sessionId, client.getObjectMapper());
-            AgentRunController.Snapshot prior = resumeId == null ? null : store.latestCheckpoint();
-            repl.configureCrawlControl(controller, store);
-            if (prior != null) {
-                controller.restore(prior);
-                store.event("resumed", "checkpoint");
-                store.checkpoint(controller, "resumed");
-            }
-
-            System.out.println("Crawl run: " + sessionId);
-            System.out.println("Mode: " + controller.mode().name().toLowerCase(Locale.ROOT)
-                    + (controller.mode() == AgentRunController.Mode.SUPERVISED
-                    ? " (mutations require /crawl approve)" : ""));
-            if (headless || requestFile != null || documents != null && !documents.isEmpty()
-                    || prompt != null && !prompt.isBlank()) {
-                if (initialMessage == null || initialMessage.isBlank()) {
-                    System.err.println("Headless crawl requires --document, --request-file, or --prompt.");
-                    controller.stop();
-                    return 1;
+            try (ChatRepl repl = new ChatRepl(client, appUrl, sessionId, rag,
+                    serverAgent, memory, null, true)) {
+                CrawlRunStore store = new CrawlRunStore(sessionId, client.getObjectMapper());
+                AgentRunController.Snapshot prior = resumeId == null ? null : store.latestCheckpoint();
+                repl.configureCrawlControl(controller, store);
+                if (prior != null) {
+                    controller.restore(prior);
+                    store.event("resumed", "checkpoint");
+                    store.checkpoint(controller, "resumed");
                 }
-                repl.runHeadless(initialMessage);
-            } else {
-                repl.run();
+
+                System.out.println("Crawl run: " + sessionId);
+                System.out.println("Mode: " + controller.mode().name().toLowerCase(Locale.ROOT)
+                        + (controller.mode() == AgentRunController.Mode.SUPERVISED
+                        ? " (mutations require /crawl approve)" : ""));
+                if (headless || requestFile != null || documents != null && !documents.isEmpty()
+                        || prompt != null && !prompt.isBlank()) {
+                    if (initialMessage == null || initialMessage.isBlank()) {
+                        System.err.println("Headless crawl requires --document, --request-file, or --prompt.");
+                        controller.stop();
+                        return 1;
+                    }
+                    repl.runHeadless(initialMessage);
+                } else {
+                    repl.run();
+                }
+                return 0;
             }
-            return 0;
         } catch (Exception e) {
             controller.stop();
             System.err.println("Crawl command failed: " + e.getMessage());
@@ -232,7 +253,82 @@ public final class CrawlCommand implements Callable<Integer> {
         System.out.println("Mode: " + controller.mode().name().toLowerCase(Locale.ROOT));
 
         Path workDir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        HeadlessAgentRunner.Options options = new HeadlessAgentRunner.Options(
+        ChatConfig config = ChatConfig.loadOrFromEnv(workDir);
+        if (config == null) {
+            return offlineFailure(controller, store,
+                    "No project chat configuration found. Run `kompile chat --setup` first.");
+        }
+        String modelOverride = blankToNull(model);
+        if (modelOverride != null) config.setModel(modelOverride);
+        HeadlessAgentRunner.Options options = offlineOptions(
+                initialMessage, workerAgent, workerCrawlUrl, controller, workDir, config);
+        try {
+            HeadlessAgentRunner.Result result;
+            if (config.isKompileLocalServing()) {
+                int startupTimeout = timeoutSeconds > 0
+                        ? (int) Math.min(Integer.MAX_VALUE, timeoutSeconds)
+                        : DEFAULT_LOCAL_SERVING_STARTUP_TIMEOUT_SECONDS;
+                OfflineModelBinding binding = resolveOfflineModelBinding(
+                        config, System.getenv());
+                try (LocalServingRuntimePool.Lease runtime =
+                             LocalServingRuntimePool.acquire(
+                                     binding.modelId(), binding.modelPath(),
+                                     binding.tokenizerPath(), binding.runtimeOptions(),
+                                     startupTimeout)) {
+                    runtime.applyTo(config);
+                }
+            }
+            result = new HeadlessAgentRunner().run(options);
+            store.event("offline_worker_completed", "exitCode=" + result.exitCode());
+            store.checkpoint(controller, "offline_worker_closed");
+            return result.exitCode();
+        } catch (KompileLocalServingBootstrap.BootstrapException | IOException | RuntimeException e) {
+            return offlineFailure(controller, store, String.valueOf(e.getMessage()));
+        }
+    }
+
+    private int runDirectOfflineRequest() {
+        ObjectMapper mapper = JsonUtils.standardMapper();
+        AgentRunController controller = new AgentRunController(parseMode(mode, true));
+        CrawlRunStore store = new CrawlRunStore(sessionId, mapper);
+        Path workDir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        store.open(controller, "(project-local direct)", "crawl-worker");
+        try {
+            ObjectNode request = directRequest(mapper, requestFile);
+            AgentConfig agent = AgentConfig.builder("crawl-worker")
+                    .enabledTools(Set.of("*"))
+                    .build();
+            PermissionService permissions = new PermissionService();
+            ToolContext context = new ToolContext(
+                    sessionId, agent, permissions, workDir, new ToolRegistry(mapper));
+            context.setAutoApproveAll(true);
+            ToolResult result = new CrawlDocumentsTool(crawlUrl, mapper)
+                    .execute(request, context);
+            System.out.println(result.getOutput());
+            String status = result.isError() ? "error" : "success";
+            store.event("direct_worker_completed", status);
+            store.checkpoint(controller, "direct_worker_closed");
+            return result.isError() ? 1 : 0;
+        } catch (Exception e) {
+            return offlineFailure(controller, store, String.valueOf(e.getMessage()));
+        }
+    }
+
+    static ObjectNode directRequest(ObjectMapper mapper, Path requestFile) throws IOException {
+        JsonNode parsed = mapper.readTree(requestFile.toFile());
+        if (!(parsed instanceof ObjectNode request)) {
+            throw new IOException("Direct crawl request must contain a JSON object: " + requestFile);
+        }
+        ObjectNode copy = request.deepCopy();
+        copy.put("async", false);
+        copy.put("waitForCompletion", true);
+        return copy;
+    }
+
+    HeadlessAgentRunner.Options offlineOptions(
+            String initialMessage, String workerAgent, String workerCrawlUrl,
+            AgentRunController controller, Path workDir, ChatConfig config) {
+        return new HeadlessAgentRunner.Options(
                 initialMessage,
                 sessionId,
                 resumeId != null && !resumeId.isBlank(),
@@ -243,20 +339,37 @@ public final class CrawlCommand implements Callable<Integer> {
                 Math.max(0, timeoutSeconds) * 1000L,
                 null,
                 workerCrawlUrl,
-                controller);
-        try {
-            HeadlessAgentRunner.Result result = new HeadlessAgentRunner().run(options);
-            store.event("offline_worker_completed", "exitCode=" + result.exitCode());
-            store.checkpoint(controller, "offline_worker_closed");
-            return result.exitCode();
-        } catch (RuntimeException e) {
-            controller.stop();
-            store.event("offline_worker_failed", String.valueOf(e.getMessage()));
-            store.checkpoint(controller, "offline_worker_failed");
-            System.err.println("Offline crawl worker failed: " + e.getMessage());
-            return 1;
-        }
+                controller,
+                null,
+                config,
+                null,
+                rag,
+                memory,
+                null,
+                true);
     }
+
+    private int offlineFailure(AgentRunController controller, CrawlRunStore store,
+                               String message) {
+        controller.stop();
+        store.event("offline_worker_failed", message);
+        store.checkpoint(controller, "offline_worker_failed");
+        System.err.println("Offline crawl worker failed: " + message);
+        return 1;
+    }
+
+    static OfflineModelBinding resolveOfflineModelBinding(
+            ChatConfig config, java.util.Map<String, String> environment) throws IOException {
+        KompileLocalServingBootstrap.ResolvedModel resolved =
+                KompileLocalServingBootstrap.resolveModel(
+                        config.getModel(), null, null, environment);
+        return new OfflineModelBinding(
+                resolved.modelId(), resolved.modelPath(), resolved.tokenizerPath(),
+                java.util.Map.of("localPath", resolved.modelPath().toString()));
+    }
+
+    record OfflineModelBinding(String modelId, Path modelPath, Path tokenizerPath,
+                               java.util.Map<String, Object> runtimeOptions) { }
 
     private String resolveUrl() {
         if (url != null && !url.isBlank()) return url;

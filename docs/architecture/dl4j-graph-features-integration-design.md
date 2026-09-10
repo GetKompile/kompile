@@ -476,7 +476,7 @@ Each phase is independently shippable and testable; Phases 0–3 are low-risk pl
   active codegen work. Mitigation: start with `gcnConv`/`sageMean`/`rotatE` (simplest,
   best-tested); pin the DL4J commit; add our own e2e training test as the first artifact.
 - **OOM regression.** The whole reason production KGE is hand-rolled. Mitigation is §7 —
-  but this must be *validated under load* (full FP&A crawl) before retiring the hand-rolled
+  but this must be *validated under load* (full domain-planning crawl) before retiring the hand-rolled
   models, not just unit-tested.
 - **CSR construction cost.** COO→CSR sort per fact-sheet per training run; cache the CSR
   alongside the graph or rebuild only on graph mutation.

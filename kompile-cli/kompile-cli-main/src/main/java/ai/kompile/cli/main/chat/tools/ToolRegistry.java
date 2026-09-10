@@ -140,8 +140,17 @@ public class ToolRegistry {
             return;
         }
         switch (agent.getName()) {
-            case "crawler", "crawl-worker" -> dynamicToolManager.activateGroup("crawl");
-            case "researcher" -> dynamicToolManager.activateGroup("web");
+            case "crawler", "crawl-worker" -> {
+                dynamicToolManager.activateGroup("crawl");
+                dynamicToolManager.activateGroup("code");
+                dynamicToolManager.activateGroup("graph_query");
+                dynamicToolManager.activateGroup("graph_analysis");
+            }
+            case "planner" -> dynamicToolManager.activateGroup("graph_query");
+            case "researcher" -> {
+                dynamicToolManager.activateGroup("web");
+                dynamicToolManager.activateGroup("graph_query");
+            }
             case "explore-quick", "explore-deep", "code-reviewer", "architect" -> {
                 dynamicToolManager.activateGroup("files");
                 dynamicToolManager.activateGroup("code");

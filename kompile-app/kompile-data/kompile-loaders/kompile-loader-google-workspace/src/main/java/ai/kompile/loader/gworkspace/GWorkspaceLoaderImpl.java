@@ -21,10 +21,12 @@ import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
+import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -55,6 +57,16 @@ import java.util.function.Consumer;
 public class GWorkspaceLoaderImpl implements DocumentLoader {
 
     private final GmailMessageParser gmailParser = new GmailMessageParser();
+    private final OAuthConnectionService oauthService;
+
+    public GWorkspaceLoaderImpl() {
+        this(null);
+    }
+
+    @Autowired
+    public GWorkspaceLoaderImpl(@Autowired(required = false) OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -79,7 +91,11 @@ public class GWorkspaceLoaderImpl implements DocumentLoader {
 
         String accessToken = str(meta.get("accessToken"));
         if (accessToken == null || accessToken.isEmpty()) {
-            throw new IllegalArgumentException("Google OAuth access token is required (metadata key: accessToken)");
+            accessToken = oauthService == null ? null : oauthService.getValidAccessToken("google");
+        }
+        if (accessToken == null || accessToken.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Google Workspace requires a connected Google OAuth account or metadata.accessToken");
         }
 
         GWorkspaceApiService api = new GWorkspaceApiService(accessToken);

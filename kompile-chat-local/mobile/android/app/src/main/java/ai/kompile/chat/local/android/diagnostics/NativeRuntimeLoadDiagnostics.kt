@@ -11,12 +11,12 @@ import android.os.SystemClock
 import android.util.AtomicFile
 import ai.kompile.chat.local.android.AndroidJavaCppMemoryPolicy
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.model.SdxHashing
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.util.UUID
 
 /** User-facing destination for a recovered fatal native operation. */
@@ -204,18 +204,8 @@ internal object NativeOperationDiagnosticPolicy {
             (expectedProcessId <= 0 || processId <= 0 || processId == expectedProcessId) &&
             exitTimestampEpochMillis >= startedEpochMillis - EXIT_MATCH_CLOCK_SLOP_MILLIS
 
-    fun modelPathFingerprint(path: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256")
-            .digest(File(path).absolutePath.toByteArray(StandardCharsets.UTF_8))
-        val hex = "0123456789abcdef"
-        return buildString(bytes.size * 2) {
-            bytes.forEach { value ->
-                val unsigned = value.toInt() and 0xff
-                append(hex[unsigned ushr 4])
-                append(hex[unsigned and 0x0f])
-            }
-        }
-    }
+    fun modelPathFingerprint(path: String): String =
+        SdxHashing.sha256Hex(File(path).absolutePath.toByteArray(StandardCharsets.UTF_8))
 
     fun reasonLabel(reason: Int): String = when (reason) {
         ApplicationExitInfo.REASON_CRASH_NATIVE -> "native crash"
@@ -261,6 +251,7 @@ internal object NativeOperationDiagnosticPolicy {
     ): ImportDiagnostic {
         val reason = exitEvidence?.let { reasonLabel(it.reason) }
         val expectedRuntimeRetirement = isExpectedRuntimeRetirement(attempt, exitEvidence)
+        val lowMemoryTermination = exitEvidence?.reason == ApplicationExitInfo.REASON_LOW_MEMORY
         val summary = when {
             expectedRuntimeRetirement ->
                 "The SDX runtime was retired during app restart while ${attempt.checkpoint.label}; the cached model remains resumable."
@@ -334,10 +325,12 @@ internal object NativeOperationDiagnosticPolicy {
                 ImportDiagnosticSeverity.ERROR
             },
             summary = summary,
-            remediation = if (expectedRuntimeRetirement) {
-                "Resume the cached model operation; the verified model, canonical SDZ, and device-driver cache remain reusable."
-            } else {
-                attempt.operation.remediation
+            remediation = when {
+                expectedRuntimeRetirement ->
+                    "Resume the cached model operation; the verified model, canonical SDZ, and device-driver cache remain reusable."
+                lowMemoryTermination ->
+                    "Close other apps or restart the device, then retry. The verified model and any completed cache artifacts remain saved, so retry does not download the model again."
+                else -> attempt.operation.remediation
             },
             technicalDetails = details
         )
@@ -999,7 +992,7 @@ internal object NativeOperationCrashRecovery {
         if (!directory.isDirectory && !directory.mkdirs()) {
             throw IOException("Could not create native tombstone directory: ${directory.absolutePath}")
         }
-        val sha256 = sha256Hex(bytes)
+        val sha256 = SdxHashing.sha256Hex(bytes)
         val suffix = if (truncated) "-truncated" else ""
         val file = File(
             directory,
@@ -1053,17 +1046,6 @@ internal object NativeOperationCrashRecovery {
         )
     }
 
-    private fun sha256Hex(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        val hex = "0123456789abcdef"
-        return buildString(digest.size * 2) {
-            digest.forEach { value ->
-                val unsigned = value.toInt() and 0xff
-                append(hex[unsigned ushr 4])
-                append(hex[unsigned and 0x0f])
-            }
-        }
-    }
 
     private fun binaryHexPrefix(bytes: ByteArray, maximumBytes: Int): String {
         if (bytes.isEmpty()) return "<empty>"

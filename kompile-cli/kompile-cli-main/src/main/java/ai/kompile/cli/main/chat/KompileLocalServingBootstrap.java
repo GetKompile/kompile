@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.utils.HashUtils;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
@@ -23,6 +24,7 @@ import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
+import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.cli.main.util.OSResolver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,6 +75,7 @@ public final class KompileLocalServingBootstrap {
     static final String PORT_PROPERTY = "kompile.chat.serving.port";
     static final String MODEL_ENV = "KOMPILE_CHAT_MODEL_PATH";
     static final String TOKENIZER_ENV = "KOMPILE_CHAT_TOKENIZER_PATH";
+    static final String MODEL_STAGE_DIR_ENV = "KOMPILE_MODEL_STAGE_DIR";
 
     private static final String HOST = "127.0.0.1";
     private static final int OUTPUT_TAIL_LIMIT = 80;
@@ -106,7 +109,8 @@ public final class KompileLocalServingBootstrap {
             String subprocessRunId,
             Path logFile,
             Path metaFile,
-            SubprocessLogWriter logWriter) implements AutoCloseable {
+            SubprocessLogWriter logWriter,
+            String watchdogId) implements AutoCloseable {
 
         public StartupResult(
                 String modelId,
@@ -118,7 +122,7 @@ public final class KompileLocalServingBootstrap {
                 Path argsFile,
                 Thread outputReader) {
             this(modelId, modelPath, tokenizerPath, baseUrl, launcher, process, argsFile,
-                    outputReader, null, null, null, null);
+                    outputReader, null, null, null, null, null);
         }
 
         void applyTo(ChatConfig config) {
@@ -128,6 +132,9 @@ public final class KompileLocalServingBootstrap {
 
         @Override
         public void close() {
+            if (watchdogId != null) {
+                LocalSubprocessWatchdog.get().deregister(watchdogId);
+            }
             stopProcess(process);
             if (outputReader != null) {
                 try {
@@ -160,7 +167,14 @@ public final class KompileLocalServingBootstrap {
 
     public static StartupResult ensureReady(ChatConfig config, int timeoutSeconds)
             throws BootstrapException {
+        return ensureReady(config, timeoutSeconds, Map.of());
+    }
+
+    static StartupResult ensureReady(
+            ChatConfig config, int timeoutSeconds, Map<String, Object> runtimeOptions)
+            throws BootstrapException {
         requireLocalProvider(config);
+        Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
         Path componentDirectory = componentDirectory();
         Path installHome = resolveInstallHome(componentDirectory);
         try {
@@ -169,7 +183,7 @@ public final class KompileLocalServingBootstrap {
                     System.getenv());
             return startResolved(
                     model, timeoutSeconds, componentDirectory,
-                    System.getProperties(), System.getenv(), Map.of(), Map.of());
+                    runtimeProperties(options), System.getenv(), childEnvironment(options), options);
         } catch (IOException e) {
             throw new BootstrapException(e.getMessage(), e);
         }
@@ -187,21 +201,33 @@ public final class KompileLocalServingBootstrap {
             Path tokenizerPath,
             Map<String, Object> runtimeOptions) throws BootstrapException {
         requireLocalProvider(config);
-        if (modelPath == null || !Files.isRegularFile(modelPath)) {
-            throw new BootstrapException("Resolved project model does not exist: " + modelPath);
-        }
         Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
-        return startResolved(
-                new ResolvedModel(
+        try {
+            return startResolved(
+                    resolveProjectModel(modelId, modelPath, tokenizerPath),
+                    timeoutSeconds,
+                    componentDirectory(),
+                    runtimeProperties(options),
+                    System.getenv(),
+                    childEnvironment(options),
+                    options);
+        } catch (IOException e) {
+            throw new BootstrapException(e.getMessage(), e);
+        }
+    }
+
+    static ResolvedModel resolveProjectModel(
+            String modelId, Path modelPath, Path tokenizerPath) throws IOException {
+        if (modelPath == null || !Files.exists(modelPath)) {
+            throw new IOException("Resolved project model does not exist: " + modelPath);
+        }
+        ResolvedModel resolved = Files.isDirectory(modelPath)
+                ? resolveLocalModel(modelPath, modelId)
+                : new ResolvedModel(
                         firstNonBlank(modelId, modelPath.getFileName().toString()),
-                        modelPath.toAbsolutePath().normalize(),
-                        tokenizerPath == null ? null : tokenizerPath.toAbsolutePath().normalize()),
-                timeoutSeconds,
-                componentDirectory(),
-                runtimeProperties(options),
-                System.getenv(),
-                childEnvironment(options),
-                options);
+                        modelPath.toAbsolutePath().normalize(), null);
+        return tokenizerPath == null ? resolved : new ResolvedModel(
+                resolved.modelId(), resolved.modelPath(), tokenizerPath.toAbsolutePath().normalize());
     }
 
     /**
@@ -243,6 +269,210 @@ public final class KompileLocalServingBootstrap {
         return properties;
     }
 
+    /**
+     * Cache marker naming the staged artifact of a GGUF source under the configured
+     * weight dtype. The SDZ records its graph as-converted, so a dtype change must
+     * produce a different file (and the GGUF mtime participates in the key).
+     */
+    static Path stagedSdzPath(Path source, String weightDtype,
+                              Map<String, String> environment) throws IOException {
+        String base = source.getFileName().toString().replaceFirst(
+                "(?i)\\.(gguf|ggml|safetensors|onnx|pb|h5|keras)$", "");
+        String dtype = weightDtype == null || weightDtype.isBlank()
+                ? "auto" : weightDtype.trim().toLowerCase(Locale.ROOT);
+        long stamp = Files.getLastModifiedTime(source).toMillis();
+        String configured = environment == null ? null : environment.get(MODEL_STAGE_DIR_ENV);
+        configured = configured == null || configured.isBlank() ? null : configured.trim();
+        if (configured == null) {
+            return source.resolveSibling(String.format("%s-%s-%d.sdz", base, dtype, stamp));
+        }
+        Path directory = Path.of(configured);
+        if (!directory.isAbsolute()) {
+            throw new IOException(MODEL_STAGE_DIR_ENV + " must be an absolute path: " + configured);
+        }
+        directory = directory.normalize();
+        Files.createDirectories(directory);
+        if (!Files.isDirectory(directory)) {
+            throw new IOException(MODEL_STAGE_DIR_ENV + " is not a directory: " + directory);
+        }
+        String sourceKey = HashUtils.sha256Hex(source.toAbsolutePath().normalize().toString())
+                .substring(0, 12);
+        return directory.resolve(String.format(
+                "%s-%s-%s-%d.sdz", base, sourceKey, dtype, stamp));
+    }
+
+    /**
+     * Ensure the model is a canonical SameDiff artifact before serving. A raw
+     * {@code .gguf} is converted ONCE by a short-lived child process which exits
+     * before serving launches — conversion heap/native memory is fully reclaimed
+     * and the serving child never runs the GGUF import + optimizer dup() pipeline.
+     * The staged SDZ is cached beside the GGUF by default, or under
+     * {@link #MODEL_STAGE_DIR_ENV} when a caller must keep the source immutable.
+     * The cache key includes source identity, mtime, and dtype; repeat launches
+     * skip conversion entirely.
+     */
+    static ResolvedModel ensureStagedModel(
+            ResolvedModel model,
+            Path installHome,
+            Properties properties,
+            Map<String, String> environment,
+            Map<String, Object> runtimeOptions) throws BootstrapException {
+        Path modelPath = model.modelPath();
+        String name = modelPath.getFileName().toString().toLowerCase(Locale.ROOT);
+        // Any convertible SOURCE format (gguf/ggml, safetensors, onnx, tensorflow/keras)
+        // gets staged to canonical SDZ. Already-canonical artifacts pass through.
+        boolean convertible = name.endsWith(".gguf") || name.endsWith(".ggml")
+                || name.endsWith(".safetensors") || name.endsWith(".onnx")
+                || name.endsWith(".pb") || name.endsWith(".h5") || name.endsWith(".keras");
+        if (!convertible || !Files.isRegularFile(modelPath)) {
+            return model;
+        }
+        String weightDtype = stringOption(runtimeOptions, "weightDtype", null);
+        Path staged;
+        try {
+            staged = stagedSdzPath(modelPath, weightDtype, environment);
+            if (isStagedArtifactValid(staged)) {
+                System.err.println("  Staged model (cached, validated): " + staged.getFileName());
+                return new ResolvedModel(model.modelId(), staged, model.tokenizerPath());
+            }
+            if (Files.exists(staged)) {
+                // Stale (converter-version change, truncated write, missing report).
+                // Delete so the fresh conversion below republishes atomically.
+                System.err.println("  Staged artifact stale or invalid — restaging");
+                Files.deleteIfExists(staged);
+                Files.deleteIfExists(staged.resolveSibling(staged.getFileName() + ".stage.json"));
+            }
+        } catch (IOException e) {
+            throw new BootstrapException("Failed to resolve staged artifact path: " + e.getMessage(), e);
+        }
+
+        System.err.println("  Converting to staged SameDiff archive (once, backend="
+                + stringOption(runtimeOptions, "conversionBackend", "cpu") + "): "
+                + staged.getFileName());
+        long start = System.currentTimeMillis();
+        runOnceConversion(modelPath, staged, weightDtype, installHome, properties, environment,
+                runtimeOptions);
+        System.err.printf("  Conversion completed in %ds; converter process exited%n",
+                (System.currentTimeMillis() - start) / 1000);
+        return new ResolvedModel(model.modelId(), staged, model.tokenizerPath());
+    }
+
+    /**
+     * Run the one-shot GGUF→SDZ converter ({@code GgufConvertMain} inside the serving
+     * jar) as a foreground child that terminates when done — no Spring/staging/web
+     * infrastructure, and the JVM exit reclaims all conversion memory. Failure is fatal
+     * for this launch: falling back to serving the raw GGUF would silently reintroduce
+     * the per-launch conversion + optimizer dup() pipeline.
+     */
+    private static void runOnceConversion(
+            Path gguf,
+            Path outputSdz,
+            String weightDtype,
+            Path installHome,
+            Properties properties,
+            Map<String, String> environment,
+            Map<String, Object> runtimeOptions) throws BootstrapException {
+        List<String> command = new ArrayList<>();
+        command.add(javaExecutable(properties).toString());
+        command.add("-Xmx" + firstNonBlank(property(properties, HEAP_PROPERTY), "8g"));
+        command.add("-Dfile.encoding=UTF-8");
+        command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
+        command.add("-cp");
+        command.add(servingJar(installHome).toString());
+        command.add("ai.kompile.app.subprocess.StagedConvertMain");
+        command.add("--input=" + gguf.toAbsolutePath().normalize());
+        command.add("--output=" + outputSdz.toAbsolutePath().normalize());
+        if (weightDtype != null && !weightDtype.isBlank()) {
+            command.add("--weight-dtype=" + weightDtype.trim());
+        }
+        // Conversion backend: cpu by default (conversion is I/O + dequantize work; GPU
+        // context init adds startup cost and nondeterminism under host memory pressure).
+        // MCP override via runtimeOptions.conversionBackend = cpu | gpu | auto.
+        command.add("--backend=" + stringOption(runtimeOptions, "conversionBackend", "cpu"));
+
+        Process process = null;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.redirectErrorStream(true);
+            builder.environment().putAll(environment);
+            process = builder.start();
+            List<String> tail = new ArrayList<>();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    tail.add(line);
+                    if (tail.size() > 40) tail.remove(0);
+                }
+            }
+            if (!process.waitFor(120, TimeUnit.MINUTES)) {
+                process.destroyForcibly();
+                throw new BootstrapException("GGUF staging conversion timed out", null);
+            }
+            if (process.exitValue() != 0 || !Files.isRegularFile(outputSdz)) {
+                throw new BootstrapException(
+                        "GGUF staging conversion failed (exit " + process.exitValue()
+                                + "): " + String.join("\n", tail), null);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BootstrapException("GGUF staging conversion interrupted", e);
+        } catch (IOException e) {
+            throw new BootstrapException("GGUF staging conversion failed: " + e.getMessage(), e);
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
+    }
+
+    private static Path servingJar(Path installHome) throws BootstrapException {
+        Path libJar = installHome.resolve("lib").resolve("kompile-model-serving.jar");
+        if (Files.isRegularFile(libJar)) {
+            return libJar;
+        }
+        throw new BootstrapException(
+                "kompile-model-serving.jar not found under " + installHome
+                        + " — required to stage GGUF models", null);
+    }
+
+    /**
+     * Cheap validation of a cached staged artifact before trusting it: non-empty SDZ
+     * plus a stage report whose converter version matches this deployment. The report
+     * is written by StagedConvertMain on every successful (atomic, post-validated)
+     * conversion, so its presence proves the artifact completed the full
+     * convert → optimize → save → reload-validate pipeline. A missing or
+     * version-mismatched report means the artifact predates a converter change and
+     * must be restaged — this is what keeps DL4J-side staging improvements from being
+     * shadowed by stale caches.
+     */
+    static boolean isStagedArtifactValid(Path staged) {
+        try {
+            if (!Files.isRegularFile(staged) || Files.size(staged) == 0) {
+                return false;
+            }
+            Path report = staged.resolveSibling(staged.getFileName() + ".stage.json");
+            if (!Files.isRegularFile(report)) {
+                return false;
+            }
+            String json = Files.readString(report);
+            return json.contains("\"stageFormatVersion\": \""
+                    + STAGE_FORMAT_VERSION + "\"");
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** Must match StagedConvertMain.STAGE_FORMAT_VERSION. */
+    private static final String STAGE_FORMAT_VERSION = "3";
+
+    private static Path javaExecutable(Properties properties) {
+        String configured = property(properties, JAVA_EXECUTABLE_PROPERTY);
+        return configured == null || configured.isBlank()
+                ? Path.of(JavaRuntimeLocator.javaExecutable())
+                : Path.of(configured);
+    }
+
     private static Map<String, String> childEnvironment(Map<String, Object> options) {
         Map<String, String> childEnvironment = new java.util.LinkedHashMap<>();
         Object environment = options.get("environment");
@@ -274,12 +504,27 @@ public final class KompileLocalServingBootstrap {
         List<String> outputTail = new ArrayList<>();
 
         try {
+            // Stage-once GGUF→SDZ: a raw .gguf model artifact is converted to a canonical
+            // SameDiff archive in a short-lived child process that EXITS before serving
+            // starts (conversion memory is fully reclaimed). The serving child then takes
+            // the native SameDiff.load fast path — never the per-launch GGUF import +
+            // optimizer dup() round-trip. The staged artifact is cached next to the GGUF
+            // unless the caller supplies an isolated model-stage directory.
+            ResolvedModel servingModel = ensureStagedModel(
+                    model, installHome, properties, environment, runtimeOptions);
             LauncherArtifact launcher = resolveLauncher(
                     installHome, componentDirectory, properties, environment);
             int port = resolvePort(properties, runtimeOptions);
             String host = stringOption(runtimeOptions, "host", HOST);
             URI baseUrl = URI.create("http://" + host + ":" + port);
-            argsFile = writeServingArgs(model, port, runtimeOptions);
+            // A staged (already-optimized) SDZ must skip the load-time optimizer:
+            // re-optimizing it only triggers the dup() round-trip for zero benefit.
+            if (!servingModel.modelPath().equals(model.modelPath())
+                    && !runtimeOptions.containsKey("optimizerEnabled")) {
+                runtimeOptions = new java.util.LinkedHashMap<>(runtimeOptions);
+                runtimeOptions.put("optimizerEnabled", Boolean.FALSE);
+            }
+            argsFile = writeServingArgs(servingModel, port, runtimeOptions);
 
             List<String> command = buildCommand(launcher, argsFile, properties);
             ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -292,7 +537,7 @@ public final class KompileLocalServingBootstrap {
             logWriter = new SubprocessLogWriter("model-serving", subprocessRunId);
             logWriter.putMetadata("processType", "model-serving");
             logWriter.putMetadata("modelId", model.modelId());
-            logWriter.putMetadata("modelPath", model.modelPath().toString());
+            logWriter.putMetadata("modelPath", servingModel.modelPath().toString());
             logWriter.putMetadata("launcher", launcher.path().toString());
             logWriter.putMetadata("streamMode", "COMBINED");
             logWriter.putMetadata("initialProjectRoot", projectRoot);
@@ -302,25 +547,31 @@ public final class KompileLocalServingBootstrap {
             outputReader = drainOutput(process, outputTail, logWriter);
 
             waitForReady(
-                    process, baseUrl, model.modelId(), Math.max(1, timeoutSeconds), outputTail);
+                    process, baseUrl, servingModel.modelId(), Math.max(1, timeoutSeconds), outputTail);
 
-            System.out.println("Using Kompile's standalone model-serving subprocess:");
-            System.out.println("  Runtime: " + launcher.path());
-            System.out.println("  Model: " + model.modelPath());
-            System.out.println("  Endpoint: " + baseUrl);
+            System.err.println("Using Kompile's standalone model-serving subprocess:");
+            System.err.println("  Runtime: " + launcher.path());
+            System.err.println("  Model: " + servingModel.modelPath());
+            System.err.println("  Endpoint: " + baseUrl);
             if (model.tokenizerPath() != null) {
-                System.out.println("  Tokenizer: " + model.tokenizerPath());
+                System.err.println("  Tokenizer: " + model.tokenizerPath());
             } else {
-                System.out.println("  Tokenizer: model-owned / GGUF embedded");
+                System.err.println("  Tokenizer: model-owned / GGUF embedded");
             }
 
+            String watchdogId = "serving-" + subprocessRunId;
+            LocalSubprocessWatchdog.get().register(
+                    watchdogId, process.pid(), "model-serving",
+                    "serving child for model " + servingModel.modelId());
+
             return new StartupResult(
-                    model.modelId(), model.modelPath(), model.tokenizerPath(), baseUrl,
+                    servingModel.modelId(), servingModel.modelPath(), servingModel.tokenizerPath(), baseUrl,
                     launcher, process, argsFile, outputReader,
                     subprocessRunId,
                     logWriter.getLogFile().toPath(),
                     logWriter.getMetaFile().toPath(),
-                    logWriter);
+                    logWriter,
+                    watchdogId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             stopProcess(process);
@@ -552,10 +803,85 @@ public final class KompileLocalServingBootstrap {
         putOptionalBoolean(root, options, "dspEnabled");
         putOptionalBoolean(root, options, "optimizerEnabled");
         putOptionalBoolean(root, options, "optimizerFp16");
+        // Model/runtime knobs the serving child supports but never exposed on the local
+        // path (the staging execution service has always had these). Null = model-owned
+        // defaults; an explicit value overrides.
+        putOptionalString(root, options, "chatTemplate");
+        putOptionalString(root, options, "kvCacheType");
+        putOptionalInteger(root, options, "maxKvCacheLength");
+        putOptionalInteger(root, options, "maxPrefillLength");
+        putOptionalBoolean(root, options, "continuationEnabled");
+        putOptionalInteger(root, options, "continuationChunkTokens");
+        putOptionalBoolean(root, options, "prefixCacheEnabled");
+        putOptionalLong(root, options, "prefixCacheMaxBytes");
+        putOptionalInteger(root, options, "prefixCacheBlockSize");
+        JsonNode deviceLimits = MAPPER.valueToTree(options.get("deviceMemoryLimitsBytes"));
+        if (!deviceLimits.isNull()) {
+            if (!deviceLimits.isArray() || deviceLimits.isEmpty()) {
+                throw new IllegalArgumentException("deviceMemoryLimitsBytes must be a nonempty array");
+            }
+            for (JsonNode limit : deviceLimits) {
+                if (!limit.isIntegralNumber() || !limit.canConvertToLong() || limit.longValue() <= 0) {
+                    throw new IllegalArgumentException("deviceMemoryLimitsBytes must contain positive 64-bit integers");
+                }
+            }
+        }
+        root.set("deviceMemoryLimitsBytes", deviceLimits);
+        // Managed ND4J environment config (thread counts, DSP capture-OOM retries,
+        // memory ceilings) — previously hardcoded null on this path, so the managed
+        // config file never reached the serving child.
+        root.put("nd4jConfigJson", managedNd4jConfigJson(options));
 
         Path argsFile = Files.createTempFile("kompile-chat-serving-", ".json");
         MAPPER.writeValue(argsFile.toFile(), root);
         return argsFile;
+    }
+
+    /**
+     * Load the managed {@code nd4j-environment-config.json} (project config dir first,
+     * then the dist-wide one) and return it as a JSON string for the serving child.
+     * An explicit {@code nd4jConfigJson} runtime option wins. Returns null when no
+     * config file exists — the child then uses its own defaults.
+     */
+    private static String managedNd4jConfigJson(Map<String, Object> options) {
+        String explicit = stringOption(options, "nd4jConfigJson", null);
+        if (explicit != null) {
+            return explicit;
+        }
+        String configJson = System.getProperty("kompile.nd4j.config.json");
+        if (configJson != null && !configJson.isBlank()) {
+            return configJson;
+        }
+        for (Path candidate : java.util.List.of(
+                kompileHomeConfig().resolve("nd4j-environment-config.json"),
+                Path.of(System.getProperty("user.home"), ".kompile",
+                        "config", "nd4j-environment-config.json"))) {
+            try {
+                if (Files.isRegularFile(candidate) && Files.size(candidate) > 0) {
+                    return Files.readString(candidate);
+                }
+            } catch (IOException ignored) {
+                // Try the next candidate; absence is normal.
+            }
+        }
+        return null;
+    }
+
+    private static Path kompileHomeConfig() {
+        String distHome = System.getProperty("kompile.dist.home");
+        Path root = distHome != null && !distHome.isBlank()
+                ? Path.of(distHome) : Path.of(System.getProperty("user.home"), ".kompile");
+        return root.resolve("config");
+    }
+
+    private static void putOptionalString(
+            ObjectNode root, Map<String, Object> options, String key) {
+        String value = stringOption(options, key, null);
+        if (value == null) {
+            root.putNull(key);
+        } else {
+            root.put(key, value);
+        }
     }
 
     private static int integerOption(
@@ -608,6 +934,16 @@ public final class KompileLocalServingBootstrap {
             root.putNull(key);
         } else {
             root.put(key, value.intValue());
+        }
+    }
+
+    private static void putOptionalLong(
+            ObjectNode root, Map<String, Object> options, String key) {
+        Number value = numericOption(options, key);
+        if (value == null) {
+            root.putNull(key);
+        } else {
+            root.put(key, value.longValue());
         }
     }
 

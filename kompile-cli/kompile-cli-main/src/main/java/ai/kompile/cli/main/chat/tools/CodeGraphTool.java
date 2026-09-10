@@ -17,7 +17,11 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.tools.grounding.CodeGraphLearningRunner;
 import ai.kompile.cli.main.codeindex.*;
+import ai.kompile.project.KompileCodingProject;
+import ai.kompile.project.KompileProjectManifest;
+import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -39,9 +43,8 @@ import java.util.Set;
  * CLI tool for building, searching, and navigating the code knowledge graph.
  * Wraps the /api/code-indexer/graph/* REST endpoints.
  * <p>
- * Uses {@link KompileBackendClient} for auto-detection, reconnection,
- * and configurable timeouts. Falls back to local index when no backend
- * is available.
+ * Uses the folder-local index unless an explicit server URL is supplied.
+ * Explicit remote requests never fall back to a different local dataset.
  */
 public class CodeGraphTool implements CliTool {
 
@@ -49,9 +52,10 @@ public class CodeGraphTool implements CliTool {
     private static final Set<String> DIRECTORY_BOUND_ACTIONS = Set.of(
             "build", "add_directory", "remove_directory", "list_directories");
 
-    // Actions that always execute against the local index even when a backend is up.
+    // Actions unavailable on the remote code-graph API.
     private static final Set<String> LOCAL_ALWAYS_ACTIONS = Set.of(
-            "impact", "ranked_search", "blended_search", "signatures", "health", "routing");
+            "impact", "ranked_search", "blended_search", "signatures", "health", "routing",
+            "learn", "learning_config_get", "learning_config_update");
 
     // Read actions preceded by a throttled incremental refresh of the local index
     // ('health'/'stats'/'connectivity' intentionally unrefreshed).
@@ -61,11 +65,13 @@ public class CodeGraphTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public CodeGraphTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -81,7 +87,10 @@ public class CodeGraphTool implements CliTool {
                 "signatures (token-compressed file views — 70-95% reduction), " +
                 "health (index quality score 0-100 with grade), " +
                 "routing (classify files into fast/balanced/powerful complexity tiers), " +
-                "stats, connectivity, add_directory, remove_directory, list_directories.";
+                "stats, connectivity, add_directory, remove_directory, list_directories, " +
+                "learn (explicit KGE/PSL/MEBN pass), learning_config_get, learning_config_update. " +
+                "No explicit URL uses the folder-local index; explicit remote requests never fall back locally. " +
+                "Analysis and learning actions are local-only.";
     }
 
     @Override
@@ -95,12 +104,18 @@ public class CodeGraphTool implements CliTool {
         action.put("type", "string");
         action.put("description", "Action: 'build', 'search', 'symbol', 'file', 'impact', " +
                 "'ranked_search', 'signatures', 'health', 'routing', 'stats', 'connectivity', " +
-                "'add_directory', 'remove_directory', 'list_directories'");
+                "'add_directory', 'remove_directory', 'list_directories', 'learn', " +
+                "'learning_config_get', 'learning_config_update'");
         action.putArray("enum")
                 .add("build").add("search").add("symbol").add("file").add("impact")
                 .add("ranked_search").add("signatures").add("health").add("routing")
                 .add("stats").add("connectivity").add("add_directory")
-                .add("remove_directory").add("list_directories");
+                .add("remove_directory").add("list_directories").add("learn")
+                .add("learning_config_get").add("learning_config_update");
+
+        ObjectNode configJson = props.putObject("config_json");
+        configJson.put("type", "string");
+        configJson.put("description", "Partial JSON object for action='learning_config_update'");
 
         ObjectNode dirPath = props.putObject("directory_path");
         dirPath.put("type", "string");
@@ -186,34 +201,33 @@ public class CodeGraphTool implements CliTool {
         // Default directory_path to current working directory if not specified
         String cwd = context.getWorkingDirectory().toAbsolutePath().toString();
 
-        boolean backendUp = backend.isAvailable();
-        String projectId = resolveProjectId(action, params, context, backendUp);
-
-        // Self-heal the local index when this call will be answered from it:
-        // background maintenance keeps it fresh; reads only join in-flight work.
-        if (REFRESHABLE_ACTIONS.contains(action)
-                && (!backendUp || LOCAL_ALWAYS_ACTIONS.contains(action))
-                && params.path("auto_refresh").asBoolean(true)) {
-            BackgroundIndexService.getInstance().prepareForRead(new LocalCodeIndexer(), projectId);
+        if (remoteConfigured && LOCAL_ALWAYS_ACTIONS.contains(action)) {
+            return ToolResult.error("Action '" + action + "' is local-only and cannot operate on the " +
+                    "explicitly configured remote dataset. Remove --url to use the folder-local index " +
+                    "and learning configuration (a separate dataset).");
         }
+        String projectId = resolveProjectId(action, params, context);
 
-        if (!backendUp) {
-            // No backend reachable — fall back to local index
-            return executeLocal(action, params, projectId, cwd, context);
+        if (!remoteConfigured) {
+            String refreshNote = null;
+            if (REFRESHABLE_ACTIONS.contains(action) && params.path("auto_refresh").asBoolean(true)) {
+                refreshNote = BackgroundIndexService.getInstance()
+                        .prepareForRead(new LocalCodeIndexer(), projectId);
+            }
+            ToolResult result = executeLocal(action, params, projectId, cwd, context);
+            return withBackend(result, "folder-local", refreshNote);
         }
 
         try {
-            return switch (action) {
+            if (!backend.isAvailable("/api/code-indexer/graph/search")) {
+                return ToolResult.error("The explicitly configured remote code graph service is unavailable. " +
+                        "No local fallback was attempted. Remove --url to use the separate folder-local index.");
+            }
+            ToolResult result = switch (action) {
                 case "build" -> doBuild(params, projectId, cwd);
                 case "search" -> doSearch(params, projectId);
                 case "symbol" -> doSymbol(params, projectId);
                 case "file" -> doFile(params, projectId);
-                case "impact" -> doImpactLocal(params, projectId, cwd);
-                case "ranked_search" -> doRankedSearchLocal(params, projectId, cwd);
-                case "blended_search" -> doBlendedSearchLocal(params, projectId, cwd);
-                case "signatures" -> doSignaturesLocal(params, projectId, cwd);
-                case "health" -> doHealthLocal(params, projectId, cwd);
-                case "routing" -> doRoutingLocal(params, projectId, cwd);
                 case "stats" -> doStats(projectId);
                 case "connectivity" -> doConnectivity(projectId);
                 case "add_directory" -> doAddDirectory(params, projectId, cwd);
@@ -222,37 +236,48 @@ public class CodeGraphTool implements CliTool {
                 default -> ToolResult.error("Unknown action: " + action +
                         ". Use 'build', 'search', 'symbol', 'file', 'impact', 'ranked_search', " +
                         "'signatures', 'health', 'routing', 'stats', 'connectivity', " +
-                        "'add_directory', 'remove_directory', or 'list_directories'.");
+                        "'add_directory', 'remove_directory', 'list_directories', 'learn', " +
+                        "'learning_config_get', or 'learning_config_update'.");
             };
+            return withBackend(result, "remote", null);
         } catch (ConnectException e) {
-            // Backend went down — KompileBackendClient already tried reconnection, fall back to local
-            return executeLocal(action, params, projectId, cwd, context);
+            return ToolResult.error("Explicit remote code graph connection failed; no local fallback: " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
-            return ToolResult.error("Code graph request timed out. Try a more specific query.");
+            return ToolResult.error("Explicit remote code graph timed out; no local fallback. Try a more specific query.");
         } catch (Exception e) {
-            return ToolResult.error("Code graph error: " + e.getMessage());
+            return ToolResult.error("Explicit remote code graph error; no local fallback: " + e.getMessage());
         }
+    }
+
+    private ToolResult withBackend(ToolResult result, String backendName, String refreshNote) {
+        Map<String, Object> metadata = new java.util.LinkedHashMap<>(result.getMetadata());
+        metadata.put("backend", backendName);
+        String output = "[backend: " + backendName + "]\n" + result.getOutput();
+        if (refreshNote != null && !refreshNote.isBlank()) {
+            output += "\n" + refreshNote;
+        }
+        return new ToolResult(result.getTitle(), output, metadata, result.isError());
     }
 
     /**
      * Resolve the effective project id. Query actions use
      * {@link ProjectIdResolver} (registration → indexed root → cwd name);
      * directory-management actions keep their legacy raw-or-'default'
-     * behavior. Backend-bound queries preserve the legacy {@code "default"}
-     * bucket when nothing authoritative matched.
+     * behavior. Backend availability does not change project identity.
      */
-    private String resolveProjectId(String action, JsonNode params, ToolContext context,
-                                    boolean backendUp) {
+    private String resolveProjectId(String action, JsonNode params, ToolContext context) {
         String raw = params.path("project_id").asText("");
+        if ("build".equals(action) || "add_directory".equals(action)) {
+            String directory = params.path("directory_path").asText("");
+            Path root = directory.isBlank()
+                    ? context.getWorkingDirectory() : Path.of(directory).toAbsolutePath();
+            return ProjectIdResolver.resolve(raw, root).projectId();
+        }
         if (DIRECTORY_BOUND_ACTIONS.contains(action)) {
             return raw.isEmpty() ? "default" : raw;
         }
         ProjectIdResolver.Resolution resolution =
                 ProjectIdResolver.resolve(raw, context.getWorkingDirectory());
-        boolean backendBound = backendUp && !LOCAL_ALWAYS_ACTIONS.contains(action);
-        if (backendBound && "cwd-name".equals(resolution.source())) {
-            return "default";
-        }
         return resolution.projectId();
     }
 
@@ -281,6 +306,8 @@ public class CodeGraphTool implements CliTool {
         sb.append("- **Files processed**: ").append(result.path("filesProcessed").asInt()).append("\n");
         sb.append("- **Entities found**: ").append(result.path("entitiesFound").asInt()).append("\n");
         sb.append("- **Relations created**: ").append(result.path("relationsCreated").asInt()).append("\n");
+        sb.append("- **Folder-local graph**: not updated by the managed code-graph build endpoint; ")
+                .append("use local_code_index action='index' when folder-local graph_search is required\n");
         if (result.has("connectivityEdgesAdded")) {
             sb.append("- **Connectivity edges added**: ").append(result.path("connectivityEdgesAdded").asInt()).append("\n");
         }
@@ -627,12 +654,18 @@ public class CodeGraphTool implements CliTool {
                                     params.path("include_patterns").asText(null),
                                     params.path("exclude_patterns").asText(null),
                                     ProgressPrintStream.from(context));
+                    LocalCodeKGraphPublisher.ProjectionResult projection =
+                            LocalCodeKGraphPublisher.publish(Path.of(dirPath), projectId,
+                                    params.path("include_patterns").asText(null),
+                                    params.path("exclude_patterns").asText(null));
                     StringBuilder sb = new StringBuilder();
                     sb.append("Codebase indexed locally with graph\n\n");
                     sb.append("- **Project**: ").append(result.projectId()).append("\n");
                     sb.append("- **Root**: ").append(result.rootPath()).append("\n");
                     sb.append("- **Files processed**: ").append(result.filesProcessed()).append("\n");
                     sb.append("- **Entities found**: ").append(result.entitiesFound()).append("\n");
+                    sb.append("- **Knowledge base**: ").append(projection.knowledgeBaseId()).append("\n");
+                    sb.append("- **KGraph**: ").append(projection.graphPath()).append("\n");
                     if (result.errors() > 0) sb.append("- **Errors**: ").append(result.errors()).append("\n");
 
                     // Report relation counts from the graph
@@ -654,8 +687,17 @@ public class CodeGraphTool implements CliTool {
                         result.languageCounts().forEach((lang, count) ->
                                 sb.append("  - ").append(lang).append(": ").append(count).append("\n"));
                     }
-                    yield ToolResult.success("code_index: " + dirPath, sb.toString(),
-                            Map.of("projectId", projectId, "filesProcessed", result.filesProcessed()));
+                    // Opt-in learning pass (KGE + PSL/MEBN) over the projected
+                    // graph so ask_graph_* tools fuse real signals on code.
+                    String learningStatus = runLearningIfTriggered(
+                            Path.of(dirPath), projection.graphPath(), "build", sb);
+                    Map<String, Object> data = new java.util.HashMap<>();
+                    data.put("projectId", projectId);
+                    data.put("filesProcessed", result.filesProcessed());
+                    data.put("knowledgeBase", projection.knowledgeBaseId());
+                    data.put("graphPath", projection.graphPath().toString());
+                    data.put("learningStatus", learningStatus);
+                    yield ToolResult.success("code_index: " + dirPath, sb.toString(), data);
                 }
                 case "search" -> {
                     String query = params.path("query").asText("");
@@ -920,13 +962,150 @@ public class CodeGraphTool implements CliTool {
                 case "signatures" -> doSignaturesLocal(params, projectId, cwd);
                 case "health" -> doHealthLocal(params, projectId, cwd);
                 case "routing" -> doRoutingLocal(params, projectId, cwd);
+                case "learn" -> doLearnLocal(params, projectId, cwd);
+                case "learning_config_get" -> doLearningConfigGet(cwd);
+                case "learning_config_update" -> doLearningConfigUpdate(params, cwd);
                 case "remove_directory" -> doRemoveDirectoryLocal(params, projectId);
                 default -> ToolResult.error("Unknown action: '" + action + "'. " +
                         "Supported local actions: build, search, ranked_search, blended_search, signatures, " +
-                        "impact, health, routing, stats, list_directories, symbol, file, connectivity.");
+                        "impact, health, routing, stats, list_directories, symbol, file, connectivity, learn, " +
+                        "learning_config_get, learning_config_update.");
             };
         } catch (Exception e) {
             return ToolResult.error("Local code index error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Run the opt-in learning pass (KGE + PSL/MEBN) over the projected code
+     * graph when the user config triggers on the given trigger point.
+     * Appends a learned-layers section to {@code sb}; never fails the build —
+     * learning problems degrade to a warning line in the tool result.
+     */
+    private String runLearningIfTriggered(
+            Path projectRoot, Path graphPath, String trigger, StringBuilder sb) {
+        CodeGraphReasoningConfig config = CodeGraphReasoningConfig.loadEffective(projectRoot);
+        if (!config.triggersOn(trigger)) {
+            return "DISABLED";
+        }
+        try {
+            CodeGraphLearningRunner runner = new CodeGraphLearningRunner();
+            CodeGraphLearningRunner.LearningSummary summary =
+                    runner.runAutomatic(graphPath, config, "local_code_index");
+            appendLearningSummary(sb, summary, config);
+            return summary.status();
+        } catch (Exception e) {
+            sb.append("\n⚠️ Learning pass failed (graph build unaffected):\n")
+              .append("  - **Error**: ").append(e.getMessage()).append("\n");
+            return "FAILED: " + e.getMessage();
+        }
+    }
+
+    /** Renders the learned-layers section of the build result. */
+    private static void appendLearningSummary(
+            StringBuilder sb, CodeGraphLearningRunner.LearningSummary summary,
+            CodeGraphReasoningConfig config) {
+        sb.append("\nLearning (hybrid reasoner):\n");
+        sb.append("  - **Status**: ").append(summary.status()).append("\n");
+        if ("COMPLETED".equals(summary.status())) {
+            sb.append("  - **KGE embeddings**: ").append(summary.kge() ? "trained" : "off").append("\n");
+            sb.append("  - **PSL rules**: ").append(summary.pslRules()).append("\n");
+            sb.append("  - **MEBN fragments**: ").append(summary.mebnFragments()).append("\n");
+            sb.append("  - **PSL/MEBN**: trained\n");
+        } else if ("SKIPPED_BELOW_MIN_GRAPH_SIZE".equals(summary.status())) {
+            sb.append("  - **Reason**: graph below minGraphSize (")
+              .append(config.getMinGraphSize()).append(")\n");
+        } else if ("SKIPPED_UNCHANGED".equals(summary.status())) {
+            sb.append("  - **Reason**: unchanged graph/config receipt\n");
+        } else if ("SUPERSEDED".equals(summary.status())) {
+            sb.append("  - **Reason**: graph changed while learning; no publication\n");
+        }
+    }
+
+    /**
+     * Explicit manual learning trigger via {@code code_graph action=learn}.
+     * Respects {@code minGraphSize} but ignores the triggers list (manual
+     * means now). Reports the same learned-layers section.
+     */
+    private ToolResult doLearnLocal(JsonNode params, String projectId, String cwd) {
+        Path indexDir = LocalCodeIndexer.getIndexDir(projectId);
+        if (!Files.exists(indexDir.resolve("index.db"))) {
+            return ToolResult.error("No index found for project '" + projectId +
+                    "'. Run action='build' first.");
+        }
+        Path projectRoot = Path.of(cwd);
+        Path graphPath = resolveGraphPath(projectRoot);
+        if (graphPath == null) {
+            return ToolResult.error("No projected KGraph found. Run action='build' first.");
+        }
+        try {
+            CodeGraphReasoningConfig config = CodeGraphReasoningConfig.loadEffective(projectRoot);
+            StringBuilder sb = new StringBuilder();
+            CodeGraphLearningRunner runner = new CodeGraphLearningRunner();
+            CodeGraphLearningRunner.LearningSummary summary = runner.run(graphPath, config);
+            appendLearningSummary(sb, summary, config);
+            return ToolResult.success("learn: " + projectId, sb.toString());
+        } catch (Exception e) {
+            return ToolResult.error("Learning pass failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult doLearningConfigGet(String cwd) {
+        try {
+            CodeGraphReasoningConfig config =
+                    CodeGraphReasoningConfig.loadEffective(Path.of(cwd));
+            String source = config.getLoadedFrom() == null
+                    ? "built-in defaults" : config.getLoadedFrom().toString();
+            return ToolResult.success("code graph learning config",
+                    "Loaded from: " + source + "\n\n" + config.toJson(),
+                    Map.of("source", source, "enabled", config.isEnabled(),
+                            "kgeTraining", config.isKgeTraining()));
+        } catch (Exception e) {
+            return ToolResult.error("Could not read code graph learning config: " + e.getMessage());
+        }
+    }
+
+    private ToolResult doLearningConfigUpdate(JsonNode params, String cwd) {
+        String json = params.path("config_json").asText("");
+        if (json.isBlank()) {
+            return ToolResult.error("config_json is required for learning_config_update");
+        }
+        try {
+            CodeGraphReasoningConfig config =
+                    CodeGraphReasoningConfig.updateProject(Path.of(cwd), json);
+            return ToolResult.success("code graph learning config updated",
+                    "Saved to: " + config.getLoadedFrom() + "\n\n" + config.toJson(),
+                    Map.of("source", config.getLoadedFrom().toString(),
+                            "enabled", config.isEnabled(),
+                            "kgeTraining", config.isKgeTraining()));
+        } catch (Exception e) {
+            return ToolResult.error("Could not update code graph learning config: " + e.getMessage());
+        }
+    }
+
+    /** Locate the projected graph for this project from the coding-project metadata. */
+    private static Path resolveGraphPath(Path projectRoot) {
+        try {
+            KompileProjectStore store = new KompileProjectStore();
+            Path root = store.findProjectRoot(projectRoot).orElse(projectRoot);
+            KompileProjectManifest manifest = store.load(root);
+            if (manifest == null) {
+                return null;
+            }
+            KompileCodingProject codingProject = manifest.getCodingProjects().stream()
+                    .filter(cp -> root.startsWith(Path.of(cp.getRootPath()).toAbsolutePath().normalize()))
+                    .findFirst()
+                    .orElse(null);
+            if (codingProject == null) {
+                return null;
+            }
+            String relative = codingProject.getMetadata().get("graphPath");
+            if (relative == null || relative.isBlank()) {
+                return null;
+            }
+            return root.resolve(relative).normalize();
+        } catch (Exception e) {
+            return null;
         }
     }
 

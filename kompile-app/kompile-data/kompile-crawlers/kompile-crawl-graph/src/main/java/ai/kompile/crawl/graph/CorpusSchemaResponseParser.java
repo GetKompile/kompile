@@ -24,11 +24,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 final class CorpusSchemaResponseParser {
 
@@ -128,7 +126,7 @@ final class CorpusSchemaResponseParser {
             return definitions;
         }
         List<Object> normalized = new ArrayList<>(values.size());
-        Set<String> seenNames = new LinkedHashSet<>();
+        Map<String, String> seenClassifications = new LinkedHashMap<>();
         for (Object value : values) {
             Map<String, Object> copy = new LinkedHashMap<>();
             if (value instanceof String name) {
@@ -144,9 +142,26 @@ final class CorpusSchemaResponseParser {
                 normalized.add(value);
                 continue;
             }
+            canonicalizeOptionalTypeField(copy, "parentType");
+            canonicalizeOptionalTypeField(copy, "connectionFamily");
             Object canonicalName = copy.get(nameField);
-            if (canonicalName != null && !seenNames.add(canonicalName.toString())) {
-                continue;
+            if (canonicalName != null) {
+                String classificationField = "label".equals(nameField)
+                        ? "parentType" : "connectionFamily";
+                Object classification = copy.get(classificationField);
+                String normalizedClassification = classification == null
+                        ? null : classification.toString();
+                String name = canonicalName.toString();
+                if (seenClassifications.containsKey(name)) {
+                    String previous = seenClassifications.get(name);
+                    if (!java.util.Objects.equals(previous, normalizedClassification)) {
+                        throw new IllegalArgumentException(kind + " " + canonicalName
+                                + " has conflicting " + classificationField + " values: "
+                                + previous + " and " + normalizedClassification);
+                    }
+                    continue;
+                }
+                seenClassifications.put(name, normalizedClassification);
             }
             if (!copy.containsKey("description") || copy.get("description") == null
                     || copy.get("description").toString().isBlank()) {
@@ -155,6 +170,13 @@ final class CorpusSchemaResponseParser {
             normalized.add(copy);
         }
         return normalized;
+    }
+
+    private static void canonicalizeOptionalTypeField(Map<String, Object> definition, String field) {
+        Object value = definition.get(field);
+        if (value != null && !value.toString().isBlank()) {
+            definition.put(field, canonicalSchemaName(value.toString()));
+        }
     }
 
     private static String canonicalSchemaName(String value) {

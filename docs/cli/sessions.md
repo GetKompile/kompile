@@ -14,17 +14,32 @@ kompile session search --query="authentication"   # Search across sessions
 
 ```bash
 # Resume a specific session
-kompile chat --resume --session-id=<id>
+kompile chat --resume <id>
 
 # Browse and pick a session to resume
 kompile resume
 
-# Resume all tracked sessions in new terminal windows
-kompile resume-all --agent=claude-code
-kompile resume-all --dry-run                      # Preview what would resume
-kompile resume-all --list                         # List resumable sessions
-kompile resume-all --prune                        # Remove stale sessions
-kompile resume-all --status                       # Show session status
+# Restore exited or crash-detected chats in new terminal windows
+kompile resume-all                                # Configured recent limit (default: 10)
+kompile resume-all --list                         # Exact sessions the batch would launch
+kompile resume-all --dry-run                      # Preview commands without launching
+kompile resume-all --recent 5                     # One-off limit
+kompile resume-all --active-within 30             # All sessions active in the last 30 minutes
+kompile resume-all --all                          # Every resumable tracked chat
+kompile resume-all --set-recent 20                # Persist a new default limit
+kompile resume-all --prune 30                     # Remove entries older than 30 days
+kompile resume-all --status                       # Show registry and terminal status
+
+# The same batch action is visible inside standard chat
+/resume-all --dry-run
+/resume-all --recent 5
+
+# Or open /resume and enter `resume-all --dry-run` in the resume browser.
+# Running chats are excluded; dead-PID entries become resumable automatically.
+
+# Repair stuck locks after a bad/corrupt shutdown
+kompile resume-all --unlock <session-id>           # Force one stuck session back to resumable
+kompile resume-all --unlock-all                    # Repair abandoned resume claims + dead-PID rows
 ```
 
 ## Import from external providers

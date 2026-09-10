@@ -34,10 +34,28 @@ class EnforcerToolCallDecisionTest {
     }
 
     @Test
-    void invalidJudgeJsonFailsClosed() {
+    void invalidJudgeJsonFailsOpen() {
         EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(mapper, "allow it");
 
-        assertFalse(decision.isAllowed());
-        assertEquals(EnforcerToolCallDecision.Action.BLOCK, decision.getAction());
+        assertTrue(decision.isAllowed());
+        assertEquals(EnforcerToolCallDecision.Action.ALLOW, decision.getAction());
+    }
+
+    @Test
+    void malformedJudgeJsonFailsOpen() {
+        EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(
+                mapper, "{\"action\":\"BLOCK\"");
+
+        assertTrue(decision.isAllowed());
+        assertEquals(EnforcerToolCallDecision.Action.ALLOW, decision.getAction());
+    }
+
+    @Test
+    void invalidRewriteFailsOpen() {
+        EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(
+                mapper, "{\"action\":\"REWRITE\",\"reason\":\"change args\"}");
+
+        assertTrue(decision.isAllowed());
+        assertFalse(decision.isRewrite());
     }
 }

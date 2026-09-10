@@ -31,6 +31,7 @@ import org.springframework.web.client.RestTemplate;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -157,6 +158,10 @@ class GraphReasoningQueryToolTest {
                     "compactHint must advertise the folder-scoped local default");
             assertTrue(hint.contains("optional remote/legacy"),
                     "compactHint must describe factSheetId only as an optional compatibility override");
+            for (JsonNode operation : new GraphReasoningQueryTool((String) null, om)
+                    .parameterSchema().path("properties").path("operation").path("enum")) {
+                assertTrue(hint.contains(operation.asText()), operation.asText());
+            }
         }
 
         @Test
@@ -186,6 +191,13 @@ class GraphReasoningQueryToolTest {
             GraphReasoningQueryTool tool = new GraphReasoningQueryTool((String) null, om);
             JsonNode props = tool.parameterSchema().path("properties");
             assertFalse(props.path("operation").isMissingNode());
+            JsonNode values = props.path("operation").path("enum");
+            assertTrue(values.isArray());
+            assertEquals(List.of(
+                            "CAPABILITIES", "OVERVIEW", "SCHEMA", "SEARCH", "RELATIONS",
+                            "DESCRIBE", "NEIGHBORS", "PATH", "TIMELINE", "FACTS", "SIMILAR",
+                            "VERIFY", "WHY", "WHY_NOT", "RANK", "ASSETS", "ARTIFACT"),
+                    om.convertValue(values, List.class));
         }
 
         @Test
@@ -466,6 +478,7 @@ class GraphReasoningQueryToolTest {
             assertTrue(tr.getOutput().contains("Jordan Lee"), "must render first entity");
             assertTrue(tr.getOutput().contains("PERSON"),     "must render entity type");
             assertTrue(tr.getOutput().contains("Alex Jordan"), "must render second entity");
+            assertTrue(tr.getOutput().contains("id=e1"), "must expose stable id for follow-up queries");
         }
 
         @Test

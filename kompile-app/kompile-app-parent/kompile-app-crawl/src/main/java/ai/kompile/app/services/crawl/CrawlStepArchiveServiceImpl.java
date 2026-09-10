@@ -87,6 +87,9 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
             ArchiveManifest manifest = readOrCreateManifest(archiveRoot, job);
             manifest.setUpdatedAt(Instant.now().toString());
             manifest.setProgressSnapshot(safeSnapshot(job));
+            manifest.setFrozenGraphSchema(job.getFrozenGraphSchema());
+            manifest.setCorpusTopicEvidence(job.getCorpusTopicEvidence());
+            manifest.setDeriveOntology(job.getRequest() == null ? null : job.getRequest().getDeriveOntology());
             if (!manifest.getArchivedSteps().contains(stepId)) {
                 manifest.getArchivedSteps().add(stepId);
             }
@@ -174,6 +177,9 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
         }
         manifest.setUpdatedAt(Instant.now().toString());
         manifest.setProgressSnapshot(safeSnapshot(job));
+        manifest.setFrozenGraphSchema(job.getFrozenGraphSchema());
+        manifest.setCorpusTopicEvidence(job.getCorpusTopicEvidence());
+        manifest.setDeriveOntology(job.getRequest() == null ? null : job.getRequest().getDeriveOntology());
         try {
             writeManifest(archiveRoot, manifest);
         } catch (IOException e) {
@@ -225,7 +231,10 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
                 manifest.getName(),
                 manifest.getFactSheetId(),
                 new ArrayList<>(manifest.getArchivedSteps()),
-                raw);
+                raw,
+                manifest.getFrozenGraphSchema(),
+                manifest.getCorpusTopicEvidence(),
+                manifest.getDeriveOntology());
     }
 
     // ---- internals ----
@@ -248,7 +257,7 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
             return manifest;
         }
         return ArchiveManifest.builder()
-                .schemaVersion(1)
+                .schemaVersion(ArchiveManifest.CURRENT_SCHEMA_VERSION)
                 .jobId(job.getJobId())
                 .name(job.getRequest() != null ? job.getRequest().getName() : null)
                 .factSheetId(job.getRequest() != null ? job.getRequest().getFactSheetId() : null)
@@ -271,6 +280,7 @@ public class CrawlStepArchiveServiceImpl implements CrawlStepArchiveService {
 
     private void writeManifest(Path archiveRoot, ArchiveManifest manifest) throws IOException {
         Files.createDirectories(archiveRoot);
+        manifest.setSchemaVersion(ArchiveManifest.CURRENT_SCHEMA_VERSION);
         Path file = archiveRoot.resolve(MANIFEST_FILE);
         Path tmp = archiveRoot.resolve(MANIFEST_FILE + ".tmp");
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), manifest);

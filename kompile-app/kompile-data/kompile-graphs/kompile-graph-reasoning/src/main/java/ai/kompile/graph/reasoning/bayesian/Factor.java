@@ -29,6 +29,10 @@ import java.util.*;
  */
 public class Factor {
 
+    private static final String MAX_FACTOR_BYTES_PROPERTY = "kompile.bayesian.maxFactorBytes";
+    private static final long DEFAULT_HEAP_FRACTION = 16L;
+    private static final long FALLBACK_FACTOR_BUDGET_BYTES = 4L * 1024L * 1024L;
+
     private final List<String> variables;
     private final int[] cardinalities;
     private final double[] values;
@@ -41,11 +45,20 @@ public class Factor {
      * @param values        flat array of size product(cardinalities), row-major order
      */
     public Factor(List<String> variables, int[] cardinalities, double[] values) {
+        Objects.requireNonNull(variables, "variables");
+        Objects.requireNonNull(cardinalities, "cardinalities");
+        Objects.requireNonNull(values, "values");
+        if (variables.size() != cardinalities.length) {
+            throw new IllegalArgumentException("Variable count " + variables.size()
+                    + " != cardinality count " + cardinalities.length);
+        }
+        if (new HashSet<>(variables).size() != variables.size()) {
+            throw new IllegalArgumentException("Factor variables must be unique: " + variables);
+        }
         this.variables = List.copyOf(variables);
         this.cardinalities = cardinalities.clone();
 
-        int expectedSize = 1;
-        for (int c : cardinalities) expectedSize *= c;
+        int expectedSize = checkedSize(cardinalities, "construction");
         if (values.length != expectedSize) {
             throw new IllegalArgumentException(
                     "Values array size " + values.length + " != expected " + expectedSize);
@@ -91,15 +104,19 @@ public class Factor {
         for (int c : f1.cardinalities) unionCards.add(c);
 
         for (int i = 0; i < f2.variables.size(); i++) {
-            if (!unionVars.contains(f2.variables.get(i))) {
+            int existingIndex = unionVars.indexOf(f2.variables.get(i));
+            if (existingIndex < 0) {
                 unionVars.add(f2.variables.get(i));
                 unionCards.add(f2.cardinalities[i]);
+            } else if (unionCards.get(existingIndex) != f2.cardinalities[i]) {
+                throw new IllegalArgumentException("Mismatched cardinality for variable '"
+                        + f2.variables.get(i) + "': " + unionCards.get(existingIndex)
+                        + " vs " + f2.cardinalities[i]);
             }
         }
 
         int[] resultCards = unionCards.stream().mapToInt(Integer::intValue).toArray();
-        int resultSize = 1;
-        for (int c : resultCards) resultSize *= c;
+        int resultSize = checkedSize(resultCards, "product");
 
         double[] resultValues = new double[resultSize];
         int[] assignment = new int[unionVars.size()];
@@ -136,9 +153,7 @@ public class Factor {
             if (i != varIdx) newCards[j++] = cardinalities[i];
         }
 
-        int newSize = 1;
-        for (int c : newCards) newSize *= c;
-        if (newSize == 0) newSize = 1; // Scalar factor
+        int newSize = checkedSize(newCards, "marginalization");
 
         double[] newValues = new double[newSize];
         int[] assignment = new int[variables.size()];
@@ -200,9 +215,7 @@ public class Factor {
             if (i != varIdx) newCards[j++] = cardinalities[i];
         }
 
-        int newSize = 1;
-        for (int c : newCards) newSize *= c;
-        if (newSize == 0) newSize = 1;
+        int newSize = checkedSize(newCards, "evidence reduction");
 
         double[] newValues = new double[newSize];
         int[] assignment = new int[variables.size()];
@@ -249,6 +262,65 @@ public class Factor {
             assignment[i] = index % cardinalities[i];
             index /= cardinalities[i];
         }
+    }
+
+    /**
+     * Validate and bound a dense factor allocation before any array is created.
+     *
+     * <p>Exact variable elimination is exponential in the largest intermediate scope.  A
+     * checked, heap-relative work budget turns that unavoidable limitation into a deterministic
+     * error instead of an integer wraparound or JVM-wide {@link OutOfMemoryError}.  Tests and
+     * deployments may raise or lower the budget explicitly with
+     * {@code -Dkompile.bayesian.maxFactorBytes=...}; the default reserves most of the heap for
+     * the network and caller rather than allowing one factor to consume it.</p>
+     */
+    static int checkedSize(int[] cardinalities, String operation) {
+        long cells = 1L;
+        for (int cardinality : cardinalities) {
+            if (cardinality <= 0) {
+                throw new IllegalArgumentException("Factor cardinalities must be positive for "
+                        + operation + ": " + cardinality);
+            }
+            if (cells > Integer.MAX_VALUE / (long) cardinality) {
+                throw new IllegalArgumentException("Bayesian factor " + operation
+                        + " requires " + cells + " x " + cardinality
+                        + " cells and exceeds the Java array limit; exact elimination would be exponential");
+            }
+            cells *= cardinality;
+        }
+
+        long requestedBytes = cells * Double.BYTES;
+        long budgetBytes = factorBudgetBytes();
+        if (requestedBytes > budgetBytes) {
+            throw new IllegalArgumentException("Bayesian factor " + operation + " requires "
+                    + cells + " cells (" + requestedBytes + " bytes), exceeding the exact-elimination "
+                    + "work budget of " + budgetBytes + " bytes; reduce the graph scope or configure "
+                    + MAX_FACTOR_BYTES_PROPERTY);
+        }
+        return (int) cells;
+    }
+
+    private static long factorBudgetBytes() {
+        String configured = System.getProperty(MAX_FACTOR_BYTES_PROPERTY);
+        if (configured != null && !configured.isBlank()) {
+            try {
+                long value = Long.parseLong(configured.trim());
+                if (value < Double.BYTES) {
+                    throw new IllegalArgumentException(MAX_FACTOR_BYTES_PROPERTY + " must be >= "
+                            + Double.BYTES + " bytes");
+                }
+                return value;
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(MAX_FACTOR_BYTES_PROPERTY
+                        + " must be a positive byte count", e);
+            }
+        }
+
+        long heap = Runtime.getRuntime().maxMemory();
+        if (heap <= 0L || heap == Long.MAX_VALUE) {
+            return FALLBACK_FACTOR_BUDGET_BYTES;
+        }
+        return Math.max(Double.BYTES, heap / DEFAULT_HEAP_FRACTION);
     }
 
     /**

@@ -154,6 +154,10 @@ class KompileLocalServingBootstrapTest {
             assertTrue(json.path("topK").isNull(),
                     "absent topK must preserve model-family sampling");
             assertTrue(json.has("dspEnabled"));
+            assertTrue(json.path("prefixCacheEnabled").isNull());
+            assertTrue(json.path("prefixCacheMaxBytes").isNull());
+            assertTrue(json.path("prefixCacheBlockSize").isNull());
+            assertTrue(json.path("deviceMemoryLimitsBytes").isNull());
         } finally {
             Files.deleteIfExists(args);
         }
@@ -172,15 +176,19 @@ class KompileLocalServingBootstrapTest {
         Path args = KompileLocalServingBootstrap.writeServingArgs(
                 resolvedModel,
                 43123,
-                Map.of(
-                        "host", "0.0.0.0",
-                        "maxNewTokens", 768,
-                        "temperature", 1.0,
-                        "topK", 20,
-                        "dspEnabled", true,
-                        "optimizerEnabled", false,
-                        "optimizerFp16", true,
-                        "memoryThresholdPercent", 81));
+                Map.ofEntries(
+                        Map.entry("host", "0.0.0.0"),
+                        Map.entry("maxNewTokens", 768),
+                        Map.entry("temperature", 1.0),
+                        Map.entry("topK", 20),
+                        Map.entry("dspEnabled", true),
+                        Map.entry("optimizerEnabled", false),
+                        Map.entry("optimizerFp16", true),
+                        Map.entry("memoryThresholdPercent", 81),
+                        Map.entry("prefixCacheEnabled", true),
+                        Map.entry("prefixCacheMaxBytes", 268_435_456L),
+                        Map.entry("prefixCacheBlockSize", 32),
+                        Map.entry("deviceMemoryLimitsBytes", List.of(15_032_385_536L, 4_294_967_296L))));
         try {
             JsonNode json = JsonUtils.standardMapper().readTree(args.toFile());
             assertEquals("0.0.0.0", json.path("host").asText());
@@ -191,8 +199,26 @@ class KompileLocalServingBootstrapTest {
             assertFalse(json.path("optimizerEnabled").asBoolean());
             assertTrue(json.path("optimizerFp16").asBoolean());
             assertEquals(81, json.path("memoryThresholdPercent").asInt());
+            assertTrue(json.path("prefixCacheEnabled").asBoolean());
+            assertEquals(268_435_456L, json.path("prefixCacheMaxBytes").asLong());
+            assertEquals(32, json.path("prefixCacheBlockSize").asInt());
+            assertEquals(2, json.path("deviceMemoryLimitsBytes").size());
+            assertEquals(15_032_385_536L, json.path("deviceMemoryLimitsBytes").get(0).longValue());
+            assertEquals(4_294_967_296L, json.path("deviceMemoryLimitsBytes").get(1).longValue());
         } finally {
             Files.deleteIfExists(args);
+        }
+    }
+
+    @Test
+    void rejectsMalformedDeviceCapsBeforeWritingArgs() {
+        var model = new KompileLocalServingBootstrap.ResolvedModel(
+                "local-model", tempDir.resolve("model.sdz"), null);
+        for (Object invalid : List.of(List.of(), List.of(0L), List.of(-1L), List.of(1.5),
+                List.of("1024"), List.of(new java.math.BigInteger("9223372036854775808")),
+                java.util.Arrays.asList(1024L, null), "1024", 1024L)) {
+            assertThrows(IllegalArgumentException.class, () -> KompileLocalServingBootstrap.writeServingArgs(
+                    model, 43123, Map.of("deviceMemoryLimitsBytes", invalid)), invalid.toString());
         }
     }
 
@@ -234,6 +260,56 @@ class KompileLocalServingBootstrapTest {
                         modelDirectory, "my-model");
 
         assertEquals("my-model", resolved.modelId());
+        assertEquals(model.toAbsolutePath(), resolved.modelPath());
+        assertEquals(tokenizer.toAbsolutePath(), resolved.tokenizerPath());
+    }
+
+    @Test
+    void explicitStageDirectoryKeepsGeneratedArtifactsAwayFromTheSource() throws Exception {
+        Path source = tempDir.resolve("immutable-release/model.gguf");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "weights");
+        Path cache = tempDir.resolve("workspace/.kompile/model-cache").toAbsolutePath();
+
+        Path isolated = KompileLocalServingBootstrap.stagedSdzPath(
+                source, "int4", Map.of(
+                        KompileLocalServingBootstrap.MODEL_STAGE_DIR_ENV, cache.toString()));
+        Path defaultPath = KompileLocalServingBootstrap.stagedSdzPath(
+                source, "int4", Map.of());
+
+        assertEquals(cache, isolated.getParent());
+        assertTrue(Files.isDirectory(cache));
+        assertTrue(isolated.getFileName().toString().contains("-int4-"));
+        assertEquals(source.getParent(), defaultPath.getParent());
+    }
+
+    @Test
+    void cachedStageMustMatchTheCurrentConverterFormat() throws Exception {
+        Path staged = Files.writeString(tempDir.resolve("model.sdz"), "staged");
+        Path report = staged.resolveSibling(staged.getFileName() + ".stage.json");
+
+        Files.writeString(report, "{\"stageFormatVersion\": \"2\"}");
+        assertFalse(KompileLocalServingBootstrap.isStagedArtifactValid(staged),
+                "a converter-v2 artifact must be restaged by the v3 runtime");
+
+        Files.writeString(report, "{\"stageFormatVersion\": \"3\"}");
+        assertTrue(KompileLocalServingBootstrap.isStagedArtifactValid(staged));
+    }
+
+    @Test
+    void resolvedProjectModelDirectoryUsesTheSameGgufAndTokenizerRules() throws Exception {
+        Path modelDirectory = tempDir.resolve("project-model");
+        Files.createDirectories(modelDirectory);
+        Path model = modelDirectory.resolve("weights.gguf");
+        Path tokenizer = modelDirectory.resolve("tokenizer.json");
+        Files.writeString(model, "weights");
+        Files.writeString(tokenizer, "{}");
+
+        KompileLocalServingBootstrap.ResolvedModel resolved =
+                KompileLocalServingBootstrap.resolveProjectModel(
+                        "project-model", modelDirectory, null);
+
+        assertEquals("project-model", resolved.modelId());
         assertEquals(model.toAbsolutePath(), resolved.modelPath());
         assertEquals(tokenizer.toAbsolutePath(), resolved.tokenizerPath());
     }

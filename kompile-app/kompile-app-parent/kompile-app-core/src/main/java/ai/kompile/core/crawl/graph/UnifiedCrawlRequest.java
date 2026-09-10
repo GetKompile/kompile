@@ -18,6 +18,7 @@ package ai.kompile.core.crawl.graph;
 
 import ai.kompile.core.crawler.pipeline.ContentRouteRule;
 import ai.kompile.core.crawler.pipeline.IngestPipelineDefinition;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -36,7 +37,7 @@ import java.util.Set;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonIgnoreProperties(value = "distributedGraphRuntimeContext", ignoreUnknown = true)
 public class UnifiedCrawlRequest {
 
     /** Human-readable name for this crawl job */
@@ -94,6 +95,13 @@ public class UnifiedCrawlRequest {
 
     /** Distribution configuration for multi-worker crawls (null = single-worker) */
     private DistributionConfig distribution;
+
+    /** Internal coordinator-issued shared-graph binding for one delegated partition. */
+    private DistributedGraphExecution distributedGraphExecution;
+
+    /** Runtime-only secret gateway context attached after delegated-job JSON deserialization. */
+    @JsonIgnore
+    private transient DistributedGraphRuntimeContext distributedGraphRuntimeContext;
 
     // ---- Selective retry fields ----
 

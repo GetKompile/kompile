@@ -77,29 +77,37 @@ class AgentLaunchDefaultsTest {
     }
 
     @Test
+    void legacyCodexUltraThinkingNormalizesToMax() {
+        AgentLaunchDefaults.Selection selected = AgentLaunchDefaults.resolve(
+                "codex", tempDir, "gpt-5.6-sol", "ultra");
+
+        assertEquals("max", selected.thinking());
+    }
+
+    @Test
     void roleDefaultsPrecedeProjectDefaultsForModelAndThinking() throws Exception {
         Path config = AgentLaunchDefaults.projectConfigPath(tempDir);
         AgentLaunchDefaults.save(config, "codex", "project-model", "low", null);
         AgentLaunchDefaults.save(config, "codex", null, "high", "role-model");
 
         RoleAgentDefaults roleDefaults = new RoleAgentDefaults(
-                "role-model", "medium", Map.of("role-model", "ultra"));
+                "role-model", "medium", Map.of("role-model", "max"));
         AgentLaunchDefaults.Selection selected = AgentLaunchDefaults.resolve(
                 "codex", tempDir, null, null, roleDefaults);
 
         assertEquals("role-model", selected.model());
-        assertEquals("ultra", selected.thinking());
+        assertEquals("max", selected.thinking());
     }
 
     @Test
     void explicitModelStillSelectsRoleThinkingAndExplicitThinkingWins() {
         RoleAgentDefaults roleDefaults = new RoleAgentDefaults(
-                "gpt-5.6-terra", "medium", Map.of("gpt-5.6-sol", "ultra"));
+                "gpt-5.6-terra", "medium", Map.of("gpt-5.6-sol", "max"));
 
         AgentLaunchDefaults.Selection selected = AgentLaunchDefaults.resolve(
                 "codex", tempDir, "gpt-5.6-sol", null, roleDefaults);
         assertEquals("gpt-5.6-sol", selected.model());
-        assertEquals("ultra", selected.thinking());
+        assertEquals("max", selected.thinking());
 
         AgentLaunchDefaults.Selection explicit = AgentLaunchDefaults.resolve(
                 "codex", tempDir, "gpt-5.6-sol", "low", roleDefaults);

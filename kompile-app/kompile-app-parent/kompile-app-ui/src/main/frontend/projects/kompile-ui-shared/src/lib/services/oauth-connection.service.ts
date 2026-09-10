@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable, BehaviorSubject, of, timer } from 'rxjs';
 import { map, tap, catchError, switchMap, shareReplay } from 'rxjs/operators';
 import { BaseService, backendUrl } from './base.service';
@@ -56,7 +56,7 @@ export class OAuthConnectionService extends BaseService {
    * Load available OAuth providers.
    */
   loadProviders(): Observable<OAuthProviderInfo[]> {
-    return this.http.get<OAuthProviderInfo[]>(`${backendUrl}/oauth/providers`).pipe(
+    return this.http.get<OAuthProviderInfo[]>(`${backendUrl}/oauth/providers`, this.authOptions()).pipe(
       tap(providers => this.providersSubject.next(providers)),
       catchError(err => {
         console.error('Failed to load OAuth providers:', err);
@@ -70,7 +70,7 @@ export class OAuthConnectionService extends BaseService {
    */
   loadConnections(): Observable<OAuthConnection[]> {
     this.loadingSubject.next(true);
-    return this.http.get<OAuthConnection[]>(`${backendUrl}/oauth/connections`).pipe(
+    return this.http.get<OAuthConnection[]>(`${backendUrl}/oauth/connections`, this.authOptions()).pipe(
       tap(connections => {
         this.connectionsSubject.next(connections);
         this.loadingSubject.next(false);
@@ -87,14 +87,14 @@ export class OAuthConnectionService extends BaseService {
    * Get connection status for a specific provider.
    */
   getConnectionStatus(providerId: string): Observable<OAuthConnectionStatus> {
-    return this.http.get<OAuthConnectionStatus>(`${backendUrl}/oauth/${providerId}/status`);
+    return this.http.get<OAuthConnectionStatus>(`${backendUrl}/oauth/${providerId}/status`, this.authOptions());
   }
 
   /**
    * Get provider info.
    */
   getProvider(providerId: string): Observable<OAuthProviderInfo | null> {
-    return this.http.get<OAuthProviderInfo>(`${backendUrl}/oauth/providers/${providerId}`).pipe(
+    return this.http.get<OAuthProviderInfo>(`${backendUrl}/oauth/providers/${providerId}`, this.authOptions()).pipe(
       catchError(err => {
         console.error(`Failed to get provider ${providerId}:`, err);
         return of(null);
@@ -109,7 +109,7 @@ export class OAuthConnectionService extends BaseService {
   initiateAuth(providerId: string): Promise<boolean> {
     return new Promise((resolve, reject) => {
       // Get authorization URL
-      this.http.get<AuthorizationUrlResponse>(`${backendUrl}/oauth/${providerId}/authorize`).subscribe({
+      this.http.get<AuthorizationUrlResponse>(`${backendUrl}/oauth/${providerId}/authorize`, this.authOptions()).subscribe({
         next: (response) => {
           if (!response.authorizationUrl) {
             reject(new Error('No authorization URL received'));
@@ -170,7 +170,7 @@ export class OAuthConnectionService extends BaseService {
    * Disconnect from an OAuth provider.
    */
   disconnect(providerId: string): Observable<{ success: boolean }> {
-    return this.http.delete<{ success: boolean }>(`${backendUrl}/oauth/${providerId}`).pipe(
+    return this.http.delete<{ success: boolean }>(`${backendUrl}/oauth/${providerId}`, this.authOptions()).pipe(
       tap(() => {
         // Update local state
         const connections = this.connectionsSubject.value.map(c => {
@@ -188,7 +188,7 @@ export class OAuthConnectionService extends BaseService {
    * Refresh access token for a provider.
    */
   refreshToken(providerId: string): Observable<OAuthConnectionStatus> {
-    return this.http.post<OAuthConnectionStatus>(`${backendUrl}/oauth/${providerId}/refresh`, {}).pipe(
+    return this.http.post<OAuthConnectionStatus>(`${backendUrl}/oauth/${providerId}/refresh`, {}, this.authOptions()).pipe(
       tap(() => {
         // Reload connections to get updated status
         this.loadConnections().subscribe();
@@ -200,7 +200,7 @@ export class OAuthConnectionService extends BaseService {
    * Check connection health.
    */
   checkHealth(providerId: string): Observable<ConnectionHealthResponse> {
-    return this.http.get<ConnectionHealthResponse>(`${backendUrl}/oauth/${providerId}/health`);
+    return this.http.get<ConnectionHealthResponse>(`${backendUrl}/oauth/${providerId}/health`, this.authOptions());
   }
 
   /**
@@ -231,5 +231,14 @@ export class OAuthConnectionService extends BaseService {
   refresh(): void {
     this.loadProviders().subscribe();
     this.loadConnections().subscribe();
+  }
+
+  private authOptions(): { headers: HttpHeaders; withCredentials: boolean } {
+    let headers = new HttpHeaders({ 'X-Kompile-Channel-Request': '1' });
+    if (typeof sessionStorage !== 'undefined') {
+      const csrf = sessionStorage.getItem('kompile.channel.csrf');
+      if (csrf) headers = headers.set('X-Kompile-Channel-CSRF', csrf);
+    }
+    return { headers, withCredentials: true };
   }
 }

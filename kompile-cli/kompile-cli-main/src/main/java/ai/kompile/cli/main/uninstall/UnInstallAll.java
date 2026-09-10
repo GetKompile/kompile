@@ -20,7 +20,7 @@ import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "all",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "all", description = "Remove all managed Kompile prerequisites.", mixinStandardHelpOptions = false)
 public class UnInstallAll implements Callable<Integer> {
     public UnInstallAll() {
     }

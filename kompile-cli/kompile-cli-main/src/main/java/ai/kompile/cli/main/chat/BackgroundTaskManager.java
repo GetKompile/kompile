@@ -23,17 +23,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
 
 /**
- * Manages background tasks for the chat REPL.
- * Supports backgrounding LLM responses with Ctrl+B, tracking completion,
- * and providing notifications for recently completed backgrounded tasks.
+ * Manages detached foreground work for the chat REPL. Standard Chat enables
+ * Ctrl+B only while a blocking subagent invocation owns the parent turn; this
+ * manager then retains output, completion state, and next-prompt notifications.
  */
 public class BackgroundTaskManager {
 
-    /**
-     * Represents a background task (e.g., an LLM response running in background).
-     */
+    /** Represents a foreground parent turn after an eligible operation is detached. */
     public static class BackgroundTask {
         private final String id;
         private final String description;
@@ -154,6 +153,7 @@ public class BackgroundTaskManager {
     private final List<String> taskOrder;
     private volatile BackgroundTask currentTask;
     private volatile boolean backgroundRequested = false;
+    private volatile BooleanSupplier backgroundableCheck = () -> true;
 
     // Queue chain tracking
     private int queueChainTotal = 0;
@@ -171,6 +171,25 @@ public class BackgroundTaskManager {
     public BackgroundTaskManager() {
         this.tasks = new ConcurrentHashMap<>();
         this.taskOrder = new CopyOnWriteArrayList<>();
+    }
+
+    /**
+     * Restrict Ctrl+B to work the owning UI can actually detach. Standalone
+     * managers retain the historical permissive behavior; Standard Chat binds
+     * this to the blocking subagent-tool phase rather than model thinking.
+     */
+    public void setBackgroundableCheck(BooleanSupplier backgroundableCheck) {
+        this.backgroundableCheck = backgroundableCheck != null
+                ? backgroundableCheck : () -> true;
+        fireChange();
+    }
+
+    private boolean isBackgroundEligible() {
+        try {
+            return backgroundableCheck.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     /**
@@ -233,25 +252,45 @@ public class BackgroundTaskManager {
         return task;
     }
 
+    /** Transfer completion ownership to the detached worker, not the next turn. */
+    public synchronized void detachTask(BackgroundTask task) {
+        if (currentTask == task) {
+            currentTask = null;
+            backgroundRequested = false;
+            fireChange();
+        }
+    }
+
+    public void completeDetachedTask(BackgroundTask task, Throwable error) {
+        synchronized (this) {
+            if (task.getCompletedAt() != null) return;
+            if (error != null) task.setError(error);
+            else task.setStatus(BackgroundTask.BackgroundTaskStatus.COMPLETED);
+            pendingNotifications.add(task);
+        }
+        // Completion can dispatch a parent turn. Never acquire its dispatch lock
+        // while holding this manager's lock (Ctrl+B takes them in reverse order).
+        fireCompletion(task);
+        fireChange();
+    }
+
     public BackgroundTask getCurrentTask() {
         return currentTask;
     }
 
-    /** True only while Ctrl+B can transition the current foreground turn. */
+    /** True only while Ctrl+B can detach the current foreground operation. */
     public synchronized boolean isCurrentTaskBackgroundable() {
         return currentTask != null
                 && currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.RUNNING
-                && !backgroundRequested;
+                && !backgroundRequested
+                && isBackgroundEligible();
     }
 
     /**
      * Signals that the current task should be backgrounded.
      */
     public synchronized BackgroundTask requestBackground() {
-        if (currentTask == null
-                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED
-                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.COMPLETED
-                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.FAILED) {
+        if (!isCurrentTaskBackgroundable()) {
             return null;
         }
         backgroundRequested = true;

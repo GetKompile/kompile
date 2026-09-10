@@ -51,8 +51,14 @@ class CliAgentRegistryTest {
 
         AgentProvider opencode = byCommand.get("opencode");
         assertNotNull(opencode);
-        assertEquals(List.of("opencode", "models"), opencode.getModelListCommand());
+        assertEquals(List.of("opencode", "models", "--verbose"),
+                opencode.getModelListCommand());
         assertEquals(List.of("opencode", "auth"), opencode.getAuthCommand());
+        assertTrue(opencode.getDescription().contains("requires the opencode CLI"));
+
+        AgentProvider pi = byCommand.get("pi");
+        assertNotNull(pi);
+        assertTrue(pi.getDescription().contains("requires the pi CLI"));
     }
 
     @Test

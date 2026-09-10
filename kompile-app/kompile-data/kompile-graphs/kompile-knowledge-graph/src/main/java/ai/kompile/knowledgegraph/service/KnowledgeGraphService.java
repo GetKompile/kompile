@@ -18,6 +18,8 @@ package ai.kompile.knowledgegraph.service;
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.knowledgegraph.domain.*;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.time.Duration;
@@ -51,6 +53,54 @@ public interface KnowledgeGraphService {
      */
     String NODE_RESTORE_STATE_KEY = "kompile.restore.node.v1";
     String EDGE_RESTORE_STATE_KEY = "kompile.restore.edge.v1";
+
+    // ── Atomic fact-sheet graph generations ─────────────────────────────────
+
+    default boolean supportsGraphGenerations() { return false; }
+
+    default GraphGeneration.Ref beginFactSheetGeneration(long factSheetId, String generationId) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Ref beginFactSheetGeneration(
+            long factSheetId, String generationId, String ownerJobId) {
+        return beginFactSheetGeneration(factSheetId, generationId);
+    }
+
+    default GraphGeneration.Validation validateFactSheetGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Activation activateFactSheetGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Activation activateFactSheetGeneration(
+            GraphGeneration.Ref generation, String operationId) {
+        return activateFactSheetGeneration(generation);
+    }
+
+    default void abortFactSheetGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default void abortFactSheetGeneration(GraphGeneration.Ref generation, String failure) {
+        abortFactSheetGeneration(generation);
+    }
+
+    default GraphGeneration.Activation rollbackFactSheetGeneration(
+            long factSheetId, long expectedRevision) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Activation rollbackFactSheetGeneration(
+            long factSheetId, long expectedRevision, String operationId) {
+        return rollbackFactSheetGeneration(factSheetId, expectedRevision);
+    }
+
+    default Optional<GraphGenerationJournal.Entry> getFactSheetGenerationStatus(long factSheetId) {
+        return Optional.empty();
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE MANAGEMENT
@@ -254,10 +304,12 @@ public interface KnowledgeGraphService {
 
     /**
      * Get a node by external ID and type, scoped to a fact sheet.
-     * Default implementation delegates to the non-scoped overload.
+     * A null scope delegates to the non-scoped overload; non-null uses the exact fact-sheet lookup.
      */
     default Optional<GraphNode> getNodeByExternalId(String externalId, NodeLevel nodeType, Long factSheetId) {
-        return getNodeByExternalId(externalId, nodeType);
+        return factSheetId == null
+                ? getNodeByExternalId(externalId, nodeType)
+                : getNodeByExternalIdInFactSheet(externalId, nodeType, factSheetId);
     }
 
     /**
@@ -1178,6 +1230,15 @@ public interface KnowledgeGraphService {
             }
             return new GraphPruneResult(ids, deleted, deleted, false);
         }
+    }
+
+    /** Fact-sheet-scoped node pruning for deterministic IDs that may exist in multiple graphs. */
+    default GraphPruneResult pruneNodes(Collection<String> nodeIds,
+                                        boolean softDelete,
+                                        Duration grace,
+                                        boolean dryRun,
+                                        Long factSheetId) {
+        return pruneNodes(nodeIds, softDelete, grace, dryRun);
     }
 
     /**

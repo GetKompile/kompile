@@ -28,6 +28,11 @@
 # ── Android app classes ──────────────────────────────────────────────────────
 -keep class ai.kompile.chat.local.android.** { *; }
 
+# AndroidX Test and Kotlin instrumentation execute from the separate test APK
+# but resolve their shared Kotlin runtime through the minified target APK.
+# Preserve that runtime namespace so R8 cannot remove facades used only by tests.
+-keep class kotlin.** { *; }
+
 # ── SLF4J ────────────────────────────────────────────────────────────────────
 -keep class org.slf4j.** { *; }
 -dontwarn org.slf4j.**

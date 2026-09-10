@@ -27,6 +27,7 @@ import ai.kompile.staging.execution.LlmExecutionService;
 import ai.kompile.staging.execution.PromptTemplateService;
 import ai.kompile.staging.execution.TextPipelineService;
 import ai.kompile.staging.execution.VlmExecutionService;
+import ai.kompile.staging.execution.text.RegisteredLlmModelResolver;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.staging.optimization.ComparisonRequest;
@@ -91,6 +92,7 @@ public class ModelStagingTool {
     private final PeftService peftService;
     private final DatasetService datasetService;
     private final LlmExecutionService llmExecutionService;
+    private final RegisteredLlmModelResolver registeredLlmModelResolver;
     private final ChatTemplateService chatTemplateService;
     private final PromptTemplateService promptTemplateService;
     private final TextPipelineService textPipelineService;
@@ -115,6 +117,7 @@ public class ModelStagingTool {
                             PeftService peftService,
                             DatasetService datasetService,
                             LlmExecutionService llmExecutionService,
+                            RegisteredLlmModelResolver registeredLlmModelResolver,
                             ChatTemplateService chatTemplateService,
                             PromptTemplateService promptTemplateService,
                             TextPipelineService textPipelineService,
@@ -137,6 +140,7 @@ public class ModelStagingTool {
         this.peftService = peftService;
         this.datasetService = datasetService;
         this.llmExecutionService = llmExecutionService;
+        this.registeredLlmModelResolver = registeredLlmModelResolver;
         this.chatTemplateService = chatTemplateService;
         this.promptTemplateService = promptTemplateService;
         this.textPipelineService = textPipelineService;
@@ -523,9 +527,7 @@ public class ModelStagingTool {
             return Map.of("status", "error", "error", "modelId is required");
         }
         try {
-            ModelRegistry registry = registryService.loadRegistry();
-            registry.setActiveModel(input.modelId());
-            registryService.saveRegistry(registry);
+            registryService.updateRegistry(registry -> registry.setActiveModel(input.modelId()));
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
@@ -1917,13 +1919,16 @@ public class ModelStagingTool {
     // ==================== LLM Execution Operations ====================
 
     @Tool(name = "staging_llm_load",
-            description = "Loads an LLM model for text generation. Specify modelId and optionally a modelPath " +
-                    "and kvCacheType (PAGED, EVICTABLE_PAGED).")
+            description = "Loads a checksum-verified registered LLM for text generation. An optional " +
+                    "modelPath must exactly match the registered file. kvCacheType may be STATIC, PAGED, " +
+                    "or QUANTIZED.")
     public Map<String, Object> llmLoad(LlmLoadInput input) {
         if (input.modelId() == null) return Map.of("status", "error", "error", "modelId is required");
         try {
+            RegisteredLlmModelResolver.VerifiedModel verified =
+                    registeredLlmModelResolver.resolve(input.modelId(), input.modelPath());
             LlmModelStatusResponse status = llmExecutionService.loadModel(
-                    input.modelId(), input.modelPath(), input.kvCacheType());
+                    input.modelId(), verified.modelFile().toString(), input.kvCacheType());
             return llmStatusToMap(status);
         } catch (Exception e) {
             return Map.of("status", "error", "error", "Failed to load LLM: " + e.getMessage());

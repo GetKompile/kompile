@@ -15,12 +15,15 @@
  */
 package ai.kompile.project;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -31,6 +34,38 @@ class KompileProjectStoreTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void staleManifestSaveMergesConcurrentCodeAndCrawlGraphState() {
+        KompileProjectStore first = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("concurrent-graph-state");
+        request.setIncludeStandardComponents(false);
+        first.init(tempDir, request);
+
+        KompileProjectManifest stale = first.load(tempDir);
+        KompileCodingProject code = new KompileCodingProject();
+        code.setId("app-code");
+        code.setCodeProjectId("app-code");
+        code.setRootPath(tempDir.toString());
+        code.getMetadata().put("knowledgeBaseId", "app-code-knowledge");
+        new KompileProjectStore().registerCodingProject(tempDir, code);
+
+        KompileProjectCrawlProfile crawl = new KompileProjectCrawlProfile();
+        crawl.setId("app-code-knowledge");
+        crawl.setName("App code graph");
+        crawl.setSources(List.of("."));
+        stale.getCrawlProfiles().add(crawl);
+        first.save(tempDir, stale);
+
+        KompileProjectManifest restored = first.load(tempDir);
+        assertTrue(restored.getCodingProjects().stream().anyMatch(candidate ->
+                "app-code".equals(candidate.getCodeProjectId())
+                        && "app-code-knowledge".equals(
+                        candidate.getMetadata().get("knowledgeBaseId"))));
+        assertTrue(restored.getCrawlProfiles().stream().anyMatch(candidate ->
+                "app-code-knowledge".equals(candidate.getId())));
+    }
 
     @Test
     void initCreatesManifestWithStandardComponentsAndTags() throws Exception {
@@ -54,7 +89,7 @@ class KompileProjectStoreTest {
         KompileProjectCrawlProfile crawlProfile = new KompileProjectCrawlProfile();
         crawlProfile.setName("Initial Crawl");
         crawlProfile.setSources(List.of("data/input_documents"));
-        crawlProfile.setSchemaPresetId("fpna-cpg-channel-v1");
+        crawlProfile.setSchemaPresetId("example-schema-v1");
         crawlProfile.setGraphSchemaMode("LENIENT");
         crawlProfile.setWatch(true);
         request.setCrawlProfiles(List.of(crawlProfile));
@@ -354,8 +389,24 @@ class KompileProjectStoreTest {
         assertTrue(body.contains("data/pids/"));
         assertTrue(body.contains("config/secrets/"));
         assertTrue(body.contains("config/oauth-encryption.key"));
+        assertTrue(body.contains("config/channel-admin.token"));
         assertTrue(body.contains(".env*"));
         assertTrue(body.contains("data/orchestrator-db*"));
+    }
+
+    @Test
+    void existingGitignoreKeepsCustomRulesAndGainsChannelCredentialRule() throws Exception {
+        Files.writeString(tempDir.resolve(".gitignore"), "custom-output/\n");
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("existing-ignore");
+        request.setBackend(KompileProjectStorageBackend.LOCAL);
+        request.setInitializeGit(false);
+
+        new KompileProjectStore().init(tempDir, request);
+
+        String body = Files.readString(tempDir.resolve(".gitignore"));
+        assertTrue(body.contains("custom-output/"));
+        assertTrue(body.contains("config/channel-admin.token"));
     }
 
     @Test
@@ -599,6 +650,79 @@ class KompileProjectStoreTest {
         KompileCodingProject restored = store.load(tempDir).getCodingProjects().get(0);
         assertEquals(42L, restored.getFactSheetId());
         assertEquals("app-code", restored.getCodeProjectId());
+    }
+
+    @Test
+    void runtimeModelSnapshotPreservesChecksumEmbeddingAndTokenizerContract() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("runtime-model-project");
+        store.init(tempDir, request);
+        Path bundle = Files.createDirectories(tempDir.resolve("data/models/encoder-a"));
+        Files.write(bundle.resolve("model.sdz"), new byte[]{1, 2, 3});
+        Files.writeString(bundle.resolve("tokenizer.json"), "{}");
+        KompileProjectModel model = new KompileProjectModel();
+        model.setId("encoder-a");
+        model.setModelId("encoder-a");
+        model.setRegistryModelId("encoder-a");
+        model.setRole("ENCODER");
+        model.setPath("data/models/encoder-a/model.sdz");
+        model.setMetadata(Map.ofEntries(
+                Map.entry("registry.type", "dense_encoder"),
+                Map.entry("registry.modelFile", "model.sdz"),
+                Map.entry("registry.vocabFile", "tokenizer.json"),
+                Map.entry("registry.checksum", "abc123"),
+                Map.entry("embedding_dim", "384"),
+                Map.entry("pooling_strategy", "MEAN"),
+                Map.entry("input_prefix", "query: "),
+                Map.entry("normalize_output", "true"),
+                Map.entry("supported_languages", "multilingual"),
+                Map.entry("registry.tokenizerDoLowerCase", "false"),
+                Map.entry("registry.tokenizerStripAccents", "false"),
+                Map.entry("registry.tokenizerAddSpecialTokens", "true"),
+                Map.entry("registry.tokenizerMaxLength", "512"),
+                Map.entry("registry.tokenizerPadding", "max_length"),
+                Map.entry("registry.tokenizerTruncation", "true")));
+
+        store.registerModel(tempDir, model);
+
+        JsonNode entry = new ObjectMapper().readTree(
+                tempDir.resolve("data/models/registry.json").toFile())
+                .path("models").path("encoder-a");
+        assertEquals("abc123", entry.path("checksum").asText());
+        assertEquals(384, entry.path("metadata").path("embedding_dim").asInt());
+        assertEquals("MEAN", entry.path("metadata").path("pooling_strategy").asText());
+        assertEquals("query: ", entry.path("metadata").path("input_prefix").asText());
+        assertFalse(entry.path("tokenizer").path("do_lower_case").asBoolean(true));
+        assertEquals(512, entry.path("tokenizer").path("max_length").asInt());
+        assertEquals("tokenizer.json", entry.path("vocab_file").asText());
+    }
+
+    @Test
+    void sourceStageArtifactNeverBecomesAnActiveRuntimeModel() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("source-model-project");
+        store.init(tempDir, request);
+        Path bundle = Files.createDirectories(tempDir.resolve("data/models/source-a"));
+        Files.write(bundle.resolve("model.onnx"), new byte[]{1, 2, 3});
+        KompileProjectModel model = new KompileProjectModel();
+        model.setId("source-a");
+        model.setModelId("source-a");
+        model.setRegistryModelId("source-a");
+        model.setRole("ENCODER");
+        model.setPath("data/models/source-a/model.onnx");
+        model.setMetadata(Map.of(
+                "registry.type", "dense_encoder",
+                "artifact.stage", "SOURCE",
+                "runtime.ready", "false"));
+
+        store.registerModel(tempDir, model);
+
+        JsonNode entry = new ObjectMapper().readTree(
+                tempDir.resolve("data/models/registry.json").toFile())
+                .path("models").path("source-a");
+        assertEquals("staged", entry.path("status").asText());
     }
 
     private static void runGit(Path directory, String... args) throws Exception {

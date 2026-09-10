@@ -78,18 +78,31 @@ public class ChatMemory {
     private static final long CACHE_TTL_MS = 60_000; // 1 minute
 
     public ChatMemory(McpSseClient mcpClient, String currentSessionId, boolean enabled) {
+        this(mcpClient, currentSessionId, enabled,
+                Paths.get(System.getProperty("user.dir")));
+    }
+
+    /**
+     * Create memory scoped to the same project directory as the owning chat session.
+     * Headless chat cannot rely on {@code user.dir} because its working directory is
+     * commonly supplied with a CLI option.
+     */
+    public ChatMemory(McpSseClient mcpClient, String currentSessionId, boolean enabled,
+                      Path workDir) {
         this.mcpClient = mcpClient;
         this.objectMapper = mcpClient != null ? mcpClient.getObjectMapper() : JsonUtils.standardMapper();
         this.currentSessionId = currentSessionId;
         this.conversationsDir = KompileHome.homeDirectory().toPath().resolve("conversations");
-        this.workDir = Paths.get(System.getProperty("user.dir"));
+        this.workDir = (workDir == null
+                ? Paths.get(System.getProperty("user.dir")) : workDir)
+                .toAbsolutePath().normalize();
         this.enabled = enabled;
         this.persistentMemoryEnabled = true;
         this.transcriptSearchEnabled = true;
         this.ragSearchEnabled = mcpClient != null; // only if server connected
 
         // Load persistent memory at construction
-        this.persistentMemoryContent = MemoryTool.loadMemoryForContext(workDir);
+        this.persistentMemoryContent = MemoryTool.loadMemoryForContext(this.workDir);
     }
 
     public boolean isEnabled() {
@@ -143,11 +156,8 @@ public class ChatMemory {
     }
 
     /**
-     * Builds a memory context block for the given user query by searching
-     * previous transcripts and RAG. Returns null if no relevant context found.
-     * <p>
-     * Note: Persistent MEMORY.md is injected separately at session start via
-     * {@link #getPersistentMemoryContent()}, not per-message.
+     * Builds the memory context block used for a turn: stable persistent memory,
+     * relevant previous transcripts, and (when connected) RAG results.
      */
     public String buildMemoryContext(String query) {
         if (!enabled) {
@@ -156,7 +166,15 @@ public class ChatMemory {
 
         StringBuilder context = new StringBuilder();
 
-        // 1. Search previous conversation transcripts
+        // 1. Stable project/global memory
+        if (persistentMemoryEnabled && persistentMemoryContent != null
+                && !persistentMemoryContent.isBlank()) {
+            context.append("[Persistent memory]\n");
+            context.append(persistentMemoryContent);
+            context.append("\n");
+        }
+
+        // 2. Search previous conversation transcripts
         if (transcriptSearchEnabled) {
             String transcriptContext = searchTranscripts(query);
             if (transcriptContext != null && !transcriptContext.isBlank()) {
@@ -166,7 +184,7 @@ public class ChatMemory {
             }
         }
 
-        // 2. Search RAG index for relevant documents
+        // 3. Search RAG index for relevant documents
         if (ragSearchEnabled && mcpClient != null) {
             String ragContext = searchRag(query);
             if (ragContext != null && !ragContext.isBlank()) {

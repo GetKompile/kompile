@@ -15,8 +15,8 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
-import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.gateway.core.gateway.channel.*;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
@@ -25,16 +25,17 @@ import java.util.Map;
 import java.util.Set;
 
 @Slf4j
-public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiClient.SlackMessageHandler {
+public class SlackChannelAdapter extends ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter implements SlackApiClient.SlackMessageHandler {
 
     private SlackApiClient apiClient;
     private String botToken;
     private String appToken;
     private final Set<String> allowedChannelIds = new HashSet<>();
     private boolean respondToAllMessages = false;
+    private boolean allowAllInbound;
 
-    public SlackChannelAdapter(KClawAgentService agentService) {
-        super(agentService);
+    public SlackChannelAdapter(AgentExecutor agentExecutor) {
+        super(agentExecutor);
     }
 
     @Override
@@ -62,11 +63,14 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
         this.respondToAllMessages = respondToAllMessages;
     }
 
+    public void setAllowAllInbound(boolean allowAllInbound) {
+        this.allowAllInbound = allowAllInbound;
+    }
+
     @Override
     protected void doStart() {
         if (apiClient == null) {
-            log.warn("Slack API client not configured");
-            return;
+            throw new IllegalStateException("Slack API client is not configured");
         }
 
         apiClient.addMessageHandler(this);
@@ -82,12 +86,12 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
     }
 
     @Override
-    public void send(String target, String content) {
+    public DeliveryResult send(String target, String content) {
         if (apiClient == null || !isRunning()) {
-            log.warn("Slack adapter not ready; cannot deliver to {}", target);
-            return;
+            throw new IllegalStateException("Slack connection is not running");
         }
         apiClient.sendMessage(target, content, null);
+        return DeliveryResult.accepted("Slack accepted the message");
     }
 
     @Override
@@ -105,11 +109,13 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
 
     @Override
     public void onReady() {
+        markReady();
         log.info("Slack adapter ready");
     }
 
     @Override
     public void onError(Throwable error) {
+        recordError(error);
         log.error("Slack adapter error", error);
     }
 
@@ -132,6 +138,8 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
         }
 
         String cleanText = cleanMention(message.text());
+        String threadId = message.threadTs() == null || message.threadTs().isBlank()
+                ? message.ts() : message.threadTs();
 
         ChannelAdapter.IncomingMessage incoming = new ChannelAdapter.IncomingMessage(
                 message.ts(),
@@ -141,11 +149,13 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
                 message.channelId(),
                 System.currentTimeMillis(),
                 message.threadTs(),
-                Map.of("slack_channel", message.channelId())
+                Map.of(
+                        "slack_channel", message.channelId(),
+                        "conversation_key", message.channelId() + ":" + threadId)
         );
 
         ChannelAdapter.MessageResponder responder = new SlackMessageResponder(
-                apiClient, message.channelId(), message.ts()
+                apiClient, message.channelId(), threadId
         );
         createAgentHandler().handle(incoming, responder);
     }
@@ -164,7 +174,7 @@ public class SlackChannelAdapter extends BaseChannelAdapter implements SlackApiC
     }
 
     private boolean isAllowed(String channelId) {
-        return allowedChannelIds.isEmpty() || allowedChannelIds.contains(channelId);
+        return allowAllInbound || allowedChannelIds.contains(channelId);
     }
 
     private String cleanMention(String text) {

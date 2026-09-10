@@ -72,8 +72,13 @@ describe('ToolsHubComponent', () => {
     expect(component.activeSubTab).toBe('prompts');
   });
 
-  it('should allow switching activeSubTab to pipelines', () => {
-    component.activeSubTab = 'pipelines';
-    expect(component.activeSubTab).toBe('pipelines');
+  it('should allow switching activeSubTab to workflows', () => {
+    component.activeSubTab = 'workflows';
+    expect(component.activeSubTab).toBe('workflows');
+  });
+
+  it('should allow switching activeSubTab to processEngine', () => {
+    component.activeSubTab = 'processEngine';
+    expect(component.activeSubTab).toBe('processEngine');
   });
 });

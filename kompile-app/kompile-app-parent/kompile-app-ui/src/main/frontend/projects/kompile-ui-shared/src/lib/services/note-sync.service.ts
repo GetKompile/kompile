@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable, BehaviorSubject } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { BaseService, backendUrl } from './base.service';
@@ -43,55 +43,70 @@ export class NoteSyncService extends BaseService {
     super();
   }
 
+  hasIntegrationBrowserSession(): boolean {
+    return typeof sessionStorage !== 'undefined'
+      && !!sessionStorage.getItem('kompile.channel.csrf');
+  }
+
+  exchangeIntegrationBrowserSession(code: string): Observable<{ csrfToken: string; expiresAt: string }> {
+    return this.http.post<{ csrfToken: string; expiresAt: string }>(
+      `${backendUrl}/channel-integrations/browser-sessions/exchange`,
+      { code }, { withCredentials: true }).pipe(tap(session => {
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem('kompile.channel.csrf', session.csrfToken);
+        }
+      }));
+  }
+
   // ── Sync Config ─────────────────────────────────────────────────────
 
   getConfig(): Observable<NoteSyncConfig> {
-    return this.http.get<NoteSyncConfig>(`${backendUrl}/sync/config`);
+    return this.http.get<NoteSyncConfig>(`${backendUrl}/sync/config`, this.syncOptions());
   }
 
   updateConfig(config: NoteSyncConfigUpdate): Observable<NoteSyncConfig> {
-    return this.http.put<NoteSyncConfig>(`${backendUrl}/sync/config`, config);
+    return this.http.put<NoteSyncConfig>(`${backendUrl}/sync/config`, config, this.syncOptions());
   }
 
   resetConfig(): Observable<NoteSyncConfig> {
-    return this.http.post<NoteSyncConfig>(`${backendUrl}/sync/config/reset`, {});
+    return this.http.post<NoteSyncConfig>(`${backendUrl}/sync/config/reset`, {}, this.syncOptions());
   }
 
   // ── Sync Connections ─────────────────────────────────────────────────
 
   loadConnections(factSheetId: number): Observable<SyncConnectionResponse[]> {
     return this.http.get<SyncConnectionResponse[]>(
-      `${backendUrl}/sync/connections?factSheetId=${factSheetId}`
+      `${backendUrl}/sync/connections?factSheetId=${factSheetId}`, this.syncOptions()
     ).pipe(tap(conns => this.connectionsSubject.next(conns)));
   }
 
   createConnection(req: SyncConnectionRequest): Observable<SyncConnectionResponse> {
-    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections`, req);
+    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections`, req, this.syncOptions());
   }
 
   updateConnection(id: number, req: SyncConnectionRequest): Observable<SyncConnectionResponse> {
-    return this.http.put<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}`, req);
+    return this.http.put<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}`, req, this.syncOptions());
   }
 
   deleteConnection(id: number): Observable<void> {
-    return this.http.delete<void>(`${backendUrl}/sync/connections/${id}`);
+    return this.http.delete<void>(`${backendUrl}/sync/connections/${id}`, this.syncOptions());
   }
 
   triggerSync(connectionId: number): Observable<SyncRunResponse> {
     return this.http.post<SyncRunResponse>(
-      `${backendUrl}/sync/connections/${connectionId}/trigger`, {}
+      `${backendUrl}/sync/connections/${connectionId}/trigger`, {}, this.syncOptions()
     );
   }
 
   pullUpdates(connectionId: number): Observable<SyncRunResponse> {
     return this.http.post<SyncRunResponse>(
-      `${backendUrl}/sync/connections/${connectionId}/pull`, {}
+      `${backendUrl}/sync/connections/${connectionId}/pull`, {}, this.syncOptions()
     );
   }
 
   getRun(sessionId: string): Observable<SyncRunResponse> {
     return this.http.get<SyncRunResponse>(
-      `${backendUrl}/sync/runs/${encodeURIComponent(sessionId)}`
+      `${backendUrl}/sync/runs/${encodeURIComponent(sessionId)}`, this.syncOptions()
     );
   }
 
@@ -99,38 +114,38 @@ export class NoteSyncService extends BaseService {
     let params = new HttpParams();
     if (connectionId != null) params = params.set('connectionId', connectionId);
     if (factSheetId != null) params = params.set('factSheetId', factSheetId);
-    return this.http.get<SyncRunResponse[]>(`${backendUrl}/sync/runs`, { params });
+    return this.http.get<SyncRunResponse[]>(`${backendUrl}/sync/runs`, this.syncOptions(params));
   }
 
   updateAutoSync(id: number, enabled: boolean, pollCron?: string): Observable<SyncConnectionResponse> {
     return this.http.patch<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/auto-sync`, {
       enabled,
       pollCron: enabled ? pollCron : null
-    });
+    }, this.syncOptions());
   }
 
   enableConnection(id: number): Observable<SyncConnectionResponse> {
-    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/enable`, {});
+    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/enable`, {}, this.syncOptions());
   }
 
   disableConnection(id: number): Observable<SyncConnectionResponse> {
-    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/disable`, {});
+    return this.http.post<SyncConnectionResponse>(`${backendUrl}/sync/connections/${id}/disable`, {}, this.syncOptions());
   }
 
   testConnectionAuth(id: number): Observable<SyncConnectionTestResponse> {
-    return this.http.post<SyncConnectionTestResponse>(`${backendUrl}/sync/connections/${id}/test-auth`, {});
+    return this.http.post<SyncConnectionTestResponse>(`${backendUrl}/sync/connections/${id}/test-auth`, {}, this.syncOptions());
   }
 
   listRecords(connectionId: number, status?: string): Observable<SyncRecord[]> {
     let url = `${backendUrl}/sync/connections/${connectionId}/records`;
     if (status) url += `?status=${status}`;
-    return this.http.get<SyncRecord[]>(url);
+    return this.http.get<SyncRecord[]>(url, this.syncOptions());
   }
 
   resolveConflict(connectionId: number, recordId: number, resolution: string): Observable<any> {
     return this.http.post(
       `${backendUrl}/sync/connections/${connectionId}/records/${recordId}/resolve-conflict`,
-      { resolution }
+      { resolution }, this.syncOptions()
     );
   }
 
@@ -158,5 +173,14 @@ export class NoteSyncService extends BaseService {
     return this.http.get<NoteModel[]>(
       `${backendUrl}/fact-sheets/${factSheetId}/notes/search?q=${encodeURIComponent(query)}`
     );
+  }
+
+  private syncOptions(params?: HttpParams): { headers: HttpHeaders; withCredentials: boolean; params?: HttpParams } {
+    let headers = new HttpHeaders({ 'X-Kompile-Channel-Request': '1' });
+    if (typeof sessionStorage !== 'undefined') {
+      const csrf = sessionStorage.getItem('kompile.channel.csrf');
+      if (csrf) headers = headers.set('X-Kompile-Channel-CSRF', csrf);
+    }
+    return { headers, withCredentials: true, ...(params ? { params } : {}) };
   }
 }

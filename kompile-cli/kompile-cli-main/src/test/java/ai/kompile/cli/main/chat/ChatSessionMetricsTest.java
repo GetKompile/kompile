@@ -202,7 +202,17 @@ class ChatSessionMetricsTest {
             assertEquals(1500, metrics.getOutputTokens());
             assertEquals(500, metrics.getCacheReadTokens());
             assertEquals(150, metrics.getCacheCreationTokens());
-            assertEquals(4500, metrics.getTotalTokens());
+            assertEquals(3650, metrics.getTotalInputTokens());
+            assertEquals(5150, metrics.getTotalTokens());
+        }
+
+        @Test
+        void cacheOnlyUsage_isStillAnActualTokenCount() {
+            metrics.recordTokenUsage(0, 0, 200, 50);
+
+            assertTrue(metrics.hasActualTokenCounts());
+            assertEquals(250, metrics.getTotalInputTokens());
+            assertEquals(250, metrics.getTotalTokens());
         }
 
         @Test

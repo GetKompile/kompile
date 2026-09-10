@@ -22,6 +22,7 @@ import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstructor;
+import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.graphrag.model.Entity;
@@ -31,6 +32,8 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.core.crawler.*;
@@ -53,6 +56,7 @@ import org.springframework.context.event.EventListener;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -107,11 +111,13 @@ class UnifiedCrawlGraphServiceImplTest {
     @MockBean private VectorStore vectorStore;
     @MockBean private EmbeddingModel embeddingModel;
     @MockBean private LLMChat llmChat;
+    @MockBean private StructuredChatLanguageModel structuredChatLanguageModel;
     @MockBean private KnowledgeGraphService knowledgeGraphService;
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
     @MockBean private CrawlStepArchiveService crawlStepArchiveService;
     @MockBean private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
     @MockBean private EntityPartitionCrawlService entityPartitionCrawlService;
+    @MockBean private OntologyAutoProvisioner ontologyAutoProvisioner;
     @Autowired private CrawlProgressEventCollector crawlProgressEventCollector;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private DocumentLoader emailLoader;
@@ -145,10 +151,30 @@ class UnifiedCrawlGraphServiceImplTest {
         doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
 
         // Reset all mocks so stubs from prior tests don't bleed through
-        reset(crawlerService, vectorStore, embeddingModel, llmChat, knowledgeGraphService,
+        reset(crawlerService, vectorStore, embeddingModel, llmChat, structuredChatLanguageModel,
+              knowledgeGraphService,
               fileLoader, emailLoader, tableAwareChunker, htmlChunker,
-              crossDocumentRelationCallback, graphExtractionCheckpointStore);
+              crossDocumentRelationCallback, graphExtractionCheckpointStore,
+              ontologyAutoProvisioner);
         when(graphExtractionCheckpointStore.completedChunkKeys(any(), any())).thenReturn(Set.of());
+
+        // Corpus ontology induction is a mandatory structured-tool phase. Keep this service-level
+        // fixture domain-neutral by returning an explicit empty vocabulary for either type pass;
+        // individual schema tests exercise proposal, consolidation, repair, and validation behavior.
+        when(structuredChatLanguageModel.generateChat(
+                any(StructuredChatLanguageModel.Request.class), anyInt()))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String toolName = request.tools().get(0).name();
+                    String resultKey = CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(toolName)
+                            ? "nodeTypes"
+                            : "relationshipTypes";
+                    return new StructuredChatLanguageModel.Response(
+                            "<empty-type-vocabulary>", "",
+                            List.of(new StructuredChatLanguageModel.ToolCall(
+                                    "schema-empty", toolName, Map.of(resultKey, List.of()))),
+                            List.of());
+                });
 
         // Re-create LLM chain mocks
         requestSpec = mock(LLMChat.ChatClientRequestSpec.class);
@@ -254,8 +280,9 @@ class UnifiedCrawlGraphServiceImplTest {
 
     private static boolean isCorpusSchemaPrompt(String prompt) {
         return prompt != null
-                && prompt.contains("AUTHORITATIVE EXISTING SCHEMA")
-                && prompt.contains("CORPUS PASSAGES");
+                && (prompt.contains(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME)
+                || prompt.contains(CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME)
+                || prompt.contains(CorpusSchemaUnifier.TOPIC_BINDING_TOOL_NAME));
     }
 
     private static LLMChat.ChatClientRequestSpec emptyCorpusSchemaResponse() {
@@ -403,6 +430,7 @@ class UnifiedCrawlGraphServiceImplTest {
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
                         .entityTypes(List.of("PERSON", "ORGANIZATION"))
+                        .relationshipTypes(List.of("WORKS_AT"))
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
@@ -479,7 +507,10 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("mixed types test")
                 .sources(List.of(fileSource("research", "/data/research")))
-                .graphExtraction(GraphExtractionConfig.builder().build())
+                .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON", "LOCATION", "TECHNOLOGY"))
+                        .relationshipTypes(List.of("LOCATED_IN", "USES"))
+                        .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -526,6 +557,8 @@ class UnifiedCrawlGraphServiceImplTest {
                         emailSource("emails", "imap://mail.example.com")
                 ))
                 .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON", "ORGANIZATION"))
+                        .relationshipTypes(List.of("WORKS_AT"))
                         .entityResolution(true)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -598,6 +631,8 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("confidence filter test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON"))
+                        .relationshipTypes(List.of("KNOWS"))
                         .minConfidence(0.8)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -782,7 +817,7 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
-    @DisplayName("Clear graph before run clears durable graph extraction checkpoints")
+    @DisplayName("Replacement crawl keeps active graph and atomically activates hidden generation")
     void clearGraphBeforeRunClearsGraphExtractionCheckpoints() throws Exception {
         CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
         cfg.retainResultGraph = true;
@@ -796,6 +831,18 @@ class UnifiedCrawlGraphServiceImplTest {
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Content", Map.of("source_path", "/data/docs"))
         ));
+        GraphGeneration.Ref generation = new GraphGeneration.Ref(
+                42L, "factsheet_42", "factsheet_42~gen~replacement", "replacement",
+                "factsheet_42", 0L);
+        when(knowledgeGraphService.supportsGraphGenerations()).thenReturn(true);
+        when(knowledgeGraphService.beginFactSheetGeneration(eq(42L), anyString(), anyString()))
+                .thenReturn(generation);
+        when(knowledgeGraphService.validateFactSheetGeneration(generation))
+                .thenReturn(new GraphGeneration.Validation(true, 1, 0, List.of()));
+        when(knowledgeGraphService.activateFactSheetGeneration(eq(generation), anyString()))
+                .thenThrow(new RuntimeException("response lost"))
+                .thenReturn(new GraphGeneration.Activation(
+                        "factsheet_42", generation.physicalGraphId(), "factsheet_42", 1L, Instant.now()));
 
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("clear checkpoint crawl")
@@ -808,10 +855,74 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        InOrder clearOrder = inOrder(graphExtractionCheckpointStore, knowledgeGraphService);
-        clearOrder.verify(graphExtractionCheckpointStore).clearFactSheet(42L);
-        clearOrder.verify(knowledgeGraphService).deleteByFactSheetId(42L);
+        InOrder lifecycle = inOrder(knowledgeGraphService, graphExtractionCheckpointStore);
+        lifecycle.verify(knowledgeGraphService)
+                .beginFactSheetGeneration(eq(42L), anyString(), eq(job.getJobId()));
+        lifecycle.verify(graphExtractionCheckpointStore).clearFactSheet(42L);
+        lifecycle.verify(knowledgeGraphService).validateFactSheetGeneration(generation);
+        lifecycle.verify(knowledgeGraphService, times(2))
+                .activateFactSheetGeneration(eq(generation), eq(job.getJobId() + ":activate"));
+        verify(knowledgeGraphService, never()).deleteByFactSheetId(42L);
+        assertNotNull(job.getGraphActivation());
+        assertEquals("ACTIVE", job.getGraphGeneration().state());
         verify(llmChat, atLeastOnce()).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
+    }
+
+    @Test
+    @DisplayName("Replacement crawl failure aborts hidden generation without deleting active graph")
+    void replacementFailureAbortsHiddenGeneration() throws Exception {
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.retainResultGraph = true;
+        cfg.crawlClearGraphBeforeRun = true;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+        GraphGeneration.Ref generation = new GraphGeneration.Ref(
+                42L, "factsheet_42", "factsheet_42~gen~replacement", "replacement",
+                "factsheet_42", 0L);
+        when(knowledgeGraphService.supportsGraphGenerations()).thenReturn(true);
+        when(knowledgeGraphService.beginFactSheetGeneration(eq(42L), anyString(), anyString()))
+                .thenReturn(generation);
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any()))
+                .thenThrow(new IllegalStateException("source unavailable"));
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("failed replacement")
+                .factSheetId(42L)
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.FAILED, job.getStatus().get());
+        verify(knowledgeGraphService).abortFactSheetGeneration(eq(generation), contains("source"));
+        verify(knowledgeGraphService, never()).activateFactSheetGeneration(any(), anyString());
+        verify(knowledgeGraphService, never()).deleteByFactSheetId(42L);
+        assertEquals("ABORTED", job.getGraphGeneration().state());
+    }
+
+    @Test
+    @DisplayName("Distributed replacement fails before generation or graph mutation")
+    void distributedReplacementFailsClosed() throws Exception {
+        CrawlRuntimeConfigManager.CrawlRuntimeConfig cfg = CrawlRuntimeConfigManager.CrawlRuntimeConfig.defaults();
+        cfg.crawlClearGraphBeforeRun = true;
+        doReturn(cfg).when(runtimeConfigManager).refreshRuntimeConfig();
+
+        UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
+                .name("distributed replacement")
+                .factSheetId(42L)
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .distribution(UnifiedCrawlRequest.DistributionConfig.builder().workerCount(2).build())
+                .graphExtraction(GraphExtractionConfig.builder().build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+
+        awaitCompletion(job);
+
+        assertEquals(UnifiedCrawlJob.Status.FAILED, job.getStatus().get());
+        verify(knowledgeGraphService, never())
+                .beginFactSheetGeneration(anyLong(), anyString(), anyString());
+        verify(knowledgeGraphService, never()).deleteByFactSheetId(anyLong());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -860,7 +971,10 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("raw json test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().build())
+                .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON", "LOCATION"))
+                        .relationshipTypes(List.of("LOCATED_IN"))
+                        .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
@@ -1005,6 +1119,43 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
+    @DisplayName("Invalid step IDs fail before model probing, events, or queue registration")
+    void startJob_invalidStepSelectionFailsBeforeSideEffects() throws Exception {
+        clearInvocations(runtimeConfigManager, crawlerService, fileLoader, llmChat,
+                vectorStore, embeddingModel);
+        int jobsBefore = service.getAllJobs().size();
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                service.startJob(UnifiedCrawlRequest.builder()
+                        .name("invalid-step")
+                        .sources(List.of(fileSource("docs", "/data/docs")))
+                        .enabledSteps(List.of("   "))
+                        .build()));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                service.startJob(UnifiedCrawlRequest.builder()
+                        .name("unknown-step")
+                        .sources(List.of(fileSource("docs", "/data/docs")))
+                        .enabledSteps(List.of("NOT_A_STEP"))
+                        .build()));
+        assertThrows(IllegalArgumentException.class, () ->
+                service.startJob(UnifiedCrawlRequest.builder()
+                        .name("null-step")
+                        .sources(List.of(fileSource("docs", "/data/docs")))
+                        .archivedSteps(Collections.singletonList(null))
+                        .build()));
+
+        assertTrue(error.getMessage().contains("<blank>"));
+        assertEquals(jobsBefore, service.getAllJobs().size());
+        assertTrue(crawlProgressEventCollector.events.isEmpty());
+        verify(runtimeConfigManager, never()).refreshRuntimeConfig();
+        verify(crawlerService, never()).hasCrawlerForSourceType(any());
+        verify(fileLoader, never()).load(any(DocumentSourceDescriptor.class), any());
+        verify(llmChat, never()).prompt(anyString());
+        verifyNoInteractions(vectorStore, embeddingModel);
+    }
+
+    @Test
     @DisplayName("Cancellation is terminal only after the running worker quiesces")
     void cancelJob_lifecycle() throws Exception {
         CountDownLatch loaderEntered = new CountDownLatch(1);
@@ -1045,7 +1196,7 @@ class UnifiedCrawlGraphServiceImplTest {
     void startJob_rejectsUnresolvedFactSheetName() {
         UnifiedCrawlRequest request = UnifiedCrawlRequest.builder()
                 .name("unresolved scope")
-                .factSheetName("FP&A typo")
+                .factSheetName("Planning typo")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build();
@@ -1152,16 +1303,16 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
-    @DisplayName("LLM throws exception — counted as error but job continues")
+    @DisplayName("LLM exception recovered by the outer in-phase retry is not permanent")
     void llmThrows_jobContinues() throws Exception {
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Doc 1", Map.of()),
                 new Document("Doc 2", Map.of())
         ));
 
-        // maxValidationRetries=2 means 3 attempts per chunk (0,1,2).
-        // To make doc 1 permanently fail we must exhaust all 3 retry slots with throws,
-        // then doc 2 gets a valid response on its first attempt.
+        // maxValidationRetries=2 means 3 attempts per chunk (0,1,2). Doc 1 exhausts those
+        // validation-level attempts, doc 2 succeeds, and then the separate per-chunk retry
+        // recovers doc 1 from Mockito's repeated final valid response.
         String validJson = buildExtractionJson(
                 List.of(entity("e1", "Result", "CONCEPT", "From doc 2", 0.9)),
                 List.of()
@@ -1182,12 +1333,10 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        assertTrue(job.getErrorCount().get() >= 1, "Doc 1 failed all retries → errorCount must be >= 1");
-        // Doc 2 extracted 1 entity on the main pass; doc 1 failed the main pass but was recovered
-        // by the per-chunk in-phase retry (extractGraphChunksIndividually) → at least 1 entity total.
-        // When doc 1 recovers on retry, it also extracts 1 entity → total >= 2 including both docs.
-        assertTrue(job.getEntitiesExtracted().get() >= 1,
-                "At least 1 entity must be extracted (from doc 2, possibly more from retried doc 1)");
+        assertEquals(0, job.getErrorCount().get(),
+                "an in-phase recovery must not leave a permanent job error");
+        assertTrue(job.getEntitiesExtracted().get() >= 2,
+                "both the main-pass document and the recovered document must be extracted");
     }
 
     @Test
@@ -1236,6 +1385,38 @@ class UnifiedCrawlGraphServiceImplTest {
         assertTrue(types.stream().anyMatch(t -> "WEB_CRAWL".equals(t.type()) && t.available()));
         // EMAIL available because emailLoader supports it
         assertTrue(types.stream().anyMatch(t -> "EMAIL".equals(t.type()) && t.available()));
+        // S3 is described but not falsely marked available when the live crawler registry lacks it.
+        assertTrue(types.stream().anyMatch(t -> "S3".equals(t.type()) && !t.available()));
+        UnifiedCrawlService.AvailableSourceType gmail = types.stream()
+                .filter(t -> "GMAIL".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(gmail.optionalProperties().contains("accessToken"));
+        assertTrue(gmail.optionalProperties().contains("gmailQuery"));
+        assertFalse(gmail.optionalProperties().contains("oauthToken"));
+        assertFalse(gmail.optionalProperties().contains("query"));
+        UnifiedCrawlService.AvailableSourceType discord = types.stream()
+                .filter(t -> "DISCORD".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(discord.requiredProperties().contains("botToken"));
+        assertTrue(discord.optionalProperties().contains("channelIds"));
+        assertFalse(discord.optionalProperties().contains("channels"));
+        UnifiedCrawlService.AvailableSourceType s3 = types.stream()
+                .filter(t -> "S3".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(s3.requiredProperties().containsAll(List.of("accessKey", "secretKey")));
+        UnifiedCrawlService.AvailableSourceType jira = types.stream()
+                .filter(t -> "JIRA".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(jira.requiredProperties().contains("pathOrUrl"));
+        assertTrue(jira.optionalProperties().containsAll(
+                List.of("projectKey", "jql", "apiToken", "maxIssues")));
+        UnifiedCrawlService.AvailableSourceType reddit = types.stream()
+                .filter(t -> "REDDIT".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(reddit.requiredProperties().contains("pathOrUrl"));
+        assertTrue(reddit.optionalProperties().containsAll(
+                List.of("sortType", "timePeriod", "postLimit", "commentDepth")));
+        UnifiedCrawlService.AvailableSourceType notion = types.stream()
+                .filter(t -> "NOTION".equals(t.type())).findFirst().orElseThrow();
+        assertTrue(notion.requiredProperties().contains("pathOrUrl"));
+        assertTrue(notion.optionalProperties().containsAll(
+                List.of("apiToken", "pageIds", "databaseIds", "maxPages", "maxBlockDepth",
+                        "maxBlocks", "maxApiRequests")));
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -1258,7 +1439,10 @@ class UnifiedCrawlGraphServiceImplTest {
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
                 .name("snapshot test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
-                .graphExtraction(GraphExtractionConfig.builder().build())
+                .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON", "ORGANIZATION"))
+                        .relationshipTypes(List.of("WORKS_AT"))
+                        .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(true).build())
                 .build());
 
@@ -1456,7 +1640,9 @@ class UnifiedCrawlGraphServiceImplTest {
         // Verify schema was built and passed
         GraphSchema capturedSchema = schemaCaptor.getValue();
         assertNotNull(capturedSchema);
-        assertEquals(2, capturedSchema.getNodeTypes().size());
+        assertTrue(capturedSchema.getAllNodeLabels().containsAll(
+                ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary
+                        .BASE_ENTITY_TYPES));
         assertEquals(2, capturedSchema.getRelationshipTypes().size());
         assertTrue(capturedSchema.getNodeTypes().stream()
                 .anyMatch(nt -> "PERSON".equals(nt.getLabel())));
@@ -1651,8 +1837,8 @@ class UnifiedCrawlGraphServiceImplTest {
     }
 
     @Test
-    @DisplayName("GraphConstructor schema is null when no entity/relationship types configured")
-    void graphConstructor_nullSchemaWhenNoTypes() throws Exception {
+    @DisplayName("GraphConstructor receives an explicit frozen empty schema when induction finds no types")
+    void graphConstructor_explicitEmptySchemaWhenInductionFindsNoTypes() throws Exception {
         enableGraphConstructor();
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Schema null check document", Map.of())
@@ -1685,13 +1871,19 @@ class UnifiedCrawlGraphServiceImplTest {
 
         awaitCompletion(job);
 
-        // Schema should be null when no types are configured
-        assertNull(schemaCaptor.getValue());
+        // Null would re-enable ontology mutation during extraction. A completed type prepass must
+        // freeze even an empty vocabulary explicitly.
+        assertNotNull(schemaCaptor.getValue());
+        assertTrue(schemaCaptor.getValue().getAllNodeLabels().containsAll(
+                ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary
+                        .BASE_ENTITY_TYPES));
+        assertTrue(schemaCaptor.getValue().getAllRelationshipTypes().isEmpty());
+        assertNotNull(schemaCaptor.getValue().getRelationshipTypes());
     }
 
     @Test
-    @DisplayName("Default enforcement mode is LENIENT when schemaMode not set")
-    void graphConstructor_defaultLenientMode() throws Exception {
+    @DisplayName("A corpus-derived frozen schema forces strict extraction enforcement")
+    void graphConstructor_frozenSchemaForcesStrictMode() throws Exception {
         enableGraphConstructor();
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
                 new Document("Some text", Map.of())
@@ -1717,14 +1909,14 @@ class UnifiedCrawlGraphServiceImplTest {
                 .name("default mode test")
                 .sources(List.of(fileSource("docs", "/data/docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
-                        // schemaMode not set → defaults to LENIENT
+                        // No configured mode; the completed prepass still freezes the vocabulary.
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
 
         awaitCompletion(job);
 
-        assertEquals(SchemaEnforcementMode.LENIENT, modeCaptor.getValue());
+        assertEquals(SchemaEnforcementMode.STRICT, modeCaptor.getValue());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -2310,6 +2502,7 @@ class UnifiedCrawlGraphServiceImplTest {
                 .sources(List.of(fileSource("emails", "/data/emails")))
                 .graphExtraction(GraphExtractionConfig.builder()
                         .entityTypes(List.of("PERSON", "DOCUMENT"))
+                        .relationshipTypes(List.of("AUTHORED"))
                         .build())
                 .vectorIndex(VectorIndexConfig.builder()
                         .enabled(true)
@@ -3313,6 +3506,7 @@ class UnifiedCrawlGraphServiceImplTest {
         });
         UnifiedCrawlJob job = service.startJob(UnifiedCrawlRequest.builder()
             .name("persistent-failure-test")
+            .factSheetId(77L)
             .sources(List.of(fileSource("docs", "/data/docs")))
             .graphExtraction(GraphExtractionConfig.builder().build())
             .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -3323,6 +3517,130 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(0, job.getEntitiesExtracted().get(),
             "Persistent failure on all retries should extract zero entities");
         assertTrue(job.getErrorCount().get() >= 1, "Error count must reflect the chunk failure");
+        ArgumentCaptor<GraphSchema> frozenSchema = ArgumentCaptor.forClass(GraphSchema.class);
+        verify(ontologyAutoProvisioner).provisionOntology(eq(77L), frozenSchema.capture());
+        assertNotNull(frozenSchema.getValue());
+        assertTrue(frozenSchema.getValue().getAllNodeLabels().contains("PERSON"),
+                "zero-yield extraction must still persist the baseline/frozen ontology schema");
+    }
+
+    @Test
+    @DisplayName("Explicit retry inherits the original job's frozen corpus schema before queueing")
+    void explicitRetryInheritsFrozenSchemaBeforeQueueing() throws Exception {
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
+                new Document("Retry schema document.", Map.of("source_path", "retry-me"))));
+        UnifiedCrawlJob original = service.startJob(UnifiedCrawlRequest.builder()
+                .name("schema retry source")
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
+                .build());
+        awaitCompletion(original);
+        assertNotNull(original.getFrozenGraphSchema());
+        original.getDocumentProgress().put("retry-me", UnifiedCrawlJob.DocumentProgress.builder()
+                .documentKey("retry-me")
+                .phase("GRAPH_EXTRACTION")
+                .status("FAILED")
+                .build());
+
+        UnifiedCrawlJob retry = service.retryJob(
+                original.getJobId(), "GRAPH_EXTRACTION", List.of("retry-me")).orElseThrow();
+
+        assertEquals(original.getFrozenGraphSchema().getAllNodeLabels(),
+                retry.getFrozenGraphSchema().getAllNodeLabels());
+        assertEquals(original.getFrozenGraphSchema().getAllRelationshipTypes(),
+                retry.getFrozenGraphSchema().getAllRelationshipTypes());
+        awaitCompletion(retry);
+    }
+
+    @Test
+    @DisplayName("Selective retry excludes successful documents before graph and vector side effects")
+    void selectiveRetryFiltersSuccessfulDocumentsBeforeDownstreamStages() throws Exception {
+        Document failedDocument = new Document("same title", Map.of("source_path", "/docs/failed.md"));
+        Document successfulDocument = new Document("same title", Map.of("source_path", "/docs/success.md"));
+        when(fileLoader.load(any(DocumentSourceDescriptor.class), any()))
+                .thenReturn(List.of(failedDocument, successfulDocument));
+
+        UnifiedCrawlJob original = service.startJob(UnifiedCrawlRequest.builder()
+                .name("selective-retry-source")
+                .sources(List.of(fileSource("docs", "/data/docs")))
+                .graphExtraction(GraphExtractionConfig.builder().build())
+                .vectorIndex(VectorIndexConfig.builder().enabled(true)
+                        .collectionName("selective-retry")
+                        .build())
+                .build());
+        awaitCompletion(original);
+        original.getDocumentProgress().put("/docs/failed.md", UnifiedCrawlJob.DocumentProgress.builder()
+                .documentKey("/docs/failed.md")
+                .phase("GRAPH_EXTRACTION")
+                .status("FAILED")
+                .build());
+
+        List<Document> indexedDocuments = new ArrayList<>();
+        clearInvocations(vectorStore, llmChat, knowledgeGraphService);
+        // Vector indexing clears each mutable batch after the store call; snapshot the argument before
+        // that cleanup so this assertion observes the documents actually consumed by the vector store.
+        doAnswer(invocation -> {
+            List<Document> batch = invocation.getArgument(0);
+            indexedDocuments.addAll(new ArrayList<>(batch));
+            return batch.size();
+        }).when(vectorStore).addWithFloatArrayEmbeddings(anyList(), any(float[][].class));
+
+        UnifiedCrawlJob retry = service.retryJob(
+                original.getJobId(), "GRAPH_EXTRACTION", List.of("/docs/failed.md")).orElseThrow();
+        awaitCompletion(retry);
+
+        assertEquals(UnifiedCrawlJob.Status.COMPLETED, retry.getStatus().get());
+        assertEquals("COMPLETED", retry.getDocumentProgress().get("/docs/failed.md").getStatus());
+        assertEquals(1, indexedDocuments.size());
+        Document indexed = indexedDocuments.get(0);
+        assertEquals("/docs/failed.md", indexed.getMetadata().get("source_path"));
+
+        ArgumentCaptor<String> graphDocumentSources = ArgumentCaptor.forClass(String.class);
+        verify(knowledgeGraphService, atLeastOnce()).getNodeByExternalId(
+                graphDocumentSources.capture(), eq(NodeLevel.DOCUMENT), any());
+        assertFalse(graphDocumentSources.getAllValues().isEmpty());
+        assertTrue(graphDocumentSources.getAllValues().stream()
+                .allMatch("/docs/failed.md"::equals));
+        assertFalse(retry.getDocumentProgress().containsKey("/docs/success.md"));
+    }
+
+    @Test
+    @DisplayName("Archived enrichment provisions the rehydrated frozen schema before hydration")
+    void archivedEnrichmentProvisionsRehydratedFrozenSchema() {
+        GraphSchema frozen = new GraphSchema(
+                List.of(new ai.kompile.core.graphrag.model.schema.NodeType(
+                        "ARCHIVED_DOMAIN_TYPE", "Archived", null, "CONCEPT")),
+                List.of(), List.of());
+        when(crawlStepArchiveService.loadSnapshot("archived-schema-job")).thenReturn(
+                new CrawlStepArchiveService.ArchivedJobSnapshot(
+                        "archived-schema-job", "Archived schema", 88L,
+                        List.of("ENRICHMENT"), Map.of(), frozen));
+        when(crawlStepArchiveService.load("archived-schema-job", "ENRICHMENT")).thenReturn(
+                new CrawlStepArchiveService.ArchivedStepData(List.of(), "null"));
+
+        int processed = service.resumeArchivedStep("archived-schema-job", "ENRICHMENT");
+
+        assertTrue(processed >= 0, "archived enrichment completed");
+        ArgumentCaptor<GraphSchema> restored = ArgumentCaptor.forClass(GraphSchema.class);
+        verify(ontologyAutoProvisioner).provisionOntology(eq(88L), restored.capture());
+        assertTrue(restored.getValue().getAllNodeLabels().contains("ARCHIVED_DOMAIN_TYPE"));
+    }
+
+    @Test
+    @DisplayName("Archived enrichment preserves deriveOntology=false")
+    void archivedEnrichmentHonorsDisabledOntologyDerivation() {
+        GraphSchema frozen = ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary.baselineSchema();
+        when(crawlStepArchiveService.loadSnapshot("archived-no-ontology")).thenReturn(
+                new CrawlStepArchiveService.ArchivedJobSnapshot(
+                        "archived-no-ontology", "Archived without ontology", 89L,
+                        List.of("ENRICHMENT"), Map.of(), frozen, false));
+        when(crawlStepArchiveService.load("archived-no-ontology", "ENRICHMENT")).thenReturn(
+                new CrawlStepArchiveService.ArchivedStepData(List.of(), "null"));
+
+        service.resumeArchivedStep("archived-no-ontology", "ENRICHMENT");
+
+        verifyNoInteractions(ontologyAutoProvisioner);
     }
 
     private static void awaitCompletion(UnifiedCrawlJob job) throws InterruptedException {

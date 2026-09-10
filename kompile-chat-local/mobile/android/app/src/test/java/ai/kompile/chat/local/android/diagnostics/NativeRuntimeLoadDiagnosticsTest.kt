@@ -298,6 +298,8 @@ class NativeRuntimeLoadDiagnosticsTest {
         )
 
         assertTrue(diagnostic.summary.contains("low-memory termination"))
+        assertTrue(diagnostic.remediation.contains("Close other apps or restart the device"))
+        assertTrue(diagnostic.remediation.contains("does not download the model again"))
         assertTrue(diagnostic.technicalDetails.length > 4_096)
         assertTrue(diagnostic.technicalDetails.contains(tail))
         assertTrue(diagnostic.technicalDetails.length <= ImportDiagnosticPolicy.MAX_DETAIL_CHARS)

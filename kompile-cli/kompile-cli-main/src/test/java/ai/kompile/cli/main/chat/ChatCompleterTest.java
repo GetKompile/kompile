@@ -58,15 +58,21 @@ class ChatCompleterTest {
         assertTrue(values.contains("/help"), "missing /help");
         assertTrue(values.contains("/tools"), "missing /tools");
         assertTrue(values.contains("/quit"), "missing /quit");
-        assertTrue(values.contains("/enforce"), "missing /enforce");
-        assertTrue(values.contains("/enforcer"), "missing /enforcer");
+        assertTrue(values.contains("/judge"), "missing /judge");
+        assertTrue(values.contains("/judge-global"), "missing /judge-global");
+        assertFalse(values.contains("/enforcer"), "legacy enforcer alias must not be advertised");
         assertTrue(values.contains("/activity"), "missing /activity");
         assertTrue(values.contains("/render"), "missing /render");
         assertTrue(values.contains("/title"), "missing /title");
+        assertTrue(values.contains("/dashboard"), "missing /dashboard");
         assertTrue(values.contains("/image"), "missing /image");
+        assertTrue(values.contains("/reset"), "missing /reset");
+        assertTrue(values.contains("/reset-all"), "missing /reset-all");
         assertTrue(values.contains("/queue-send-all"), "missing /queue-send-all");
         assertTrue(values.contains("/queue-edit"), "missing /queue-edit");
         assertTrue(values.contains("/queue-move"), "missing /queue-move");
+        assertTrue(values.contains("/loop"), "missing /loop");
+        assertTrue(values.contains("/loop-global"), "missing /loop-global");
         // Skills too
         assertTrue(values.contains("/commit"), "missing /commit skill");
         assertTrue(values.contains("/review"), "missing /review skill");
@@ -89,6 +95,19 @@ class ChatCompleterTest {
         List<Candidate> candidates = complete("/help");
         Set<String> values = candidateValues(candidates);
         assertTrue(values.contains("/help"));
+    }
+
+    @Test
+    void dashboardCompletesDeterministicControls() {
+        Set<String> values = candidateValues(complete("/dashboard "));
+        assertEquals(Set.of("refresh", "show", "hide", "status"), values);
+    }
+
+    @Test
+    void resourcesCompletesPlainTextControls() {
+        Set<String> values = candidateValues(complete("/resources "));
+        assertTrue(values.containsAll(Set.of("show", "sources", "rules", "check", "rule",
+                "remove", "default", "unknown-shell", "inherit", "global", "json", "help")));
     }
 
     @Test
@@ -134,18 +153,19 @@ class ChatCompleterTest {
         // when the user types that exact command
         List<String> allCases = List.of(
                 "/quit", "/exit", "/help", "/setup", "/tools", "/subagents",
-                "/local-tools", "/tool", "/local-tool", "/status", "/history",
-                "/clear", "/compact", "/auto-compact", "/rag", "/agents", "/local-agents",
+                "/local-tools", "/tool", "/local-tool", "/status", "/dashboard", "/history",
+                "/clear", "/reset", "/reset-all", "/restart", "/compact", "/auto-compact",
+                "/rag", "/agents", "/local-agents",
                 "/agent", "/local-agent", "/config", "/sessions", "/ask",
                 "/agent-chat", "/conversations", "/transcript", "/memory",
                 "/recall", "/reminder", "/reminder-global", "/permissions", "/todos",
                 "/plan", "/title", "/queue",
                 "/queues", "/queue-send", "/queue-send-all", "/queue-remove",
                 "/queue-edit", "/queue-move", "/queue-clear", "/queue-status",
-                "/jobs", "/jobs-remove",
+                "/loop", "/loop-global", "/jobs", "/jobs-remove",
                 "/jobs-clear", "/activity", "/processes", "/process-kill", "/process-output",
-                "/process-status", "/statusbar", "/auto-dequeue", "/enforce", "/enforcer", "/stats",
-                "/passthrough", "/keys", "/render", "/resume", "/mode", "/menu", "/skills",
+                "/process-status", "/statusbar", "/auto-dequeue", "/judge", "/judge-global", "/stats",
+                "/passthrough", "/keys", "/render", "/resume", "/resume-all", "/mode", "/menu", "/skills",
                 "/roles", "/role", "/model", "/forward", "/archive", "/rollback", "/diff", "/purge",
                 "/rules", "/image", "/file", "/attach", "/attachments"
         );
@@ -156,6 +176,16 @@ class ChatCompleterTest {
             assertTrue(values.contains(cmd),
                     "Command " + cmd + " should be completable but was not found in candidates: " + values);
         }
+    }
+
+    @Test
+    void sessionAndGlobalLoopCommandsCompleteTheSameControls() {
+        Set<String> session = candidateValues(complete("/loop "));
+        Set<String> global = candidateValues(complete("/loop-global "));
+
+        assertEquals(Set.of("add", "list", "clear", "pause", "resume", "run", "remove"),
+                session);
+        assertEquals(session, global);
     }
 
     // ========================================================================
@@ -276,15 +306,16 @@ class ChatCompleterTest {
     }
 
     // ========================================================================
-    // Sub-argument completion (enforce, rag, plan, mode)
+    // Sub-argument completion (judge, rag, plan, mode)
     // ========================================================================
 
     @Test
-    void enforceSubArgs() {
-        List<Candidate> candidates = complete("/enforce ");
+    void judgeSubArgs() {
+        List<Candidate> candidates = complete("/judge ");
         Set<String> values = candidateValues(candidates);
-        assertEquals(Set.of("status", "on", "off", "pause", "resume", "judgements", "show",
-                "rules", "init", "delete", "reload", "run"), values);
+        assertEquals(Set.of("status", "on", "off", "pause", "resume", "global",
+                "workflow", "judgements", "config", "show", "rules", "init", "delete", "reload", "run",
+                "direction", "chat", "feedback", "override", "restart", "agent"), values);
     }
 
     @Test
@@ -295,11 +326,22 @@ class ChatCompleterTest {
         assertTrue(values.contains("pause"));
         assertTrue(values.contains("resume"));
         assertTrue(values.contains("judgements"));
+        assertTrue(values.contains("global"));
+        assertTrue(values.contains("workflow"));
     }
 
     @Test
-    void enforceSubArgWithPrefix() {
-        List<Candidate> candidates = complete("/enforce o");
+    void resumeAllSubArgsExposeEverySupportedControl() {
+        Set<String> values = candidateValues(complete("/resume-all "));
+        assertEquals(Set.of(
+                "--dry-run", "--list", "--recent", "--all", "--agent", "--project",
+                "--status", "--terminal", "--set-recent", "--set-terminal",
+                "--set-terminal-args", "--prune"), values);
+    }
+
+    @Test
+    void judgeSubArgWithPrefix() {
+        List<Candidate> candidates = complete("/judge o");
         Set<String> values = candidateValues(candidates);
         assertTrue(values.contains("on"));
         assertTrue(values.contains("off"));
@@ -307,20 +349,23 @@ class ChatCompleterTest {
     }
 
     @Test
-    void enforceSubArgHasDescription() {
-        List<Candidate> candidates = complete("/enforce ru");
+    void judgeSubArgHasDescription() {
+        List<Candidate> candidates = complete("/judge ru");
         Candidate rules = candidates.stream()
                 .filter(c -> "rules".equals(c.value()))
                 .findFirst().orElse(null);
         assertNotNull(rules);
-        assertEquals("Show active enforcer rules", rules.descr());
+        assertEquals("Show active judge policy rules", rules.descr());
     }
 
     @Test
     void activitySubArgsIncludeInspectionAndCleanup() {
         List<Candidate> candidates = complete("/activity ");
         Set<String> values = candidateValues(candidates);
-        assertEquals(Set.of("enter", "inspect", "status", "logs", "kill", "remove", "clear", "close"), values);
+        assertEquals(Set.of("agents", "agent", "refresh", "local",
+                "session", "project", "global", "history", "outcomes", "transcript",
+                "detail", "search", "next", "previous", "confirm", "annotate",
+                "enter", "inspect", "status", "logs", "kill", "remove", "clear", "close"), values);
     }
 
     @Test

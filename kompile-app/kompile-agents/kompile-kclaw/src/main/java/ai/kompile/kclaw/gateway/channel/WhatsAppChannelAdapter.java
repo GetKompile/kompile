@@ -15,9 +15,9 @@
  */
 package ai.kompile.kclaw.gateway.channel;
 
-import ai.kompile.kclaw.agent.KClawAgentService;
 import ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter;
 import ai.kompile.gateway.core.gateway.channel.ChannelAdapter;
+import ai.kompile.gateway.core.service.AgentExecutor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
@@ -31,10 +31,12 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
     private String accessToken;
     private String phoneNumberId;
     private String verifyToken;
+    private String appSecret;
     private final Set<String> allowedPhoneNumbers = new HashSet<>();
+    private boolean allowAllInbound;
 
-    public WhatsAppChannelAdapter(KClawAgentService agentService) {
-        super(agentService);
+    public WhatsAppChannelAdapter(AgentExecutor agentExecutor) {
+        super(agentExecutor);
     }
 
     @Override
@@ -58,23 +60,42 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
         this.phoneNumberId = phoneNumberId;
     }
 
+    public String getPhoneNumberId() {
+        return phoneNumberId;
+    }
+
+    /** Called only by the durable, signature-authenticated webhook inbox. */
+    public void processWebhookPayload(Map<String, Object> payload) {
+        if (apiClient == null || !isRunning()) {
+            throw new IllegalStateException("WhatsApp connection is not running");
+        }
+        apiClient.processWebhookPayload(payload);
+    }
+
     public void setVerifyToken(String verifyToken) {
         this.verifyToken = verifyToken;
+    }
+
+    public void setAppSecret(String appSecret) {
+        this.appSecret = appSecret;
     }
 
     public void addAllowedPhone(String phoneNumber) {
         allowedPhoneNumbers.add(phoneNumber);
     }
 
+    public void setAllowAllInbound(boolean allowAllInbound) {
+        this.allowAllInbound = allowAllInbound;
+    }
+
     @Override
     protected void doStart() {
         if (apiClient == null) {
-            log.warn("WhatsApp API client not configured");
-            return;
+            throw new IllegalStateException("WhatsApp API client is not configured");
         }
 
         apiClient.addMessageHandler(this);
-        apiClient.start(accessToken, phoneNumberId, verifyToken);
+        apiClient.start(accessToken, phoneNumberId, verifyToken, appSecret);
     }
 
     @Override
@@ -104,7 +125,7 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
                 message.fromName() != null ? message.fromName() : cleanPhone,
                 message.text(),
                 phoneNumberId,
-                message.timestamp() * 1000L,
+                message.timestamp(),
                 message.messageId(),
                 Map.of("phone_number", message.from())
         );
@@ -143,11 +164,13 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
 
     @Override
     public void onReady() {
+        markReady();
         log.info("WhatsApp adapter ready");
     }
 
     @Override
     public void onError(Throwable error) {
+        recordError(error);
         log.error("WhatsApp adapter error", error);
     }
 
@@ -156,8 +179,17 @@ public class WhatsAppChannelAdapter extends BaseChannelAdapter implements WhatsA
         return channelConfigs.values().stream().findFirst().orElse(null);
     }
 
+    @Override
+    public DeliveryResult send(String target, String content) {
+        if (apiClient == null || !isRunning()) {
+            throw new IllegalStateException("WhatsApp connection is not running");
+        }
+        apiClient.sendTextMessage(target, content);
+        return DeliveryResult.accepted("WhatsApp accepted the message");
+    }
+
     private boolean isAllowed(String from) {
-        if (allowedPhoneNumbers.isEmpty()) {
+        if (allowAllInbound) {
             return true;
         }
         String cleanFrom = cleanPhoneNumber(from);

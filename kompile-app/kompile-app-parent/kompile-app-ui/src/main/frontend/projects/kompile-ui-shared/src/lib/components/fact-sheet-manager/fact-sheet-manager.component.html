@@ -36,6 +36,22 @@
     </span>
   </div>
 
+  <div class="integration-auth-bar" *ngIf="integrationAuthRequired && crawlServiceAvailable">
+    <mat-icon>lock</mat-icon>
+    <span>
+      Remote source changes require browser authorization. Run
+      <code>kompile auth source web-login</code> and enter the one-time code.
+      Local loopback ingestion remains available without a browser session.
+    </span>
+    <mat-form-field appearance="outline" subscriptSizing="dynamic">
+      <mat-label>One-time code</mat-label>
+      <input matInput [(ngModel)]="integrationLoginCode"
+             (keyup.enter)="authenticateIntegrationBrowser()" autocomplete="off">
+    </mat-form-field>
+    <button mat-raised-button color="primary" (click)="authenticateIntegrationBrowser()"
+            [disabled]="!integrationLoginCode.trim()">Authorize</button>
+  </div>
+
   <!-- Tab Navigation -->
   <mat-tab-group [selectedIndex]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)">
 

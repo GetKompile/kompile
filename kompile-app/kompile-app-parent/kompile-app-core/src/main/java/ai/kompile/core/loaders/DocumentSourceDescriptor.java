@@ -24,6 +24,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -48,6 +49,10 @@ public class DocumentSourceDescriptor {
         SLACK,          // Represents a Slack channel or workspace for real-time ingestion
         SLACK_HISTORY,  // Represents historical Slack messages to be ingested
         CONFLUENCE,     // Represents Confluence pages/spaces for document ingestion
+        JIRA,           // Represents Jira Cloud issues selected by JQL
+        REDDIT,         // Represents Reddit posts and comments from a subreddit
+        NOTION,         // Represents Notion pages/databases
+        OBSIDIAN,       // Represents a local Obsidian Markdown vault
         EMAIL,          // Represents generic email source (IMAP or POP3)
         IMAP,           // Represents IMAP mail server connection
         POP3,           // Represents POP3 mail server connection
@@ -165,5 +170,35 @@ public class DocumentSourceDescriptor {
             return sourceId;
         }
         return pathOrUrl;
+    }
+
+    /**
+     * Source types whose loaders never read {@code pathOrUrl} as part of their identity.
+     * Mailboxes and workspaces ingest the whole account (GMAIL, GOOGLE_WORKSPACE, EMAIL,
+     * IMAP, POP3), GDOCS discovers document ids itself, Discord resolves the guild from
+     * metadata, and SLACK_HISTORY can load all channels. Locator-centric types (FILE, URL,
+     * GDRIVE, ONEDRIVE, NOTION, JIRA, CONFLUENCE, SLACK, REDDIT, ...) genuinely require
+     * the locator; their loaders throw a precise error when it is absent.
+     */
+    public static boolean locatorOptional(SourceType type) {
+        return switch (type) {
+            case GMAIL, GOOGLE_WORKSPACE, EMAIL, IMAP, POP3, GDOCS,
+                 DISCORD, DISCORD_HISTORY, SLACK_HISTORY -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * String-form overload of {@link #locatorOptional(SourceType)}; unknown types are
+     * locator-required.
+     */
+    public static boolean locatorOptional(String type) {
+        if (type == null) return false;
+        try {
+            return locatorOptional(SourceType.valueOf(
+                    type.trim().toUpperCase(Locale.ROOT).replace('-', '_')));
+        } catch (IllegalArgumentException unknown) {
+            return false;
+        }
     }
 }

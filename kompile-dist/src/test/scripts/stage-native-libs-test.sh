@@ -169,6 +169,31 @@ cmp -s "${ACCELERATOR_BACKEND}/libnd4jcuda.so" "${TEST_TMP}/accelerator-dest/lib
 cmp -s "${ACCELERATOR_BACKEND}/libjnind4jcuda.so" "${TEST_TMP}/accelerator-dest/libjnind4jcuda.so"
 cmp -s "${ACCELERATOR_BACKEND}/shared-runtime-manifest.txt" "${TEST_TMP}/accelerator-dest/shared-runtime-manifest.txt"
 
+# ROCm Core SDK classifiers own non-library kernel packs through the same
+# producer manifest. Preserve their nested .kpack path rather than flattening
+# them into lib/ with shared objects.
+ROCM_SOURCE="${TEST_TMP}/rocm-source"
+ROCM_DEST="${TEST_TMP}/rocm-dest"
+ROCM_BACKEND="${ROCM_SOURCE}/org/nd4j/linalg/jcublas/bindings/linux-x86_64-zluda-rocm-10.0.0"
+mkdir -p "${ROCM_BACKEND}/.kpack"
+printf 'rocm-runtime\n' > "${ROCM_BACKEND}/libnd4jcuda.so"
+printf 'rocm-jni\n' > "${ROCM_BACKEND}/libjnind4jcuda.so"
+printf 'blas-pack\n' > "${ROCM_BACKEND}/.kpack/blas_lib_gfx1103.kpack"
+printf 'sparse-pack\n' > "${ROCM_BACKEND}/.kpack/sparse_lib_gfx1103.kpack"
+cat > "${ROCM_BACKEND}/shared-runtime-manifest.txt" <<'EOF'
+# nd4j-shared-runtime-manifest-v1
+# runtime-count=0
+# resource-count=2
+# resource=.kpack/blas_lib_gfx1103.kpack
+# resource=.kpack/sparse_lib_gfx1103.kpack
+EOF
+bash "${STAGER}" "${ROCM_SOURCE}" "${ROCM_DEST}" linux-x86_64 \
+    -zluda-rocm-10.0.0 nd4j-zluda-12.9
+cmp -s "${ROCM_BACKEND}/.kpack/blas_lib_gfx1103.kpack" \
+    "${ROCM_DEST}/.kpack/blas_lib_gfx1103.kpack"
+cmp -s "${ROCM_BACKEND}/.kpack/sparse_lib_gfx1103.kpack" \
+    "${ROCM_DEST}/.kpack/sparse_lib_gfx1103.kpack"
+
 # A distribution destination can contain GraalVM JDK shims before dependency
 # natives are staged. Both may export JNI_OnLoad, but only the newly staged
 # producer artifact belongs in the direct-JNI bootstrap manifest.

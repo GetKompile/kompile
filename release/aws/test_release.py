@@ -70,9 +70,37 @@ class ReleasePlanTest(unittest.TestCase):
             "cpu-intel": "cpu-avx2", "cpu-arm": "cpu-arm64",
             "cuda": "cuda-12.9", "amd-zluda": "amd-zluda",
         }, variants)
+        zluda = next(
+            variant
+            for shard in self.plan["shards"] if shard["build"]["kind"] == "distribution"
+            for variant in shard["build"]["variants"]
+            if variant["name"] == "amd-zluda"
+        )
+        self.assertEqual("linux-x86_64-zluda", zluda["dl4jLane"])
+        self.assertEqual("cuda-12.9", zluda["dl4jVariant"])
+        self.assertEqual(
+            "linux-x86_64-zluda-rocm-7.2.4", zluda["sdkClassifier"],
+        )
+        self.assertFalse(zluda["requireSdk"])
         for shard in self.plan["shards"]:
             if shard["build"]["kind"] == "distribution":
                 self.assertIn("maven", shard["workloads"], shard["id"])
+
+    def test_rocm_10_is_an_explicit_linux_candidate_platform(self):
+        shard = self.shards["platform-linux-x86_64-zluda-rocm-10.0.0"]
+        self.assertEqual("linux", shard["os"])
+        self.assertEqual("platform", shard["build"]["kind"])
+        self.assertEqual("linux-x86_64-zluda-rocm-10.0.0", shard["build"]["dl4jLane"])
+        self.assertFalse(shard["build"]["requireSdk"])
+        self.assertEqual([{
+            "name": "cuda-12.9",
+            "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
+            "kompileVariant": "amd-zluda",
+            "requireSdk": False,
+        }], shard["build"]["variants"])
+        self.assertNotIn(
+            "platform-windows-x86_64-zluda-rocm-10.0.0", self.shards,
+        )
 
     def test_cpu_classifier_matrix_matches_dl4j_release(self):
         common = {
@@ -99,7 +127,11 @@ class ReleasePlanTest(unittest.TestCase):
         self.assertEqual(["avx2"], [item["name"] for item in classifier[0]["build"]["variants"]])
 
     def test_cuda_versions_platforms_and_classifiers(self):
-        cuda = [item for item in self.plan["shards"] if item["build"]["backend"] == "cuda"]
+        cuda = [
+            item for item in self.plan["shards"]
+            if item["build"]["backend"] == "cuda"
+            and "zluda" not in str(item["build"].get("dl4jLane", ""))
+        ]
         self.assertEqual({("linux", "12.6"), ("linux", "12.9"),
                           ("windows", "12.6"), ("windows", "12.9")},
                          {(item["os"], item["build"]["cudaVersion"]) for item in cuda})
@@ -284,6 +316,74 @@ class BuildPlatformParityTest(unittest.TestCase):
                     command,
                 )
 
+    def test_zluda_sdk_hydration_uses_versioned_artifacts_and_one_native_classifier(self):
+        config = {
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jMavenRepositoryUrl": "https://repo.example/snapshots",
+            "dl4jMavenRepositoryId": "dl4j-release",
+            "shard": {
+                "build": {
+                    "backend": "cuda",
+                    "cudaVersion": "12.9",
+                    "javacppPlatform": "linux-x86_64",
+                    "dl4jLane": "linux-x86_64-zluda-rocm-10.0.0",
+                },
+            },
+        }
+        expected_artifacts = [
+            "nd4j-zluda-12.9",
+            "nd4j-zluda-12.9-platform",
+            "nd4j-cuda-12.9-preset",
+            "nd4j-cuda-backend-common",
+            "nd4j-presets-common",
+        ]
+        self.assertEqual(
+            expected_artifacts,
+            BUILD_MODULE.dl4j_sdk_artifact_ids(config["shard"]["build"]),
+        )
+        classifier = "linux-x86_64-zluda-rocm-10.0.0"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            destination = root / "sdk"
+            jars = destination / "jars"
+
+            def copy_snapshot(command, _cwd):
+                coordinate = next(
+                    item.removeprefix("-Dartifact=")
+                    for item in command if item.startswith("-Dartifact=")
+                )
+                parts = coordinate.split(":")
+                artifact_id = parts[1]
+                artifact_classifier = parts[4] if len(parts) == 5 else ""
+                suffix = f"-{artifact_classifier}" if artifact_classifier else ""
+                jars.mkdir(parents=True, exist_ok=True)
+                (jars / f"{artifact_id}-1.0.0-SNAPSHOT{suffix}.jar").write_bytes(b"jar")
+
+            with patch.object(BUILD_MODULE, "run", side_effect=copy_snapshot) as run:
+                BUILD_MODULE.hydrate_dl4j_sdk_jars(
+                    config, source, root / "m2", destination, classifier,
+                )
+
+            coordinates = [
+                next(item.removeprefix("-Dartifact=") for item in call.args[0]
+                     if item.startswith("-Dartifact="))
+                for call in run.call_args_list
+            ]
+            self.assertEqual(len(expected_artifacts) + 1, len(coordinates))
+            self.assertIn(
+                "org.eclipse.deeplearning4j:nd4j-zluda-12.9:"
+                "1.0.0-SNAPSHOT:jar:linux-x86_64-zluda-rocm-10.0.0",
+                coordinates,
+            )
+            self.assertFalse(any(
+                coordinate.startswith(
+                    "org.eclipse.deeplearning4j:nd4j-zluda-12.9-platform:"
+                ) and coordinate.endswith(f":{classifier}")
+                for coordinate in coordinates
+            ))
+
     def test_graalvm_community_resolution_matches_latest_java_21_tag(self):
         response = MagicMock()
         response.read.return_value = (
@@ -404,14 +504,25 @@ class BuildPlatformParityTest(unittest.TestCase):
         plan = MODULE.load_plan(ROOT / "release-plan.json")
         shards = {item["id"]: item for item in plan["shards"]}
 
-        def create_sdk(*args):
+        def create_sdk(*args, **kwargs):
             sdk = pathlib.Path(args[4])
-            (sdk / "jars").mkdir(parents=True, exist_ok=True)
-            (sdk / "runtime.zip").write_bytes(b"PK\x03\x04runtime")
-            (sdk / "jars" / "nd4j-platform.jar").write_bytes(b"jar")
+            if kwargs.get("require_sdk", True):
+                (sdk / "jars").mkdir(parents=True, exist_ok=True)
+                (sdk / "runtime.zip").write_bytes(b"PK\x03\x04runtime")
+                (sdk / "jars" / "nd4j-platform.jar").write_bytes(b"jar")
+
+        def create_maven_only_sdk(_repository, destination, *_args):
+            jars = pathlib.Path(destination) / "jars"
+            jars.mkdir(parents=True, exist_ok=True)
+            (jars / "nd4j-zluda-12.9.jar").write_bytes(b"jar")
 
         with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}) as graalvm, \
              patch.object(BUILD_MODULE, "run_dl4j_release_lane", side_effect=create_sdk) as dl4j, \
+             patch.object(
+                 BUILD_MODULE, "stage_local_dl4j_sdk_jars",
+                 side_effect=create_maven_only_sdk,
+             ) as local_sdk, \
+             patch.object(BUILD_MODULE, "stage_dl4j_release_artifacts"), \
              patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"), \
              patch.object(BUILD_MODULE, "run") as run:
             for shard_id in ("distribution-linux-x86_64", "distribution-linux-x86_64-accelerators"):
@@ -431,8 +542,14 @@ class BuildPlatformParityTest(unittest.TestCase):
             ("linux-x86_64-cpu", ["base"]),
             ("linux-x86_64-cpu", ["avx2"]),
             ("linux-x86_64-cuda-12-9", ["base"]),
-            ("linux-x86_64-zluda", ["zluda"]),
+            ("linux-x86_64-zluda", ["cuda-12.9"]),
         ], delegated)
+        zluda_call = next(
+            call for call in dl4j.call_args_list
+            if call.args[5] == "linux-x86_64-zluda"
+        )
+        self.assertFalse(zluda_call.kwargs["require_sdk"])
+        local_sdk.assert_called_once()
         canonical = [call for call in run.call_args_list if call.args[0][:2] == ["bash", "./build-dist.sh"]]
         self.assertEqual(6, len(canonical))
         self.assertTrue(all(call.args[2]["KOMPILE_MAVEN_REPO"] == "/m2" for call in canonical))
@@ -446,6 +563,65 @@ class BuildPlatformParityTest(unittest.TestCase):
         )
         self.assertEqual("nvidia/cuda:12.9.1-devel-ubuntu22.04",
                          shards["distribution-linux-x86_64-accelerators"]["containerImage"])
+
+    def test_repository_default_zluda_hydrates_maven_only_sdk_without_runtime_archive(self):
+        plan = MODULE.load_plan(ROOT / "release-plan.json")
+        shard = next(
+            json.loads(json.dumps(item)) for item in plan["shards"]
+            if item["id"] == "distribution-linux-x86_64-accelerators"
+        )
+        shard["build"]["variants"] = [
+            item for item in shard["build"]["variants"]
+            if item["name"] == "amd-zluda"
+        ]
+        config = {
+            "releaseVersion": "1.2.3",
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jMavenRepositoryUrl": "https://repo.example/snapshots",
+            "dl4jMavenRepositoryId": "dl4j-release",
+            "shard": shard,
+        }
+
+        def hydrate(_config, _source, _repository, destination, _classifier, **_kwargs):
+            jars = pathlib.Path(destination) / "jars"
+            jars.mkdir(parents=True, exist_ok=True)
+            (jars / "nd4j-zluda-12.9.jar").write_bytes(b"jar")
+
+        captured = {}
+
+        def capture_build(command, _cwd, _env=None):
+            captured["command"] = command
+            sdk_root = pathlib.Path(command[command.index("--sdx-assets") + 1])
+            captured["runtime_packages"] = [
+                item for item in sdk_root.rglob("*")
+                if item.is_file() and item.suffix.lower() in {".zip", ".aar"}
+            ]
+
+        with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}), \
+             patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download, \
+             patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars", side_effect=hydrate) as hydrated, \
+             patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j, \
+             patch.object(BUILD_MODULE, "stage_dl4j_release_artifacts"), \
+             patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"), \
+             patch.object(BUILD_MODULE, "run", side_effect=capture_build):
+            BUILD_MODULE.build_distribution(
+                config, pathlib.Path("/source"), pathlib.Path("/m2"),
+                pathlib.Path("/maven-output"), pathlib.Path("/assets"),
+            )
+
+        download.assert_not_called()
+        dl4j.assert_not_called()
+        hydrated.assert_called_once()
+        hydrate_call = hydrated.call_args
+        self.assertEqual(
+            "linux-x86_64-zluda-rocm-7.2.4", hydrate_call.args[4],
+        )
+        self.assertEqual(
+            "linux-x86_64-zluda", hydrate_call.kwargs["build_override"]["dl4jLane"],
+        )
+        command = captured["command"]
+        self.assertIn("--sdx-assets", command)
+        self.assertEqual([], captured["runtime_packages"])
 
     def test_dl4j_lane_preserves_sdk_artifact_rules_for_jar_packaging(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -830,6 +1006,13 @@ class BuildPlatformParityTest(unittest.TestCase):
             cli.write_bytes(b"native-cli")
             cli.chmod(0o755)
             (cli.parent / "native-libs").mkdir()
+            model_cli = (
+                root / "kompile-cli" / "kompile-model-cli" / "target" /
+                "kompile-model"
+            )
+            model_cli.parent.mkdir(parents=True)
+            model_cli.write_bytes(b"native-model-cli")
+            model_cli.chmod(0o755)
             output = root / "output"
             repository = root / "m2"
             env = os.environ.copy()
@@ -862,6 +1045,123 @@ class BuildPlatformParityTest(unittest.TestCase):
             )
             self.assertTrue((installed / f"{base}.zip").is_file())
             self.assertTrue((installed / f"{base}.tar.gz").is_file())
+
+    def test_native_stager_preserves_manifest_owned_rocm_kernel_packs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            helper_dir = root / "helpers"
+            helper_dir.mkdir()
+            stager = helper_dir / "stage-native-libs.sh"
+            shutil.copy2(
+                REPOSITORY / "kompile-dist" / "src" / "main" / "build" /
+                "stage-native-libs.sh",
+                stager,
+            )
+            stager.chmod(0o755)
+            normalizer = helper_dir / "normalize-elf-portability.sh"
+            normalizer.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            normalizer.chmod(0o755)
+
+            classifier = "linux-x86_64-zluda-rocm-10.0.0"
+            backend = (
+                root / "source" / "org" / "nd4j" / "linalg" / "jcublas" /
+                "bindings" / classifier
+            )
+            resources = backend / ".kpack"
+            resources.mkdir(parents=True)
+            (resources / "blas_lib_gfx1103.kpack").write_bytes(b"blas-pack")
+            (resources / "sparse_lib_gfx1103.kpack").write_bytes(b"sparse-pack")
+            shutil.copy2("/bin/true", backend / "libnd4jcuda.so")
+            shutil.copy2("/bin/true", backend / "libjnind4jcuda.so")
+            (backend / "shared-runtime-manifest.txt").write_text(
+                "# nd4j-shared-runtime-manifest-v1\n"
+                "# runtime-count=2\n"
+                "# resource-count=2\n"
+                "# resource=.kpack/blas_lib_gfx1103.kpack\n"
+                "# resource=.kpack/sparse_lib_gfx1103.kpack\n"
+                "libnd4jcuda.so\n"
+                "libjnind4jcuda.so\n",
+                encoding="utf-8",
+            )
+
+            destination = root / "dist" / "lib"
+            command = [
+                "bash", str(stager), str(root / "source"), str(destination),
+                "linux-x86_64", "-zluda-rocm-10.0.0", "nd4j-zluda-12.9",
+            ]
+            completed = subprocess.run(
+                command, check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+            self.assertEqual(
+                b"blas-pack", (destination / ".kpack" / "blas_lib_gfx1103.kpack").read_bytes(),
+            )
+            self.assertEqual(
+                b"sparse-pack", (destination / ".kpack" / "sparse_lib_gfx1103.kpack").read_bytes(),
+            )
+
+            (resources / "sparse_lib_gfx1103.kpack").unlink()
+            failed = subprocess.run(
+                [*command[:3], str(root / "missing-dist" / "lib"), *command[4:]],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, failed.returncode)
+            self.assertIn("runtime resource is missing", failed.stdout + failed.stderr)
+
+    def test_exec_jar_reuse_requires_exact_rocm_classifier(self):
+        source = (REPOSITORY / "build-dist.sh").read_text(encoding="utf-8")
+        marker = "exec_jar_matches_backend() {"
+        function_body = source.split(marker, 1)[1].split(
+            '\n}\n\nif [ "${SKIP_JAVA_BUILD}"', 1,
+        )[0]
+        function = marker + function_body + "\n}\n"
+        backend = "nd4j-zluda-12.9"
+        version = "1.0.0-SNAPSHOT"
+        classifier = "linux-x86_64-zluda-rocm-10.0.0"
+        script = (
+            f'ND4J_BACKEND="{backend}"\n'
+            f'ND4J_VERSION="{version}"\n'
+            f'SDK_CLASSIFIER="{classifier}"\n'
+            'KOMPILE_BACKEND_PROFILE="zluda-rocm-10.0.0"\n'
+            + function
+            + 'exec_jar_matches_backend "$1"\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            exact = root / "exact.jar"
+            stale = root / "stale.jar"
+            with zipfile.ZipFile(exact, "w") as archive:
+                archive.writestr(
+                    f"BOOT-INF/lib/{backend}-{version}.jar", b"java-backend",
+                )
+                archive.writestr(
+                    f"BOOT-INF/lib/{backend}-{version}-{classifier}.jar",
+                    b"rocm10-native",
+                )
+            with zipfile.ZipFile(stale, "w") as archive:
+                archive.writestr(
+                    f"BOOT-INF/lib/{backend}-{version}.jar", b"java-backend",
+                )
+                archive.writestr(
+                    f"BOOT-INF/lib/{backend}-{version}-linux-x86_64-zluda-rocm-7.2.4.jar",
+                    b"rocm7-native",
+                )
+            exact_result = subprocess.run(
+                ["bash", "-c", script, "bash", str(exact)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            stale_result = subprocess.run(
+                ["bash", "-c", script, "bash", str(stale)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(
+            0, exact_result.returncode, exact_result.stdout + exact_result.stderr,
+        )
+        self.assertNotEqual(0, stale_result.returncode)
 
     def test_repository_only_backend_assembly_produces_self_contained_zip(self):
         maven = shutil.which("mvn")
@@ -908,6 +1208,10 @@ class BuildPlatformParityTest(unittest.TestCase):
 
             files = {
                 "kompile-cli/kompile-cli-main/target/kompile-cli-main": b"native-cli",
+                "kompile-cli/kompile-agent-cli/target/kompile-agent": b"native-agent-cli",
+                "kompile-cli/kompile-app-cli/target/kompile-app-cli": b"native-app-cli",
+                "kompile-cli/kompile-model-cli/target/kompile-model": b"native-model-cli",
+                "kompile-cli/kompile-component-cli/target/kompile-component": b"native-component-cli",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app": b"native-app",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/app-exec.jar": b"app",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test": b"native-vlm",
@@ -1155,14 +1459,35 @@ class BuildPlatformParityTest(unittest.TestCase):
             windows_zluda = root / "windows-zluda"
             (windows_zluda / "jars").mkdir(parents=True)
             for jar_name in (
-                "nd4j-cuda-12.9-1.0.0-SNAPSHOT-windows-x86_64-zluda.jar",
+                "nd4j-zluda-12.9-1.0.0-SNAPSHOT.jar",
+                "nd4j-zluda-12.9-1.0.0-SNAPSHOT-windows-x86_64-zluda-rocm-7.2.4.jar",
+                "nd4j-zluda-12.9-platform-1.0.0-SNAPSHOT.jar",
                 "nd4j-cuda-12.9-preset-1.0.0-SNAPSHOT.jar",
+                "nd4j-cuda-backend-common-1.0.0-SNAPSHOT.jar",
+                "nd4j-presets-common-1.0.0-SNAPSHOT.jar",
             ):
                 (windows_zluda / "jars" / jar_name).write_bytes(b"jar")
             subprocess.run(
                 [
                     "bash", str(script), str(windows_zluda), str(root / "windows-zluda-staged"),
                     "amd-zluda", "windows-x86_64", "1.0.0-SNAPSHOT", "12.9",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            legacy_zluda = root / "legacy-windows-zluda"
+            (legacy_zluda / "jars").mkdir(parents=True)
+            for jar_name in (
+                "nd4j-cuda-12.9-1.0.0-SNAPSHOT-windows-x86_64-zluda.jar",
+                "nd4j-cuda-12.9-preset-1.0.0-SNAPSHOT.jar",
+            ):
+                (legacy_zluda / "jars" / jar_name).write_bytes(b"jar")
+            subprocess.run(
+                [
+                    "bash", str(script), str(legacy_zluda), str(root / "legacy-zluda-staged"),
+                    "zluda", "windows-x86_64", "1.0.0-SNAPSHOT", "12.9",
                 ],
                 check=True,
                 capture_output=True,
@@ -1288,13 +1613,80 @@ class BuildPlatformParityTest(unittest.TestCase):
             "android-x86_64", "android-x86_64-onednn", "android-x86_64-compile",
             "linux-x86_64-vulkan", "linux-x86_64-vulkan-compile",
             "linux-x86_64-hexagon", "linux-x86_64-tpu",
+            "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4",
+            "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4",
+            "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
         ):
             self.assertIn(f'"{lane}"', source)
         self.assertIn('*cuda*-cudnn) echo "${base}-cudnn"', source)
         self.assertIn('*cuda*-compile) echo "${base}-compile"', source)
         self.assertIn('*cuda*-zluda) echo "${base}-zluda"', source)
+        self.assertIn('*cuda*-zluda-rocm-*)', source)
+        self.assertIn(
+            '*zluda-rocm-*) sdk_namespaces=(org/eclipse/deeplearning4j)',
+            source,
+        )
         self.assertIn('"-Djavacpp.platform=${javacpp_platform}"', source)
         self.assertIn('--distribution-classifier "${distribution_classifier}"', source)
+
+    def test_rocm_wrapper_defaults_to_7_and_rocm_10_fails_closed_off_linux(self):
+        wrapper = (REPOSITORY / "build-scripts" / "build-kompile-rocm.sh").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn('KOMPILE_ROCM_VERSION:-7.2.4', wrapper)
+        self.assertIn('7.2.4|10.0.0', wrapper)
+        self.assertIn('kompile_build_for_platform "${PLATFORM}" 1', wrapper)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            completed = subprocess.run(
+                [
+                    "bash", str(REPOSITORY / "build-dist.sh"), "amd-zluda",
+                    "--backend-profile", "zluda-rocm-10.0.0",
+                    "--platform", "windows-x86_64",
+                    "--version", "0.1.0-SNAPSHOT",
+                    "--output-dir", temporary,
+                    "--skip-java-build", "--skip-native", "--skip-maven-install",
+                ],
+                cwd=REPOSITORY,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "ROCm 10 ZLUDA distributions are supported only on linux-x86_64",
+            completed.stdout + completed.stderr,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdk = pathlib.Path(temporary)
+            (sdk / "jars").mkdir()
+            low_level = subprocess.run(
+                [
+                    "bash",
+                    str(
+                        REPOSITORY / "kompile-dist" / "src" / "main" /
+                        "build" / "validate-sdx-assets.sh"
+                    ),
+                    str(sdk), "amd-zluda", "windows-x86_64",
+                    "1.0.0-SNAPSHOT", "12.9", "nd4j-zluda-12.9",
+                    "windows-x86_64-zluda-rocm-10.0.0",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(0, low_level.returncode)
+        self.assertIn(
+            "unsupported version-qualified ZLUDA classifier",
+            low_level.stdout + low_level.stderr,
+        )
+
+        installer = (REPOSITORY / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('BACKEND_PROFILE="zluda-rocm-7.2.4"', installer)
+        self.assertIn(
+            'BACKEND_PROFILE}" = "zluda-rocm-10.0.0"', installer,
+        )
 
     def test_maven_profiles_match_dl4j_release_classifier_contract(self):
         source = (REPOSITORY / "pom.xml").read_text(encoding="utf-8")
@@ -1328,6 +1720,26 @@ class BuildPlatformParityTest(unittest.TestCase):
             "${javacpp.platform}-cuda-12.9-zluda",
             profile("zluda"),
         )
+        self.assertIn(
+            "<nd4j.backend>nd4j-zluda-12.9</nd4j.backend>",
+            profile("zluda-rocm-7.2.4"),
+        )
+        self.assertIn(
+            "<javacpp.platform.extension>-zluda-rocm-7.2.4</javacpp.platform.extension>",
+            profile("zluda-rocm-7.2.4"),
+        )
+        self.assertIn(
+            "<nd4j.native.backend>nd4j-zluda-12.9</nd4j.native.backend>",
+            profile("zluda-rocm-10.0.0"),
+        )
+        self.assertIn(
+            "${javacpp.platform}-cuda-12.9-zluda-rocm-10.0.0",
+            profile("zluda-rocm-10.0.0"),
+        )
+        self.assertIn(
+            "require-rocm-10-linux-x86-64",
+            profile("zluda-rocm-10.0.0"),
+        )
         for cpu_variant in (
             "cpu-avx2", "cpu-avx512", "cpu-onednn", "cpu-onednn-avx2",
             "cpu-onednn-avx512", "cpu-compile", "cpu-compile-avx2",
@@ -1350,6 +1762,12 @@ class BuildPlatformParityTest(unittest.TestCase):
             REPOSITORY / "kompile-dist" / "src" / "main" / "assembly" / "dist.xml"
         ).read_text(encoding="utf-8")
         self.assertIn("<id>${kompile.distribution.classifier}</id>", assembly)
+        self.assertIn("<include>.kpack/**</include>", assembly)
+        app_main = (
+            REPOSITORY / "kompile-app" / "kompile-app-parent" /
+            "kompile-app-main" / "pom.xml"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(2, app_main.count("**/*.kpack"))
 
     def test_stages_only_kompile_maven_coordinates(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1433,8 +1851,12 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 REPOSITORY / ".github" / "workflows" / name
             ).read_text(encoding="utf-8").replace("\\", "/")
             suffix = ".exe" if "windows" in name else ""
+            shared_orchestrator = "./build-scripts/build-kompile-native-only.sh" in source
+            if shared_orchestrator:
+                self.assertIn('NATIVE_TARGETS="${TARGETS}"', source, name)
             for module, binary in expected.items():
-                self.assertIn(f"cd kompile-cli/{module}", source, name)
+                if not shared_orchestrator:
+                    self.assertIn(f"cd kompile-cli/{module}", source, name)
                 self.assertIn(
                     f"cp kompile-cli/{module}/target/{binary}{suffix} native-binaries/",
                     source,
@@ -1500,7 +1922,8 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("KOMPILE_AOT_LINUX_X64_RUNNER", source)
         self.assertIn("KOMPILE_AOT_MACOS_ARM64_RUNNER", source)
         self.assertIn("KOMPILE_AOT_WINDOWS_X64_RUNNER", source)
-        self.assertIn("AOT release builds require a runner with at least 32 GiB RAM", source)
+        self.assertIn("EXPECTED_GIB=32", source)
+        self.assertIn("AOT builds require at least ${EXPECTED_GIB} GiB RAM", source)
         self.assertIn("execution:", source)
         self.assertIn("distribution:", source)
         self.assertIn("platforms:", source)
@@ -1570,6 +1993,7 @@ class GithubWorkflowParityTest(unittest.TestCase):
             'BUILD_CMD=("${MVN}" clean install -DskipTests "${MAVEN_BUILD_ARGS[@]}")',
             source,
         )
+        self.assertIn('"--no-snapshot-updates"', source)
         self.assertIn('"-Dmaven.repo.local=${MAVEN_REPOSITORY}"', source)
         self.assertIn('"-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"', source)
         self.assertIn('"-Dkompile.backend=${KOMPILE_BACKEND_PROFILE}"', source)
@@ -1577,6 +2001,96 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn('native-windows-pe-safe', (REPOSITORY / "pom.xml").read_text(encoding="utf-8"))
         self.assertIn('<buildArg>-O1</buildArg>', (REPOSITORY / "pom.xml").read_text(encoding="utf-8"))
         self.assertNotIn('eval "${BUILD_CMD}"', source)
+
+    def test_product_distribution_reactor_excludes_unrelated_root_siblings(self):
+        source = (REPOSITORY / "build-dist.sh").read_text(encoding="utf-8")
+        branch = re.search(
+            r'full\|hosted\|cpu-intel\|cpu-arm\|cuda\|amd-zluda\)(.*?)\n\s*;;',
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(branch)
+        match = re.search(r'JAVA_BUILD_MODULES="([^"]+)"', branch.group(1))
+        self.assertIsNotNone(match)
+        modules = set(match.group(1).split(","))
+        self.assertEqual({
+            ":kompile-cli-main",
+            ":kompile-agent-cli",
+            ":kompile-app-cli",
+            ":kompile-model-cli",
+            ":kompile-component-cli",
+            ":kompile-app-main",
+            ":kompile-app-chat",
+            ":kompile-app-crawl-manager",
+            ":kompile-model-staging",
+            ":kompile-app-subprocess-serving",
+            ":kompile-pipeline-serving",
+            ":kompile-compute-graph-scripting",
+            ":kompile-app-lite",
+            ":kompile-sdk-serving",
+        }, modules)
+        self.assertTrue({
+            ":kompile-chat-local",
+            ":kompile-chat-local-mobile",
+            ":kompile-e2e-tests",
+        }.isdisjoint(modules))
+        self.assertIn("JAVA_BUILD_ALSO_MAKE=true", branch.group(1))
+        self.assertIn('BUILD_CMD+=(-pl "${JAVA_BUILD_MODULES}")', source)
+        self.assertIn('if [ -z "${JAVA_BUILD_MODULES}" ]; then', source)
+
+    def test_distribution_modes_build_every_required_delegated_cli_form(self):
+        source = (REPOSITORY / "build-dist.sh").read_text(encoding="utf-8")
+        step_one = source.split(
+            "# ── Step 1: Java build", 1
+        )[1].split("# ── Step 1b:", 1)[0]
+        local_branch = re.search(r'\n\s*local\)(.*?)\n\s*;;', step_one, re.DOTALL)
+        self.assertIsNotNone(local_branch)
+        self.assertIn('if [ "${JARS_ONLY}" = true ]; then', local_branch.group(1))
+        for module in (
+            ":kompile-agent-cli",
+            ":kompile-app-cli",
+            ":kompile-component-cli",
+        ):
+            self.assertIn(module, local_branch.group(1))
+        for native_spec in (
+            '"kompile-cli/kompile-agent-cli:kompile-agent"',
+            '"kompile-cli/kompile-app-cli:kompile-app-cli"',
+            '"kompile-cli/kompile-component-cli:kompile-component"',
+        ):
+            self.assertIn(native_spec, source)
+        self.assertIn(
+            'if [ "${CLI_NATIVE}" = true ] && '
+            '[ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then',
+            source,
+        )
+        for binary in ("kompile-agent", "kompile-app-cli", "kompile-component"):
+            self.assertIn(f"target/{binary}${{EXE_SUFFIX}}", source)
+            requirement = (
+                f'require_native_component "{binary.split("-")[1] if binary != "kompile-app-cli" else "app"} CLI" '
+                f'"{binary}${{EXE_SUFFIX}}"'
+            )
+            self.assertIn(requirement, source)
+            self.assertGreater(
+                source.index(requirement),
+                source.index('cp "${extra}" "${DIST_DIR}/bin/${BNAME}"'),
+            )
+
+    def test_persona_verifier_covers_every_server_distribution_variant(self):
+        source = (
+            REPOSITORY / "kompile-dist" / "src" / "main" / "build" /
+            "verify-persona-artifacts.py"
+        ).read_text(encoding="utf-8")
+        variants = re.search(r"PERSONA_VARIANTS = \{(.*?)\}", source, re.DOTALL)
+        self.assertIsNotNone(variants)
+        self.assertEqual({
+            "full",
+            "hosted",
+            "cpu-intel",
+            "cpu-arm",
+            "cuda",
+            "amd-zluda",
+        }, set(re.findall(r'"([^"]+)"', variants.group(1))))
+        self.assertIn("if variant in PERSONA_VARIANTS:", source)
 
     def test_windows_pe_safe_flag_reaches_native_orchestration_path(self):
         source = (REPOSITORY / "build-scripts" / "build-common.sh").read_text(

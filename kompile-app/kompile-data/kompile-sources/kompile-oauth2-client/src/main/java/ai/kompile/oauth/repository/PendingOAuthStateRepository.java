@@ -22,6 +22,8 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 
@@ -31,4 +33,17 @@ public interface PendingOAuthStateRepository extends JpaRepository<PendingOAuthS
     @Modifying
     @Query("DELETE FROM PendingOAuthState p WHERE p.expiresAt < :now")
     int deleteExpired(@Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Query("DELETE FROM PendingOAuthState p WHERE p.state = :state "
+            + "AND p.providerId = :providerId AND p.redirectUri = :redirectUri")
+    int consume(@Param("state") String state,
+                @Param("providerId") String providerId,
+                @Param("redirectUri") String redirectUri);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Query("DELETE FROM PendingOAuthState p WHERE p.state = :state")
+    int deleteStateClaim(@Param("state") String state);
 }

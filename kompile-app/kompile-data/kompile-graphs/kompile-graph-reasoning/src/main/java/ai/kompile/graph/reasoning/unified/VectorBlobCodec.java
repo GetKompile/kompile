@@ -18,6 +18,7 @@ package ai.kompile.graph.reasoning.unified;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
@@ -100,6 +101,156 @@ public final class VectorBlobCodec {
 
     /** Deserialize a {@link VectorLayer} from {@code in} (does not close the stream). */
     public static VectorLayer read(DataInputStream in) throws IOException {
+        Header header = readHeader(in);
+        VectorLayer layer;
+        try {
+            layer = new VectorLayer(header.name(), header.target(), header.dim(), header.dtype());
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Invalid KVEC layer metadata", e);
+        }
+        for (int r = 0; r < header.count(); r++) {
+            String id = readString(in);
+            if (layer.rows().containsKey(id)) {
+                throw new IOException("Duplicate KVEC row id: " + id);
+            }
+            double[] v = new double[header.dim()];
+            for (int i = 0; i < header.dim(); i++) {
+                v[i] = switch (header.dtype()) {
+                    case F16 -> Dtype.halfToFloat(in.readShort());
+                    case F32 -> in.readFloat();
+                    case F64 -> in.readDouble();
+                    case I8  -> in.readByte() * header.scale();
+                };
+            }
+            layer.put(id, v);
+        }
+        return layer;
+    }
+
+    /**
+     * Open a row-at-a-time KVEC cursor. The cursor owns {@code input}; closing it closes the
+     * underlying archive-entry stream. Only the current row vector is allocated.
+     */
+    public static RowCursor openRows(InputStream input) throws IOException {
+        return new StreamingRowCursor(new DataInputStream(input));
+    }
+
+    /** One freshly allocated decoded row. The array is not retained by the cursor. */
+    public record VectorRow(String id, double[] values) { }
+
+    public interface RowCursor extends AutoCloseable {
+        String name();
+        Dtype dtype();
+        VectorLayer.Target target();
+        int count();
+        int dimension();
+        double scale();
+        int position();
+        /** Return the next row, or {@code null} once all declared rows were consumed. */
+        VectorRow next() throws IOException;
+        @Override void close() throws IOException;
+    }
+
+    private static final class StreamingRowCursor implements RowCursor {
+        private final DataInputStream input;
+        private final Header header;
+        private int position;
+
+        private StreamingRowCursor(DataInputStream input) throws IOException {
+            this.input = input;
+            try {
+                this.header = readHeader(input);
+            } catch (IOException | RuntimeException failure) {
+                try { input.close(); } catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                throw failure;
+            }
+        }
+
+        @Override public String name() { return header.name(); }
+        @Override public Dtype dtype() { return header.dtype(); }
+        @Override public VectorLayer.Target target() { return header.target(); }
+        @Override public int count() { return header.count(); }
+        @Override public int dimension() { return header.dim(); }
+        @Override public double scale() { return header.scale(); }
+        @Override public int position() { return position; }
+
+        @Override
+        public VectorRow next() throws IOException {
+            if (position >= header.count()) return null;
+            String id = readString(input);
+            double[] values = new double[header.dim()];
+            for (int index = 0; index < values.length; index++) {
+                values[index] = switch (header.dtype()) {
+                    case F16 -> Dtype.halfToFloat(input.readShort());
+                    case F32 -> input.readFloat();
+                    case F64 -> input.readDouble();
+                    case I8 -> input.readByte() * header.scale();
+                };
+            }
+            position++;
+            return new VectorRow(id, values);
+        }
+
+        @Override public void close() throws IOException { input.close(); }
+    }
+
+    @FunctionalInterface
+    interface VectorRowConsumer { void accept(String id, double[] values) throws IOException; }
+
+    @FunctionalInterface
+    interface VectorRowPass { void forEach(VectorRowConsumer consumer) throws IOException; }
+
+    static void writeRows(
+            DataOutputStream out,
+            String name,
+            VectorLayer.Target target,
+            Dtype dtype,
+            int count,
+            int dimension,
+            double scale,
+            VectorRowPass pass) throws IOException {
+        out.write(MAGIC);
+        out.writeInt(VERSION);
+        out.writeInt(dtype.code());
+        out.writeInt(target.code());
+        writeString(out, name);
+        out.writeInt(count);
+        out.writeInt(dimension);
+        double effectiveScale = dtype == Dtype.I8 ? scale : 0.0;
+        if (dtype == Dtype.I8 && (!Double.isFinite(effectiveScale) || effectiveScale <= 0.0)) {
+            throw new IOException("Invalid KVEC int8 scale: " + effectiveScale);
+        }
+        out.writeLong(Double.doubleToLongBits(effectiveScale));
+        int[] rows = {0};
+        pass.forEach((id, values) -> {
+            if (values == null || values.length != dimension) {
+                throw new IOException("KVEC streamed row dimension mismatch for " + id);
+            }
+            writeString(out, id);
+            for (double value : values) {
+                switch (dtype) {
+                    case F16 -> out.writeShort(Dtype.floatToHalf((float) value));
+                    case F32 -> out.writeFloat((float) value);
+                    case F64 -> out.writeDouble(value);
+                    case I8 -> out.writeByte(quantizeI8(value, effectiveScale));
+                }
+            }
+            rows[0]++;
+        });
+        if (rows[0] != count) throw new IOException("KVEC streamed row count changed");
+    }
+
+    /** Inspect and validate a blob's decoded value count without allocating any row vectors. */
+    static long decodedValueCount(byte[] blob) throws IOException {
+        try (DataInputStream in = new DataInputStream(new java.io.ByteArrayInputStream(blob))) {
+            Header header = readHeader(in);
+            return Math.multiplyExact((long) header.count(), header.dim());
+        } catch (ArithmeticException overflow) {
+            throw new IOException("KVEC decoded value count overflows", overflow);
+        }
+    }
+
+    private static Header readHeader(DataInputStream in) throws IOException {
         byte[] magic = new byte[4];
         in.readFully(magic);
         if (magic[0] != MAGIC[0] || magic[1] != MAGIC[1] || magic[2] != MAGIC[2] || magic[3] != MAGIC[3]) {
@@ -132,31 +283,11 @@ public final class VectorBlobCodec {
         }
         verifyDecodedValueBudget(count, dim);
         verifyMinimumPayloadFits(in, dtype, count, dim);
-
-        VectorLayer layer;
-        try {
-            layer = new VectorLayer(name, target, dim, dtype);
-        } catch (IllegalArgumentException e) {
-            throw new IOException("Invalid KVEC layer metadata", e);
-        }
-        for (int r = 0; r < count; r++) {
-            String id = readString(in);
-            if (layer.rows().containsKey(id)) {
-                throw new IOException("Duplicate KVEC row id: " + id);
-            }
-            double[] v = new double[dim];
-            for (int i = 0; i < dim; i++) {
-                v[i] = switch (dtype) {
-                    case F16 -> Dtype.halfToFloat(in.readShort());
-                    case F32 -> in.readFloat();
-                    case F64 -> in.readDouble();
-                    case I8  -> in.readByte() * scale;
-                };
-            }
-            layer.put(id, v);
-        }
-        return layer;
+        return new Header(name, dtype, target, count, dim, scale);
     }
+
+    private record Header(
+            String name, Dtype dtype, VectorLayer.Target target, int count, int dim, double scale) { }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers

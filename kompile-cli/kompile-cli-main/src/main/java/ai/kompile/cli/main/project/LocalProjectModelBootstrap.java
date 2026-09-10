@@ -5,15 +5,12 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
-import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.modelmanager.ManagedModelRuntimeRegistrar;
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
-import ai.kompile.project.KompileProjectInitRequest;
 import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectModel;
 import ai.kompile.project.KompileProjectStore;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -34,16 +31,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
- * Resolves project-owned models and bootstraps missing artifacts by invoking the
- * standalone model-staging component for exactly one request.
+ * Resolves project-owned runtime artifacts provisioned through {@code model_runtime}.
  *
  * <p>Both the native and executable-JAR tiers use the same CLI ABI. There is no
  * application server, app-main process, Maven execution, or development
  * classpath fallback.</p>
  */
 public final class LocalProjectModelBootstrap {
-    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
-    private static final String RESULT_PREFIX = "MODEL_BOOTSTRAP_RESULT:";
     private static final String DEFAULT_CATALOG_MODEL = "lfm2.5-1.2b-instruct";
 
     private LocalProjectModelBootstrap() {
@@ -53,8 +47,6 @@ public final class LocalProjectModelBootstrap {
             String modelId,
             Path modelPath,
             Path tokenizerPath,
-            Path stagingRuntime,
-            boolean bootstrapped,
             String disposition) {
     }
 
@@ -68,7 +60,7 @@ public final class LocalProjectModelBootstrap {
             Path projectRoot,
             String selection,
             Map<String, Object> runtimeOptions) throws IOException, InterruptedException {
-        return ensure(projectRoot, selection, runtimeOptions, true);
+        return ensure(projectRoot, selection, runtimeOptions, false);
     }
 
     public static ResolvedProjectModel ensure(
@@ -78,6 +70,11 @@ public final class LocalProjectModelBootstrap {
             boolean allowProjectMutation) throws IOException, InterruptedException {
         Path root = projectRoot.toAbsolutePath().normalize();
         Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
+
+        if (allowProjectMutation) {
+            throw new IOException("Runtime execution is read-only. Provision or import models with "
+                    + "model_runtime before running a crawl or pipeline.");
+        }
 
         // A configured localPath is already the model artifact. Resolve it directly so
         // local-only pipelines never create a project manifest, invoke staging, or
@@ -89,19 +86,17 @@ public final class LocalProjectModelBootstrap {
                     stringOption(options, "modelId", null),
                     localPath.getFileName() == null ? "local-model" : localPath.getFileName().toString());
             return new ResolvedProjectModel(
-                    localModelId, localPath, tokenizerForLocalPath(localPath), null, false, "local");
+                    localModelId, localPath, tokenizerForLocalPath(localPath), "local");
         }
 
         KompileProjectStore store = new KompileProjectStore();
-        if (allowProjectMutation) {
-            ensureProject(store, root);
-        } else if (!Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
+        if (!Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
             throw new IOException("Read-only pipeline resolution cannot proceed because the project has no "
                     + KompileProjectStore.MANIFEST_FILE
                     + "; initialize the project and provision the model with model_runtime first.");
         }
         KompileProjectManifest manifest = store.load(root);
-        KompileProjectModel model = selectModel(manifest, selection, options, allowProjectMutation);
+        KompileProjectModel model = selectModel(manifest, selection, options, false);
         if (model == null) {
             throw new IOException("Read-only pipeline resolution cannot use project model '"
                     + firstNonBlank(selection, DEFAULT_CATALOG_MODEL)
@@ -115,42 +110,16 @@ public final class LocalProjectModelBootstrap {
                 || modelDefinitionChanged(model, options);
         Path existing = resolveManifestArtifact(root, model);
         if (existing != null && !explicitProvisioning) {
-            if (allowProjectMutation) {
-                applyModelDefinition(model, options);
-                registerResolvedModel(store, root, model, existing, Map.of());
-            }
             return new ResolvedProjectModel(
-                    modelId(model), existing, tokenizerBeside(existing), null, false, "existing");
+                    modelId(model), existing, tokenizerBeside(existing), "existing");
         }
 
-        if (!allowProjectMutation) {
-            String reason = explicitProvisioning
-                    ? "the requested model definition requires provisioning"
-                    : "the registered model has no local artifact";
-            throw new IOException("Read-only pipeline resolution failed because " + reason
-                    + " for project model '" + modelId(model)
-                    + "'; provision it with model_runtime before testing.");
-        }
-        if (!booleanOption(options, "autoBootstrap", true)) {
-            throw new IOException("Project model '" + modelId(model)
-                    + "' has no local artifact and modelRuntime.autoBootstrap is false");
-        }
-
-        Map<String, Object> result = runStaging(root, model, options);
-        Path modelPath = requireProjectArtifact(
-                root, stringValue(result.get("modelPath")), isVlmPipeline(model));
-        Path tokenizerPath = optionalProjectArtifact(root, stringValue(result.get("tokenizerPath")));
-        Path runtimePath = Path.of(stringValue(result.get("runtimePath")));
-
-        applyModelDefinition(model, options);
-        registerResolvedModel(store, root, model, modelPath, result);
-        return new ResolvedProjectModel(
-                modelId(model),
-                modelPath,
-                tokenizerPath,
-                runtimePath,
-                true,
-                stringValue(result.getOrDefault("disposition", "staged")));
+        String reason = explicitProvisioning
+                ? "the requested model definition differs from the provisioned artifact"
+                : "the registered model has no local runtime artifact";
+        throw new IOException("Read-only runtime resolution failed because " + reason
+                + " for project model '" + modelId(model)
+                + "'; use model_runtime bootstrap/import/convert first.");
     }
 
     private static boolean modelDefinitionChanged(
@@ -166,18 +135,6 @@ public final class LocalProjectModelBootstrap {
         if (requested == null || requested.isBlank()) return false;
         if (existing == null) return true;
         return ignoreCase ? !requested.equalsIgnoreCase(existing) : !requested.equals(existing);
-    }
-
-    private static void applyModelDefinition(
-            KompileProjectModel model, Map<String, Object> options) {
-        String source = stringOption(options, "source", null);
-        String repository = stringOption(options, "repository", null);
-        String revision = stringOption(options, "revision", null);
-        String type = stringOption(options, "type", null);
-        if (source != null && !source.isBlank()) model.setSource(source);
-        if (repository != null && !repository.isBlank()) model.setSourceRepository(repository);
-        if (revision != null && !revision.isBlank()) model.setSourceRevision(revision);
-        if (type != null && !type.isBlank()) model.getMetadata().put("registry.type", type);
     }
 
     public static List<Map<String, Object>> inventory(Path projectRoot) {
@@ -208,7 +165,7 @@ public final class LocalProjectModelBootstrap {
             item.put("runtimeStatus", runtimeArtifactReady ? "NOT_PROBED" : "CONVERSION_REQUIRED");
             item.put("runtimeProbeRequired", runtimeArtifactReady);
             item.put("ready", runtimeArtifactReady);
-            item.put("readyMeaning", "true only for a runtime-form artifact; runtime initialization is still probed separately");
+            item.put("readyMeaning", "true means a runtime-form artifact is present; it does not prove runtime initialization");
             item.put("recommendedAction", !runtimeArtifactReady && artifactReady
                     ? "Convert the source artifact with model_runtime action=convert."
                     : artifactReady
@@ -244,12 +201,16 @@ public final class LocalProjectModelBootstrap {
         command.add("--input=" + inputPath.toAbsolutePath().normalize());
         command.add("--output=" + outputPath.toAbsolutePath().normalize());
         addOption(command, "--format=", format);
-        addOption(command, "--staging-executable=", stringOption(options, "stagingExecutable", null));
-        addOption(command, "--staging-jar=", stringOption(options, "stagingJar", null));
+        addOption(command, "--weight-dtype=", stringOption(options, "weightDtype", null));
         addOption(command, "--onnx-importer-executable=", stringOption(options, "onnxImporterExecutable", null));
         addOption(command, "--onnx-importer-jar=", stringOption(options, "onnxImporterJar", null));
-        addOption(command, "--model-id=", stringOption(options, "modelId", null));
-        addOption(command, "--models-root=", root.resolve("data/models").toAbsolutePath().normalize().toString());
+        // --models-root only matters for ONNX managed-model registration; passing it
+        // unconditionally breaks older model CLIs that do not define the option.
+        String managedModelId = stringOption(options, "modelId", null);
+        if (managedModelId != null && !managedModelId.isBlank()
+                && "onnx".equalsIgnoreCase(format == null ? "" : format.trim())) {
+            addOption(command, "--models-root=", root.resolve("data/models").toAbsolutePath().normalize().toString());
+        }
         if (booleanOption(options, "force", false)) {
             command.add("--force");
         }
@@ -286,6 +247,11 @@ public final class LocalProjectModelBootstrap {
             if (process.exitValue() != 0) {
                 throw new IOException("Model CLI exited with " + process.exitValue()
                         + outputTail(output));
+            }
+            ManagedModelRuntimeRegistrar.validateConvertedModel(outputPath);
+            if (managedModelId != null && !managedModelId.isBlank()) {
+                LocalProjectModelAcquisition.registerConverted(
+                        root, managedModelId, outputPath);
             }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
@@ -348,8 +314,6 @@ public final class LocalProjectModelBootstrap {
         command.add("--force=" + booleanOption(options, "force", false));
         command.add("--create-backup=" + booleanOption(options, "createBackup", true));
         command.add("--dry-run=" + booleanOption(options, "dryRun", false));
-        addOption(command, "--staging-executable=", stringOption(options, "stagingExecutable", null));
-        addOption(command, "--staging-jar=", stringOption(options, "stagingJar", null));
         addOption(command, "--java=", stringOption(options, "javaExecutable", null));
         command.add("--timeout-minutes=" + longOption(options, "timeoutMinutes", 60L));
 
@@ -500,18 +464,6 @@ public final class LocalProjectModelBootstrap {
         if (value != null && !value.isBlank()) {
             roots.add(Path.of(value).toAbsolutePath().normalize());
         }
-    }
-
-    private static void ensureProject(KompileProjectStore store, Path root) {
-        if (Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
-            return;
-        }
-        KompileProjectInitRequest request = new KompileProjectInitRequest();
-        Path name = root.getFileName();
-        request.setName(name == null ? "kompile-project" : name.toString());
-        request.setDescription("Folder-local Kompile project metadata");
-        request.setInitializeGit(false);
-        store.init(root, request);
     }
 
     private static KompileProjectModel selectModel(
@@ -684,242 +636,16 @@ public final class LocalProjectModelBootstrap {
                 || "VLM".equalsIgnoreCase(model.getRole());
     }
 
-    private static Map<String, Object> runStaging(
-            Path root,
-            KompileProjectModel model,
-            Map<String, Object> options) throws IOException, InterruptedException {
-        LauncherArtifact launcher = resolveStagingLauncher(options);
-        List<String> command = new ArrayList<>();
-        if (launcher.nativeExecutable()) {
-            command.add(launcher.path().toString());
-        } else {
-            command.add(resolveJava(options));
-            command.add("-Dfile.encoding=UTF-8");
-            command.add("-jar");
-            command.add(launcher.path().toString());
-        }
-
-        command.add("bootstrap");
-        command.add("--model-id=" + modelId(model));
-        addOption(command, "--local-path=", stringOption(options, "localPath", null));
-        String manifestSource = model.getSource();
-        if ("CATALOG".equalsIgnoreCase(manifestSource)
-                || "BUILT_IN".equalsIgnoreCase(manifestSource)) {
-            manifestSource = null;
-        }
-        addOption(command, "--source=", firstNonBlank(
-                stringOption(options, "source", null), manifestSource));
-        addOption(command, "--repository=", firstNonBlank(
-                stringOption(options, "repository", null), model.getSourceRepository()));
-        addOption(command, "--revision=", firstNonBlank(
-                stringOption(options, "revision", null), model.getSourceRevision()));
-        addOption(command, "--format=", stringOption(options, "format", null));
-        addOption(command, "--type=", firstNonBlank(
-                stringOption(options, "type", null), model.getMetadata().get("registry.type")));
-        command.add("--timeout-minutes=" + longOption(options, "timeoutMinutes", 60L));
-        // kompile.data.dir is the project root; model-manager appends data/models.
-        // Passing <root>/data here produced the incorrect <root>/data/data/models cache.
-        command.add("--kompile.data.dir=" + root);
-        command.add("--kompile.staging.models-dir=" + root.resolve("data/models"));
-
-        ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(root.toFile())
-                .redirectErrorStream(true);
-        Object envOption = options.get("environment");
-        if (envOption instanceof Map<?, ?> environment) {
-            for (Map.Entry<?, ?> entry : environment.entrySet()) {
-                if (entry.getKey() != null && entry.getValue() != null) {
-                    builder.environment().put(
-                            String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-                }
-            }
-        }
-
-        Process process = null;
-        Thread reader = null;
-        List<String> output = Collections.synchronizedList(new ArrayList<>());
-        try {
-            process = builder.start();
-            Process child = process;
-            reader = new Thread(() -> drain(child, output), "kompile-model-staging-bootstrap");
-            reader.setDaemon(true);
-            reader.start();
-            long timeout = Math.max(1L, longOption(options, "timeoutMinutes", 60L));
-            if (!process.waitFor(timeout, TimeUnit.MINUTES)) {
-                throw new IOException("Model staging timed out after " + timeout + " minute(s)");
-            }
-            reader.join(1000);
-            if (process.exitValue() != 0) {
-                throw new IOException("Model staging exited with " + process.exitValue()
-                        + outputTail(output));
-            }
-            Map<String, Object> result = parseResult(output);
-            result.put("runtimePath", launcher.path().toString());
-            return result;
-        } finally {
-            stopProcess(process);
-            if (reader != null) {
-                reader.join(1000);
-            }
-        }
-    }
-
-    private static LauncherArtifact resolveStagingLauncher(Map<String, Object> options)
-            throws IOException {
-        String explicitExecutable = firstNonBlank(
-                stringOption(options, "stagingExecutable", null),
-                System.getProperty("kompile.model.staging.executable"),
-                System.getenv("KOMPILE_MODEL_STAGING_EXECUTABLE"));
-        if (explicitExecutable != null) {
-            Path path = Path.of(explicitExecutable).toAbsolutePath().normalize();
-            requireExecutable(path, "model-staging executable");
-            return new LauncherArtifact(path, true);
-        }
-        String explicitJar = firstNonBlank(
-                stringOption(options, "stagingJar", null),
-                System.getProperty("kompile.model.staging.jar"),
-                System.getenv("KOMPILE_MODEL_STAGING_JAR"));
-        if (explicitJar != null) {
-            Path path = Path.of(explicitJar).toAbsolutePath().normalize();
-            requireFile(path, "model-staging executable JAR");
-            CliProcessLauncher.requireCompatibleChild("kompile-model-staging", false, path);
-            return new LauncherArtifact(path, false);
-        }
-
-        ComponentRegistry registry = new ComponentRegistry();
-        Path componentDirectory = registry.getInstallDirectory(ComponentRegistry.KOMPILE_MODEL_STAGING)
-                .toPath().toAbsolutePath().normalize();
-        String executableName = isWindows()
-                ? "kompile-model-staging.exe" : "kompile-model-staging";
-        Path installHome = componentInstallHome(componentDirectory);
-        for (Path candidate : List.of(
-                componentDirectory.resolve(executableName),
-                installHome.resolve("bin").resolve(executableName))) {
-            if (Files.isRegularFile(candidate) && Files.isExecutable(candidate)) {
-                return new LauncherArtifact(candidate, true);
-            }
-        }
-        if (CliProcessLauncher.requiresNativeChildren()) {
-            throw new IOException("The native Kompile distribution is missing its native "
-                    + "model-staging worker: bin/" + executableName + ". Refusing to fall back "
-                    + "to the executable Spring Boot JAR from a native MCP process.");
-        }
-        // ComponentRegistry's compatibility lookup intentionally returns the
-        // distribution-native form before a JAR. Preserve that form when a JVM
-        // parent is running against a mixed/native install; do not pass a native
-        // executable to java -jar.
-        java.io.File installedArtifact = registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
-        if (installedArtifact != null && installedArtifact.isFile()) {
-            Path artifact = installedArtifact.toPath().toAbsolutePath().normalize();
-            boolean nativeExecutable = !artifact.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar");
-            CliProcessLauncher.requireCompatibleChild(
-                    "kompile-model-staging", nativeExecutable, artifact);
-            return new LauncherArtifact(artifact, nativeExecutable);
-        }
-        Path developmentJar = findDevelopmentStagingJar();
-        if (developmentJar != null) {
-            return new LauncherArtifact(developmentJar, false);
-        }
-        throw new IOException("No standalone model-staging runtime found. Install "
-                + executableName + ", package the executable JAR, or configure "
-                + "modelRuntime.stagingExecutable / modelRuntime.stagingJar.");
-    }
-
-    private static Path findDevelopmentStagingJar() {
-        Path cursor = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
-        for (int i = 0; i < 8 && cursor != null; i++, cursor = cursor.getParent()) {
-            Path target = cursor.resolve("kompile-app")
-                    .resolve("kompile-models")
-                    .resolve("kompile-model-staging")
-                    .resolve("target");
-            if (!Files.isDirectory(target)) {
-                continue;
-            }
-            try (var files = Files.list(target)) {
-                Path match = files.filter(Files::isRegularFile)
-                        .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
-                        .findFirst().orElse(null);
-                if (match != null) {
-                    return match.toAbsolutePath().normalize();
-                }
-            } catch (IOException ignored) {
-                // Continue toward the workspace root.
-            }
-        }
-        return null;
-    }
-
     private static String resolveJava(Map<String, Object> options) throws IOException {
         String configured = firstNonBlank(
                 stringOption(options, "javaExecutable", null),
-                System.getProperty("kompile.model.staging.java"));
+                System.getProperty("kompile.model.java"));
         if (configured == null) {
             return JavaRuntimeLocator.javaExecutable();
         }
         Path path = Path.of(configured).toAbsolutePath().normalize();
         requireExecutable(path, "Java runtime");
         return path.toString();
-    }
-
-    private static void registerResolvedModel(
-            KompileProjectStore store,
-            Path root,
-            KompileProjectModel model,
-            Path modelPath,
-            Map<String, Object> result) {
-        Path directory = modelPath.getParent();
-        String relativeDirectory = root.relativize(directory).toString().replace('\\', '/');
-        model.setPath(relativeDirectory);
-        model.setModelId(modelId(model));
-        model.setRegistryModelId(modelId(model));
-        model.setStagingRegistryPath("data/models/registry.json");
-        model.setUpdatedAt(Instant.now());
-        if (model.getCreatedAt() == null) {
-            model.setCreatedAt(model.getUpdatedAt());
-        }
-        model.getMetadata().put("registry.modelFile", modelPath.getFileName().toString());
-        String type = stringValue(result.get("modelType"));
-        if (type != null) {
-            model.getMetadata().put("registry.type", type);
-        }
-        store.registerModel(root, model);
-    }
-
-    private static Path requireProjectArtifact(
-            Path root, String value, boolean vlmPipeline) throws IOException {
-        Path path = optionalProjectArtifact(root, value);
-        if (path == null || !supportedArtifact(path, vlmPipeline)) {
-            throw new IOException("Model staging returned no supported project artifact: " + value);
-        }
-        return path;
-    }
-
-    private static Path optionalProjectArtifact(Path root, String value) throws IOException {
-        if (value == null) {
-            return null;
-        }
-        Path path = Path.of(value).toAbsolutePath().normalize();
-        Path dataRoot = root.resolve("data").toAbsolutePath().normalize();
-        if (!path.startsWith(dataRoot) || !Files.isRegularFile(path)) {
-            throw new IOException("Model staging returned an artifact outside the project data folder: "
-                    + path);
-        }
-        return path;
-    }
-
-    private static Map<String, Object> parseResult(List<String> output) throws IOException {
-        synchronized (output) {
-            for (int i = output.size() - 1; i >= 0; i--) {
-                String line = output.get(i);
-                int marker = line.indexOf(RESULT_PREFIX);
-                if (marker >= 0) {
-                    return new LinkedHashMap<>(MAPPER.readValue(
-                            line.substring(marker + RESULT_PREFIX.length()),
-                            new TypeReference<Map<String, Object>>() { }));
-                }
-            }
-        }
-        throw new IOException("Model staging produced no result marker" + outputTail(output));
     }
 
     private static void drain(Process process, List<String> output) {
@@ -968,16 +694,6 @@ public final class LocalProjectModelBootstrap {
         }
         Path tokenizer = parent.resolve("tokenizer.json");
         return Files.isRegularFile(tokenizer) ? tokenizer : null;
-    }
-
-    private static Path componentInstallHome(Path componentDirectory) {
-        Path cursor = componentDirectory;
-        for (int i = 0; i < 3 && cursor != null; i++) {
-            cursor = cursor.getParent();
-        }
-        return cursor == null
-                ? Path.of(System.getProperty("user.home"), ".kompile")
-                : cursor;
     }
 
     private static String registryDirectory(String type) {

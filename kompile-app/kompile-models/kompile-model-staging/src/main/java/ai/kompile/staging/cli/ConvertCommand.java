@@ -53,6 +53,11 @@ public class ConvertCommand implements Callable<Integer> {
             description = "Input format: onnx, tensorflow, keras, gguf, ggml, safetensors (auto-detected if not specified)")
     private String format;
 
+    @Option(names = {"-w", "--weight-dtype"},
+            description = "GGUF weight storage dtype: fp32, fp16, bf16, fp8, fp8_e5m2, int8, int4. " +
+                    "Default fp16 (dense dequantize); int4/int8 keep GGUF-packed weights for runtime-quantized matmul")
+    private String weightDtype;
+
     @Override
     public Integer call() {
         Path inputPath = Paths.get(input);
@@ -82,7 +87,7 @@ public class ConvertCommand implements Callable<Integer> {
         System.out.println("Format: " + detectedFormat);
         System.out.println("Output: " + outputPath);
 
-        ConversionResult result = conversionService.convert(inputPath, outputPath, detectedFormat);
+        ConversionResult result = conversionService.convert(inputPath, outputPath, detectedFormat, weightDtype);
 
         if (result.isSuccess()) {
             System.out.println("Conversion completed successfully!");

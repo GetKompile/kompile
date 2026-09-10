@@ -3,12 +3,15 @@
     "includes": [
       {"pattern": "cli-agents\\.json"},
       {"pattern": "pi-mcp-adapter/.*"},
+      {"pattern": "installer/install\\.sh"},
       {"pattern": "templates/.*"},
       {"pattern": "ai/kompile/pipelines/steps/.*/.*\\.schema\\.json"},
       {"pattern": "META-INF/services/org\\.apache\\.sshd\\..*"},
       {"pattern": ".*-theme\\.properties"},
       {"pattern": "multilang/lanterna-ui.*\\.properties"},
       {"pattern": "ai/kompile/modelmanager/.*"},
+      {"pattern": "ai/kompile/cli/main/chat/model-catalogs\\.json"},
+      {"pattern": "ai/kompile/cli/main/chat/providers/.*\\.json"},
       {"pattern": "io/anserini/encoder/.*"},
       {"pattern": "org/jline/.*"},
       {"pattern": "META-INF/services/org/jline/.*"}

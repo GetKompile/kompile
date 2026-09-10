@@ -24,6 +24,7 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallGuard;
 import ai.kompile.cli.main.chat.gateway.CliToolGatewayInterceptor;
+import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
@@ -33,6 +34,7 @@ import ai.kompile.cli.main.chat.tools.AmbientMemoryGardener;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BashTool;
 import ai.kompile.cli.main.chat.tools.BrowserTool;
+import ai.kompile.cli.main.chat.tools.ChannelTool;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.CodeGraphTool;
 import ai.kompile.cli.main.chat.tools.CodeSearchTool;
@@ -46,10 +48,13 @@ import ai.kompile.cli.main.chat.tools.EditBatchTool;
 import ai.kompile.cli.main.chat.tools.EditPatchTool;
 import ai.kompile.cli.main.chat.tools.EditTool;
 import ai.kompile.cli.main.chat.tools.EnforcerConfigTool;
+import ai.kompile.cli.main.chat.tools.JudgeControlTool;
 import ai.kompile.cli.main.chat.tools.ExploreTool;
 import ai.kompile.cli.main.chat.tools.FetchResultBatchTool;
 import ai.kompile.cli.main.chat.tools.FetchResultTool;
 import ai.kompile.cli.main.chat.tools.FileActivityTool;
+import ai.kompile.cli.main.chat.tools.FileContextTool;
+import ai.kompile.cli.main.chat.tools.FileNoteTool;
 import ai.kompile.cli.main.chat.tools.GlobTool;
 import ai.kompile.cli.main.chat.tools.GrepBatchTool;
 import ai.kompile.cli.main.chat.tools.GraphAggregateTool;
@@ -60,6 +65,7 @@ import ai.kompile.cli.main.chat.tools.GraphForecastTool;
 import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
 import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
 import ai.kompile.cli.main.chat.tools.GrepTool;
+import ai.kompile.cli.main.chat.tools.HighMemoryToolCallGuard;
 import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
@@ -68,6 +74,7 @@ import ai.kompile.cli.main.chat.tools.LocalCodeIndexTool;
 import ai.kompile.cli.main.chat.tools.LspTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.MemoryTool;
+import ai.kompile.cli.main.chat.tools.McpToolResultSerializer;
 import ai.kompile.cli.main.chat.tools.PatchTool;
 import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
 import ai.kompile.cli.main.chat.tools.ProcessMiningCliTool;
@@ -80,8 +87,10 @@ import ai.kompile.cli.main.chat.tools.RoleManagerTool;
 import ai.kompile.cli.main.chat.tools.SemanticMemoryEngine;
 import ai.kompile.cli.main.chat.tools.SemanticMemoryTool;
 import ai.kompile.cli.main.chat.tools.ServerModeTool;
+import ai.kompile.cli.main.chat.tools.SessionListTool;
 import ai.kompile.cli.main.chat.tools.SidePanelTool;
 import ai.kompile.cli.main.chat.tools.SkillManagerTool;
+import ai.kompile.cli.main.chat.tools.SubprocessWatchdogTool;
 import ai.kompile.cli.main.chat.tools.TestMilestoneTool;
 import ai.kompile.cli.main.chat.tools.TodoReadTool;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
@@ -89,6 +98,7 @@ import ai.kompile.cli.main.chat.tools.ToolCallCatalogTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolResultReferenceCache;
+import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolSchemaOptimizer;
 import ai.kompile.cli.main.chat.tools.TranscriptSearchTool;
 import ai.kompile.cli.main.chat.tools.WebFetchTool;
@@ -167,6 +177,10 @@ public class McpStdioCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--work-dir"}, description = "Working directory for tools")
     private String workDir;
 
+    @CommandLine.Option(names = {"--transcript-id"},
+            description = "Parent chat transcript UUID/ID used for isolated diagnostics")
+    private String transcriptId;
+
     @CommandLine.Option(names = {"--url"}, description = "Optional distributed Kompile base URL; omit for project-local crawl and knowledge tools")
     private String baseUrl;
 
@@ -199,23 +213,24 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // minimal: read + search only (~4 tools, ~1000 tokens)
         m.put("minimal", new LinkedHashSet<>(Set.of(
-                "read", "grep", "glob", "list"
+                "read", "file_context", "grep", "glob", "list"
         )));
 
         // explore: read-only + code intelligence (~2500 tokens)
         m.put("explore", new LinkedHashSet<>(Set.of(
-                "read", "read_batch", "grep", "grep_batch", "glob", "list",
+                "read", "read_batch", "file_context", "grep", "grep_batch", "glob", "list",
                 "explore", "code_search", "local_code_index", "code_graph",
+                "graph_search", "graph_reasoning_query",
                 "fetch_result", "fetch_result_batch"
         )));
 
         // core: file I/O + search + workflow (~3000 tokens)
         m.put("core", new LinkedHashSet<>(Set.of(
-                "read", "read_batch", "write", "edit", "edit_batch",
+                "read", "read_batch", "file_context", "file_note", "write", "edit", "edit_batch",
                 "grep", "grep_batch", "glob", "list", "bash",
                 "explore", "fetch_result", "fetch_result_batch", "patch", "edit_patch",
                 "todowrite", "todoread", "memory",
-                "webfetch", "websearch"
+                "webfetch", "websearch", "mcp_tool_search", "mcp_tool_call"
         )));
 
         // full: all tools (no restriction) — handled by returning allTools.keySet()
@@ -229,6 +244,9 @@ public class McpStdioCommand implements Callable<Integer> {
 
     /** Coordination state manager for cross-agent edit/process/agent coordination. */
     private volatile CoordinationStateManager coordinator;
+
+    /** Fail-closed resource gate applied to every high-memory-capable MCP tool. */
+    private volatile HighMemoryToolCallGuard highMemoryToolCallGuard;
 
     /** Reference cache for large tool outputs — enables handle-based inter-tool communication. */
     private volatile ToolResultReferenceCache resultReferenceCache;
@@ -262,6 +280,19 @@ public class McpStdioCommand implements Callable<Integer> {
 
     /** Enforcer tool call guard — blocks tool calls that violate active enforcer policy. */
     private volatile EnforcerToolCallGuard enforcerGuard;
+    private ai.kompile.cli.main.chat.enforcer.JudgeControl mcpJudgeControl;
+
+    private synchronized ai.kompile.cli.main.chat.enforcer.JudgeControl mcpJudgeControl() {
+        if (mcpJudgeControl == null) mcpJudgeControl = ai.kompile.cli.main.chat.enforcer.JudgeControl
+                .load(toolContextSessionId(transcriptId));
+        return mcpJudgeControl;
+    }
+
+    /** External custom MCP servers loaded behind the search/call gateway. */
+    private volatile McpBundleToolLoader customMcpTools;
+
+    /** Fatal asynchronous initialization failure surfaced to tools/list and tools/call. */
+    private volatile String toolInitializationFailure;
 
     /** Output writer for sending JSON-RPC notifications (stored as field for access from helpers). */
     private volatile OutputStreamWriter mcpOut;
@@ -309,6 +340,76 @@ public class McpStdioCommand implements Callable<Integer> {
         hints.put("profile", resolvedProfile);
     }
 
+    static void registerStdioCoordinationSession(CoordinationStateManager manager) {
+        registerStdioCoordinationSession(manager, manager.getSessionId());
+    }
+
+    static void registerStdioCoordinationSession(CoordinationStateManager manager,
+                                                 String toolSessionId) {
+        String parentSessionId = nonBlankEnvironment("KOMPILE_PARENT_SESSION_ID");
+        String task = nonBlankEnvironment("KOMPILE_AGENT_TASK");
+        if (task == null) task = "MCP stdio tool session";
+        String roleName = nonBlankEnvironment("KOMPILE_AGENT_ROLE");
+        int depth = 0;
+        String depthValue = nonBlankEnvironment("KOMPILE_SUBAGENT_DEPTH");
+        if (depthValue != null) {
+            try {
+                depth = Math.max(0, Integer.parseInt(depthValue));
+            } catch (NumberFormatException ignored) {
+                // A malformed inherited value must not prevent session registration.
+            }
+        }
+        manager.registerAgent(task, parentSessionId, detectOwningAgent(), depth,
+                ProcessHandle.current().pid(), toolSessionId, roleName);
+    }
+
+    private static String detectOwningAgent() {
+        String configured = nonBlankEnvironment("KOMPILE_AGENT_NAME");
+        if (configured != null) return configured;
+        String commandLine = ProcessHandle.current().parent()
+                .flatMap(parent -> parent.info().commandLine())
+                .orElse("").toLowerCase(Locale.ROOT);
+        if (commandLine.contains("opencode")) return "opencode";
+        if (commandLine.contains("claude")) return "claude";
+        if (commandLine.contains("codex")) return "codex";
+        if (commandLine.contains("qwen")) return "qwen";
+        if (commandLine.contains("gemini")) return "gemini";
+        return "mcp-stdio";
+    }
+
+    private static String nonBlankEnvironment(String name) {
+        String value = System.getenv(name);
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    static String resolveTranscriptId(String configured) {
+        if (configured != null && !configured.isBlank()) return configured.trim();
+        String inherited = nonBlankEnvironment("KOMPILE_TRANSCRIPT_UUID");
+        return inherited != null ? inherited : UUID.randomUUID().toString();
+    }
+
+    static Path transcriptMcpLogDirectory(String transcriptId) throws IOException {
+        Path directory = LogPaths.ensureTranscriptDirectory(transcriptId)
+                .toPath().resolve("mcp");
+        Files.createDirectories(directory);
+        return directory;
+    }
+
+    /** Canonical session identity passed to session-scoped CLI tools. */
+    static String toolContextSessionId(String transcriptId) {
+        return transcriptId == null || transcriptId.isBlank()
+                ? "mcp-stdio" : transcriptId.trim();
+    }
+
+    static void requireWritableLogFile(Path file) throws IOException {
+        Files.createDirectories(file.getParent());
+        try (java.io.OutputStream ignored = Files.newOutputStream(file,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND)) {
+            // Opening the exact sink prevents a silently black-holed MCP session.
+        }
+    }
+
     /** ObjectMapper shared across the session. */
     private volatile ObjectMapper om;
 
@@ -331,27 +432,42 @@ public class McpStdioCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         Path wd = workDir != null ? Paths.get(workDir) : Paths.get(System.getProperty("user.dir"));
+        transcriptId = resolveTranscriptId(transcriptId);
 
         // Redirect stderr to a log file for the entire MCP stdio session so warnings,
         // auto-detect messages, and skill-loading errors do not pollute the client's UI.
         // stdout is intentionally left alone here so daemon bridgeStdio() can still write
         // JSON-RPC responses to the real stdout; runInProcess() additionally redirects
         // stdout once it takes over stdio.
-        Path resolvedLogDir = LogPaths.logsDirectory(wd).toPath();
+        Path resolvedLogDir;
+        try {
+            resolvedLogDir = transcriptMcpLogDirectory(transcriptId);
+            requireWritableLogFile(resolvedLogDir.resolve("mcp-stderr.log"));
+            requireWritableLogFile(resolvedLogDir.resolve("mcp-activity.log"));
+        } catch (IOException e) {
+            System.err.println("[MCP] Cannot start without transcript-scoped logs: "
+                    + e.getMessage());
+            return 1;
+        }
         McpStderrLogger stderrLogger =
                 new McpStderrLogger(
                         resolvedLogDir.resolve("mcp-stderr.log"));
         PrintStream originalErr = System.err;
         System.setErr(stderrLogger.getPrintStream());
         try {
+            System.err.println("[MCP] transcript=" + transcriptId
+                    + " pid=" + ProcessHandle.current().pid()
+                    + " workDir=" + wd.toAbsolutePath().normalize());
             // Stdio is self-contained by default. No application endpoint is probed or required
             // at startup; RAG, graph, crawl, code search, and history tools use project-local
             // implementations. An explicit --url remains an opt-in remote override.
 
             // Daemon sharing is explicit opt-in. Plain stdio and --no-daemon stay in-process.
             if (daemon) {
+                String resolvedProfile = resolvedProfileName();
                 DaemonClient client =
-                        DaemonClient.ensureDaemon("mcp", wd);
+                        DaemonClient.ensureDaemon("mcp", wd, resolvedProfile,
+                                resolvedProfileToolIds(resolvedProfile));
                 if (client != null) {
                     try {
                         client.bridgeStdio();
@@ -389,20 +505,21 @@ public class McpStdioCommand implements Callable<Integer> {
 
             om = JsonUtils.standardMapper();
 
-            sessionTracker = new McpSessionTracker(om);
+            sessionTracker = new McpSessionTracker(om, transcriptId, wd);
             resultReferenceCache = new ToolResultReferenceCache();
-            progressLogger = new McpToolProgressLogger(wd);
+            progressLogger = new McpToolProgressLogger(
+                    LogPaths.transcriptDirectory(transcriptId).toPath().resolve("mcp"));
             asyncExecutor = new AsyncToolExecutor(progressLogger);
             gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(om);
             auditLogger = new McpToolAuditLogger(
-                    sessionTracker.getMetrics().getSessionId(),
-                    "kompile-mcp-stdio",
+                    transcriptId,
+                    detectOwningAgent(),
                     "mcp-stdio",
                     wd,
                     om);
 
             // Load enforcer tool call guard from environment (if enforcer mode is active)
-            enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om);
+            enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om, wd);
 
             // ── CRITICAL: Start event loop FIRST, defer heavy init ──────────
             // Claude Code drops the MCP connection if the server doesn't respond
@@ -427,6 +544,7 @@ public class McpStdioCommand implements Callable<Integer> {
                 // Release the enforcer guard's judge lease so a lazily-created judge
                 // process never outlives this MCP server.
                 if (enforcerGuard != null) enforcerGuard.close();
+                if (customMcpTools != null) customMcpTools.close();
                 // Close cached IndexDatabase connections
                 LocalCodeIndexTool.closeAll();
             }, "mcp-harness-shutdown"));
@@ -438,7 +556,7 @@ public class McpStdioCommand implements Callable<Integer> {
             // populated by the background init thread below.
 
             // Resolved profile for filtering
-            String resolvedProfile = (profile != null && !profile.isBlank()) ? profile.toLowerCase().trim() : "full";
+            String resolvedProfile = resolvedProfileName();
 
             // Two-phase initialization: fast tools first (unblocks tools/list quickly),
             // then slow tools (semantic memory, file watcher, delegation) on a second pass.
@@ -482,6 +600,8 @@ public class McpStdioCommand implements Callable<Integer> {
                 } catch (Exception e) {
                     System.err.println("[MCP] Error during tool initialization: " + e.getMessage());
                     e.printStackTrace(System.err);
+                    toolInitializationFailure = e.getMessage() != null
+                            ? e.getMessage() : e.getClass().getSimpleName();
                     toolsReady.set(true); // unblock event loop even on error (with empty tools)
                 }
             }, "mcp-tool-init");
@@ -564,6 +684,7 @@ public class McpStdioCommand implements Callable<Integer> {
             toolExecutor.shutdownNow();
             if (sessionTracker != null) sessionTracker.shutdown();
             if (coordinator != null) coordinator.shutdown();
+            if (customMcpTools != null) customMcpTools.close();
             // Restore original stdout/stderr so callers (tests, daemon bridge) are not
             // left with redirected streams after this method returns.
             System.setOut(originalOut);
@@ -642,6 +763,11 @@ public class McpStdioCommand implements Callable<Integer> {
                         }
                     }
 
+                    if (toolInitializationFailure != null) {
+                        throw new IllegalStateException(
+                                "MCP tool initialization failed: " + toolInitializationFailure);
+                    }
+
                     ObjectNode toolsResult = om.createObjectNode();
                     var toolsArray = toolsResult.putArray("tools");
 
@@ -712,6 +838,11 @@ public class McpStdioCommand implements Callable<Integer> {
                         }
                     }
 
+                    if (toolInitializationFailure != null) {
+                        throw new IllegalStateException(
+                                "MCP tool initialization failed: " + toolInitializationFailure);
+                    }
+
                     String toolName = params.path("name").asText();
                     JsonNode args = params.path("arguments");
 
@@ -779,8 +910,9 @@ public class McpStdioCommand implements Callable<Integer> {
                         }
 
                         // Enforcer gate: check the final tool call against policy BEFORE execution.
-                        if (enforcerGuard != null && enforcerGuard.isActive()) {
-                            var guardDecision = enforcerGuard.evaluate(toolName, effectiveArgMap);
+                        {
+                            var guardDecision = EnforcerToolCallGuard.evaluateSession(
+                                    enforcerGuard, toolName, effectiveArgMap, mcpJudgeControl(), om);
                             if (!guardDecision.isAllowed()) {
                                 ObjectNode callResult = om.createObjectNode();
                                 String blockMsg = "BLOCKED by enforcer: " + guardDecision.blockMessage();
@@ -814,15 +946,13 @@ public class McpStdioCommand implements Callable<Integer> {
 
                         Map<String, Object> argMap = new LinkedHashMap<>(effectiveArgMap);
 
-                        // Check for _background mode -- run tool async and return immediately.
-                        // Delegation tools (task, multi_task, quorum_task) are ALWAYS async
-                        // because managed agent turns can take minutes.
+                        // Background execution is explicit. In particular, delegation tools
+                        // must keep their original MCP call open by default so the parent model
+                        // receives normal exits and failures (including quota exhaustion) as the
+                        // tool result. An implicitly detached call can only be recovered by polling,
+                        // which cannot wake a parent model that already ended its turn.
                         boolean background = argMap != null
                                 && Boolean.TRUE.equals(argMap.remove("_background"));
-                        // Force async for delegation tools to avoid client-side timeouts
-                        if (!background && td.annotations() == McpToolAnnotations.DELEGATION) {
-                            background = true;
-                        }
 
                         if (background && asyncExecutor != null) {
                             final Map<String, Object> finalArgs = argMap;
@@ -1290,7 +1420,8 @@ public class McpStdioCommand implements Callable<Integer> {
                 return Set.of();
             }
             String content = Files.readString(profileFile, StandardCharsets.UTF_8);
-            JsonNode root = om.readTree(content);
+            ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
+            JsonNode root = mapper.readTree(content);
             Set<String> toolIds = new LinkedHashSet<>();
             if (root.isArray()) {
                 root.forEach(n -> { if (n.isTextual()) toolIds.add(n.asText()); });
@@ -1301,6 +1432,22 @@ public class McpStdioCommand implements Callable<Integer> {
             System.err.println("[MCP] Failed to load custom profile '" + profileName + "': " + e.getMessage());
             return Set.of();
         }
+    }
+
+    String resolvedProfileName() {
+        return profile != null && !profile.isBlank()
+                ? profile.toLowerCase(Locale.ROOT).trim() : "full";
+    }
+
+    /** Null means the historical full/unrecognized-profile behavior: do not filter. */
+    Set<String> resolvedProfileToolIds(String resolvedProfile) {
+        if ("full".equals(resolvedProfile)) return null;
+        Set<String> builtIn = PROFILE_TOOLS.get(resolvedProfile);
+        if (builtIn != null && !builtIn.isEmpty()) {
+            return new LinkedHashSet<>(builtIn);
+        }
+        Set<String> custom = loadCustomProfile(resolvedProfile);
+        return custom.isEmpty() ? null : custom;
     }
 
     // ── Tool building ───────────────────────────────────────────────────────
@@ -1329,7 +1476,7 @@ public class McpStdioCommand implements Callable<Integer> {
         var pool = new SharedResourcePool(wd);
         var agentRegistry = pool.agentRegistry();
         var roleManager = pool.roleManager();
-        var processManager = new BackgroundProcessManager(System.getProperty("user.dir"));
+        var processManager = new BackgroundProcessManager(transcriptId, wd);
         var subagentRunner = new DirectSubagentRunnerStdio(wd, roleManager);
         System.err.println("[MCP] SharedResourcePool: " + (System.currentTimeMillis() - t0) + "ms");
 
@@ -1355,13 +1502,20 @@ public class McpStdioCommand implements Callable<Integer> {
         }
 
         // ── Coordination state manager ────────────────────────────────────
-        String coordSessionId = "mcp-stdio-" + System.currentTimeMillis();
+        String coordSessionId = "mcp-stdio-" + UUID.randomUUID();
         coordinator = new CoordinationStateManager(wd, coordSessionId, om);
+        highMemoryToolCallGuard = new HighMemoryToolCallGuard(coordinator);
+        registerStdioCoordinationSession(coordinator, transcriptId);
+        subagentRunner.setBaseEnvironment(Map.of(
+                "KOMPILE_PARENT_SESSION_ID", coordinator.getSessionId(),
+                "KOMPILE_TRANSCRIPT_UUID", transcriptId));
         System.err.println("[MCP] Core init: " + (System.currentTimeMillis() - t0) + "ms");
 
         // ── File I/O tools ─────────────────────────────────────────────────
         registerCliTool(tools, new ReadTool(), om, wd);
         registerCliTool(tools, new ReadBatchTool(), om, wd);
+        registerCliTool(tools, new FileContextTool(), om, wd);
+        registerCliTool(tools, new FileNoteTool(), om, wd);
         registerCliTool(tools, new WriteTool(coordinator), om, wd);
         registerCliTool(tools, new EditTool(coordinator), om, wd);
         registerCliTool(tools, new EditBatchTool(coordinator), om, wd);
@@ -1395,6 +1549,7 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Network tools ──────────────────────────────────────────────────
         registerCliTool(tools, new WebFetchTool(), om, wd);
         registerCliTool(tools, new WebSearchTool(), om, wd);
+        registerCliTool(tools, new ChannelTool(baseUrl, om), om, wd);
 
         // ── Workflow tools ─────────────────────────────────────────────────
         registerCliTool(tools, new TodoWriteTool(), om, wd);
@@ -1411,6 +1566,17 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ConfigArchiveTool(), om, wd);
         registerCliTool(tools, new ProjectConfigTool(), om, wd);
         registerCliTool(tools, new EnforcerConfigTool(), om, wd);
+        registerCliTool(tools, new JudgeControlTool(), om, wd);
+
+        // ── Custom MCP servers ────────────────────────────────────────────
+        // Keep the provider-facing schema small: custom server tools are
+        // discoverable and callable through these two stable gateway tools.
+        ToolRegistry customMcpRegistry = new ToolRegistry(om);
+        customMcpTools = McpBundleToolLoader.load(wd, customMcpRegistry, transcriptId);
+        CliTool mcpSearch = customMcpRegistry.get("mcp_tool_search");
+        CliTool mcpCall = customMcpRegistry.get("mcp_tool_call");
+        if (mcpSearch != null) registerCliTool(tools, mcpSearch, om, wd);
+        if (mcpCall != null) registerCliTool(tools, mcpCall, om, wd);
 
         // ── Test milestone tracking ───────────────────────────────────────
         registerCliTool(tools, new TestMilestoneTool(), om, wd);
@@ -1453,6 +1619,9 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new CrawlControlTool(crawlBaseUrl, om), om, wd);
         registerCliTool(tools, new CrawlResultTool(crawlBaseUrl, om), om, wd);
 
+        // ── Local crawl subprocess watchdog ─────────────────────────────
+        registerCliTool(tools, new SubprocessWatchdogTool(om), om, wd);
+
         // ── Graph analytics (in-process by default; --url selects remote) ──
         registerCliTool(tools, new GraphAggregateTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphForecastTool(baseUrl, om), om, wd);
@@ -1470,12 +1639,11 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── Process management ─────────────────────────────────────────────
         var procTool = new ProcessManagementTool(processManager, coordinator);
-        tools.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),
-            procTool.mcpAnnotations(),
-            args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
+        registerCliTool(tools, procTool, om, wd);
 
         // ── Edit coordination ─────────────────────────────────────────────
         registerCliTool(tools, new EditCoordinatorTool(coordinator), om, wd);
+        registerCliTool(tools, new SessionListTool(coordinator), om, wd);
 
         // ── Semantic memory (passive vector retrieval) ────────────────────
         long tSem = System.currentTimeMillis();
@@ -1513,19 +1681,13 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── Delegation tools ───────────────────────────────────────────────
         var taskTool = new StdioTaskTool(agentRegistry, subagentRunner, om, roleManager, coordinator);
-        tools.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
-            McpToolAnnotations.DELEGATION,
-            args -> { try { return taskTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
-
         var quorumTool = new StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
         tools.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
             McpToolAnnotations.DELEGATION,
             args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
         var multiTool = new StdioMultiTaskTool(agentRegistry, subagentRunner, om, wd, roleManager, coordinator);
-        tools.put(multiTool.id(), new ToolDef(multiTool.id(), multiTool.description(), multiTool.parameterSchema(),
-            McpToolAnnotations.DELEGATION,
-            args -> { try { return multiTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
+        registerTaskTools(tools, taskTool, multiTool, () -> ctx(wd));
 
         var rmTool = new RoleManagerTool(roleManager, om);
         tools.put(rmTool.id(), new ToolDef(rmTool.id(), rmTool.description(), rmTool.parameterSchema(),
@@ -1710,42 +1872,45 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Build a standard MCP call result from a ToolResult. */
     ObjectNode buildCallResult(ToolResult tr) {
         ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
-        ObjectNode callResult = mapper.createObjectNode();
-        var content = callResult.putArray("content");
-        var textObj = content.addObject();
-        textObj.put("type", "text");
-        String title = tr.getTitle() != null ? tr.getTitle() + "\n" : "";
-        String output = tr.getOutput() != null ? tr.getOutput() : "";
-        String text = title + output;
-        textObj.put("text", text);
-        if (tr.getMetadata() != null && !tr.getMetadata().isEmpty()) {
-            ObjectNode structured = mapper.createObjectNode();
-            if (tr.getTitle() != null && !tr.getTitle().isEmpty()) {
-                structured.put("title", tr.getTitle());
-            }
-            structured.put("output", output);
-            structured.set("metadata", mapper.valueToTree(tr.getMetadata()));
-            callResult.set("structuredContent", structured);
-        }
-        callResult.put("isError", tr.isError());
-        return callResult;
+        return McpToolResultSerializer.toMcpCallResult(mapper, tr);
+    }
+
+    /** Register single and parallel delegation together, including compact discovery guidance. */
+    static void registerTaskTools(Map<String, ToolDef> tools, StdioTaskTool taskTool,
+                                  StdioMultiTaskTool multiTool) {
+        registerTaskTools(tools, taskTool, multiTool, () -> null);
+    }
+
+    static void registerTaskTools(Map<String, ToolDef> tools, StdioTaskTool taskTool,
+                                  StdioMultiTaskTool multiTool,
+                                  java.util.function.Supplier<ToolContext> context) {
+        tools.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
+                McpToolAnnotations.DELEGATION,
+                args -> { try { return taskTool.execute(args, context.get()); } catch (Exception e) { return ToolResult.error(e.getMessage()); } },
+                taskTool.compactHint()));
+        tools.put(multiTool.id(), new ToolDef(multiTool.id(), multiTool.description(), multiTool.parameterSchema(),
+                McpToolAnnotations.DELEGATION,
+                args -> { try { return multiTool.execute(args, context.get()); } catch (Exception e) { return ToolResult.error(e.getMessage()); } },
+                multiTool.compactHint()));
     }
 
     /** Register a standalone CliTool (no special constructor deps) into the MCP tool map. */
     private void registerCliTool(Map<String, ToolDef> tools,
                                   CliTool cliTool,
                                   ObjectMapper om, Path wd) {
-        tools.put(cliTool.id(), new ToolDef(
-            cliTool.id(), cliTool.description(), cliTool.parameterSchema(),
-            cliTool.mcpAnnotations(),
+        HighMemoryToolCallGuard guard = highMemoryToolCallGuard;
+        CliTool executable = guard == null ? cliTool : guard.wrap(cliTool);
+        tools.put(executable.id(), new ToolDef(
+            executable.id(), executable.description(), executable.parameterSchema(),
+            executable.mcpAnnotations(),
             args -> {
                 try {
-                    return cliTool.execute(om.valueToTree(args), ctx(wd));
+                    return executable.execute(om.valueToTree(args), ctx(wd));
                 } catch (Exception e) {
                     return ToolResult.error(e.getMessage());
                 }
             },
-            cliTool.compactHint()
+            executable.compactHint()
         ));
     }
 
@@ -1765,9 +1930,15 @@ public class McpStdioCommand implements Callable<Integer> {
 
     private ToolContext ctx(Path wd) {
         var ctx = CTX.get();
-        if (ctx == null) {
+        if (ctx == null || !ctx.getSessionId().equals(toolContextSessionId(transcriptId))
+                || !ctx.getWorkingDirectory().equals(wd)) {
+            // Session-scoped tools (todowrite/todoread) key their persisted state on
+            // this id. Use the real transcript session so per-session task lists
+            // follow the parent chat session instead of collapsing every MCP client
+            // into one shared bucket.
+            String toolSessionId = toolContextSessionId(transcriptId);
             ctx = new ToolContext(
-                "mcp-stdio", null,
+                toolSessionId, null,
                 new AllowAllPermissionService(),
                 wd, null);
             // Wire output consumer to both stderr and progress logger
@@ -1782,10 +1953,14 @@ public class McpStdioCommand implements Callable<Integer> {
             });
             CTX.set(ctx);
         }
+        ctx.bindJudgeControl(mcpJudgeControl(), true);
         // Bind this call's context so notifications/cancelled can flip its abort signal
         // (ProcessManager's abort watcher then kills the running command tree).
         InFlightCall call = CURRENT_CALL.get();
         if (call != null && call.context == null) {
+            // Observe the request flag before publication so cancellation before/during
+            // context creation cannot be lost (without giving tools ownership of it).
+            ctx.linkAbortCheck(call.cancelled::get);
             call.context = ctx;
         }
         return ctx;

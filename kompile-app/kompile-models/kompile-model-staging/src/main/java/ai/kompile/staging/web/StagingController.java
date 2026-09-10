@@ -615,9 +615,7 @@ public class StagingController {
             return ResponseEntity.notFound().build();
         }
 
-        ModelRegistry registry = registryService.loadRegistry();
-        registry.setActiveModel(modelId);
-        registryService.saveRegistry(registry);
+        registryService.updateRegistry(registry -> registry.setActiveModel(modelId));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("success", true);
@@ -634,37 +632,28 @@ public class StagingController {
     @PostMapping("/normalize")
     public ResponseEntity<Map<String, Object>> normalizeRegistry() {
         log.info("Normalizing registry - ensuring one active model per type");
-        ModelRegistry registry = registryService.loadRegistry();
         Map<String, String> changes = new LinkedHashMap<>();
-
-        // Group active models by type
-        Map<ModelType, List<ModelEntry>> activeByType = new LinkedHashMap<>();
-        for (ModelEntry entry : registry.getActiveModels()) {
-            activeByType.computeIfAbsent(entry.getType(), k -> new ArrayList<>()).add(entry);
-        }
-
-        // For types with multiple active models, keep only the most recently promoted
-        for (Map.Entry<ModelType, List<ModelEntry>> typeEntry : activeByType.entrySet()) {
-            List<ModelEntry> models = typeEntry.getValue();
-            if (models.size() > 1) {
-                // Sort by promotedAt descending, keep the first
-                models.sort((a, b) -> {
-                    String aTime = a.getPromotedAt() != null ? a.getPromotedAt() : "";
-                    String bTime = b.getPromotedAt() != null ? b.getPromotedAt() : "";
-                    return bTime.compareTo(aTime);
-                });
-                // Deactivate all except the first
-                for (int i = 1; i < models.size(); i++) {
-                    models.get(i).setStatus(ModelStatus.STAGED);
-                    changes.put(models.get(i).getModelId(), "deactivated");
-                }
-                changes.put(models.get(0).getModelId(), "kept_active");
+        registryService.updateRegistry(registry -> {
+            Map<ModelType, List<ModelEntry>> activeByType = new LinkedHashMap<>();
+            for (ModelEntry entry : registry.getActiveModels()) {
+                activeByType.computeIfAbsent(entry.getType(), k -> new ArrayList<>()).add(entry);
             }
-        }
-
-        if (!changes.isEmpty()) {
-            registryService.saveRegistry(registry);
-        }
+            for (Map.Entry<ModelType, List<ModelEntry>> typeEntry : activeByType.entrySet()) {
+                List<ModelEntry> models = typeEntry.getValue();
+                if (models.size() > 1) {
+                    models.sort((a, b) -> {
+                        String aTime = a.getPromotedAt() != null ? a.getPromotedAt() : "";
+                        String bTime = b.getPromotedAt() != null ? b.getPromotedAt() : "";
+                        return bTime.compareTo(aTime);
+                    });
+                    for (int i = 1; i < models.size(); i++) {
+                        models.get(i).setStatus(ModelStatus.STAGED);
+                        changes.put(models.get(i).getModelId(), "deactivated");
+                    }
+                    changes.put(models.get(0).getModelId(), "kept_active");
+                }
+            }
+        });
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("success", true);

@@ -84,9 +84,9 @@ public class DocumentIngestService implements org.springframework.beans.factory.
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
-    @Autowired
+    @Autowired(required = false)
     private List<DocumentLoader> documentLoaders;
-    @Autowired
+    @Autowired(required = false)
     private List<TextChunker> textChunkers;
     @Autowired
     private List<IndexerService> indexerServices;
@@ -166,8 +166,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     @Autowired
     public DocumentIngestService(
             @Autowired(required = false) SimpMessagingTemplate messagingTemplate,
-            @Autowired List<DocumentLoader> documentLoaders,
-            @Autowired List<TextChunker> textChunkers,
+            @Autowired(required = false) List<DocumentLoader> documentLoaders,
+            @Autowired(required = false) List<TextChunker> textChunkers,
             @Autowired List<IndexerService> indexerServices,
             @Lazy @Autowired List<ai.kompile.core.embeddings.EmbeddingModel> embeddingModels,
             IngestConfiguration ingestConfiguration,
@@ -180,8 +180,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             @Autowired(required = false) SubprocessConfigService subprocessConfigService,
             @Autowired(required = false) ResourceAwareJobScheduler resourceScheduler) {
         this.messagingTemplate = messagingTemplate; // May be null if WebSocket not configured
-        this.documentLoaders = documentLoaders;
-        this.textChunkers = textChunkers;
+        this.documentLoaders = documentLoaders != null ? documentLoaders : List.of();
+        this.textChunkers = textChunkers != null ? textChunkers : List.of();
         this.ingestConfiguration = ingestConfiguration;
         this.memoryWatchdogService = memoryWatchdogService;
         this.textConversionService = textConversionService;

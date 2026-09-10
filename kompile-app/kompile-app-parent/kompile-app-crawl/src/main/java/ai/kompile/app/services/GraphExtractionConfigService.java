@@ -426,7 +426,8 @@ public class GraphExtractionConfigService {
                     .map(type -> type == null ? null : new NodeType(
                             type.getLabel(),
                             type.getDescription(),
-                            copyProperties(type.getProperties())))
+                            copyProperties(type.getProperties()),
+                            type.getParentType()))
                     .toList();
             List<RelationshipType> relationshipTypes = schema.getRelationshipTypes() == null
                     ? null
@@ -435,7 +436,8 @@ public class GraphExtractionConfigService {
                                     type.getType(),
                                     type.getDescription(),
                                     copyProperties(type.getProperties()),
-                                    type.getAliases() == null ? List.of() : List.copyOf(type.getAliases())))
+                                    type.getAliases() == null ? List.of() : List.copyOf(type.getAliases()),
+                                    type.getConnectionFamily()))
                             .toList();
             List<String> patterns = schema.getPatterns() == null ? null : List.copyOf(schema.getPatterns());
             return new GraphSchema(nodeTypes, relationshipTypes, patterns);

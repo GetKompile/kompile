@@ -929,7 +929,9 @@ public final class ToolDrivenExtractionExecutor {
             prompt.append("""
                     Build a knowledge-graph delta from SOURCE as one window of the unified corpus. Call one tool per turn.
                     TOOLS.graphSchema is the current prepass-derived ontology. Use its entity types,
-                    relationship types, and directed endpoint patterns; a relationship has its own type.
+                    entity parent hierarchy, relationship types, connection families, and directed endpoint patterns.
+                    Choose the most specific supported entity type. A connection family classifies a relationship
+                    predicate but is never the predicate: emit EMAILED rather than COMMUNICATION.
                     TOOLS.callShape is the exact JSON envelope: return only its top-level tool and args
                     keys, with no prose, markdown, catalog fields, or state fields. It defaults to
                     submit_graph_delta; fill both arrays with every source-supported entity and relation.
@@ -985,6 +987,8 @@ public final class ToolDrivenExtractionExecutor {
             return """
                     Extract only facts explicitly stated in SOURCE SHARD.
                     Allowed entity types, relation types, and endpoint patterns are labels, not evidence.
+                    Entity parents and relation connection families are classification context. Choose the most
+                    specific supported entity or predicate; never emit a connection-family name as the relation type.
                     Never copy prompt, tool, schema, or validation text into an id, name, type, or relation.
                     Call submit_graph_delta. For each named entity, copy its exact SOURCE name, assign an
                     allowed type, and create a short stable id. For each explicit directed relation, use the
@@ -1002,12 +1006,13 @@ public final class ToolDrivenExtractionExecutor {
                 and CURRENT GRAPH AND CORPUS STATE.graphSchema is the current authoritative ontology revision.
                 Use node types for entities. Extract every supported directed relation and assign it a
                 relationship type allowed by relationshipTypes and its source/relation/target pattern.
+                Subtypes satisfy ancestor endpoints. Families classify predicates; emit the predicate, not its family.
                 Search graph_reasoning_query by a name, email, or alias before creating an ambiguous entity.
                 Reuse the resolved id, attach source-supported aliases, and do not create duplicate identities.
                 Use unified_corpus when the current window needs exact cross-source evidence.
-                If update_ontology is declared and evidence establishes a missing reusable node type,
-                relationship type, property, alias, or endpoint pattern, call it alone and use the refreshed
-                ontology on the next turn. When it is not declared, the configured ontology is closed.
+                If update_ontology is declared and evidence establishes a missing reusable type, property, alias,
+                or endpoint pattern, call it alone. New node types require parentType; predicates require
+                connectionFamily. Use the refreshed ontology next turn. Otherwise the ontology is closed.
                 CURRENT GRAPH AND CORPUS STATE.recommendedFirstTool is guidance. Call a function, not a plan.
                 Finish with submit_graph_delta and include every supported entity and typed relation.
                 Each relation endpoint must copy an id from this submission or the current graph.
@@ -1305,14 +1310,14 @@ public final class ToolDrivenExtractionExecutor {
 
     private static String retainedSubsetGuidance(String submissionTool) {
         if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(submissionTool)) {
-            return "Validator-clean entity rows are already retained. Invoke submit_typed_entities with only "
-                    + "corrected or missing entity objects. Populate every name with the exact Text string and "
-                    + "every type with the chosen allowed ontology node label.";
+            return "Validator-clean entity rows are already retained. Invoke submit_typed_entities with the complete "
+                    + "positional entity array. Keep retained rows unchanged, correct rejected positions, populate "
+                    + "every name with the exact Text string, and choose every type from the allowed ontology labels.";
         }
         if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(submissionTool)) {
-            return "Validator-clean relation rows are already retained. Invoke submit_relations with only "
-                    + "corrected or missing relation objects. Populate source and target with actual integer lookup "
-                    + "indices and type with the chosen allowed ontology relation label; obey its directed endpoint pattern.";
+            return "Validator-clean relation rows are already retained. Invoke submit_relations with the complete "
+                    + "positional relation array. Keep retained rows unchanged, correct rejected positions, use the "
+                    + "immutable integer endpoints, and choose types from the allowed ontology relation labels.";
         }
         return COMPLETE_REPLACEMENT_GUIDANCE;
     }
@@ -1323,11 +1328,11 @@ public final class ToolDrivenExtractionExecutor {
                 ? "" : observation.request().name();
         if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)) {
             return "PREVIOUS ENTITY SUBMISSION WAS REJECTED. Follow the ENTITY REPAIR CARD below and submit "
-                    + "only corrected or missing rows. Do not repeat a rejected row unchanged.";
+                    + "the complete positional table. Keep retained rows unchanged and correct every rejected position.";
         }
         if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool)) {
             return "PREVIOUS RELATION SUBMISSION WAS REJECTED. Follow the RELATION REPAIR CARD below and submit "
-                    + "only corrected or missing rows. Do not repeat a rejected row unchanged.";
+                    + "the complete positional table. Keep retained rows unchanged and correct every rejected position.";
         }
         Object format = observation == null || observation.request() == null
                 ? null : observation.request().arguments().get("format");
@@ -1576,8 +1581,8 @@ public final class ToolDrivenExtractionExecutor {
             JsonNode submitted = MAPPER.valueToTree(observation.request().arguments()).path(field);
             JsonNode rejected = correction.path(rejectedField);
             StringBuilder card = new StringBuilder(relations
-                    ? "RELATION REPAIR CARD (replace rejected rows only)\n"
-                    : "ENTITY REPAIR CARD (replace rejected rows only)\n");
+                    ? "RELATION REPAIR CARD (correct rejected positions)\n"
+                    : "ENTITY REPAIR CARD (correct rejected positions)\n");
             appendRejectedRows(card, submitted, rejected);
             if (relations) {
                 JsonNode table = correction.path("entities");
@@ -1604,8 +1609,8 @@ public final class ToolDrivenExtractionExecutor {
                         + "both endpoint names from the same explicit predicate; map each name independently to the "
                         + "immutable index; choose the allowed relation label whose definition matches the predicate "
                         + "and whose directed endpoint pattern matches source type to target type. Use no background "
-                        + "knowledge and do not substitute a convenient endpoint from another sentence. Resubmit only "
-                        + "corrected or missing native relation objects; do not emit a second row format or prose.\n");
+                        + "knowledge and do not substitute a convenient endpoint from another sentence. Resubmit the "
+                        + "complete positional relation array; do not emit a second row format or prose.\n");
             } else {
                 appendCompactField(card, "Allowed entity types",
                         correction.path("allowedEntityTypes"));
@@ -1616,11 +1621,11 @@ public final class ToolDrivenExtractionExecutor {
                         + "referent is in ordinary words, and compare that evidence with the ontology definitions "
                         + "before choosing exactly one label. Ignore enum order, row count, and unused labels; never "
                         + "reuse one name under a second type. A type label, relation label, instruction, placeholder, "
-                        + "alternate casing, or duplicate cannot fill a missing entity row. Resubmit only corrected "
-                        + "or missing native entity objects; do not emit a second row format or prose.\n");
+                        + "alternate casing, or duplicate cannot fill a missing entity row. Resubmit the complete "
+                        + "positional entity array; do not emit a second row format or prose.\n");
             }
             String requiredCall = correction.path("requiredCall").asText("");
-            card.append("NEXT: invoke this native call with corrected or missing rows only: ")
+            card.append("NEXT: invoke this native call with the complete positional table: ")
                     .append(requiredCall.isBlank()
                             ? requiredNativeCallShape(tool) : requiredCall);
             return card.toString();

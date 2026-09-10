@@ -14,6 +14,7 @@ import ai.kompile.graph.reasoning.psl.PslProgram;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +28,10 @@ import java.util.Optional;
  */
 public class FactStore {
 
-    private final Map<String, Fact> store = new LinkedHashMap<>();
+    private final Map<String, LinkedHashMap<String, StoredFact>> store = new LinkedHashMap<>();
+    private long assertionSequence;
+
+    private record StoredFact(Fact fact, long sequence) { }
 
     /**
      * Assert a fact into the store. If a fact with the same atom key already
@@ -35,9 +39,12 @@ public class FactStore {
      *
      * @param fact the fact to assert; must not be null
      */
-    public void assertFact(Fact fact) {
+    public synchronized void assertFact(Fact fact) {
         if (fact == null) throw new IllegalArgumentException("fact must not be null");
-        store.put(fact.atomKey(), fact);
+        LinkedHashMap<String, StoredFact> sources =
+                store.computeIfAbsent(fact.atomKey(), ignored -> new LinkedHashMap<>());
+        sources.remove(fact.sourceId());
+        sources.put(fact.sourceId(), new StoredFact(fact, ++assertionSequence));
     }
 
     /**
@@ -46,7 +53,7 @@ public class FactStore {
      *
      * @param fact the fact to assert; must not be null
      */
-    public void assert_(Fact fact) {
+    public synchronized void assert_(Fact fact) {
         assertFact(fact);
     }
 
@@ -56,8 +63,39 @@ public class FactStore {
      * @param atomKey the atom key to retract
      * @return the removed fact, or empty if not present
      */
-    public Optional<Fact> retract(String atomKey) {
-        return Optional.ofNullable(store.remove(atomKey));
+    public synchronized Optional<Fact> retract(String atomKey) {
+        LinkedHashMap<String, StoredFact> removed = store.remove(atomKey);
+        return removed == null ? Optional.empty() : effective(removed);
+    }
+
+    /**
+     * Retract every fact owned by one provenance source, preserving observations asserted by all
+     * other sources. Returns the number of removed facts.
+     */
+    public synchronized int retractBySource(String sourceId) {
+        if (sourceId == null) return 0;
+        int removed = 0;
+        var iterator = store.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, LinkedHashMap<String, StoredFact>> atom = iterator.next();
+            if (atom.getValue().remove(sourceId) != null) removed++;
+            if (atom.getValue().isEmpty()) iterator.remove();
+        }
+        return removed;
+    }
+
+    /** Atomically replace the complete fact set owned by one provenance source. */
+    public synchronized int replaceSourceFacts(String sourceId, Collection<Fact> replacements) {
+        if (sourceId == null) throw new IllegalArgumentException("sourceId must not be null");
+        List<Fact> staged = replacements == null ? List.of() : List.copyOf(replacements);
+        for (Fact fact : staged) {
+            if (fact == null || !sourceId.equals(fact.sourceId())) {
+                throw new IllegalArgumentException("replacement facts must all belong to source " + sourceId);
+            }
+        }
+        int removed = retractBySource(sourceId);
+        staged.forEach(this::assertFact);
+        return removed;
     }
 
     /**
@@ -67,10 +105,10 @@ public class FactStore {
      * @param predicate the predicate name to filter by (e.g. "State")
      * @return list of matching facts (may be empty)
      */
-    public List<Fact> factsFor(String predicate) {
+    public synchronized List<Fact> factsFor(String predicate) {
         List<Fact> result = new ArrayList<>();
         String prefix = predicate + "(";
-        for (Fact f : store.values()) {
+        for (Fact f : effectiveFacts()) {
             if (f.atomKey().startsWith(prefix) || f.atomKey().equals(predicate)) {
                 result.add(f);
             }
@@ -83,8 +121,27 @@ public class FactStore {
      *
      * @return unmodifiable view of all stored facts
      */
-    public Collection<Fact> allFacts() {
-        return Collections.unmodifiableCollection(store.values());
+    public synchronized Collection<Fact> allFacts() {
+        return Collections.unmodifiableList(effectiveFacts());
+    }
+
+    /** All source-specific facts in assertion order, for lossless store copies and auditing. */
+    public synchronized Collection<Fact> allSourceFacts() {
+        List<StoredFact> sourced = store.values().stream()
+                .flatMap(sources -> sources.values().stream())
+                .sorted(Comparator.comparingLong(StoredFact::sequence))
+                .toList();
+        return Collections.unmodifiableList(sourced.stream().map(StoredFact::fact).toList());
+    }
+
+    /** Source-specific facts for one atom in assertion order. */
+    public synchronized List<Fact> sourceFactsFor(String atomKey) {
+        Map<String, StoredFact> sources = store.get(atomKey);
+        if (sources == null) return List.of();
+        return sources.values().stream()
+                .sorted(Comparator.comparingLong(StoredFact::sequence))
+                .map(StoredFact::fact)
+                .toList();
     }
 
     /**
@@ -93,23 +150,24 @@ public class FactStore {
      * @param atomKey the key to look up
      * @return the fact, or empty if not present
      */
-    public Optional<Fact> factFor(String atomKey) {
-        return Optional.ofNullable(store.get(atomKey));
+    public synchronized Optional<Fact> factFor(String atomKey) {
+        return effective(store.get(atomKey));
     }
 
     /** @return the number of facts in the store */
-    public int size() {
+    public synchronized int size() {
         return store.size();
     }
 
     /** @return true if there are no facts in the store */
-    public boolean isEmpty() {
+    public synchronized boolean isEmpty() {
         return store.isEmpty();
     }
 
     /** Remove all facts from the store. */
-    public void clear() {
+    public synchronized void clear() {
         store.clear();
+        assertionSequence = 0L;
     }
 
     /**
@@ -125,8 +183,8 @@ public class FactStore {
      *
      * @param program the PSL program to observe facts into
      */
-    public void applyToProgram(PslProgram program) {
-        for (Fact fact : store.values()) {
+    public synchronized void applyToProgram(PslProgram program) {
+        for (Fact fact : effectiveFacts()) {
             String atomKey = fact.atomKey();
             int lp = atomKey.indexOf('(');
             if (lp < 0) {
@@ -148,5 +206,19 @@ public class FactStore {
                 }
             }
         }
+    }
+
+    private List<Fact> effectiveFacts() {
+        return store.values().stream()
+                .map(FactStore::effective)
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    private static Optional<Fact> effective(Map<String, StoredFact> sources) {
+        if (sources == null || sources.isEmpty()) return Optional.empty();
+        return sources.values().stream()
+                .max(Comparator.comparingLong(StoredFact::sequence))
+                .map(StoredFact::fact);
     }
 }

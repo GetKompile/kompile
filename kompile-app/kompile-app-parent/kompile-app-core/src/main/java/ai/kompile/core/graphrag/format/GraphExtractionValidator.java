@@ -259,7 +259,7 @@ public final class GraphExtractionValidator {
                 validateEntityType(entity, schemaEntityTypes, violations);
             }
             if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.PROPERTY_SCHEMA)) {
-                validateEntityProperties(entity, schemaEntityTypes, violations);
+                validateEntityProperties(entity, schemaEntityTypes, schema, violations);
             }
             if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.REQUIRED_DESCRIPTIONS)
                     && !hasText(entity.description())) {
@@ -295,7 +295,7 @@ public final class GraphExtractionValidator {
                         + " type must match [A-Z][A-Z0-9_]*: " + relation.type());
             }
             if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.RELATION_TYPE_SCHEMA)) {
-                validateRelationType(i, relation, schemaRelationTypes, violations);
+                validateRelationType(i, relation, schemaRelationTypes, schema, violations);
             }
             if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.PROPERTY_SCHEMA)) {
                 validateRelationProperties(i, relation, schemaRelationTypes, violations);
@@ -326,7 +326,8 @@ public final class GraphExtractionValidator {
 
             if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.RELATION_SCHEMA_PATTERN)
                     && hasText(relation.type())) {
-                validateRelationPattern(i, relation, entitiesById, patternsByType, policy, violations);
+                validateRelationPattern(i, relation, entitiesById, patternsByType,
+                        policy, schema, violations);
             }
         }
         return violations;
@@ -374,8 +375,17 @@ public final class GraphExtractionValidator {
     private static void validateRelationType(int index,
                                              ExtractedRelation relation,
                                              Map<String, RelationshipType> schemaTypes,
+                                             GraphSchema schema,
                                              List<String> violations) {
-        if (schemaTypes.isEmpty() || !hasText(relation.type())) {
+        if (!hasText(relation.type())) {
+            return;
+        }
+        if (schemaTypes.isEmpty()) {
+            if (schema != null && schema.getRelationshipTypes() != null) {
+                violations.add("[RELATION_TYPE_SCHEMA] Relation at index " + index
+                        + " uses type " + relation.type()
+                        + "; the frozen relationship vocabulary is empty");
+            }
             return;
         }
         String normalized = normalizeType(relation.type());
@@ -399,14 +409,18 @@ public final class GraphExtractionValidator {
 
     private static void validateEntityProperties(ExtractedEntity entity,
                                                  Map<String, NodeType> schemaTypes,
+                                                 GraphSchema schema,
                                                  List<String> violations) {
         if (schemaTypes.isEmpty() || !hasText(entity.type()) || entity.properties().isEmpty()) {
             return;
         }
         NodeType definition = schemaTypes.get(normalizeType(entity.type()));
         if (definition != null) {
+            List<PropertyType> effectiveProperties = schema == null
+                    ? definition.getProperties()
+                    : schema.getEffectiveNodeProperties(entity.type());
             validateProperties("Entity '" + entity.id() + "'", entity.properties(),
-                    definition.getProperties(), violations);
+                    effectiveProperties, violations);
         }
     }
 
@@ -567,6 +581,7 @@ public final class GraphExtractionValidator {
                                                 Map<String, ExtractedEntity> entitiesById,
                                                 Map<String, List<RelationSignature>> patternsByType,
                                                 GraphExtractionValidationPolicy policy,
+                                                GraphSchema schema,
                                                 List<String> violations) {
         String relationType = normalizeType(relation.type());
         List<RelationSignature> allowed = patternsByType.getOrDefault(relationType, List.of());
@@ -586,7 +601,8 @@ public final class GraphExtractionValidator {
         String sourceType = normalizeType(source.type());
         String targetType = normalizeType(target.type());
         boolean matches = allowed.stream().anyMatch(pattern ->
-                pattern.sourceType().equals(sourceType) && pattern.targetType().equals(targetType));
+                nodeTypeMatches(schema, sourceType, pattern.sourceType())
+                        && nodeTypeMatches(schema, targetType, pattern.targetType()));
         if (!matches) {
             String expected = allowed.stream()
                     .map(RelationSignature::expression)
@@ -597,6 +613,13 @@ public final class GraphExtractionValidator {
                     + sourceType + "-[:" + relationType + "]->" + targetType
                     + " but allowed signature is " + expected);
         }
+    }
+
+    private static boolean nodeTypeMatches(
+            GraphSchema schema, String actualType, String expectedType) {
+        return schema == null
+                ? expectedType.equals(actualType)
+                : schema.isNodeTypeAssignableTo(actualType, expectedType);
     }
 
     /**
@@ -961,12 +984,22 @@ public final class GraphExtractionValidator {
             rules.append("- Entity types MUST use the standardized schema vocabulary: ")
                     .append(String.join(", ", schema.getAllNodeLabels().stream().sorted().toList()))
                     .append(".\n");
+            if (!schema.getNodeParentTypes().isEmpty()) {
+                rules.append("- Entity subtype hierarchy uses child -> parent declarations: ")
+                        .append(schema.getNodeParentTypes())
+                        .append(". Choose the most specific supported type; a subtype satisfies endpoint signatures declared for its ancestors.\n");
+            }
         }
         if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.RELATION_TYPE_SCHEMA)
                 && schema != null && !schema.getAllRelationshipTypes().isEmpty()) {
             rules.append("- Relation types MUST use the standardized schema vocabulary: ")
                     .append(String.join(", ", schema.getAllRelationshipTypes().stream().sorted().toList()))
                     .append(".\n");
+            if (!schema.getRelationshipConnectionFamilies().isEmpty()) {
+                rules.append("- Relation connection families are classification context only: ")
+                        .append(schema.getRelationshipConnectionFamilies())
+                        .append(". Emit the specific relation type, never its family name.\n");
+            }
         }
         if (policy.isValidatorEnabled(GraphExtractionValidationPolicy.PROPERTY_SCHEMA)
                 && schema != null) {
@@ -987,7 +1020,7 @@ public final class GraphExtractionValidator {
             if (patterns.isEmpty() && policy.isRequirePatternForEveryRelationType()) {
                 rules.append("- Do not emit relations because this project has no allowed relationship signatures.\n");
             } else if (!patterns.isEmpty()) {
-                rules.append("- For the listed relation types, source and target entity types MUST match one allowed signature exactly:\n");
+                rules.append("- For the listed relation types, source and target entity types MUST match one allowed signature, including subtype-to-ancestor matches:\n");
                 patterns.forEach(pattern -> rules.append("  - ").append(pattern).append('\n'));
                 if (policy.isRequirePatternForEveryRelationType()) {
                     rules.append("- Do not emit relationship types absent from the allowed signatures.\n");

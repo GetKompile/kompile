@@ -75,9 +75,25 @@ class UnifiedCodeIndexIntegrationTest {
                     public UserService(UserRepository userRepository) {
                         this.userRepository = userRepository;
                     }
+                    public record Lookup(
+                            @Names({"email", "address"}) String email)
+                            implements
+                            java.io.Serializable {
+                        public String normalized() { return email.trim(); }
+                    }
+                    public User afterNestedType(String email) {
+                        return getUserByEmail(email);
+                    }
                     public User getUserByEmail(String email) {
                         List<User> users = userRepository.findByEmail(email);
                         return users.isEmpty() ? null : users.get(0);
+                    }
+                    public User resolveUser(
+                            String email,
+                            boolean required) {
+                        int bodyLocal = required ? 1 : 0;
+                        List<User> users = userRepository.findByEmail(email);
+                        return users.isEmpty() ? null : users.get(bodyLocal);
                     }
                     public void createUser(String name, String email) {
                         User user = new User();
@@ -88,6 +104,58 @@ class UnifiedCodeIndexIntegrationTest {
                     public void removeUser(long id) {
                         userRepository.deleteById(id);
                     }
+                }
+                """);
+
+        Files.writeString(srcMain.resolve("FormattingService.java"), String.join("\n",
+                "package com.example;",
+                "public class FormattingService {",
+                "    public java.util.Map<String, ? extends Number> allman(",
+                "            String value)",
+                "    throws IllegalStateException",
+                "    {",
+                "        String braces = \"\"\"",
+                "                { text block braces are not code }",
+                "                escaped delimiter: \\" + "\"\"\" { still text block }",
+                "                \"\"\";",
+                "        int formattingLocal = value.length();",
+                "        return java.util.Map.of();",
+                "    }",
+                "    public void afterTextBlock() {}",
+                "    public void commentedAllman() // header comment",
+                "    {",
+                "        int commentedLocal = 1;",
+                "    }",
+                "    public void afterCommentedAllman() {}",
+                "}"));
+
+        Files.writeString(srcMain.resolve("GroovyService.groovy"), """
+                package com.example
+                class GroovyService {
+                    def render()
+                    {
+                        def triple = ''' } still text '''
+                        def slashy = / } still text /
+                        def dollar = $/ } still text /$
+                        def matches = "value" ==~ /}/
+                        def combined = /a/ + / } /
+                    }
+                    def afterRender() {}
+                }
+                """);
+
+        Files.writeString(srcMain.resolve("JvmChild.kt"), """
+                package com.example.kotlin
+                class Parent {}
+                class Child : Parent {
+                    fun value(): Int { return 1 }
+                }
+                """);
+
+        Files.writeString(srcMain.resolve("Metric.scala"), """
+                package com.example.scala
+                class Metric {
+                    def value() = 1
                 }
                 """);
 
@@ -218,6 +286,93 @@ class UnifiedCodeIndexIntegrationTest {
         // Splan declarations are indexed as CONSTANT
         List<Map<String, Object>> decls = indexer.search(PROJECT_ID, "source_dir", "CONSTANT", 10);
         assertFalse(decls.isEmpty(), "Should find splan 'source_dir' declaration as CONSTANT");
+    }
+
+    @Test
+    void testMultilineJavaMethodIndexedWithoutBodyLocals() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> methods =
+                indexer.search(PROJECT_ID, "resolveUser", "METHOD", 10);
+        assertFalse(methods.isEmpty(), "Multiline method declaration should be indexed");
+        assertEquals("resolveUser", methods.get(0).get("name"));
+
+        List<Map<String, Object>> falseFields =
+                indexer.search(PROJECT_ID, "bodyLocal", "FIELD", 10);
+        assertTrue(falseFields.isEmpty(), "Method-body local variables are not class fields");
+    }
+
+    @Test
+    void testAllmanMethodAndTextBlockKeepFollowingLocalDefinitions() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        assertFalse(indexer.search(PROJECT_ID, "allman", "METHOD", 10).isEmpty());
+        assertFalse(indexer.search(PROJECT_ID, "afterTextBlock", "METHOD", 10).isEmpty());
+        assertFalse(indexer.search(PROJECT_ID, "commentedAllman", "METHOD", 10).isEmpty());
+        assertFalse(indexer.search(PROJECT_ID, "afterCommentedAllman", "METHOD", 10).isEmpty());
+        assertTrue(indexer.search(PROJECT_ID, "formattingLocal", "FIELD", 10).isEmpty());
+        assertTrue(indexer.search(PROJECT_ID, "commentedLocal", "FIELD", 10).isEmpty());
+    }
+
+    @Test
+    void testNestedTypeScopeRestoresOuterMethodFqn() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> nested =
+                indexer.search(PROJECT_ID, "normalized", "METHOD", 10);
+        assertFalse(nested.isEmpty());
+        assertEquals("com.example.UserService.Lookup.normalized",
+                nested.get(0).get("fullyQualifiedName"));
+
+        List<Map<String, Object>> outer =
+                indexer.search(PROJECT_ID, "afterNestedType", "METHOD", 10);
+        assertFalse(outer.isEmpty());
+        assertEquals("com.example.UserService.afterNestedType",
+                outer.get(0).get("fullyQualifiedName"));
+    }
+
+    @Test
+    void testGroovyBodiesAndLiteralsDoNotCorruptOuterScope() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> after =
+                indexer.search(PROJECT_ID, "afterRender", "METHOD", 10);
+        assertFalse(after.isEmpty());
+        assertEquals("com.example.GroovyService.afterRender",
+                after.get(0).get("fullyQualifiedName"));
+        assertTrue(indexer.search(PROJECT_ID, "triple", "FIELD", 10).isEmpty());
+        assertTrue(indexer.search(PROJECT_ID, "slashy", "FIELD", 10).isEmpty());
+        assertTrue(indexer.search(PROJECT_ID, "dollar", "FIELD", 10).isEmpty());
+    }
+
+    @Test
+    void testKotlinAndScalaRetainJvmPrefixCompatibility() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> kotlinClass =
+                indexer.search(PROJECT_ID, "Child", "CLASS", 10);
+        assertTrue(kotlinClass.stream().anyMatch(e ->
+                "com.example.kotlin.Child".equals(e.get("fullyQualifiedName"))));
+        List<Map<String, Object>> kotlinMethod =
+                indexer.search(PROJECT_ID, "value", "METHOD", 20);
+        assertTrue(kotlinMethod.stream().anyMatch(e ->
+                "com.example.kotlin.Child.value".equals(e.get("fullyQualifiedName"))));
+        assertTrue(kotlinMethod.stream().anyMatch(e ->
+                "com.example.scala.Metric.value".equals(e.get("fullyQualifiedName"))));
+    }
+
+    @Test
+    void testExactSymbolNameRanksBeforeSignatureAndDocumentationMatches() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> results =
+                indexer.search(PROJECT_ID, "findByEmail", null, 10);
+        assertFalse(results.isEmpty());
+        assertEquals("findByEmail", results.get(0).get("name"));
+        assertEquals("METHOD", results.get(0).get("entityType"));
+    }
+
+    @Test
+    void testEntitiesForFileWorksWithoutApplicationBackend() throws Exception {
+        LocalCodeIndexer indexer = new LocalCodeIndexer();
+        List<Map<String, Object>> entities = indexer.entitiesForFile(
+                PROJECT_ID, "src/main/java/com/example/UserService.java", 10);
+        assertTrue(entities.stream().anyMatch(e -> "UserService".equals(e.get("name"))));
+        assertTrue(entities.stream().anyMatch(e -> "resolveUser".equals(e.get("name"))));
     }
 
     @Test

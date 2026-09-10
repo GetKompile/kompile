@@ -28,6 +28,7 @@ import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.core.kgembedding.KGEmbeddingConfig;
 import ai.kompile.core.kgembedding.KgeTrainingExecutor;
@@ -35,6 +36,9 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.crawl.graph.preprocessing.PreprocessingPipelineRunner;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
@@ -216,6 +220,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired(required = false)
     private CrawlFactSheetScopeResolver factSheetScopeResolver;
 
+    /** Optional application-layer hard barrier for managed structural code projection. */
+    @Autowired(required = false)
+    private ManagedCodeProjectionCallback managedCodeProjectionCallback;
+
     /** Optional app-main hook that derives/binds crawl schema and materializes type hierarchy metadata. */
     @Autowired(required = false)
     private OntologyAutoProvisioner ontologyAutoProvisioner;
@@ -315,6 +323,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     // partition components still starts; its absence is reported on the step, never silently.
     @Autowired(required = false)
     private EntityPartitionCrawlStep entityPartitionCrawlStep;
+    @Autowired(required = false)
+    private DistributedCrawlPartitionBarrier distributedPartitionBarrier;
 
     /** Read side used to hydrate deterministic/source-native graph facts before LLM extraction. */
     @Autowired(required = false)
@@ -501,6 +511,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         return request;
     }
 
+    /** Validate the request's single declarative step plan before any start-side effects occur. */
+    private void validateRequestedStepPlan(UnifiedCrawlRequest request) {
+        CrawlStepPlan.from(request).validate();
+    }
+
     private UnifiedCrawlRequest resolveFactSheetScope(UnifiedCrawlRequest request) {
         if (factSheetScopeResolver != null) {
             factSheetScopeResolver.resolveScope(request);
@@ -518,7 +533,14 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     @Override
     public UnifiedCrawlJob startJob(UnifiedCrawlRequest request) {
-        request = resolveFactSheetScope(normalizeMandatoryGraphExtraction(request));
+        return startJob(request, null);
+    }
+
+    /** Queue a job with an already-authoritative schema, used by explicit retry lifecycles. */
+    private UnifiedCrawlJob startJob(UnifiedCrawlRequest request, GraphSchema inheritedFrozenSchema) {
+        request = normalizeMandatoryGraphExtraction(request);
+        validateRequestedStepPlan(request);
+        request = resolveFactSheetScope(request);
         CrawlRuntimeConfigManager.CrawlRuntimeConfig config = runtimeConfigManager.refreshRuntimeConfig();
         executorQueueCapacity = runtimeConfigManager.applyRuntimeConfig(
                 config, this, memoryMonitor, graphExtractionOrchestrator, vectorIndexingHelper,
@@ -539,6 +561,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 .createdAt(Instant.now())
                 .queuedAt(Instant.now())
                 .build();
+        job.setFrozenGraphSchema(inheritedFrozenSchema);
         job.getMaxConcurrentJobs().set(Math.max(1, maxConcurrentJobs));
         job.getQueueCapacity().set(Math.max(1, queueCapacity));
         job.getCurrentPhase().set("QUEUED");
@@ -550,7 +573,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             sourceProgressList.add(UnifiedCrawlJob.SourceProgress.builder()
                     .label(source.getLabel())
                     .sourceType(source.getSourceType() != null ? source.getSourceType().name() : "UNKNOWN")
-                    .pathOrUrl(source.getPathOrUrl())
+                    .pathOrUrl(SourceCredentialRedactor.redact(source.getPathOrUrl()))
                     .status(UnifiedCrawlJob.Status.PENDING)
                     .build());
         }
@@ -1037,6 +1060,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     || current == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
                     || current == UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH
                     || current == UnifiedCrawlJob.Status.FAILED
+                    || current == UnifiedCrawlJob.Status.ACTIVATING
                     || current == UnifiedCrawlJob.Status.CANCELLING
                     || current == UnifiedCrawlJob.Status.CANCELLED) {
                 return false;
@@ -1237,6 +1261,26 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             registerRehydratedJob(job);
             log.info("[Job {}] Rehydrated from persisted snapshot to resume archived step {}", jobId, step);
         }
+        if (job.getGraphGeneration() != null && job.getGraphActivation() == null) {
+            log.warn("[Job {}] Archived step {} belongs to an unactivated replacement; "
+                    + "selective resume is unsafe, start a full replacement retry", jobId, step);
+            return -1;
+        }
+        if (job.getGraphActivation() != null) {
+            Optional<GraphGenerationJournal.Entry> current = knowledgeGraphService == null
+                    ? Optional.empty()
+                    : knowledgeGraphService.getFactSheetGenerationStatus(
+                    job.getGraphGeneration().factSheetId());
+            UnifiedCrawlJob.GraphActivationSnapshot archived = job.getGraphActivation();
+            if (current.isEmpty()
+                    || current.get().pointer().revision() != archived.revision()
+                    || !Objects.equals(current.get().pointer().activePhysicalGraphId(),
+                    archived.activePhysicalGraphId())) {
+                log.warn("[Job {}] Archived step {} targets stale graph revision {}; current graph differs",
+                        jobId, step, archived.revision());
+                return -1;
+            }
+        }
         CrawlStepArchiveService.ArchivedStepData data = crawlStepArchiveService.load(jobId, step);
         if (data == null) {
             log.warn("[Job {}] No archive found on disk for step {}", jobId, step);
@@ -1410,6 +1454,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         if (crawlStepArchiveService == null || job == null) {
             return;
         }
+        if (job.getGraphGeneration() != null && job.getGraphActivation() == null) {
+            recordEvent(job, "FAILED", "INFO", "Replacement requires full retry",
+                    "The hidden generation is aborted atomically; selective archived-step resume is disabled");
+            return;
+        }
         // Only checkpoint graph-state steps when a graph actually exists to resolve / compute edges over.
         boolean haveGraph = job.getEntitiesExtracted().get() > 0 || job.getRelationshipsExtracted().get() > 0;
         if (!haveGraph) {
@@ -1541,6 +1590,11 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 // + ONTOLOGY_CONFORMANCE + HEALTH)
                 // against the already-persisted graph without re-crawling or re-extracting.
                 Long factSheetId = jobFactSheetId(job);
+                if (factSheetId != null && ontologyAutoProvisioner != null
+                        && !Boolean.FALSE.equals(job.getRequest().getDeriveOntology())) {
+                    ontologyAutoProvisioner.provisionOntology(
+                            factSheetId, job.getFrozenGraphSchema());
+                }
                 if (graphHydrationOrchestrator == null) {
                     log.warn("[Job {}] ENRICHMENT step resume: graphHydrationOrchestrator not wired — skipping",
                             job.getJobId());
@@ -1619,11 +1673,26 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         UnifiedCrawlRequest req = UnifiedCrawlRequest.builder()
                 .name(snap.name())
                 .factSheetId(snap.factSheetId())
+                .deriveOntology(snap.deriveOntology())
                 .build();
         UnifiedCrawlJob job = UnifiedCrawlJob.builder()
                 .jobId(snap.jobId())
                 .request(req)
                 .build();
+        job.setFrozenGraphSchema(snap.frozenGraphSchema());
+        job.setCorpusTopicEvidence(snap.corpusTopicEvidence());
+        if (snap.rawSnapshot() != null) {
+            Object generation = snap.rawSnapshot().get("graphGeneration");
+            Object activation = snap.rawSnapshot().get("graphActivation");
+            if (generation != null) {
+                job.setGraphGeneration(JSON_MAPPER.convertValue(
+                        generation, UnifiedCrawlJob.GraphGenerationSnapshot.class));
+            }
+            if (activation != null) {
+                job.setGraphActivation(JSON_MAPPER.convertValue(
+                        activation, UnifiedCrawlJob.GraphActivationSnapshot.class));
+            }
+        }
         job.getStatus().set(UnifiedCrawlJob.Status.RUNNING);
         initializePipelineSteps(job);
         if (snap.archivedSteps() != null) {
@@ -1662,6 +1731,91 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         }
     }
 
+    static boolean isRetryEligible(UnifiedCrawlJob job) {
+        if (job == null || job.getStatus() == null) {
+            return false;
+        }
+        UnifiedCrawlJob.Status status = job.getStatus().get();
+        if (status == UnifiedCrawlJob.Status.FAILED) {
+            return true;
+        }
+        if (status != UnifiedCrawlJob.Status.COMPLETED
+                && status != UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING
+                && status != UnifiedCrawlJob.Status.COMPLETED_PENDING_GRAPH) {
+            return false;
+        }
+        return hasFailedDocuments(job);
+    }
+
+    static boolean hasFailedDocuments(UnifiedCrawlJob job) {
+        return job != null && job.getDocumentProgress() != null
+                && job.getDocumentProgress().values().stream()
+                .filter(Objects::nonNull)
+                .anyMatch(progress -> "FAILED".equalsIgnoreCase(progress.getStatus()));
+    }
+
+    /** Filter loaded documents using the same source-path/document-id identity as progress tracking. */
+    static List<Document> filterDocumentsForRetry(
+            List<Document> documents, Collection<String> retryDocumentKeys, CrawlDocumentTracker tracker) {
+        if (documents == null || documents.isEmpty()) {
+            return List.of();
+        }
+        if (retryDocumentKeys == null || retryDocumentKeys.isEmpty()) {
+            return new ArrayList<>(documents);
+        }
+        Set<String> retryKeySet = retryDocumentKeys.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (retryKeySet.isEmpty()) {
+            return List.of();
+        }
+        return documents.stream()
+                .filter(Objects::nonNull)
+                .filter(document -> retryKeySet.contains(tracker.documentKey(document)))
+                .collect(Collectors.toList());
+    }
+
+    private static boolean hasSelectiveRetry(UnifiedCrawlJob job) {
+        UnifiedCrawlRequest request = job != null ? job.getRequest() : null;
+        return request != null && request.getRetryFromJobId() != null
+                && !request.getRetryFromJobId().isBlank()
+                && request.getRetryDocumentKeys() != null
+                && !request.getRetryDocumentKeys().isEmpty();
+    }
+
+    private List<CrawlSourceLoadingService.SourceLoadResult> filterRetrySourceResults(
+            UnifiedCrawlJob job, List<CrawlSourceLoadingService.SourceLoadResult> sourceResults) {
+        if (!hasSelectiveRetry(job) || sourceResults == null || sourceResults.isEmpty()) {
+            return sourceResults;
+        }
+        List<String> retryKeys = job.getRequest().getRetryDocumentKeys();
+        List<CrawlSourceLoadingService.SourceLoadResult> filtered = new ArrayList<>(sourceResults.size());
+        for (CrawlSourceLoadingService.SourceLoadResult result : sourceResults) {
+            if (result == null) {
+                continue;
+            }
+            filtered.add(new CrawlSourceLoadingService.SourceLoadResult(
+                    result.index(), result.label(),
+                    filterDocumentsForRetry(result.documents(), retryKeys, documentTracker)));
+        }
+        return filtered;
+    }
+
+    private void removeUnselectedRetryProgress(
+            UnifiedCrawlJob job, List<CrawlSourceLoadingService.SourceLoadResult> sourceResults) {
+        Set<String> retainedKeys = new HashSet<>();
+        if (sourceResults != null) {
+            for (CrawlSourceLoadingService.SourceLoadResult result : sourceResults) {
+                if (result == null || result.documents() == null) continue;
+                for (Document document : result.documents()) {
+                    String key = documentTracker.documentKey(document);
+                    if (key != null && !key.isBlank()) retainedKeys.add(key);
+                }
+            }
+        }
+        job.getDocumentProgress().keySet().removeIf(key -> !retainedKeys.contains(key));
+    }
+
     @Override
     public Optional<UnifiedCrawlJob> retryJob(String originalJobId, String retryPhase, List<String> documentKeys) {
         UnifiedCrawlJob originalJob = jobs.get(originalJobId);
@@ -1669,49 +1823,72 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             log.warn("Retry requested for unknown job {}", originalJobId);
             return Optional.empty();
         }
+        if (!isRetryEligible(originalJob)) {
+            log.info("Retry rejected for job {} in non-retryable status {}",
+                    originalJobId, originalJob.getStatus().get());
+            return Optional.empty();
+        }
 
-        // Collect failed document keys from the original job
+        UnifiedCrawlRequest originalRequest = originalJob.getRequest();
+        if (originalRequest == null) {
+            log.warn("Retry requested for job {} without its original request", originalJobId);
+            return Optional.empty();
+        }
+
+        // Collect failed document keys from the original job.
         List<String> failedKeys = new ArrayList<>();
         for (Map.Entry<String, UnifiedCrawlJob.DocumentProgress> entry : originalJob.getDocumentProgress().entrySet()) {
             UnifiedCrawlJob.DocumentProgress dp = entry.getValue();
-            if (!"FAILED".equals(dp.getStatus())) continue;
+            if (dp == null || !"FAILED".equalsIgnoreCase(dp.getStatus())) continue;
             if (retryPhase != null && !retryPhase.equals(dp.getPhase())) continue;
             if (documentKeys != null && !documentKeys.isEmpty() && !documentKeys.contains(entry.getKey())) continue;
             failedKeys.add(entry.getKey());
         }
 
-        if (failedKeys.isEmpty()) {
+        boolean replacementRetry = replacementRequested(originalJob);
+        if (failedKeys.isEmpty() && !replacementRetry) {
             log.info("No failed documents to retry in job {} (phase={})", originalJobId, retryPhase);
             return Optional.empty();
         }
 
-        // Build a retry request from the original, carrying only failed documents
-        UnifiedCrawlRequest originalRequest = originalJob.getRequest();
-        UnifiedCrawlRequest retryRequest = UnifiedCrawlRequest.builder()
-                .name((originalRequest.getName() != null ? originalRequest.getName() : "Crawl") + " (retry)")
-                .factSheetId(originalRequest.getFactSheetId())
-                .factSheetName(originalRequest.getFactSheetName())
-                .sources(originalRequest.getSources())
-                .graphExtraction(originalRequest.getGraphExtraction())
-                .chunking(originalRequest.getChunking())
-                .vectorIndex(originalRequest.getVectorIndex())
-                .processingRoute(originalRequest.getProcessingRoute())
-                .runtimeConfig(originalRequest.getRuntimeConfig())
-                .preprocessing(originalRequest.getPreprocessing())
-                .pipelines(originalRequest.getPipelines())
-                .routeRules(originalRequest.getRouteRules())
-                .defaultPipelineId(originalRequest.getDefaultPipelineId())
-                .distribution(originalRequest.getDistribution())
-                .retryFromJobId(originalJobId)
-                .retryPhase(retryPhase)
-                .retryDocumentKeys(failedKeys)
-                .maxValidationRetries(originalRequest.getMaxValidationRetries())
-                .build();
+        // Atomic replacement generations are discarded on failure, so their retry must replay the
+        // complete original source set. Merge crawls retain selective failed-document retry.
+        UnifiedCrawlRequest retryRequest = copyRequestForRetry(
+                originalRequest, originalJobId, retryPhase, failedKeys, replacementRetry);
 
-        log.info("Starting retry job from {} with {} failed documents (phase={})",
+        log.info("Starting {}retry job from {} with {} failed documents (phase={})",
+                replacementRetry ? "full replacement " : "selective ",
                 originalJobId, failedKeys.size(), retryPhase);
-        UnifiedCrawlJob retryJob = startJob(retryRequest);
+        UnifiedCrawlJob retryJob = startJob(retryRequest, originalJob.getFrozenGraphSchema());
         return Optional.of(retryJob);
+    }
+
+    /**
+     * Deep-copy the complete request before applying retry-only overrides. The tree round-trip keeps
+     * this helper future-proof as request fields are added and prevents retries from sharing mutable
+     * source/config collections with the original job. The transient runtime context is deliberately
+     * reattached from the trusted in-process request rather than serialized.
+     */
+    static UnifiedCrawlRequest copyRequestForRetry(
+            UnifiedCrawlRequest originalRequest,
+            String originalJobId,
+            String retryPhase,
+            List<String> retryDocumentKeys,
+            boolean replacementRetry) {
+        if (originalRequest == null) {
+            throw new IllegalArgumentException("Original crawl request is required for retry");
+        }
+        DistributedGraphRuntimeContext trustedRuntimeContext =
+                originalRequest.getDistributedGraphRuntimeContext();
+        UnifiedCrawlRequest copy = JSON_MAPPER.convertValue(
+                JSON_MAPPER.valueToTree(originalRequest), UnifiedCrawlRequest.class);
+        copy.setDistributedGraphRuntimeContext(trustedRuntimeContext);
+        copy.setName((copy.getName() != null ? copy.getName() : "Crawl") + " (retry)");
+        copy.setRetryFromJobId(originalJobId);
+        copy.setRetryPhase(retryPhase);
+        copy.setRetryDocumentKeys(replacementRetry || retryDocumentKeys == null
+                ? List.of() : new ArrayList<>(retryDocumentKeys));
+        return copy;
     }
 
     @Override
@@ -1753,36 +1930,78 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 List.of("pathOrUrl"), List.of("crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.SLACK,
                 "Slack", "Ingest messages from a Slack workspace",
-                List.of("pathOrUrl"), List.of("token", "workspaceId", "channels", "crawlerId"));
+                List.of("pathOrUrl"), List.of("slackToken", "limit", "oldest", "latest", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.SLACK_HISTORY,
                 "Slack History", "Load exported Slack history",
-                List.of("pathOrUrl"), List.of("token", "workspaceId", "channels", "crawlerId"));
+                List.of("pathOrUrl"), List.of("slackToken", "loadAllChannels", "includeThreads",
+                        "oldest", "latest", "startDate", "endDate", "daysBack", "maxMessages", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.DISCORD,
                 "Discord", "Ingest messages from a Discord server",
-                List.of("pathOrUrl"), List.of("botToken", "guildId", "channels", "crawlerId"));
+                List.of("pathOrUrl", "botToken"), List.of("guildId", "channelIds", "includeThreads",
+                        "includeAttachments", "maxMessages", "daysBack", "startDate", "endDate", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.DISCORD_HISTORY,
                 "Discord History", "Load exported Discord message history",
-                List.of("pathOrUrl"), List.of("botToken", "guildId", "channels", "crawlerId"));
+                List.of("pathOrUrl", "botToken"), List.of("guildId", "channelIds", "includeThreads",
+                        "includeAttachments", "maxMessages", "daysBack", "startDate", "endDate", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.GMAIL,
                 "Gmail", "Crawl Gmail messages via the Gmail API",
-                List.of("pathOrUrl"), List.of("oauthToken", "query", "labels", "crawlerId"));
+                List.of("pathOrUrl"), List.of("accessToken", "gmailQuery", "maxMessages", "daysBack",
+                        "includeAttachments", "threadMode", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.GDOCS,
                 "Google Docs", "Crawl Google Docs via the Google APIs",
-                List.of("pathOrUrl"), List.of("oauthToken", "documentId", "folderId", "crawlerId"));
+                List.of("pathOrUrl"), List.of("accessToken", "documentId", "folderId", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.GDRIVE,
                 "Google Drive", "Load files from Google Drive",
-                List.of("pathOrUrl"), List.of("folderId", "oauthToken", "crawlerId"));
+                List.of("pathOrUrl"), List.of("folderId", "accessToken", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.ONEDRIVE,
                 "OneDrive", "Load files from Microsoft OneDrive",
-                List.of("pathOrUrl"), List.of("driveId", "folderId", "oauthToken", "crawlerId"));
+                List.of("pathOrUrl"), List.of("driveId", "folderId", "siteId", "accessToken", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.GOOGLE_WORKSPACE,
                 "Google Workspace", "Crawl Gmail, Drive, Docs, and Calendar from Google Workspace",
-                List.of("pathOrUrl"), List.of("oauthToken", "workspaceId", "includeGmail", "includeDrive", "crawlerId"));
+                List.of("pathOrUrl"), List.of("accessToken", "services", "daysBack", "gmailQuery",
+                        "gmailMaxMessages", "driveQuery", "driveMaxFiles", "calendarIds",
+                        "calendarMaxEvents", "crawlerId"));
         addSourceType(types, DocumentSourceDescriptor.SourceType.CONFLUENCE,
                 "Confluence", "Load pages from Confluence",
-                List.of("pathOrUrl"), List.of("spaceKey", "apiToken", "crawlerId"));
+                List.of("pathOrUrl"), List.of("spaceKey", "cloudId", "accessToken", "email", "username",
+                        "apiToken", "maxDocuments", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.JIRA,
+                "Jira", "Load Jira Cloud issues selected by project or JQL",
+                List.of("pathOrUrl"), List.of("projectKey", "jql", "cloudId", "accessToken",
+                        "email", "apiToken", "maxIssues", "includeComments", "commentLimit",
+                        "includeAttachments", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.REDDIT,
+                "Reddit", "Load posts and comments from a subreddit",
+                List.of("pathOrUrl"), List.of("accessToken", "sortType", "timePeriod",
+                        "postLimit", "includeComments", "commentDepth", "commentLimit",
+                        "minScore", "includeNsfw", "searchQuery", "userAgent", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.NOTION,
+                "Notion", "Load pages and databases from Notion",
+                List.of("pathOrUrl"), List.of("accessToken", "apiToken", "pageIds",
+                        "databaseIds", "resourceType", "includeSubpages", "maxPages",
+                        "maxBlockDepth", "maxBlocks", "maxApiRequests", "crawlerId"));
 
-        return types;
+        addSourceType(types, DocumentSourceDescriptor.SourceType.S3,
+                "S3", "Crawl an S3-compatible bucket or prefix",
+                List.of("pathOrUrl", "accessKey", "secretKey"), List.of("region", "endpoint", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.SFTP,
+                "SFTP", "Crawl files from an SFTP server",
+                List.of("pathOrUrl", "host", "username"), List.of("port", "password", "privateKeyPath", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.SMB,
+                "SMB", "Crawl an SMB/CIFS share",
+                List.of("pathOrUrl", "host", "username", "password"), List.of("port", "domain", "crawlerId"));
+        addSourceType(types, DocumentSourceDescriptor.SourceType.SQL,
+                "SQL", "Load rows from a database query or table",
+                List.of("pathOrUrl"), List.of("username", "password", "query", "tables", "driver", "crawlerId"));
+
+        return types.stream().map(type -> {
+            DocumentSourceDescriptor.SourceType sourceType =
+                    DocumentSourceDescriptor.SourceType.valueOf(type.type());
+            return new AvailableSourceType(
+                    type.type(), type.displayName(), type.description(),
+                    sourceLoadingService.hasRuntimeFor(sourceType),
+                    type.requiredProperties(), type.optionalProperties());
+        }).toList();
     }
 
     // ---- Internal pipeline execution ----
@@ -1792,6 +2011,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         // (embedding, learning, …) into this crawl's live UI. Registered after STARTED below,
         // detached in the finally so it never leaks across jobs.
         final SubprocessLogSink subprocessSink = ev -> handleSubprocessLog(job, ev);
+        List<String> managedProjectionIds = List.of();
+        GraphGenerationContext.Scope graphGenerationScope = null;
         try {
             CrawlRuntimeConfigManager.CrawlRuntimeConfig config = runtimeConfigManager.refreshRuntimeConfig();
             executorQueueCapacity = runtimeConfigManager.applyRuntimeConfig(
@@ -1826,15 +2047,25 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             recordEvent(job, "LOADING", "INFO", "Pipeline step plan", stepPlan.actions().toString());
             updateMemorySnapshot(job);
 
-            // [FIX-4] Clear graph before loading if explicitly requested (default=false = merge/update).
-            // This is a destructive opt-in only; the default preserves all prior enrichment/confidence.
-            if (crawlClearGraphBeforeRun && knowledgeGraphService != null) {
+            graphGenerationScope = openDistributedGraphRoute(job);
+            GraphGeneration.Ref replacementGeneration = beginReplacementGeneration(job);
+            if (replacementGeneration != null && graphGenerationScope == null) {
+                graphGenerationScope = GraphGenerationContext.open(replacementGeneration, job.getJobId());
+            }
+
+            // Replacement crawls build in a hidden physical graph. The active graph is never cleared
+            // before success; only extraction checkpoints are reset for the forced full recrawl.
+            if (replacementGeneration != null) {
                 Long clearFactSheetId = jobFactSheetId(job);
                 if (clearFactSheetId != null) {
-                    log.warn("[Job {}] crawlClearGraphBeforeRun=true: CLEARING graph and extraction checkpoints for factSheetId={} before LOADING",
+                    log.warn("[Job {}] replacement crawl: building hidden generation {} for factSheetId={} before LOADING",
+                            job.getJobId(), replacementGeneration.physicalGraphId(),
+                            clearFactSheetId);
+                    recordEvent(job, "LOADING", "WARN", "Hidden replacement generation started",
+                            "active graph remains unchanged; physicalGraphId="
+                                    + replacementGeneration.physicalGraphId());
+                    log.info("[Job {}] Clearing extraction checkpoints for replacement factSheetId={}",
                             job.getJobId(), clearFactSheetId);
-                    recordEvent(job, "LOADING", "WARN", "Graph and extraction checkpoints cleared before crawl",
-                            "crawlClearGraphBeforeRun=true: all nodes/edges and graph extraction checkpoints for factSheetId=" + clearFactSheetId + " deleted");
                     if (graphExtractionCheckpointStore != null) {
                         try {
                             graphExtractionCheckpointStore.clearFactSheet(clearFactSheetId);
@@ -1844,15 +2075,6 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             throw new IllegalStateException("Failed to clear graph extraction checkpoints before crawl", checkpointEx);
                         }
                     }
-                    try {
-                        knowledgeGraphService.deleteByFactSheetId(clearFactSheetId);
-                        knowledgeGraphService.flushPendingNodes();
-                        log.info("[Job {}] Graph cleared for factSheetId={}", job.getJobId(), clearFactSheetId);
-                    } catch (Exception clearEx) {
-                        log.warn("[Job {}] Graph clear failed (non-fatal): {}", job.getJobId(), clearEx.getMessage());
-                    }
-                } else {
-                    log.debug("[Job {}] crawlClearGraphBeforeRun=true but no factSheetId — skipping clear", job.getJobId());
                 }
             }
 
@@ -1870,6 +2092,14 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             sourceLoadingService.crawlForceFullRecrawl = crawlForceFullRecrawl;
             List<CrawlSourceLoadingService.SourceLoadResult> sourceResults =
                     sourceLoadingService.loadSources(job, sourceLoadParallelism, sharedSourceLoadPool);
+            boolean selectiveRetry = hasSelectiveRetry(job);
+            if (selectiveRetry) {
+                // Source loading is the first boundary where loader/crawler metadata provides the
+                // canonical document identity. Restrict the aggregate immediately, before facts,
+                // conversion, preprocessing, routing, chunking, graph, or vector side effects.
+                sourceResults = filterRetrySourceResults(job, sourceResults);
+                removeUnselectedRetryProgress(job, sourceResults);
+            }
             List<Document> allDocuments = new ArrayList<>();
             for (CrawlSourceLoadingService.SourceLoadResult result : sourceResults) {
                 if (result.documents() == null) {
@@ -1884,10 +2114,16 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 failPipelineStep(job, "LOADING", reason);
                 throw new IllegalStateException(reason);
             }
+            if (selectiveRetry && allDocuments.isEmpty()) {
+                String reason = "No loaded document matched the requested retry document key(s)";
+                failPipelineStep(job, "LOADING", reason);
+                throw new IllegalStateException(reason);
+            }
+            sourceLoadingService.registerCrawledSourcesAsFacts(job, sourceResults);
+            managedProjectionIds = awaitManagedCodeProjection(job);
+
             completePipelineStep(job, "LOADING", sourceCount,
                     allDocuments.size() + " document(s) loaded from " + sourceCount + " source(s)");
-
-            sourceLoadingService.registerCrawledSourcesAsFacts(job, sourceResults);
 
             sourceResults.clear();
             docsBySource.clear();
@@ -1978,7 +2214,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 });
                 try {
                     List<Callable<Void>> tasks = graphPersistence.stream()
-                            .<Callable<Void>>map(task -> () -> {
+                            .<Callable<Void>>map(task -> GraphGenerationContext.wrapCurrent(() -> {
                                 if (!isCancelled(job)) {
                                     task.run();
                                     int completed = completedPersistenceOps.incrementAndGet();
@@ -1988,7 +2224,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                     }
                                 }
                                 return null;
-                            })
+                            }))
                             .toList();
                     for (Future<Void> future : persistencePool.invokeAll(tasks)) {
                         future.get();
@@ -2032,7 +2268,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             List<Future<?>> backgroundGraphFutures = new ArrayList<>();
 
             final List<Document> emailDocs = textConversionService.copyDocumentsForBackgroundGraph(allDocuments);
-            Future<?> emailGraphFuture = backgroundGraphPool.submit(() -> {
+            Future<?> emailGraphFuture = GraphGenerationContext.submit(backgroundGraphPool, () -> {
                 try {
                     if (isCancelled(job)) return;
                     log.info("[Job {}] [BG] Email graph extraction starting", job.getJobId());
@@ -2059,7 +2295,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             });
             backgroundGraphFutures.add(emailGraphFuture);
 
-            Future<?> documentGraphFuture = backgroundGraphPool.submit(() -> {
+            Future<?> documentGraphFuture = GraphGenerationContext.submit(backgroundGraphPool, () -> {
                 try {
                     if (isCancelled(job)) return;
                     log.info("[Job {}] [BG] Document graph extraction for {} documents",
@@ -2088,7 +2324,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             backgroundGraphFutures.add(documentGraphFuture);
 
             if (crossDocumentRelationCallback != null && knowledgeGraphService != null) {
-                backgroundGraphFutures.add(backgroundGraphPool.submit(() -> {
+                backgroundGraphFutures.add(GraphGenerationContext.submit(backgroundGraphPool, () -> {
                     try {
                         // Cross-document rules consume nodes created by the source-native email and
                         // document passes. Make that dependency explicit instead of racing all three.
@@ -2256,30 +2492,6 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             if (stepPlan.isRun("GRAPH_EXTRACTION") && (graphConstructorAvailable || llmChat != null)) {
 
-                // Retry filtering: when this is a retry job, only process chunks whose parent
-                // document key is in the retry list (i.e., documents that failed in the original job)
-                List<String> retryKeys = job.getRequest().getRetryDocumentKeys();
-                if (retryKeys != null && !retryKeys.isEmpty()) {
-                    Set<String> retryKeySet = new HashSet<>(retryKeys);
-                    int originalSize = chunkedDocuments.size();
-                    chunkedDocuments = chunkedDocuments.stream()
-                            .filter(doc -> {
-                                Map<String, Object> meta = doc.getMetadata();
-                                String sourcePath = documentTracker.documentSourcePath(meta, doc.getId());
-                                String docKey = documentTracker.documentKeyFromSourcePath(sourcePath, doc.getId());
-                                return retryKeySet.contains(docKey);
-                            })
-                            .collect(Collectors.toList());
-                    int filtered = originalSize - chunkedDocuments.size();
-                    if (filtered > 0) {
-                        log.info("[Job {}] Retry mode: filtered {} already-succeeded chunks, {} remaining for retry",
-                                job.getJobId(), filtered, chunkedDocuments.size());
-                        recordEvent(job, "GRAPH_EXTRACTION", "INFO",
-                                "Retry: skipped " + filtered + " succeeded chunks",
-                                chunkedDocuments.size() + " chunks to retry");
-                    }
-                }
-
                 job.getCurrentFile().set("(graph extraction: " + chunkedDocuments.size() + " chunks, parallel LLM)");
                 graphExtractionOrchestrator.resetGraphExtractionProgress(job, chunkedDocuments.size());
                 updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
@@ -2378,6 +2590,21 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             if (isCancelled(job)) return;
 
+            DistributedGraphExecution distributedExecution = job.getRequest().getDistributedGraphExecution();
+            if (distributedExecution != null && distributedExecution.partitionBarrierRequired()
+                    && doVectorIndex) {
+                waitForVectorIndexingFuture(job, vectorIndexFuture, chunksForIndex, indexConfig);
+            }
+            DistributedCrawlPartitionBarrier.Decision partitionDecision =
+                    awaitDistributedPartitionBarrier(job);
+            if (partitionDecision == DistributedCrawlPartitionBarrier.Decision.ABORT) {
+                throw new IllegalStateException("Distributed graph partition barrier aborted the crawl");
+            }
+            if (partitionDecision == DistributedCrawlPartitionBarrier.Decision.COMPLETE_PARTITION) {
+                completeDistributedNonFinalizer(job, chunkedDocuments, unifiedGraph);
+                return;
+            }
+
             if (isCancelled(job)) return;
 
             // Entity resolution is intentionally deferred until the complete corpus graph has
@@ -2430,7 +2657,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 });
                 updatePipelineStep(job, "EDGE_COMPUTATION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
                         0, 2, 0, 0, 0, 0, null, "Computing automatic graph edges");
-                sharedEdgeFuture = edgePool.submit(() -> {
+                sharedEdgeFuture = GraphGenerationContext.submit(edgePool, () -> {
                     try {
                         Long factSheetId = jobFactSheetId(job);
                         log.info("[Job {}] Computing shared entity edges for factSheetId={}",
@@ -2576,7 +2803,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             // up with (post entity-resolution) and the retrieval discovery channels are only
             // meaningful once VECTOR_INDEXING has landed this run's chunks. Skipped on wholesale
             // extraction failure — there are no entities to claim coverage over.
-            if (graphWholesaleFailure[0]) {
+            boolean distributedFinalizer = job.getRequest().getDistributedGraphExecution() != null
+                    && job.getRequest().getDistributedGraphExecution().coordinatorOwnsLifecycle();
+            if (distributedFinalizer) {
+                skipPipelineStep(job, EntityPartitionCrawlStep.STEP_ID,
+                        "Entity partitions skipped for distributed finalizer: shared chunk handoff is not yet available");
+            } else if (graphWholesaleFailure[0]) {
                 skipPipelineStep(job, EntityPartitionCrawlStep.STEP_ID,
                         "Entity partitions skipped: graph extraction failed wholesale");
             } else if (entityPartitionCrawlStep == null) {
@@ -2600,8 +2832,29 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             if (isCancelled(job)) return;
 
             // ── Phase 9: Post-crawl enrichment (PSL/MEBN MAP derivation + prune/compact + health) ──────
-            // Skipped when graphWholesaleFailure: enrichment over an empty graph is a no-op.
-            if (!graphWholesaleFailure[0] && stepPlan.isRun("ENRICHMENT")) {
+            // Ontology/schema persistence is not graph enrichment: it must run even when extraction
+            // produced no instances, because the frozen prepass contains authoritative zero-instance
+            // types, relationship declarations, and parent hierarchy edges.
+            Long factSheetId = jobFactSheetId(job);
+            boolean frozenSchemaOntologyProvisioningInvoked = false;
+            if (stepPlan.isRun("ENRICHMENT") && factSheetId != null
+                    && ontologyAutoProvisioner != null
+                    && !Boolean.FALSE.equals(job.getRequest().getDeriveOntology())) {
+                try {
+                    ontologyAutoProvisioner.provisionOntology(
+                            factSheetId, job.getFrozenGraphSchema());
+                    frozenSchemaOntologyProvisioningInvoked = true;
+                } catch (RuntimeException e) {
+                    log.warn("[Job {}] deriveOntology step failed (continuing enrichment): {}",
+                            job.getJobId(), e.toString());
+                }
+            }
+            if (graphWholesaleFailure[0] && stepPlan.isRun("ENRICHMENT")) {
+                skipPipelineStep(job, "ENRICHMENT",
+                        frozenSchemaOntologyProvisioningInvoked
+                                ? "Graph enrichment skipped after wholesale extraction failure; frozen schema ontology provisioning invoked"
+                                : "Graph enrichment skipped after wholesale extraction failure; ontology persistence unavailable or disabled");
+            } else if (stepPlan.isRun("ENRICHMENT")) {
                 updateProgress(job, "ENRICHMENT", 83,
                         "Post-crawl enrichment starting",
                         "PSL/MEBN MAP derivation, pruning/compaction, ontology, health");
@@ -2621,19 +2874,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             "or confidence accumulation will run for this crawl");
                 }
                 if (graphHydrationOrchestrator != null && knowledgeGraphService != null) {
-                    Long factSheetId = jobFactSheetId(job);
                     if (factSheetId != null) {
-                        // deriveOntology step: derive/bind structural schema and materialize crawl
-                        // entity types + type hierarchy before regrounding.
-                        if (ontologyAutoProvisioner != null
-                                && !Boolean.FALSE.equals(job.getRequest().getDeriveOntology())) {
-                            try {
-                                ontologyAutoProvisioner.provisionOntology(factSheetId);
-                            } catch (RuntimeException e) {
-                                log.warn("[Job {}] deriveOntology step failed (continuing enrichment): {}",
-                                        job.getJobId(), e.toString());
-                            }
-                        }
                         try {
                             updateProgress(job, "ENRICHMENT", 83,
                                     "Post-crawl enrichment running", "PSL/MEBN hydration is active");
@@ -2877,11 +3118,16 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 checkpointFailedJobForResume(job);
                 publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR, errorMsg);
             } else if (hasDeferredEmbedding) {
+                activateReplacementGeneration(job);
+                if (graphGenerationScope != null) {
+                    graphGenerationScope.close();
+                    graphGenerationScope = null;
+                }
                 recordDegradedSteps(job, failedNames);
                 String message = "Crawl graph completed; "
                         + job.getDeferredEmbeddingChunks().size() + " chunk(s) pending bge-m3/vector embedding";
                 if (!job.getStatus().compareAndSet(
-                        UnifiedCrawlJob.Status.RUNNING,
+                        completionSourceStatus(job),
                         UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING)) {
                     return;
                 }
@@ -2894,9 +3140,14 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 publishGraphBuildCompletedEvent(job);
                 publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, message);
             } else {
+                activateReplacementGeneration(job);
+                if (graphGenerationScope != null) {
+                    graphGenerationScope.close();
+                    graphGenerationScope = null;
+                }
                 recordDegradedSteps(job, failedNames);
                 if (!job.getStatus().compareAndSet(
-                        UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.COMPLETED)) {
+                        completionSourceStatus(job), UnifiedCrawlJob.Status.COMPLETED)) {
                     return;
                 }
                 job.getCurrentPhase().set("COMPLETED");
@@ -2918,7 +3169,9 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 return;
             }
             if (!job.getStatus().compareAndSet(
-                    UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.FAILED)) {
+                    job.getStatus().get() == UnifiedCrawlJob.Status.ACTIVATING
+                            ? UnifiedCrawlJob.Status.ACTIVATING : UnifiedCrawlJob.Status.RUNNING,
+                    UnifiedCrawlJob.Status.FAILED)) {
                 return;
             }
             log.error("Unified crawl job {} failed: {}", job.getJobId(), e.getMessage(), e);
@@ -2932,6 +3185,13 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             publishProgressEvent(job, CrawlProgressEvent.EventType.ERROR,
                     e.getClass().getSimpleName() + ": " + e.getMessage());
         } finally {
+            abortUncommittedReplacement(job);
+            if (graphGenerationScope != null) {
+                graphGenerationScope.close();
+            }
+            if (managedCodeProjectionCallback != null && !managedProjectionIds.isEmpty()) {
+                managedCodeProjectionCallback.releaseProjection(managedProjectionIds);
+            }
             // Detach the per-job subprocess log listener registered at start.
             if (subprocessLogBus != null) {
                 subprocessLogBus.unregister(subprocessSink);
@@ -3048,6 +3308,9 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     private void publishGraphBuildCompletedEvent(UnifiedCrawlJob job) {
         if (eventPublisher == null || job == null) return;
+        DistributedGraphExecution distributed = job.getRequest() != null
+                ? job.getRequest().getDistributedGraphExecution() : null;
+        if (distributed != null && distributed.coordinatorOwnsLifecycle()) return;
         try {
             Long factSheetId = jobFactSheetId(job);
             eventPublisher.publishEvent(new GraphBuildCompletedEvent(
@@ -3848,6 +4111,249 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {
         return job != null && job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
+    }
+
+    private GraphGeneration.Ref beginReplacementGeneration(UnifiedCrawlJob job) {
+        DistributedGraphExecution distributed = job.getRequest().getDistributedGraphExecution();
+        if (distributed != null && distributed.coordinatorOwnsLifecycle()
+                && distributed.physicalGraphId() != null && !distributed.physicalGraphId().isBlank()) {
+            GraphGeneration.Ref supplied = distributedGeneration(distributed);
+            job.setGraphGeneration(toSnapshot(supplied, "BUILDING", null));
+            return supplied;
+        }
+        if (!replacementRequested(job)) return null;
+        UnifiedCrawlRequest.DistributionConfig distribution = job.getRequest().getDistribution();
+        if (distribution != null && distribution.getWorkerCount() != 1) {
+            throw new IllegalStateException(
+                    "Replacement crawls require exactly one worker until graph RPCs share one authority");
+        }
+        Long factSheetId = jobFactSheetId(job);
+        if (factSheetId == null) {
+            throw new IllegalStateException("Replacement crawl requires a resolved fact sheet");
+        }
+        if (knowledgeGraphService == null || !knowledgeGraphService.supportsGraphGenerations()) {
+            throw new IllegalStateException(
+                    "Authoritative graph generation protocol v2 is unavailable; active graph was not modified");
+        }
+        GraphGeneration.Ref generation = knowledgeGraphService.beginFactSheetGeneration(
+                factSheetId, job.getJobId(), job.getJobId());
+        job.setGraphGeneration(toSnapshot(generation, "BUILDING", null));
+        return generation;
+    }
+
+    private GraphGenerationContext.Scope openDistributedGraphRoute(UnifiedCrawlJob job) {
+        DistributedGraphExecution execution = job.getRequest().getDistributedGraphExecution();
+        if (execution == null) return null;
+        DistributedGraphRuntimeContext runtime = job.getRequest().getDistributedGraphRuntimeContext();
+        if (runtime == null) {
+            throw new IllegalStateException("Delegated graph execution is missing trusted runtime authority context");
+        }
+        GraphGeneration.Ref generation = execution.physicalGraphId() == null
+                || execution.physicalGraphId().isBlank() ? null : distributedGeneration(execution);
+        return GraphGenerationContext.openRemote(
+                generation, execution.generationOwnerId(), runtime);
+    }
+
+    private DistributedCrawlPartitionBarrier.Decision awaitDistributedPartitionBarrier(
+            UnifiedCrawlJob job) {
+        DistributedGraphExecution execution = job.getRequest().getDistributedGraphExecution();
+        if (execution == null || !execution.partitionBarrierRequired()) {
+            return DistributedCrawlPartitionBarrier.Decision.RUN_CORPUS_FINALIZATION;
+        }
+        if (distributedPartitionBarrier == null) {
+            throw new IllegalStateException("Distributed graph partition barrier is unavailable");
+        }
+        if (vectorStore != null) vectorStore.awaitPendingEmbeddings();
+        if (knowledgeGraphService != null) knowledgeGraphService.flushPendingNodes();
+        DistributedGraphRuntimeContext runtime = job.getRequest().getDistributedGraphRuntimeContext();
+        if (runtime == null) throw new IllegalStateException("Distributed graph runtime context is unavailable");
+        return distributedPartitionBarrier.await(execution, runtime, job.toProgressSnapshot());
+    }
+
+    private void completeDistributedNonFinalizer(
+            UnifiedCrawlJob job, List<Document> chunkedDocuments, Graph unifiedGraph) {
+        int chunks = chunkedDocuments.size();
+        chunkedDocuments.clear();
+        graphExtractionOrchestrator.releaseInMemoryGraph(unifiedGraph);
+        job.setResultGraph(null);
+        job.getCurrentPhase().set("PARTITION_COMPLETE");
+        job.getProgressPercent().set(100);
+        job.setCompletedAt(Instant.now());
+        job.getStatus().compareAndSet(UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.COMPLETED);
+        recordEvent(job, "PARTITION_COMPLETE", "INFO",
+                "Distributed partition completed local graph work",
+                chunks + " chunk(s); corpus-global finalization delegated to elected worker");
+        publishProgressEvent(job, CrawlProgressEvent.EventType.COMPLETED,
+                "Distributed partition completed; finalizer runs corpus-global stages");
+    }
+
+    private static GraphGeneration.Ref distributedGeneration(DistributedGraphExecution execution) {
+        return new GraphGeneration.Ref(
+                execution.factSheetId(), execution.logicalGraphId(), execution.physicalGraphId(),
+                execution.generationId(), execution.expectedActivePhysicalGraphId(),
+                execution.expectedRevision());
+    }
+
+    private boolean replacementRequested(UnifiedCrawlJob job) {
+        UnifiedCrawlRequest.RuntimeConfig runtime = job != null && job.getRequest() != null
+                ? job.getRequest().getRuntimeConfig() : null;
+        return runtime != null && runtime.getClearGraphBeforeRun() != null
+                ? runtime.getClearGraphBeforeRun() : crawlClearGraphBeforeRun;
+    }
+
+    private void activateReplacementGeneration(UnifiedCrawlJob job) {
+        UnifiedCrawlJob.GraphGenerationSnapshot snapshot = job.getGraphGeneration();
+        if (snapshot == null) return;
+        DistributedGraphExecution distributed = job.getRequest().getDistributedGraphExecution();
+        if (distributed != null && distributed.coordinatorOwnsLifecycle()) {
+            job.setGraphGeneration(new UnifiedCrawlJob.GraphGenerationSnapshot(
+                    snapshot.factSheetId(), snapshot.logicalGraphId(), snapshot.physicalGraphId(),
+                    snapshot.generationId(), snapshot.expectedActivePhysicalGraphId(),
+                    snapshot.expectedRevision(), "FINALIZER_COMPLETE", null));
+            return;
+        }
+        if (!job.getStatus().compareAndSet(
+                UnifiedCrawlJob.Status.RUNNING, UnifiedCrawlJob.Status.ACTIVATING)) {
+            throw new IllegalStateException(
+                    "Replacement activation cannot start from status " + job.getStatus().get());
+        }
+        GraphGeneration.Ref generation = fromSnapshot(snapshot);
+        GraphGeneration.Validation validation =
+                knowledgeGraphService.validateFactSheetGeneration(generation);
+        job.setGraphGeneration(toSnapshot(generation,
+                validation.valid() ? "VALIDATED" : "BUILDING",
+                validation.valid() ? null : String.join("; ", validation.errors())));
+        if (!validation.valid()) {
+            throw new IllegalStateException("Replacement graph validation failed: " + validation.errors());
+        }
+        GraphGeneration.Activation activation = activateReplacementWithReconciliation(job, generation);
+        job.setGraphActivation(new UnifiedCrawlJob.GraphActivationSnapshot(
+                activation.logicalGraphId(), activation.activePhysicalGraphId(),
+                activation.previousPhysicalGraphId(), activation.revision(), activation.activatedAt()));
+        job.setGraphGeneration(toSnapshot(generation, "ACTIVE", null));
+        recordEvent(job, "ACTIVATING", "INFO", "Replacement graph generation activated",
+                "physicalGraphId=" + activation.activePhysicalGraphId()
+                        + ", revision=" + activation.revision());
+    }
+
+    private GraphGeneration.Activation activateReplacementWithReconciliation(
+            UnifiedCrawlJob job, GraphGeneration.Ref generation) {
+        String operationId = job.getJobId() + ":activate";
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return knowledgeGraphService.activateFactSheetGeneration(generation, operationId);
+            } catch (RuntimeException activationFailure) {
+                lastFailure = activationFailure;
+                log.warn("[Job {}] Replacement activation response failed (attempt {}/2): {}",
+                        job.getJobId(), attempt, activationFailure.getMessage());
+                GraphGeneration.Activation reconciled = currentActivation(generation);
+                if (reconciled != null) return reconciled;
+            }
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
+        while (System.nanoTime() < deadline) {
+            GraphGeneration.Activation reconciled = currentActivation(generation);
+            if (reconciled != null) return reconciled;
+            try {
+                Thread.sleep(250L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                if (lastFailure != null) lastFailure.addSuppressed(interrupted);
+                break;
+            }
+        }
+        throw lastFailure != null ? lastFailure
+                : new IllegalStateException("Replacement activation did not return a result");
+    }
+
+    private GraphGeneration.Activation currentActivation(GraphGeneration.Ref generation) {
+        try {
+            Optional<GraphGenerationJournal.Entry> status =
+                    knowledgeGraphService.getFactSheetGenerationStatus(generation.factSheetId());
+            if (status.isPresent()
+                    && status.get().state() == GraphGenerationJournal.State.ACTIVE
+                    && generation.physicalGraphId().equals(
+                    status.get().pointer().activePhysicalGraphId())
+                    && status.get().activation() != null) {
+                return status.get().activation();
+            }
+        } catch (RuntimeException statusFailure) {
+            log.debug("Replacement activation status is temporarily unavailable: {}",
+                    statusFailure.getMessage());
+        }
+        return null;
+    }
+
+    private void abortUncommittedReplacement(UnifiedCrawlJob job) {
+        UnifiedCrawlJob.GraphGenerationSnapshot snapshot = job.getGraphGeneration();
+        if (snapshot == null || job.getGraphActivation() != null || "ABORTED".equals(snapshot.state())) return;
+        DistributedGraphExecution distributed = job.getRequest().getDistributedGraphExecution();
+        if (distributed != null && distributed.coordinatorOwnsLifecycle()) return;
+        String error = job.getErrorMessage();
+        if (error == null || error.isBlank()) {
+            error = isCancelled(job) ? "crawl cancelled before activation" : "crawl ended before activation";
+        }
+        try {
+            GraphGeneration.Ref generation = fromSnapshot(snapshot);
+            knowledgeGraphService.abortFactSheetGeneration(generation, error);
+            job.setGraphGeneration(toSnapshot(generation, "ABORTED", error));
+            recordEvent(job, "ABORTED", "WARN", "Hidden replacement generation aborted", error);
+        } catch (RuntimeException abortFailure) {
+            log.error("[Job {}] Could not abort hidden graph generation: {}",
+                    job.getJobId(), abortFailure.getMessage(), abortFailure);
+        }
+    }
+
+    private UnifiedCrawlJob.Status completionSourceStatus(UnifiedCrawlJob job) {
+        return job.getGraphActivation() == null
+                ? UnifiedCrawlJob.Status.RUNNING : UnifiedCrawlJob.Status.ACTIVATING;
+    }
+
+    private static UnifiedCrawlJob.GraphGenerationSnapshot toSnapshot(
+            GraphGeneration.Ref generation, String state, String error) {
+        return new UnifiedCrawlJob.GraphGenerationSnapshot(
+                generation.factSheetId(), generation.logicalGraphId(), generation.physicalGraphId(),
+                generation.generationId(), generation.expectedActivePhysicalGraphId(),
+                generation.expectedRevision(), state, error);
+    }
+
+    private static GraphGeneration.Ref fromSnapshot(
+            UnifiedCrawlJob.GraphGenerationSnapshot snapshot) {
+        return new GraphGeneration.Ref(
+                snapshot.factSheetId(), snapshot.logicalGraphId(), snapshot.physicalGraphId(),
+                snapshot.generationId(), snapshot.expectedActivePhysicalGraphId(),
+                snapshot.expectedRevision());
+    }
+
+    List<String> awaitManagedCodeProjection(UnifiedCrawlJob job) {
+        if (job == null || job.getRequest() == null || job.getRequest().getSources() == null) {
+            return List.of();
+        }
+        LinkedHashSet<String> projectIds = new LinkedHashSet<>();
+        for (UnifiedCrawlSource source : job.getRequest().getSources()) {
+            if (source == null || source.getProperties() == null) continue;
+            Object marker = source.getProperties().get("kompileCodeProject");
+            boolean managed = Boolean.TRUE.equals(marker)
+                    || marker instanceof String text && Boolean.parseBoolean(text);
+            if (!managed) continue;
+            Object projectId = source.getProperties().get("codeProjectId");
+            if (projectId == null || String.valueOf(projectId).isBlank()) {
+                throw new IllegalStateException("Managed code source is missing codeProjectId");
+            }
+            projectIds.add(String.valueOf(projectId));
+        }
+        if (projectIds.isEmpty()) return List.of();
+        Long factSheetId = jobFactSheetId(job);
+        if (factSheetId == null) {
+            throw new IllegalStateException("Managed code projection requires a resolved fact sheet");
+        }
+        if (managedCodeProjectionCallback == null) {
+            throw new IllegalStateException("Managed code projection callback is unavailable");
+        }
+        List<String> selected = List.copyOf(projectIds);
+        managedCodeProjectionCallback.awaitProjection(factSheetId, selected);
+        return selected;
     }
 
     private KgeTrainingPlan resolveKgeTrainingPlan(UnifiedCrawlRequest request) {

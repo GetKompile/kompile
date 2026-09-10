@@ -127,13 +127,13 @@ class GrepToolGlobTest {
     @Test
     void rgCommandRemapsGitignoreExcludesForSubdirectorySearchRoot() {
         Path repo = Path.of("/repo");
-        Path project = repo.resolve("kompile-fpna-v8");
+        Path project = repo.resolve("generated-project");
         List<String> cmd = GrepTool.buildRipgrepCommand(
                 "TOKEN", project, List.of(), "content", false, 0, false,
-                SearchExclusions.fromLines(List.of("kompile-fpna-v8/log-archives/"), repo));
+                SearchExclusions.fromLines(List.of("generated-project/log-archives/"), repo));
 
         assertTrue(cmd.contains("!log-archives"), "subdirectory search should prune the ignored child dir");
-        assertFalse(cmd.contains("!kompile-fpna-v8/log-archives"),
+        assertFalse(cmd.contains("!generated-project/log-archives"),
                 "repo-relative exclude would not match paths when rg searches from the subdirectory");
     }
 

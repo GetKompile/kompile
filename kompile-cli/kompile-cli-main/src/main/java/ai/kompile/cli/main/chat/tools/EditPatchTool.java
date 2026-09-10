@@ -70,14 +70,16 @@ public class EditPatchTool implements CliTool {
                 + "many edit calls for larger changes. Every file must have been read first. Files are "
                 + "independent and atomic (written only when all hunks locate); a failing file does not "
                 + "stop the rest unless stop_on_error=true. Existing files only — for Add/Delete File "
-                + "or full multi-file diff blobs use the patch tool.";
+                + "or full multi-file diff blobs use the patch tool. Managed memory paths are rejected; "
+                + "use the memory tool instead.";
     }
 
     @Override
     public String compactHint() {
         return "Patch MANY files in one call: patches=[{file_path,patch}] where patch = that file's "
                 + "hunks (' '/'-'/'+' lines, @@ separators; V4A or unified — @@ numbers ignored, "
-                + "content-located). READ files first. Per-file atomic; Add/Delete File → patch tool.";
+                + "content-located). READ files first. Per-file atomic; Add/Delete File → patch tool; "
+                + "managed memory → memory tool.";
     }
 
     @Override
@@ -135,7 +137,7 @@ public class EditPatchTool implements CliTool {
             if (patch.isBlank()) {
                 return ToolResult.error("patches[" + (index - 1) + "]: patch is required");
             }
-            Path path = context.resolvePath(filePath);
+            Path path = context.resolveMutationPath(filePath);
             List<ApplyPatchFormat.Hunk> hunks;
             try {
                 hunks = ApplyPatchFormat.parseHunksBody(patch);

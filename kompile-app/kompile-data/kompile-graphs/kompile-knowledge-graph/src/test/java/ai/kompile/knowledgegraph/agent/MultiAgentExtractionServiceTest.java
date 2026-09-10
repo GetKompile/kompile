@@ -117,14 +117,12 @@ class MultiAgentExtractionServiceTest {
     }
 
     @Test
-    void runExtractionWithNoAgentsReturnsEmptyGraph() {
+    void runExtractionWithNoAgentsFails() {
         List<RetrievedDoc> chunks = List.of(
                 new RetrievedDoc("c1", "Some text.", Map.of()));
 
-        MergedGraphResult result = service.runExtraction(chunks, null, "UNION", null);
-
-        assertNotNull(result);
-        assertEquals(0, result.totalEntities());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.runExtraction(chunks, null, "UNION", null));
     }
 
     @Test
@@ -157,16 +155,14 @@ class MultiAgentExtractionServiceTest {
     }
 
     @Test
-    void runExtractionDefaultsToUnionWhenStrategyUnknown() {
+    void runExtractionRejectsUnknownStrategy() {
         RelationExtractionAgent a1 = stubAgent("a1",
                 List.of(entity("e1", "Alice", "PERSON")), List.of());
         service = new MultiAgentExtractionService(List.of(a1));
 
         List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Some text.", Map.of()));
-        MergedGraphResult result = service.runExtraction(chunks, null, "INVALID_STRATEGY", null);
-
-        assertNotNull(result);
-        assertEquals(GraphMergeStrategy.UNION, result.strategy());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.runExtraction(chunks, null, "INVALID_STRATEGY", null));
     }
 
     @Test
@@ -374,18 +370,13 @@ class MultiAgentExtractionServiceTest {
     }
 
     @Test
-    void unknownAgentIdInSelectionIsWarned() {
+    void unknownAgentIdInSelectionFails() {
         RelationExtractionAgent a1 = stubAgent("known-agent", List.of(), List.of());
         service = new MultiAgentExtractionService(List.of(a1));
 
         List<RetrievedDoc> chunks = List.of(new RetrievedDoc("c1", "Text.", Map.of()));
-        // Requesting unknown agent should not crash
-        MergedGraphResult result = service.runExtraction(
-                chunks, List.of("nonexistent-agent"), "UNION", null);
-
-        assertNotNull(result);
-        // No agents selected, so result is empty
-        assertEquals(0, result.totalEntities());
+        assertThrows(IllegalArgumentException.class, () -> service.runExtraction(
+                chunks, List.of("nonexistent-agent"), "UNION", null));
     }
 
     // Helper: build a minimal MergedGraphResult from a graph

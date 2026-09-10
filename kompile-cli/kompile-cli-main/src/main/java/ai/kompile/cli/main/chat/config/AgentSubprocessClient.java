@@ -197,7 +197,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                 }
 
                 if (!quiet) {
-                    System.out.println("\n  \033[33m[enforcer] violation detected — auto-reprompting "
+                    System.out.println("\n  \033[33m[judge] violation detected — auto-reprompting "
                             + "(attempt " + (attempt + 1) + "/" + maxAttempts + ")\033[0m");
                     System.out.flush();
                 }
@@ -343,7 +343,8 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                             }
                         } else if (event instanceof TurnComplete tc) {
                             // Use result-level tokens if available, otherwise use accumulated
-                            if (tc.inputTokens() > 0 || tc.outputTokens() > 0) {
+                            if (tc.inputTokens() > 0 || tc.outputTokens() > 0
+                                    || tc.cacheReadTokens() > 0 || tc.cacheCreationTokens() > 0) {
                                 turnInputTokens = tc.inputTokens();
                                 turnOutputTokens = tc.outputTokens();
                                 turnCacheRead = tc.cacheReadTokens();
@@ -358,12 +359,16 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                                 if (stats.length() > 0) stats.append(" · ");
                                 stats.append(String.format("$%.4f", tc.costUsd()));
                             }
-                            if (turnInputTokens > 0 || turnOutputTokens > 0) {
+                            if (turnInputTokens > 0 || turnOutputTokens > 0
+                                    || turnCacheRead > 0 || turnCacheCreate > 0) {
                                 if (stats.length() > 0) stats.append(" · ");
                                 stats.append(FormatUtils.formatNumber(turnInputTokens)).append(" in / ")
                                      .append(FormatUtils.formatNumber(turnOutputTokens)).append(" out");
                                 if (turnCacheRead > 0) {
                                     stats.append(" · ").append(FormatUtils.formatNumber(turnCacheRead)).append(" cached");
+                                }
+                                if (turnCacheCreate > 0) {
+                                    stats.append(" · ").append(FormatUtils.formatNumber(turnCacheCreate)).append(" cache new");
                                 }
                             }
                             if (!quiet && stats.length() > 0) {

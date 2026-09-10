@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -63,7 +65,9 @@ class GraphBuildingIntegrationServiceTest {
         ExtractionJob job = new ExtractionJob();
         job.setJobId(jobId);
         job.setFactSheetId(factSheetId);
+        job.setBuilderType("llm-builder");
         job.setStatus(ExtractionJob.JobStatus.PENDING);
+        when(jobService.getJob(jobId)).thenReturn(Optional.of(job));
         return job;
     }
 
@@ -141,12 +145,12 @@ class GraphBuildingIntegrationServiceTest {
     }
 
     @Test
-    void getBuilderForFactSheet_invalidConfigJson_stillReturnsBuilder() {
+    void getBuilderForFactSheet_invalidConfigJsonFailsClosed() {
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
 
-        Optional<KnowledgeGraphBuilder> result = service.getBuilderForFactSheet("llm-builder", "not-json");
-        assertTrue(result.isPresent());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.getBuilderForFactSheet("llm-builder", "not-json"));
         verify(mockBuilder, never()).configure(any());
     }
 
@@ -160,11 +164,20 @@ class GraphBuildingIntegrationServiceTest {
         verify(mockBuilder, never()).configure(any());
     }
 
+    @Test
+    void invalidFactSheetConfigCannotStartAnUnintendedDefaultModel() {
+        when(builderRegistry.getBuilderByTypeString("llm-builder")).thenReturn(Optional.of(mockBuilder));
+        assertThrows(IllegalArgumentException.class, () -> service.triggerForFactSheet(
+                1L, List.of(doc("c1", "source")), "llm-builder", "not-json", null));
+        verifyNoInteractions(jobService, mockBuilder);
+    }
+
     // ─── triggerGraphBuildingAsync ────────────────────────────────────
 
     @Test
     void triggerAsync_builderNotFound_failsJob() throws Exception {
         ExtractionJob job = stubJob("job-1", 1L);
+        job.setBuilderType("unknown");
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
         when(builderRegistry.getBuilderByTypeString("unknown")).thenReturn(Optional.empty());
 
@@ -181,7 +194,7 @@ class GraphBuildingIntegrationServiceTest {
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
-        when(mockBuilder.buildFromChunks(anyList(), any(), any())).thenReturn(List.of());
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenReturn(List.of());
         when(jobService.createProposalsFromTriples(anyString(), anyLong(), anyList())).thenReturn(0);
 
         List<RetrievedDoc> chunks = List.of(doc("c1", "hello"), doc("c2", "world"));
@@ -195,12 +208,12 @@ class GraphBuildingIntegrationServiceTest {
     }
 
     @Test
-    void triggerAsync_withConfig_configuresBuilder() throws Exception {
+    void triggerAsync_withConfig_usesRequestScopedBuild() throws Exception {
         ExtractionJob job = stubJob("job-3", 1L);
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
-        when(mockBuilder.buildFromChunks(anyList(), any(), any())).thenReturn(List.of());
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenReturn(List.of());
         when(jobService.createProposalsFromTriples(anyString(), anyLong(), anyList())).thenReturn(0);
 
         BuilderConfig config = new BuilderConfig(
@@ -210,7 +223,8 @@ class GraphBuildingIntegrationServiceTest {
         service.triggerGraphBuildingAsync(1L, List.of(doc("c1", "text")),
                 "llm-builder", config, null);
 
-        verify(mockBuilder).configure(config);
+        verify(mockBuilder).buildFromChunks(anyList(), any(), eq(config), any());
+        verify(mockBuilder, never()).configure(any());
     }
 
     @Test
@@ -219,13 +233,13 @@ class GraphBuildingIntegrationServiceTest {
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
-        when(mockBuilder.buildFromChunks(anyList(), any(), any()))
-                .thenThrow(new RuntimeException("LLM error"));
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any()))
+                .thenThrow(new RuntimeException("Provider error with private request body and credentials"));
 
         service.triggerGraphBuildingAsync(1L, List.of(doc("c1", "text")),
                 "llm-builder", null, null);
 
-        verify(jobService).failJob(eq("job-4"), contains("LLM error"));
+        verify(jobService).failJob("job-4", "Graph extraction failed");
     }
 
     @Test
@@ -237,7 +251,7 @@ class GraphBuildingIntegrationServiceTest {
 
         ProposedTriple triple = new ProposedTriple("Alice", "PERSON", "WORKS_AT",
                 "Acme", "ORG", 0.9, "chunk-1", "doc-1", "Alice works at Acme", Map.of());
-        when(mockBuilder.buildFromChunks(anyList(), any(), any())).thenReturn(List.of(triple));
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenReturn(List.of(triple));
         when(jobService.createProposalsFromTriples(anyString(), anyLong(), anyList())).thenReturn(1);
 
         service.triggerGraphBuildingAsync(1L, List.of(doc("c1", "text")),
@@ -253,7 +267,7 @@ class GraphBuildingIntegrationServiceTest {
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
-        when(mockBuilder.buildFromChunks(anyList(), any(), any())).thenReturn(List.of());
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenReturn(List.of());
         when(jobService.createProposalsFromTriples(anyString(), anyLong(), anyList())).thenReturn(3);
 
         BuilderConfig config = new BuilderConfig(
@@ -271,6 +285,112 @@ class GraphBuildingIntegrationServiceTest {
     @Test
     void requestCancellation_setsFlag() {
         assertDoesNotThrow(() -> service.requestCancellation("job-99"));
+    }
+
+    @Test
+    void cancellationInterruptsWorkerAndPreventsPersistence() throws Exception {
+        var job = stubJob("cancel-active", 1L);
+        when(builderRegistry.getBuilderByTypeString("llm-builder")).thenReturn(Optional.of(mockBuilder));
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenAnswer(invocation -> {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException("interrupted");
+            }
+            return List.of();
+        });
+        Thread worker = new Thread(() -> service.runExistingJobAsync(job,
+                List.of(doc("c1", "text")), null, null), "extraction-cancellation-test");
+        worker.start();
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            service.requestCancellation(job.getJobId());
+            worker.join(5000);
+            assertFalse(worker.isAlive());
+            verify(jobService).cancelJob(job.getJobId());
+            verify(jobService, never()).createProposalsFromTriples(any(), any(), any());
+            verify(jobService, never()).completeJob(any(), anyInt());
+        } finally {
+            release.countDown();
+            worker.interrupt();
+            worker.join(5000);
+        }
+    }
+
+    @Test
+    void workerCannotBeReleasedForReuseWhileCancellationIsInterruptingIt() throws Exception {
+        var job = stubJob("cancel-race", 1L);
+        when(builderRegistry.getBuilderByTypeString("llm-builder")).thenReturn(Optional.of(mockBuilder));
+        var entered = new CountDownLatch(1);
+        var finishBuild = new CountDownLatch(1);
+        var interruptEntered = new CountDownLatch(1);
+        var finishInterrupt = new CountDownLatch(1);
+        var removingWorker = new CountDownLatch(1);
+        var releasedWorker = new CountDownLatch(1);
+        var cancellationFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var trackedWorkers = new java.util.concurrent.ConcurrentHashMap<String, Thread>() {
+            @Override public Thread remove(Object key) {
+                removingWorker.countDown();
+                Thread removed = super.remove(key);
+                releasedWorker.countDown();
+                return removed;
+            }
+        };
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "runningJobs", trackedWorkers);
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenAnswer(invocation -> {
+            entered.countDown();
+            if (!finishBuild.await(5, TimeUnit.SECONDS)) throw new AssertionError("Builder was not released");
+            return List.of();
+        });
+        Thread worker = new Thread(() -> service.runExistingJobAsync(job,
+                List.of(doc("c1", "text")), null, null), "extraction-worker-release-test") {
+            @Override public void interrupt() {
+                interruptEntered.countDown();
+                try {
+                    if (!finishInterrupt.await(5, TimeUnit.SECONDS)) throw new AssertionError("Interrupt was not released");
+                } catch (InterruptedException e) {
+                    throw new AssertionError(e);
+                }
+                super.interrupt();
+            }
+        };
+        Thread canceller = new Thread(() -> {
+            try { service.requestCancellation(job.getJobId()); }
+            catch (Throwable failure) { cancellationFailure.set(failure); }
+        }, "extraction-cancel-race-test");
+        worker.start();
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            canceller.start();
+            assertTrue(interruptEntered.await(5, TimeUnit.SECONDS));
+            finishBuild.countDown();
+            assertTrue(removingWorker.await(5, TimeUnit.SECONDS));
+            // A get-then-interrupt race would let the worker finish/remove and be reused here.
+            assertFalse(releasedWorker.await(150, TimeUnit.MILLISECONDS));
+        } finally {
+            finishBuild.countDown();
+            finishInterrupt.countDown();
+            canceller.join(5000);
+            worker.join(5000);
+        }
+        assertFalse(worker.isAlive());
+        assertFalse(canceller.isAlive());
+        assertNull(cancellationFailure.get());
+        assertTrue(trackedWorkers.isEmpty());
+    }
+
+    @Test
+    void cancelledQueuedJobNeverCallsBuilder() {
+        var job = stubJob("cancel-queued", 1L);
+        job.setStatus(ExtractionJob.JobStatus.CANCELLED);
+        when(builderRegistry.getBuilderByTypeString("llm-builder")).thenReturn(Optional.of(mockBuilder));
+        service.runExistingJobAsync(job, List.of(doc("c1", "text")), null, null);
+        verifyNoInteractions(mockBuilder);
+        verify(jobService, never()).startJob(any(), anyInt());
     }
 
     // ─── triggerForFactSheet ─────────────────────────────────────────
@@ -292,7 +412,7 @@ class GraphBuildingIntegrationServiceTest {
         when(builderRegistry.getBuilderByTypeString("llm-builder"))
                 .thenReturn(Optional.of(mockBuilder));
         when(jobService.createJob(anyLong(), anyString(), any())).thenReturn(job);
-        when(mockBuilder.buildFromChunks(anyList(), any(), any())).thenReturn(List.of());
+        when(mockBuilder.buildFromChunks(anyList(), any(), any(), any())).thenReturn(List.of());
         when(jobService.createProposalsFromTriples(anyString(), anyLong(), anyList())).thenReturn(0);
 
         CompletableFuture<Optional<String>> result = service.triggerForFactSheet(

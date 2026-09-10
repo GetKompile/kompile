@@ -57,6 +57,14 @@ public class ImpactAnalyzer {
             int totalUniqueImpact
     ) {}
 
+    /** Aggregate-only result from a single multi-source reverse-graph traversal. */
+    public record AggregateImpact(
+            Set<String> allImpacted,
+            Set<String> allAffectedTests,
+            Set<String> allAffectedRoutes,
+            int totalUniqueImpact
+    ) {}
+
     /**
      * Analyze the impact of changing a single file.
      *
@@ -97,6 +105,83 @@ public class ImpactAnalyzer {
             return new ImpactReport(impacts, allImpacted, allTests, allRoutes, allImpacted.size());
         } catch (SQLException e) {
             throw new IOException("Database error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Analyze many changed files as one source set. This is intended for broad
+     * working-tree context where callers only need the aggregate blast radius.
+     * Each graph layer is queried in batches and visited once, avoiding the
+     * O(changed-files × graph-traversal) behavior of {@link #analyzeFiles}.
+     */
+    public static AggregateImpact analyzeFilesAggregate(
+            Collection<String> relPaths, Path indexDir, int maxDepth) throws IOException {
+        try (IndexDatabase db = IndexDatabase.open(indexDir)) {
+            Set<String> changedFiles = new LinkedHashSet<>();
+            for (String relPath : relPaths) {
+                if (relPath != null && !relPath.isBlank()) changedFiles.add(relPath);
+            }
+            if (changedFiles.isEmpty()) {
+                return new AggregateImpact(Set.of(), Set.of(), Set.of(), 0);
+            }
+
+            Map<String, List<Map<String, Object>>> sourceEntities =
+                    db.getEntitiesForFiles(changedFiles, 0);
+            Set<String> sourceFqns = entityFqns(sourceEntities.values());
+            Set<String> visited = new LinkedHashSet<>(changedFiles);
+            Set<String> allImpacted = new LinkedHashSet<>();
+
+            Set<String> currentFrontier = new LinkedHashSet<>();
+            addUnvisited(db.getIncomingRelationFilesForFqns(sourceFqns), visited, currentFrontier);
+            allImpacted.addAll(currentFrontier);
+
+            int depth = 1;
+            int effectiveMaxDepth = maxDepth > 0 ? maxDepth : 20;
+            while (!currentFrontier.isEmpty() && depth < effectiveMaxDepth) {
+                Map<String, List<Map<String, Object>>> frontierEntities =
+                        db.getEntitiesForFiles(currentFrontier, 0);
+                Set<String> frontierFqns = entityFqns(frontierEntities.values());
+                Set<String> nextFrontier = new LinkedHashSet<>();
+                addUnvisited(db.getIncomingRelationFilesForFqns(frontierFqns), visited, nextFrontier);
+                allImpacted.addAll(nextFrontier);
+                currentFrontier = nextFrontier;
+                depth++;
+            }
+
+            Set<String> tests = new LinkedHashSet<>();
+            Set<String> routes = new LinkedHashSet<>();
+            for (String file : allImpacted) {
+                if (isTestFile(file)) tests.add(file);
+                if (isRouteFile(file)) routes.add(file);
+            }
+            return new AggregateImpact(
+                    Collections.unmodifiableSet(allImpacted),
+                    Collections.unmodifiableSet(tests),
+                    Collections.unmodifiableSet(routes),
+                    allImpacted.size());
+        } catch (SQLException e) {
+            throw new IOException("Database error: " + e.getMessage(), e);
+        }
+    }
+
+    private static Set<String> entityFqns(
+            Collection<List<Map<String, Object>>> entitiesByFile) {
+        Set<String> fqns = new LinkedHashSet<>();
+        for (List<Map<String, Object>> entities : entitiesByFile) {
+            for (Map<String, Object> entity : entities) {
+                String fqn = (String) entity.get("fullyQualifiedName");
+                if (fqn != null && !fqn.isBlank()) fqns.add(fqn);
+            }
+        }
+        return fqns;
+    }
+
+    private static void addUnvisited(
+            Collection<String> candidates, Set<String> visited, Set<String> destination) {
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank() && visited.add(candidate)) {
+                destination.add(candidate);
+            }
         }
     }
 

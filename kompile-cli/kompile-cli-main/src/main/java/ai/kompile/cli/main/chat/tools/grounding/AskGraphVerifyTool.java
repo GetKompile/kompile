@@ -73,6 +73,9 @@ public class AskGraphVerifyTool implements CliTool {
         props.putObject("asOf")
                 .put("type", "string")
                 .put("description", "ISO-8601 instant for temporal point-in-time verification. Absent = current truth.");
+        props.putObject("validAt")
+                .put("type", "string")
+                .put("description", "Local only: ISO-8601 valid-time filter over retained facts. Timeless facts included; does not reconstruct deleted history. Cannot combine with asOf.");
         props.putObject("minConfidence")
                 .put("type", "number")
                 .put("description", "Override the default confidence threshold [0,1]. Default: 0.5.");
@@ -118,6 +121,9 @@ public class AskGraphVerifyTool implements CliTool {
             return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
+        if (params.hasNonNull("validAt")) {
+            return ToolResult.error("validAt is supported only by the project-local backend; no remote request was sent.");
+        }
         try {
             ObjectNode body = objectMapper.createObjectNode();
             body.put("atom", atom);

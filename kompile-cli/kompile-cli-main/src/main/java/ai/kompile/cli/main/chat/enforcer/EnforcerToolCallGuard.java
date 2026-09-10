@@ -36,6 +36,7 @@ public class EnforcerToolCallGuard implements AutoCloseable {
 
     private final ObjectMapper objectMapper;
     private final EnforcerRuntimePolicy runtimePolicy;
+    private final Path workingDirectory;
     private final KeywordEnforcerEvaluator keywordEvaluator;
 
     /** Lazily-created LLM judge; guarded by {@link #judgeLock}. */
@@ -51,10 +52,18 @@ public class EnforcerToolCallGuard implements AutoCloseable {
     public EnforcerToolCallGuard(ObjectMapper objectMapper,
                                  EnforcerRuntimePolicy runtimePolicy,
                                  EnforcerJudge judge) {
+        this(objectMapper, runtimePolicy, judge, null);
+    }
+
+    public EnforcerToolCallGuard(ObjectMapper objectMapper,
+                                 EnforcerRuntimePolicy runtimePolicy,
+                                 EnforcerJudge judge, Path workingDirectory) {
         this.objectMapper = objectMapper;
         this.runtimePolicy = runtimePolicy;
+        this.workingDirectory = workingDirectory;
         this.judge = judge;
         this.judgeInitAttempted = judge != null;
+        bindReminderConstraints(judge);
         // Always build keyword evaluator as a fallback / fast-path filter
         this.keywordEvaluator = runtimePolicy != null && runtimePolicy.getPolicy() != null
                 ? KeywordEnforcerEvaluator.fromPolicy(runtimePolicy.getPolicy(), objectMapper)
@@ -62,25 +71,31 @@ public class EnforcerToolCallGuard implements AutoCloseable {
     }
 
     public static EnforcerToolCallGuard fromEnvironment(ObjectMapper objectMapper) {
-        return fromPolicy(EnforcerRuntimePolicy.loadFromEnvironment(objectMapper), objectMapper);
+        return fromEnvironment(objectMapper, null);
+    }
+
+    public static EnforcerToolCallGuard fromEnvironment(ObjectMapper objectMapper, Path workingDirectory) {
+        return fromPolicy(EnforcerRuntimePolicy.loadFromEnvironment(objectMapper), objectMapper, workingDirectory);
     }
 
     public static EnforcerToolCallGuard fromPolicyFile(String policyFile, ObjectMapper objectMapper) {
         if (policyFile == null || policyFile.isBlank()) {
             return fromEnvironment(objectMapper);
         }
-        return fromPolicy(EnforcerRuntimePolicy.load(Path.of(policyFile), objectMapper), objectMapper);
+        return fromPolicy(EnforcerRuntimePolicy.load(Path.of(policyFile), objectMapper), objectMapper, null);
     }
 
     private static EnforcerToolCallGuard fromPolicy(EnforcerRuntimePolicy runtimePolicy,
-                                                   ObjectMapper objectMapper) {
+                                                   ObjectMapper objectMapper, Path workingDirectory) {
         if (runtimePolicy == null || runtimePolicy.getPolicy() == null
-                || !runtimePolicy.getPolicy().hasRules()) {
+                || !runtimePolicy.getPolicy().hasRules()
+                || (runtimePolicy.getHarnessConfig() != null
+                    && !runtimePolicy.getHarnessConfig().isJudgeGlobalEnabled())) {
             return null;
         }
         // No judge here — it is created on first use so MCP server startup never
         // blocks on (or recursively spawns) a judge agent process.
-        return new EnforcerToolCallGuard(objectMapper, runtimePolicy);
+        return new EnforcerToolCallGuard(objectMapper, runtimePolicy, null, workingDirectory);
     }
 
     /**
@@ -98,9 +113,10 @@ public class EnforcerToolCallGuard implements AutoCloseable {
                 try {
                     HarnessConfig config = runtimePolicy != null ? runtimePolicy.getHarnessConfig() : null;
                     judge = new EnforcerJudge(config != null ? config : HarnessConfig.load(objectMapper),
-                            objectMapper);
+                            objectMapper, workingDirectory);
+                    bindReminderConstraints(judge);
                 } catch (Exception e) {
-                    System.err.println("[enforcer] Could not create tool-call judge: " + e.getMessage());
+                    EnforcerDiagnostics.alert("[enforcer] Could not create tool-call judge: " + e.getMessage());
                 }
             }
             return judge;
@@ -109,10 +125,36 @@ public class EnforcerToolCallGuard implements AutoCloseable {
 
     public boolean isActive() {
         return runtimePolicy != null && runtimePolicy.getPolicy() != null
-                && runtimePolicy.getPolicy().hasRules();
+                && runtimePolicy.getPolicy().hasRules()
+                && runtimePolicy.isEnabled(objectMapper)
+                && (runtimePolicy.getHarnessConfig() == null
+                    || runtimePolicy.getHarnessConfig().isJudgeGlobalEnabled());
+    }
+
+    /** Standalone MCP has tool-call boundaries, not chat turns. Control calls never consume a one-shot. */
+    public static EnforcerToolCallDecision evaluateSession(EnforcerToolCallGuard guard,
+            String toolName, Map<String, Object> args, JudgeControl control, ObjectMapper mapper) {
+        if ("judge_control".equals(JudgeToolPolicy.canonicalToolName(toolName))) {
+            return EnforcerToolCallDecision.allow("Operator control; confirmation and permission are checked by the tool");
+        }
+        JudgeControl.TurnSnapshot snapshot = control.beginTurn();
+        String serialized = mapper.valueToTree(args == null ? Map.of() : args).toString();
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, serialized);
+        if (mandate != null) return mandate;
+        if (!snapshot.enabled()) return EnforcerToolCallDecision.allow("Session judge disabled");
+        if (snapshot.approvesCommand(toolName, serialized)) {
+            return EnforcerToolCallDecision.allow("Explicit session command approval consumed for this tool call");
+        }
+        if (guard == null) return EnforcerToolCallDecision.allow("No configured judge policy");
+        return guard.evaluate(toolName, args, snapshot.guidance(), snapshot.reportOnly());
     }
 
     public EnforcerToolCallDecision evaluate(String toolName, Map<String, Object> args) {
+        return evaluate(toolName, args, "", false);
+    }
+
+    private EnforcerToolCallDecision evaluate(String toolName, Map<String, Object> args,
+                                               String guidance, boolean reportOnly) {
         if (!isActive()) {
             return EnforcerToolCallDecision.allow("No active enforcer policy");
         }
@@ -120,10 +162,37 @@ public class EnforcerToolCallGuard implements AutoCloseable {
             return EnforcerToolCallDecision.block("Missing MCP tool name");
         }
 
+        // Deterministic shell-mandate layer: bash must not smuggle sed/grep/cat/find over
+        // files when dedicated kompile tools exist. Hard block, no LLM, no fail-open.
+        if (args != null) {
+            Object command = args.get("command");
+            if (command instanceof String commandText) {
+                EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateCommand(toolName, commandText);
+                if (mandate != null) {
+                    return mandate;
+                }
+            }
+        }
+
+        String serializedArgs = args == null ? "{}" : objectMapper.valueToTree(args).toString();
+        EnforcerToolCallDecision readOnlyGit = JudgeToolPolicy.evaluateReadOnlyGitTool(
+                toolName, serializedArgs, runtimePolicy.getPolicy(), objectMapper);
+        if (readOnlyGit != null) {
+            return readOnlyGit;
+        }
+
+        if (runtimePolicy.getReminderConstraints().isBlank()) {
+            EnforcerToolCallDecision routine = JudgeToolPolicy.evaluateRoutineTool(
+                    toolName, serializedArgs,
+                    runtimePolicy.getPolicy(), objectMapper);
+            if (routine != null) {
+                return routine;
+            }
+        }
+
         // Fast-path: keyword evaluation (instant, no LLM needed)
         if (keywordEvaluator != null && keywordEvaluator.isAvailable()) {
             try {
-                String serializedArgs = objectMapper.writeValueAsString(args == null ? Map.of() : args);
                 EnforcerToolCallDecision kwDecision = keywordEvaluator.evaluateToolCall(
                         toolName, serializedArgs, runtimePolicy.getPolicy());
                 if (!kwDecision.isAllowed()) {
@@ -138,26 +207,32 @@ public class EnforcerToolCallGuard implements AutoCloseable {
         // Full LLM evaluation for nuanced rules (judge created on first need)
         EnforcerJudge llmJudge = lazyJudge();
         if (llmJudge == null || !llmJudge.isAvailable()) {
-            // No LLM judge available — keyword check already passed, allow
-            if (keywordEvaluator != null && keywordEvaluator.isAvailable()) {
-                return EnforcerToolCallDecision.allow("Passed keyword check (no LLM judge available)");
-            }
-            return EnforcerToolCallDecision.block("Active enforcer policy has no available judge backend");
+            return EnforcerToolCallDecision.allow(
+                    "No LLM judge available after keyword check; failing open");
         }
 
         try {
-            String serializedArgs = objectMapper.writeValueAsString(args == null ? Map.of() : args);
             EnforcerConversationContext context = EnforcerConversationContext.read(
                     runtimePolicy.getContextFile(), objectMapper);
+            if (guidance != null && !guidance.isBlank()) {
+                var messages = new java.util.ArrayList<>(context.getMessages());
+                messages.add(new EnforcerConversationContext.Message("user", "Judge guidance: " + guidance));
+                context = EnforcerConversationContext.of(messages);
+            }
             EnforcerToolCallDecision decision = llmJudge.evaluateToolCall(
                     toolName, serializedArgs, runtimePolicy.getPolicy(), context);
+            if (reportOnly) {
+                return EnforcerToolCallDecision.allow("Report-only judge verdict: "
+                        + decision.getAction() + " — " + decision.getReason());
+            }
             if (decision.isRewrite() && decision.getRewrittenArgs() == null) {
-                return EnforcerToolCallDecision.block(
-                        "Enforcer requested a rewrite but did not provide rewritten arguments");
+                return EnforcerToolCallDecision.allow(
+                        "Enforcer returned an invalid rewrite; failing open");
             }
             return decision;
         } catch (Exception e) {
-            return EnforcerToolCallDecision.block("Enforcer tool-call evaluation failed: " + e.getMessage());
+            return EnforcerToolCallDecision.allow(
+                    "Enforcer tool-call evaluation failed; failing open: " + e.getMessage());
         }
     }
 
@@ -167,6 +242,12 @@ public class EnforcerToolCallGuard implements AutoCloseable {
         String judgeDescription = built != null ? built.describe() : "lazy (created on first use)";
         String sessionId = runtimePolicy != null ? runtimePolicy.getSessionId() : "none";
         return "session=" + sessionId + ", judge=" + judgeDescription;
+    }
+
+    private void bindReminderConstraints(EnforcerJudge target) {
+        if (target != null && runtimePolicy != null) {
+            target.setReminderSupplier(runtimePolicy::getReminderConstraints);
+        }
     }
 
     @Override

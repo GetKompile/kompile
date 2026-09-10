@@ -18,8 +18,18 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import org.jline.terminal.Size;
+import org.jline.terminal.impl.LineDisciplineTerminal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -32,6 +42,9 @@ class ResumeTuiFormattingTest {
 
     private final TerminalRenderer renderer = new TerminalRenderer(true);
     private final AsciiRenderer ascii = new AsciiRenderer(renderer);
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void assistantMarkdownIsRendered() {
@@ -82,14 +95,113 @@ class ResumeTuiFormattingTest {
     }
 
     @Test
-    void truncationShowsEarlierTurnsMessage() {
-        // When there are more than 10 turns, restoreSession shows a truncation message
-        // Verify the dim styling for the truncation message
-        int totalTurns = 15;
-        int startTurn = Math.max(0, totalTurns - 10);
-        String truncMsg = renderer.dim("  ... (" + startTurn + " earlier turns)");
-        assertTrue(truncMsg.contains("5 earlier turns"));
-        assertTrue(truncMsg.contains("\033["));
+    void managedResumeRendersEveryTurnAndPreservesFullMarkdownBodies() throws Exception {
+        EmulatedPassthroughCommand command = new EmulatedPassthroughCommand();
+        TerminalRenderer plainRenderer = new TerminalRenderer(false);
+        setField(command, "renderer", plainRenderer);
+        setField(command, "ascii", new AsciiRenderer(plainRenderer, 100));
+
+        List<ChatHistory.Turn> turns = new ArrayList<>();
+        String longUserBody = "x".repeat(240) + " FULL_USER_TAIL";
+        for (int index = 0; index < 12; index++) {
+            if (index % 2 == 0) {
+                String content = index == 0
+                        ? "## Request zero\n\n" + longUserBody + "\n\n- final request item"
+                        : "user turn " + index;
+                turns.add(new ChatHistory.Turn("user", content));
+            } else {
+                turns.add(new ChatHistory.Turn(
+                        "assistant", "**assistant turn " + index + "** with `code`"));
+            }
+        }
+
+        List<String> renderedLines = command.renderResumedConversation(turns);
+        String rendered = String.join("\n", renderedLines);
+
+        assertTrue(rendered.contains("Resumed conversation (12 turns)"));
+        assertTrue(rendered.contains("FULL_USER_TAIL"),
+                "resumed user bodies must not be shortened to a preview");
+        assertTrue(renderedLines.stream().filter(line -> line.contains("xxxxxxxxxx")).count() >= 2,
+                "long resumed paragraphs must wrap instead of clipping at terminal width");
+        assertTrue(renderedLines.stream()
+                        .map(AsciiRenderer::stripAnsi)
+                        .allMatch(line -> line.length() <= 119),
+                "wrapped resume rows must preserve the terminal's safe last-column margin");
+        assertTrue(rendered.contains("final request item"));
+        assertTrue(rendered.contains("user turn 10"), "older and newer turns must all render");
+        assertTrue(rendered.contains("assistant turn 11"));
+        assertTrue(rendered.contains("You:"));
+        assertTrue(rendered.contains("Assistant:"));
+        assertFalse(rendered.contains("## Request zero"), "headings must use Markdown rendering");
+        assertFalse(rendered.contains("**assistant turn"), "bold markers must be rendered");
+        assertFalse(rendered.contains("earlier turns"), "resume must not replace turns with a summary row");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void managedReplayDoesNotAppendDuplicateCopiesToPersistedTranscript() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        PrintStream originalOut = System.out;
+        LineDisciplineTerminal terminal = null;
+        ChatHistory activeHistory = null;
+        try {
+            System.setProperty("user.home", tempDir.toString());
+            String sessionId = "managed-resume-no-duplicates";
+            String fullUserBody = "## Persisted request\n\n" + "u".repeat(160)
+                    + " PERSISTED_USER_TAIL";
+            ChatHistory stored = new ChatHistory(sessionId);
+            stored.open("", "codex (emulated)", false, tempDir);
+            stored.logUserMessage(fullUserBody);
+            stored.logAssistantMessage("The **persisted answer** uses `code`.", 0, 0);
+            stored.close();
+
+            TerminalRenderer plainRenderer = new TerminalRenderer(false);
+            EmulatedPassthroughCommand command = new EmulatedPassthroughCommand();
+            terminal = new LineDisciplineTerminal(
+                    "resume-replay-test", "xterm", new ByteArrayOutputStream(),
+                    StandardCharsets.UTF_8);
+            terminal.setSize(new Size(80, 30));
+            setField(command, "terminal", terminal);
+            setField(command, "drawLock", new Object());
+            setField(command, "scrollBottom", 20);
+            setField(command, "inputRows", 3);
+            setField(command, "agent", "codex");
+            setField(command, "messageQueue", new MessageQueue("resume-replay-queue"));
+            setField(command, "renderer", plainRenderer);
+            setField(command, "ascii", new AsciiRenderer(plainRenderer, 80));
+
+            activeHistory = new ChatHistory(sessionId);
+            activeHistory.open("", "codex (emulated)", false, tempDir);
+            System.setOut(new PrintStream(
+                    new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+            Method replay = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                    "replayConversationHistory", String.class, ChatHistory.class);
+            replay.setAccessible(true);
+            replay.invoke(command, sessionId, activeHistory);
+
+            List<String> retained = (List<String>) getField(command, "scrollbackLines");
+            String rendered = String.join("\n", retained);
+            assertTrue(rendered.contains("PERSISTED_USER_TAIL"));
+            assertTrue(rendered.contains("Persisted request"));
+            assertFalse(rendered.contains("## Persisted request"));
+            assertTrue(rendered.contains("persisted answer"));
+            assertTrue(rendered.contains("You:"));
+            assertTrue(rendered.contains("Assistant:"));
+
+            activeHistory.close();
+            activeHistory = null;
+            assertEquals(2, new ChatHistory(sessionId).readTurns().size(),
+                    "visually replaying a stored session must not persist its turns again");
+        } finally {
+            if (activeHistory != null) activeHistory.close();
+            System.setOut(originalOut);
+            if (terminal != null) terminal.close();
+            if (originalHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", originalHome);
+            }
+        }
     }
 
     @Test
@@ -148,5 +260,17 @@ class ResumeTuiFormattingTest {
         assertTrue(result.contains("4"), "Assistant content preserved");
         // Bold markdown markers should be rendered away
         assertFalse(result.contains("**4**"), "Bold markers should be rendered");
+    }
+
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
+    private static Object getField(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 }

@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
  * call is made first. For binary atoms (edge predicates), the NodeLevel of each argument
  * is unknown; the helper tries {@link NodeLevel#ENTITY} first, then iterates through all
  * remaining levels. If no node is found the slug is returned as-is (already human-readable
- * in the FP&amp;A corpus, e.g. {@code country_usa}).</p>
+ * in the reference corpus, e.g. {@code country_usa}).</p>
  *
  * <h3>Special-case keys</h3>
  * <ul>
@@ -67,7 +67,7 @@ public class TraceHumanizer {
     /**
      * NodeLevel lookup order used when the argument's type cannot be derived from the
      * predicate alone (binary atoms / unknown predicates). ENTITY is tried first because
-     * the vast majority of PSL-grounded nodes are at the ENTITY level in the FP&amp;A corpus.
+     * the vast majority of PSL-grounded nodes are at the ENTITY level in the reference corpus.
      */
     private static final NodeLevel[] LOOKUP_ORDER = {
         NodeLevel.ENTITY, NodeLevel.SOURCE, NodeLevel.DOCUMENT,

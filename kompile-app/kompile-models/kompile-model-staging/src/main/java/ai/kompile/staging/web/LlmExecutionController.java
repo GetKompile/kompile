@@ -20,9 +20,13 @@ import ai.kompile.staging.execution.ChatTemplateService;
 import ai.kompile.staging.execution.LlmExecutionService;
 import ai.kompile.staging.execution.PromptTemplateService;
 import ai.kompile.staging.execution.TextPipelineService;
+import ai.kompile.staging.execution.text.DurableLlmGenerationService;
+import ai.kompile.staging.execution.text.RegisteredLlmModelResolver;
 import ai.kompile.staging.web.dto.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -50,15 +54,43 @@ public class LlmExecutionController {
     private final ChatTemplateService chatTemplateService;
     private final PromptTemplateService promptTemplateService;
     private final TextPipelineService textPipelineService;
+    private final DurableLlmGenerationService durableGenerationService;
+    private final RegisteredLlmModelResolver registeredModelResolver;
 
+    @Autowired
     public LlmExecutionController(LlmExecutionService executionService,
                                   ChatTemplateService chatTemplateService,
                                   PromptTemplateService promptTemplateService,
-                                  TextPipelineService textPipelineService) {
+                                  TextPipelineService textPipelineService,
+                                  DurableLlmGenerationService durableGenerationService,
+                                  RegisteredLlmModelResolver registeredModelResolver) {
         this.executionService = executionService;
         this.chatTemplateService = chatTemplateService;
         this.promptTemplateService = promptTemplateService;
         this.textPipelineService = textPipelineService;
+        this.durableGenerationService = durableGenerationService;
+        this.registeredModelResolver = registeredModelResolver;
+    }
+
+    /** Backward-compatible construction seam for run-bound controller unit tests. */
+    @Deprecated
+    public LlmExecutionController(LlmExecutionService executionService,
+                                  ChatTemplateService chatTemplateService,
+                                  PromptTemplateService promptTemplateService,
+                                  TextPipelineService textPipelineService,
+                                  DurableLlmGenerationService durableGenerationService) {
+        this(executionService, chatTemplateService, promptTemplateService, textPipelineService,
+                durableGenerationService, null);
+    }
+
+    /** Backward-compatible construction seam for legacy-only controller tests/embedders. */
+    @Deprecated
+    public LlmExecutionController(LlmExecutionService executionService,
+                                  ChatTemplateService chatTemplateService,
+                                  PromptTemplateService promptTemplateService,
+                                  TextPipelineService textPipelineService) {
+        this(executionService, chatTemplateService, promptTemplateService, textPipelineService,
+                null, null);
     }
 
     // ==================== Model Management ====================
@@ -77,11 +109,14 @@ public class LlmExecutionController {
                     .build());
             }
 
-            // Use explicit model path if provided, otherwise use model ID as path placeholder
-            String modelPath = request.getModelPath() != null && !request.getModelPath().isBlank()
-                    ? request.getModelPath() : modelId;
+            if (registeredModelResolver == null) {
+                throw new IllegalStateException("Registry-backed LLM loading is unavailable");
+            }
+            RegisteredLlmModelResolver.VerifiedModel verified =
+                    registeredModelResolver.resolve(modelId, request.getModelPath());
             String kvCacheType = request.getKvCacheType() != null ? request.getKvCacheType() : "STATIC";
-            LlmModelStatusResponse response = executionService.loadModel(modelId, modelPath, kvCacheType);
+            LlmModelStatusResponse response = executionService.loadModel(
+                    modelId, verified.modelFile().toString(), kvCacheType);
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
@@ -124,7 +159,39 @@ public class LlmExecutionController {
      * Generate text from a prompt using the loaded LLM model.
      */
     @PostMapping("/generate")
-    public ResponseEntity<LlmGenerateResponse> generate(@RequestBody LlmGenerateRequest request) {
+    public ResponseEntity<?> generate(@RequestBody LlmGenerateRequest request) {
+        if (request == null || request.getRunId() == null) {
+            return generateLegacy(request);
+        }
+        try {
+            return ResponseEntity.ok(durableGenerationService.generate(request));
+        } catch (DurableLlmGenerationService.InvalidRunRequestException invalid) {
+            return runBoundError(HttpStatus.BAD_REQUEST, "LLM_RUN_REQUEST_INVALID",
+                    invalid.getMessage());
+        } catch (DurableLlmGenerationService.IdempotencyConflictException conflict) {
+            return runBoundError(HttpStatus.CONFLICT, "LLM_RUN_CONFLICT",
+                    conflict.getMessage());
+        } catch (DurableLlmGenerationService.GenerationUnavailableException unavailable) {
+            return runBoundError(HttpStatus.SERVICE_UNAVAILABLE,
+                    "LLM_GENERATION_UNAVAILABLE", unavailable.getMessage());
+        } catch (DurableLlmGenerationService.RunStoreUnavailableException unavailable) {
+            return runBoundError(HttpStatus.SERVICE_UNAVAILABLE,
+                    "LLM_RUN_STORE_UNAVAILABLE", unavailable.getMessage());
+        } catch (DurableLlmGenerationService.InvalidExecutionResultException invalid) {
+            return runBoundError(HttpStatus.BAD_GATEWAY, "LLM_GENERATION_INVALID",
+                    invalid.getMessage());
+        } catch (DurableLlmGenerationService.CorruptRunManifestException corrupt) {
+            return runBoundError(HttpStatus.BAD_GATEWAY, "LLM_RUN_MANIFEST_INVALID",
+                    corrupt.getMessage());
+        } catch (Exception failure) {
+            log.error("Run-bound LLM generation failed", failure);
+            return runBoundError(HttpStatus.SERVICE_UNAVAILABLE,
+                    "LLM_GENERATION_UNAVAILABLE",
+                    "Run-bound LLM generation is unavailable");
+        }
+    }
+
+    private ResponseEntity<LlmGenerateResponse> generateLegacy(LlmGenerateRequest request) {
         try {
             if (request.getPrompt() == null || request.getPrompt().isBlank()) {
                 return ResponseEntity.badRequest().body(LlmGenerateResponse.builder()
@@ -143,6 +210,14 @@ public class LlmExecutionController {
                 .finishReason("error: " + e.getMessage())
                 .build());
         }
+    }
+
+    private static ResponseEntity<Map<String, Object>> runBoundError(
+            HttpStatus status, String code, String message) {
+        return ResponseEntity.status(status).body(Map.of(
+                "status", status.value(),
+                "code", code,
+                "message", message == null ? code : message));
     }
 
     // ==================== Presets ====================

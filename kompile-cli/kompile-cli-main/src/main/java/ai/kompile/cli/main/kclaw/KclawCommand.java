@@ -15,6 +15,8 @@
  */
 package ai.kompile.cli.main.kclaw;
 
+import ai.kompile.channel.api.ChannelControlHeaders;
+import ai.kompile.cli.common.auth.IntegrationAdminCredential;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -28,7 +30,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 
 /**
@@ -73,10 +77,43 @@ public class KclawCommand implements Callable<Integer> {
         Integer port;
 
         String tasksUrl() {
-            String base = (url != null && !url.isBlank())
+            return baseUrl() + "/api/kclaw/tasks";
+        }
+
+        HttpRequest.Builder request(String requestUrl, boolean mutation) throws IOException {
+            URI uri = URI.create(requestUrl);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) && !isLoopback(uri.getHost())) {
+                throw new IllegalStateException(
+                        "Refusing KClaw control over non-loopback HTTP: " + uri.getAuthority());
+            }
+            String token = IntegrationAdminCredential.loadFor(uri);
+            if (token == null || token.isBlank()) {
+                throw new IllegalStateException(
+                        "KClaw administration token is unavailable. Start the admin process locally or set "
+                                + ChannelControlHeaders.TOKEN_ENVIRONMENT + ".");
+            }
+            HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                    .header(ChannelControlHeaders.TOKEN_HEADER, token);
+            if (mutation) {
+                builder.header(ChannelControlHeaders.REQUEST_HEADER, "1");
+            }
+            return builder;
+        }
+
+        private String baseUrl() {
+            return (url != null && !url.isBlank())
                     ? url.replaceAll("/+$", "")
                     : "http://localhost:" + (port != null ? port : 8080);
-            return base + "/api/kclaw/tasks";
+        }
+
+        private static boolean isLoopback(String host) {
+            if (host == null) return false;
+            String normalized = host.toLowerCase(Locale.ROOT);
+            if (normalized.startsWith("[") && normalized.endsWith("]")) {
+                normalized = normalized.substring(1, normalized.length() - 1);
+            }
+            return "localhost".equals(normalized) || "127.0.0.1".equals(normalized)
+                    || "::1".equals(normalized) || "0:0:0:0:0:0:0:1".equals(normalized);
         }
     }
 
@@ -110,7 +147,7 @@ public class KclawCommand implements Callable<Integer> {
         @Option(names = "--model", description = "Model override (kompile-cli engine)")
         String model;
 
-        @Option(names = "--channel", description = "Deliver the result to this channel (e.g. discord, slack)")
+        @Option(names = "--channel", description = "Deliver the result through this named `kompile auth channel` connection")
         String channel;
 
         @Option(names = "--target", description = "Channel target id (required with --channel)")
@@ -129,7 +166,7 @@ public class KclawCommand implements Callable<Integer> {
             if (channel != null) body.put("channel", channel);
             if (target != null) body.put("channelTarget", target);
 
-            HttpRequest req = HttpRequest.newBuilder(URI.create(tasksUrl()))
+            HttpRequest req = request(tasksUrl(), true)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
                     .build();
@@ -146,14 +183,17 @@ public class KclawCommand implements Callable<Integer> {
             }
             for (int i = 0; i < 1800; i++) {
                 Thread.sleep(1000);
-                HttpResponse<String> g = send(HttpRequest.newBuilder(
-                        URI.create(tasksUrl() + "/" + id)).GET().build());
+                HttpResponse<String> g = send(request(tasksUrl() + "/" + id, false).GET().build());
                 if (g.statusCode() >= 300) continue;
                 JsonNode jt = MAPPER.readTree(g.body());
                 switch (jt.path("status").asText()) {
                     case "SUCCEEDED" -> {
                         System.out.println();
                         System.out.println(jt.path("output").asText(""));
+                        if ("FAILED".equals(jt.path("deliveryStatus").asText())) {
+                            return fail("channel delivery failed: "
+                                    + jt.path("deliveryError").asText("unknown delivery error"));
+                        }
                         return 0;
                     }
                     case "FAILED" -> {
@@ -170,7 +210,7 @@ public class KclawCommand implements Callable<Integer> {
     static class ListCmd extends Base {
         @Override
         public Integer call() throws Exception {
-            HttpResponse<String> resp = send(HttpRequest.newBuilder(URI.create(tasksUrl())).GET().build());
+            HttpResponse<String> resp = send(request(tasksUrl(), false).GET().build());
             if (resp.statusCode() >= 300) {
                 return fail("List failed (" + resp.statusCode() + "): " + resp.body());
             }
@@ -195,8 +235,7 @@ public class KclawCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            HttpResponse<String> resp = send(HttpRequest.newBuilder(
-                    URI.create(tasksUrl() + "/" + id)).GET().build());
+            HttpResponse<String> resp = send(request(tasksUrl() + "/" + id, false).GET().build());
             if (resp.statusCode() == 404) return fail("task not found: " + id);
             if (resp.statusCode() >= 300) return fail("Get failed (" + resp.statusCode() + "): " + resp.body());
             System.out.println(MAPPER.writerWithDefaultPrettyPrinter()
@@ -212,8 +251,8 @@ public class KclawCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
-            HttpResponse<String> resp = send(HttpRequest.newBuilder(
-                    URI.create(tasksUrl() + "/" + id + "/output")).GET().build());
+            HttpResponse<String> resp = send(request(
+                    tasksUrl() + "/" + id + "/output", false).GET().build());
             if (resp.statusCode() == 404) return fail("task not found: " + id);
             if (resp.statusCode() >= 300) return fail("Output failed (" + resp.statusCode() + "): " + resp.body());
             System.out.println(resp.body());

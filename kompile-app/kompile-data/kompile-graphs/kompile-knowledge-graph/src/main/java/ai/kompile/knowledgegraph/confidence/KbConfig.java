@@ -248,7 +248,7 @@ public class KbConfig {
      * of these edges (it stops the ComponentPruner treating cross-doc entity islands as singletons).</p>
      *
      * <p>When {@code false} the legacy <b>clique</b> links every pair — {@code O(k²)} edges.  For
-     * generic structured values (an FP&amp;A spreadsheet value like "Revenue"/"Total"/"0" lands
+     * generic structured values (a spreadsheet value like "Revenue"/"Total"/"0" lands
      * hundreds of cells in one bucket → a single bucket emits {@code ~k²/2 ≈ 125 000} edges) this
      * was the dominant source of edge-count explosion (703k of 1.27M edges were SHARED_ENTITY).
      * The star preserves the identical connected component with linear edges and drops no data.</p>

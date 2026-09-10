@@ -37,6 +37,8 @@ import ai.kompile.core.loaders.PdfClassificationResult;
 import ai.kompile.core.loaders.PdfContentClassifier;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.core.source.SourceDocumentStorageService;
+import ai.kompile.core.source.provider.SourceProvider;
+import ai.kompile.core.source.provider.SourceProviderRegistry;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 
 import org.slf4j.Logger;
@@ -117,6 +119,34 @@ public class ExternalSourceIngestController {
             String chunkerName) {
     }
 
+    public record AddJiraRequest(
+            Long factSheetId,
+            String baseUrl,
+            String email,
+            String apiToken,
+            String projectKey,
+            String jql,
+            Integer maxIssues,
+            Boolean includeComments,
+            Boolean includeAttachments,
+            String chunkerName) {
+    }
+
+    public record AddRedditRequest(
+            Long factSheetId,
+            String subreddit,
+            String sortType,
+            String timePeriod,
+            Integer postLimit,
+            Boolean includeComments,
+            Integer commentDepth,
+            Integer commentLimit,
+            Integer minScore,
+            Boolean includeNsfw,
+            String searchQuery,
+            String chunkerName) {
+    }
+
     public record AddSlackRequest(
             String channelId,
             String token,
@@ -157,6 +187,7 @@ public class ExternalSourceIngestController {
     private final SingleSourceCrawlPreviewService singleSourceCrawlPreviewService;
     private final SingleSourceCrawlStarter singleSourceCrawlStarter;
     private final PdfContentClassifier pdfContentClassifier;
+    private final SourceProviderRegistry sourceProviderRegistry;
 
     /**
      * Mapping of UI chunker strategy IDs to backend chunker names.
@@ -193,7 +224,8 @@ public class ExternalSourceIngestController {
             @Autowired(required = false) FactSheetService factSheetService,
             @Autowired(required = false) SingleSourceCrawlPreviewService singleSourceCrawlPreviewService,
             @Autowired(required = false) SingleSourceCrawlStarter singleSourceCrawlStarter,
-            @Autowired(required = false) PdfContentClassifier pdfContentClassifier) {
+            @Autowired(required = false) PdfContentClassifier pdfContentClassifier,
+            @Autowired(required = false) SourceProviderRegistry sourceProviderRegistry) {
 
         this.sourceProperties = appDocumentSourceProperties;
         this.youTubeTranscriptService = youTubeTranscriptService;
@@ -212,6 +244,7 @@ public class ExternalSourceIngestController {
         this.singleSourceCrawlPreviewService = singleSourceCrawlPreviewService;
         this.singleSourceCrawlStarter = singleSourceCrawlStarter;
         this.pdfContentClassifier = pdfContentClassifier;
+        this.sourceProviderRegistry = sourceProviderRegistry;
 
         if (documentIngestService == null) {
             logger.warn("ExternalSourceIngestController: DocumentIngestService is not available");
@@ -257,6 +290,17 @@ public class ExternalSourceIngestController {
 
     private boolean unifiedCrawlAvailable() {
         return singleSourceCrawlStarter != null && singleSourceCrawlStarter.isAvailable();
+    }
+
+    private boolean sourceAuthenticationReady(String providerId) {
+        if (sourceProviderRegistry == null) return false;
+        SourceProvider provider = sourceProviderRegistry.getProvider(providerId);
+        return provider != null && provider.isAvailable() && !provider.requiresAuth();
+    }
+
+    private boolean factSheetExists(Long factSheetId) {
+        return factSheetId != null && factSheetId > 0 && factSheetService != null
+                && factSheetService.getSheetById(factSheetId).isPresent();
     }
 
     private SingleSourceCrawlStarter.SingleSourceCrawlResult startUnifiedCrawlForFile(
@@ -1294,10 +1338,10 @@ public class ExternalSourceIngestController {
             metadata.put("source_kind", "discord_add");
             metadata.put("botToken", request.botToken().trim());
             if (channelId != null && !channelId.isBlank()) {
-                metadata.put("channelId", channelId);
+                metadata.put("channelIds", channelId);
             }
             if (request.messageLimit() != null) {
-                metadata.put("messageLimit", request.messageLimit());
+                metadata.put("maxMessages", request.messageLimit());
             }
             if (request.includeThreads() != null) {
                 metadata.put("includeThreads", request.includeThreads());
@@ -1344,12 +1388,6 @@ public class ExternalSourceIngestController {
         if (request == null || request.baseUrl() == null || request.baseUrl().trim().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Confluence base URL cannot be empty."));
         }
-        if (request.email() == null || request.email().trim().isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Confluence email cannot be empty."));
-        }
-        if (request.apiToken() == null || request.apiToken().trim().isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Confluence API token cannot be empty."));
-        }
         if (request.spaceKey() == null || request.spaceKey().trim().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Confluence space key cannot be empty."));
         }
@@ -1362,8 +1400,12 @@ public class ExternalSourceIngestController {
 
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("source_kind", "confluence_add");
-            metadata.put("email", request.email().trim());
-            metadata.put("apiToken", request.apiToken().trim());
+            if (request.email() != null && !request.email().isBlank()) {
+                metadata.put("email", request.email().trim());
+            }
+            if (request.apiToken() != null && !request.apiToken().isBlank()) {
+                metadata.put("apiToken", request.apiToken().trim());
+            }
             metadata.put("spaceKey", spaceKey);
             metadata.put("includeChildren", includeChildren);
             metadata.put("includeAttachments", includeAttachments);
@@ -1393,6 +1435,211 @@ public class ExternalSourceIngestController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to start Confluence source crawl", "details", e.getMessage()));
         }
+    }
+
+    @PostMapping("/add-jira")
+    public ResponseEntity<?> handleAddJira(@RequestBody AddJiraRequest request) {
+        if (!unifiedCrawlAvailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Unified crawl service is not available for Jira add-source requests"));
+        }
+        if (request == null || request.baseUrl() == null || request.baseUrl().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Jira base URL cannot be empty."));
+        }
+        if (!factSheetExists(request.factSheetId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "The selected Fact Sheet does not exist."));
+        }
+        String baseUrl;
+        try {
+            baseUrl = normalizeJiraCloudBaseUrl(request.baseUrl());
+        } catch (IllegalArgumentException invalidSite) {
+            return ResponseEntity.badRequest().body(Map.of("error", invalidSite.getMessage()));
+        }
+        boolean hasEmail = request.email() != null && !request.email().isBlank();
+        boolean hasApiToken = request.apiToken() != null && !request.apiToken().isBlank();
+        if (hasEmail != hasApiToken) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "Jira API-token authentication requires both email and API token."));
+        }
+        if (!hasEmail && !sourceAuthenticationReady("jira")) {
+            return ResponseEntity.status(HttpStatus.PRECONDITION_REQUIRED)
+                    .body(Map.of("error", "Connect Atlassian OAuth before starting Jira ingestion."));
+        }
+        String projectKey = request.projectKey() == null ? "" : request.projectKey().trim();
+        if (!projectKey.isEmpty() && !projectKey.matches("[A-Za-z][A-Za-z0-9_]{0,31}")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Jira project key is invalid."));
+        }
+
+        try {
+            int maxIssues = request.maxIssues() == null ? 250
+                    : Math.max(1, Math.min(10_000, request.maxIssues()));
+            boolean includeComments = request.includeComments() == null || request.includeComments();
+            boolean includeAttachments = Boolean.TRUE.equals(request.includeAttachments());
+
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source_kind", "jira_add");
+            if (hasEmail) {
+                metadata.put("email", request.email().trim());
+            }
+            if (hasApiToken) {
+                metadata.put("apiToken", request.apiToken().trim());
+            }
+            if (!projectKey.isEmpty()) metadata.put("projectKey", projectKey);
+            if (request.jql() != null && !request.jql().isBlank()) {
+                metadata.put("jql", request.jql().trim());
+            }
+            metadata.put("maxIssues", maxIssues);
+            metadata.put("includeComments", includeComments);
+            metadata.put("includeAttachments", includeAttachments);
+
+            String label = projectKey.isEmpty() ? "Jira issues" : "Jira: " + projectKey;
+            UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                    .label(label)
+                    .sourceType(DocumentSourceDescriptor.SourceType.JIRA)
+                    .pathOrUrl(baseUrl)
+                    .maxDepth(0)
+                    .maxDocuments(maxIssues)
+                    .chunkerName(request.chunkerName())
+                    .properties(metadata)
+                    .build();
+            SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                    "Add " + label + " source", source,
+                    SingleSourceCrawlStarter.SingleSourceCrawlOptions.builder()
+                            .factSheetId(request.factSheetId()).build());
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Unified crawl started for Jira issues");
+            response.put("baseUrl", baseUrl);
+            response.put("projectKey", projectKey);
+            response.put("maxIssues", maxIssues);
+            addCrawlResponse(response, crawl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error starting Jira source crawl: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start Jira source crawl"));
+        }
+    }
+
+    @PostMapping("/add-reddit")
+    public ResponseEntity<?> handleAddReddit(@RequestBody AddRedditRequest request) {
+        if (!unifiedCrawlAvailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Unified crawl service is not available for Reddit add-source requests"));
+        }
+        if (request == null || request.subreddit() == null || request.subreddit().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Subreddit cannot be empty."));
+        }
+        if (!factSheetExists(request.factSheetId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "The selected Fact Sheet does not exist."));
+        }
+        if (!sourceAuthenticationReady("reddit")) {
+            return ResponseEntity.status(HttpStatus.PRECONDITION_REQUIRED)
+                    .body(Map.of("error", "Connect Reddit OAuth before starting Reddit ingestion."));
+        }
+
+        String subreddit;
+        String sortType;
+        String timePeriod;
+        try {
+            subreddit = normalizeSubreddit(request.subreddit());
+            sortType = normalizeRedditOption(request.sortType(), "hot",
+                    Set.of("hot", "new", "top", "rising", "controversial"), "sort type");
+            timePeriod = normalizeRedditOption(request.timePeriod(), "week",
+                    Set.of("hour", "day", "week", "month", "year", "all"), "time period");
+        } catch (IllegalArgumentException invalidRequest) {
+            return ResponseEntity.badRequest().body(Map.of("error", invalidRequest.getMessage()));
+        }
+
+        try {
+            int postLimit = request.postLimit() == null ? 100
+                    : Math.max(1, Math.min(1_000, request.postLimit()));
+            int commentDepth = request.commentDepth() == null ? 3
+                    : Math.max(1, Math.min(10, request.commentDepth()));
+            int commentLimit = request.commentLimit() == null ? 50
+                    : Math.max(0, Math.min(500, request.commentLimit()));
+            int minScore = request.minScore() == null ? 0 : Math.max(0, request.minScore());
+            boolean includeComments = request.includeComments() == null || request.includeComments();
+            boolean includeNsfw = Boolean.TRUE.equals(request.includeNsfw());
+
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("source_kind", "reddit_add");
+            metadata.put("sortType", sortType);
+            metadata.put("timePeriod", timePeriod);
+            metadata.put("postLimit", postLimit);
+            metadata.put("includeComments", includeComments);
+            metadata.put("commentDepth", commentDepth);
+            metadata.put("commentLimit", commentLimit);
+            metadata.put("minScore", minScore);
+            metadata.put("includeNsfw", includeNsfw);
+            if (request.searchQuery() != null && !request.searchQuery().isBlank()) {
+                metadata.put("searchQuery", request.searchQuery().trim());
+            }
+
+            UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                    .label("Reddit: " + subreddit)
+                    .sourceType(DocumentSourceDescriptor.SourceType.REDDIT)
+                    .pathOrUrl(subreddit)
+                    .maxDepth(includeComments ? commentDepth : 0)
+                    .maxDocuments(postLimit)
+                    .chunkerName(request.chunkerName())
+                    .properties(metadata)
+                    .build();
+            SingleSourceCrawlStarter.SingleSourceCrawlResult crawl = singleSourceCrawlStarter.start(
+                    "Add Reddit source: " + subreddit, source,
+                    SingleSourceCrawlStarter.SingleSourceCrawlOptions.builder()
+                            .factSheetId(request.factSheetId()).build());
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Unified crawl started for Reddit subreddit");
+            response.put("subreddit", subreddit);
+            response.put("postLimit", postLimit);
+            addCrawlResponse(response, crawl);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Error starting Reddit source crawl: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start Reddit source crawl"));
+        }
+    }
+
+    private static String normalizeJiraCloudBaseUrl(String raw) {
+        URI uri = URI.create(raw.trim());
+        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getUserInfo() != null
+                || uri.getQuery() != null || uri.getFragment() != null
+                || !host.endsWith(".atlassian.net") || host.length() <= ".atlassian.net".length()
+                || uri.getPort() != -1 && uri.getPort() != 443
+                || uri.getPath() != null && !uri.getPath().isBlank() && !"/".equals(uri.getPath())) {
+            throw new IllegalArgumentException(
+                    "Jira Cloud URL must be the HTTPS root of an *.atlassian.net site.");
+        }
+        return "https://" + host;
+    }
+
+    private static String normalizeSubreddit(String raw) {
+        String candidate = raw.trim();
+        if (candidate.regionMatches(true, 0, "http://", 0, 7)
+                || candidate.regionMatches(true, 0, "https://", 0, 8)) {
+            URI uri = URI.create(candidate);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            if (!("reddit.com".equals(host) || "www.reddit.com".equals(host))) {
+                throw new IllegalArgumentException("Subreddit URL must use reddit.com.");
+            }
+            candidate = uri.getPath() == null ? "" : uri.getPath();
+        }
+        candidate = candidate.replaceFirst("(?i)^/?r/", "").replaceAll("/.*$", "");
+        if (!candidate.matches("[A-Za-z0-9_]{2,21}")) {
+            throw new IllegalArgumentException("Invalid subreddit name.");
+        }
+        return candidate;
+    }
+
+    private static String normalizeRedditOption(
+            String raw, String defaultValue, Set<String> supported, String label) {
+        String value = raw == null || raw.isBlank() ? defaultValue : raw.trim().toLowerCase(Locale.ROOT);
+        if (!supported.contains(value)) throw new IllegalArgumentException("Unsupported Reddit " + label + ".");
+        return value;
     }
 
     /**

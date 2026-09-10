@@ -27,6 +27,8 @@ import ai.kompile.cli.main.chat.roles.RoleManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +94,22 @@ class DirectSubagentRunnerStdioTest {
     }
 
     @Test
+    void deepSeekHarnessUsesTheOfficialOneShotHeadlessContract() {
+        assertTrue(SubprocessAgentRunner.requiresManagedOneShot("dsh"));
+        assertTrue(SubprocessAgentRunner.requiresManagedOneShot("DeepSeek Harness"));
+        assertFalse(SubprocessAgentRunner.requiresManagedOneShot("codex"));
+
+        assertEquals(List.of("/tmp/dsh", "--profile", "headless", "review"),
+                SubprocessAgentRunner.buildManagedCommand(
+                        "dsh", "/tmp/dsh", "review", false, null,
+                        false, tempDir, null, "undocumented-model", "undocumented-effort"));
+        assertEquals(List.of("/tmp/dsh", "--profile", "headless", "continue"),
+                SubprocessAgentRunner.buildManagedCommand(
+                        "dsh", "/tmp/dsh", "continue", true, "old-session",
+                        false, tempDir, null, null, null));
+    }
+
+    @Test
     void managedCommandsKeepFullPermissionsEnabled() {
         List<String> codex = SubprocessAgentRunner.buildManagedCommand(
                 "codex", "/tmp/codex", "implement", false, null, true, tempDir, null,
@@ -121,6 +139,34 @@ class DirectSubagentRunnerStdioTest {
     }
 
     @Test
+    void exactResumeModeNeverUsesProviderGlobalLatestSession() throws Exception {
+        TerminalRenderer renderer = new TerminalRenderer(false);
+        SubprocessAgentRunner runner = new SubprocessAgentRunner(
+                "codex", tempDir.toString(), true, false, "", 0,
+                null, renderer, new AsciiRenderer(renderer, 100));
+        runner.setExactResumeRequired(true);
+
+        Field firstMessageSent = SubprocessAgentRunner.class.getDeclaredField("firstMessageSent");
+        firstMessageSent.setAccessible(true);
+        Method buildCommand = SubprocessAgentRunner.class.getDeclaredMethod(
+                "buildCommand", String.class, String.class);
+        buildCommand.setAccessible(true);
+
+        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "pi")) {
+            runner.setAgent(provider);
+            firstMessageSent.set(runner, true);
+            @SuppressWarnings("unchecked")
+            List<String> command = (List<String>) buildCommand.invoke(runner, provider, "second message");
+            assertFalse(command.contains("--continue"), provider + ": " + command);
+            assertFalse(command.contains("--last"), provider + ": " + command);
+            assertFalse(command.contains("resume"), provider + ": " + command);
+            assertFalse(command.contains("--resume"), provider + ": " + command);
+            assertFalse(command.contains("--session"), provider + ": " + command);
+            assertTrue(command.contains("second message"), provider + ": " + command);
+        }
+    }
+
+    @Test
     void runSubagentUsesManagedRunnerAndCapturesOutput() throws Exception {
         ManagedTestRunner runner = new ManagedTestRunner(tempDir);
         runner.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
@@ -138,12 +184,29 @@ class DirectSubagentRunnerStdioTest {
         assertTrue(fake.cleanupCalled, "managed runner cleanup should restore injected tools/skills");
         assertEquals("inspect managed tools", fake.message);
         assertEquals("1", fake.extraEnvironment.get("KOMPILE_SUBAGENT_DEPTH"));
+        assertEquals("codex", fake.extraEnvironment.get("KOMPILE_AGENT_NAME"));
         assertEquals("forked-value", fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
         assertEquals("gpt-5.3-codex", fake.modelOverride);
         assertEquals("high", fake.thinkingOverride);
         assertTrue(result.contains("Subagent 'codex' completed"));
         assertTrue(result.contains("managed-output"));
         assertTrue(result.contains("Full output"));
+    }
+
+    @Test
+    void baseCoordinationEnvironmentSurvivesTemporaryPolicyOverlayReset() throws Exception {
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+        runner.setBaseEnvironment(Map.of("KOMPILE_PARENT_SESSION_ID", "parent-session"));
+        runner.setExtraEnvironment(Map.of("KOMPILE_POLICY", "strict"));
+
+        runner.runSubagent(AgentConfig.builder("codex").build(), "first task");
+        assertEquals("parent-session", runner.fake.extraEnvironment.get("KOMPILE_PARENT_SESSION_ID"));
+        assertEquals("strict", runner.fake.extraEnvironment.get("KOMPILE_POLICY"));
+
+        runner.setExtraEnvironment(Map.of());
+        runner.runSubagent(AgentConfig.builder("codex").build(), "second task");
+        assertEquals("parent-session", runner.fake.extraEnvironment.get("KOMPILE_PARENT_SESSION_ID"));
+        assertFalse(runner.fake.extraEnvironment.containsKey("KOMPILE_POLICY"));
     }
 
     @Test
@@ -156,7 +219,7 @@ class DirectSubagentRunnerStdioTest {
                 .agentDefaults(Map.of(
                         "codex", new RoleAgentDefaults(
                                 "gpt-5.6-terra", "medium",
-                                Map.of("gpt-5.6-sol", "ultra"))))
+                                Map.of("gpt-5.6-sol", "max"))))
                 .build();
         RoleManager roleManager = new TestRoleManager(tempDir, doer, "doer");
         ManagedTestRunner runner = new ManagedTestRunner(tempDir, roleManager);
@@ -168,7 +231,7 @@ class DirectSubagentRunnerStdioTest {
         assertTrue(runner.fake.message.contains("# Role: Focused Doer"));
         assertTrue(runner.fake.message.contains("implement the focused change"));
         assertEquals("gpt-5.6-sol", runner.fake.modelOverride);
-        assertEquals("ultra", runner.fake.thinkingOverride);
+        assertEquals("max", runner.fake.thinkingOverride);
     }
 
     @Test
@@ -189,7 +252,7 @@ class DirectSubagentRunnerStdioTest {
                 .systemPrompt("Use the explicit role.")
                 .agentDefaults(Map.of(
                         "codex", new RoleAgentDefaults(
-                                "gpt-5.6-sol", "ultra", Map.of())))
+                                "gpt-5.6-sol", "max", Map.of())))
                 .build();
         RoleManager roleManager = new TestRoleManager(
                 tempDir, Map.of("assigned", assigned, "explicit", explicit), "assigned");
@@ -202,7 +265,7 @@ class DirectSubagentRunnerStdioTest {
         assertTrue(runner.fake.message.contains("# Role: Explicit Role"));
         assertFalse(runner.fake.message.contains("# Role: Assigned Role"));
         assertEquals("gpt-5.6-sol", runner.fake.modelOverride);
-        assertEquals("ultra", runner.fake.thinkingOverride);
+        assertEquals("max", runner.fake.thinkingOverride);
     }
 
     @Test

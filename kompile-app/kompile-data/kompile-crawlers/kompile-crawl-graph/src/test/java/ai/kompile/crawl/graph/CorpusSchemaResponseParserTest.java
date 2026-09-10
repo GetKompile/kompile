@@ -85,10 +85,12 @@ class CorpusSchemaResponseParserTest {
         Map<String, Object> arguments = Map.of(
                 "nodeTypes", List.of(
                         Map.of("label", "person", "description", "A person."),
-                        Map.of("label", "company record", "description", "A company.")),
+                        Map.of("label", "company record", "description", "A company.",
+                                "parentType", "organization")),
                 "relationshipTypes", List.of(Map.of(
                         "type", "founded-by",
-                        "description", "A person founded a company.")),
+                        "description", "A person founded a company.",
+                        "connectionFamily", "attribution")),
                 "patterns", List.of(Map.of(
                         "sourceType", "person",
                         "relationshipType", "founded-by",
@@ -101,8 +103,24 @@ class CorpusSchemaResponseParserTest {
         assertEquals(List.of("PERSON", "COMPANY_RECORD"),
                 result.schema().getNodeTypes().stream().map(type -> type.getLabel()).toList());
         assertEquals("FOUNDED_BY", result.schema().getRelationshipTypes().get(0).getType());
+        assertEquals("ORGANIZATION", result.schema().getNodeTypes().get(1).getParentType());
+        assertEquals("ATTRIBUTION",
+                result.schema().getRelationshipTypes().get(0).getConnectionFamily());
         assertEquals(List.of("(PERSON)-[:FOUNDED_BY]->(COMPANY_RECORD)"),
                 result.schema().getPatterns());
+    }
+
+    @Test
+    void rejectsDuplicateLabelsWithConflictingHierarchyClassifications() {
+        CorpusSchemaResponseParser.ParseResult result = CorpusSchemaResponseParser.parse(Map.of(
+                "nodeTypes", List.of(
+                        Map.of("label", "employee", "parentType", "person"),
+                        Map.of("label", "EMPLOYEE", "parentType", "organization")),
+                "relationshipTypes", List.of(),
+                "patterns", List.of()));
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().get(0).contains("conflicting parentType"));
     }
 
     @Test

@@ -264,7 +264,7 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
         assertTrue(result.reason().contains("cautionary domain evidence"));
         AdmissionEvidence caution = result.evidenceTrace()
                 .itemsOfKind(AdmissionEvidence.Kind.CAUTION).get(0);
-        assertEquals("fpna.status.not-usable", caution.ruleId());
+        assertEquals("canonical.status.not-usable", caution.ruleId());
         assertEquals(List.of("HAS_STATUS"), caution.predicatePath());
         assertEquals(List.of("sheet-summary", "status-do-not-use"), caution.entityPath());
     }
@@ -283,7 +283,7 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
 
         AdmissionEvidence affirming = result.evidenceTrace()
                 .itemsOfKind(AdmissionEvidence.Kind.AFFIRMING_RELATION).get(0);
-        assertEquals("fpna.status.authoritative", affirming.ruleId());
+        assertEquals("canonical.status.authoritative", affirming.ruleId());
     }
 
     @Test
@@ -298,9 +298,9 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
                 graph, "status-do-not-use", List.of(candidate("status-do-not-use")));
 
         assertTrue(result.evidenceTrace().items().stream()
-                .noneMatch(item -> "fpna.status.not-usable".equals(item.ruleId())));
+                .noneMatch(item -> "canonical.status.not-usable".equals(item.ruleId())));
         assertTrue(result.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.status.assignment".equals(item.ruleId())
+                .anyMatch(item -> "canonical.status.assignment".equals(item.ruleId())
                         && item.kind() == AdmissionEvidence.Kind.CONTEXT_RELATION));
     }
 
@@ -321,16 +321,16 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
                 graph, "version-v1", List.of(candidate("version-v1")));
 
         assertTrue(current.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.version.supersedes".equals(item.ruleId())
+                .anyMatch(item -> "canonical.version.supersedes".equals(item.ruleId())
                         && item.kind() == AdmissionEvidence.Kind.AFFIRMING_RELATION));
         assertTrue(current.evidenceTrace().items().stream()
-                .noneMatch(item -> "fpna.status.not-usable".equals(item.ruleId())),
+                .noneMatch(item -> "canonical.status.not-usable".equals(item.ruleId())),
                 "a warning on the superseded version must not leak onto the current version");
         assertTrue(obsolete.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.version.superseded".equals(item.ruleId())
+                .anyMatch(item -> "canonical.version.superseded".equals(item.ruleId())
                         && item.kind() == AdmissionEvidence.Kind.CAUTION));
         assertTrue(obsolete.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.status.not-usable".equals(item.ruleId())));
+                .anyMatch(item -> "canonical.status.not-usable".equals(item.ruleId())));
     }
 
     @Test
@@ -347,13 +347,13 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
                 graph, "action", List.of(candidate("action")));
 
         assertTrue(policy.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.requires-action".equals(item.ruleId())
+                .anyMatch(item -> "canonical.requires-action".equals(item.ruleId())
                         && item.kind() == AdmissionEvidence.Kind.REQUIREMENT));
         assertTrue(action.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.requires-action.target".equals(item.ruleId())
+                .anyMatch(item -> "canonical.requires-action.target".equals(item.ruleId())
                         && item.kind() == AdmissionEvidence.Kind.CONTEXT_RELATION));
         assertTrue(action.evidenceTrace().items().stream()
-                .noneMatch(item -> "fpna.requires-action".equals(item.ruleId())));
+                .noneMatch(item -> "canonical.requires-action".equals(item.ruleId())));
     }
 
     @Test
@@ -370,10 +370,10 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
                 graph, "policy", List.of(candidate("policy")));
 
         assertTrue(pattern.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.governed-by".equals(item.ruleId())
+                .anyMatch(item -> "canonical.governed-by".equals(item.ruleId())
                         && item.summary().contains("is governed by")));
         assertTrue(policy.evidenceTrace().items().stream()
-                .anyMatch(item -> "fpna.governs".equals(item.ruleId())
+                .anyMatch(item -> "canonical.governs".equals(item.ruleId())
                         && item.summary().contains("governs the related entity")));
     }
 
@@ -414,7 +414,7 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
                 graph, "workbook-apac", List.of(candidate("workbook-apac")));
 
         AdmissionEvidence warning = result.evidenceTrace().items().stream()
-                .filter(item -> "fpna.status.not-usable".equals(item.ruleId()))
+                .filter(item -> "canonical.status.not-usable".equals(item.ruleId()))
                 .findFirst()
                 .orElseThrow();
         assertEquals(List.of("workbook-apac", "sheet-summary", "status-do-not-use"),
@@ -422,14 +422,14 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
         assertEquals(List.of("CONTAINS_SHEET", "HAS_STATUS"), warning.predicatePath());
         String promptContext = result.evidenceTrace().toPromptContext();
         assertTrue(promptContext.startsWith("graph_evidence examined_paths="));
-        assertTrue(promptContext.contains("kind=CAUTION rule=fpna.status.not-usable"));
+        assertTrue(promptContext.contains("kind=CAUTION rule=canonical.status.not-usable"));
         assertTrue(promptContext.contains("predicates=CONTAINS_SHEET>HAS_STATUS"));
         assertTrue(promptContext.contains(
                 "entities=workbook-apac>sheet-summary>status-do-not-use"));
         String compactContext = result.evidenceTrace().toCompactPromptContext();
         assertTrue(compactContext.startsWith("graph_evidence_compact examined_paths="));
         assertTrue(compactContext.contains(
-                "CAUTION|fpna.status.not-usable|s=1.0000"
+                "CAUTION|canonical.status.not-usable|s=1.0000"
                         + "|e=workbook-apac>sheet-summary>status-do-not-use"
                         + "|p=CONTAINS_SHEET>HAS_STATUS"));
         assertFalse(compactContext.contains("|summary="));
@@ -437,7 +437,7 @@ class HybridGraphAdmissionEvaluatorMetamorphicTest {
         String limitedContext = result.evidenceTrace().toCompactPromptContext(3);
         assertTrue(limitedContext.contains("shown=3 total="));
         assertTrue(limitedContext.contains("truncated=true"));
-        assertTrue(limitedContext.contains("CAUTION|fpna.status.not-usable"));
+        assertTrue(limitedContext.contains("CAUTION|canonical.status.not-usable"));
         assertEquals(4, limitedContext.lines().count());
     }
 

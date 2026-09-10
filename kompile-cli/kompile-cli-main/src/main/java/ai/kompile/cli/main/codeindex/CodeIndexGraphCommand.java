@@ -124,7 +124,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── export ────────���──────────────────────────────────────────────────────
+    // ── export ───────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "export",
             description = "Export the code graph as SVG, HTML, or JSON")
@@ -172,7 +172,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ���─ symbol ─────────���─────────────────────────────────────────────────────
+    // ── symbol ───────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "symbol",
             description = "Look up a symbol by FQN and show its graph connections")
@@ -247,7 +247,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── callers ───────────��───────────────────────────���──────────────────────
+    // ── callers ──────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "callers",
             description = "Find functions/methods that call a given symbol")
@@ -300,7 +300,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── relations ───────────��────────────────────────────────────────────────
+    // ── relations ────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "relations",
             description = "Show code relations for a symbol (extends, implements, calls, etc.)")
@@ -367,7 +367,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── file ──────���──────────────────────���───────────────────────────────────
+    // ── file ─────────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "file",
             description = "Show all code symbols in a file and their graph connections")
@@ -427,7 +427,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── search ───────��───────────────────────────────────────────────────────
+    // ── search ───────────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "search",
             description = "Search the code graph (entities + knowledge graph nodes)")
@@ -558,7 +558,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
         }
     }
 
-    // ── connectivity ─────��───────────────────────────────────────────────────
+    // ── connectivity ─────────────────────────────────────────────────────────
 
     @CommandLine.Command(name = "connectivity",
             description = "Ensure all cross-reference edges are created in the graph")
@@ -1067,7 +1067,7 @@ public class CodeIndexGraphCommand implements Callable<Integer> {
     // ── test-coverage ───────────────────────────────────────────────────
 
     @CommandLine.Command(name = "test-coverage",
-            description = "Test coverage report: tested/untested methods, coverage %, frameworks")
+            description = "Test coverage report: tested/untested methods, coverage %%, frameworks")
     static class TestCoverageCmd implements Callable<Integer> {
         @CommandLine.Mixin private AppClientMixin app;
 

@@ -124,12 +124,12 @@ public final class Node2VecLearner implements EmbeddingLearner {
         AliasTable negSampler = AliasTable.build(degreeWeights);
 
         // ─── 5. Construct the SameDiff trainer (seeds ND4J + matrix init) ────────
-        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+        try (SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
                 entityIds,
                 config.dim(),
                 config.negSamples(),
                 config.learningRate(),
-                config.seed());
+                config.seed())) {
 
         // ─── 6. Build the walk generator ─────────────────────────────────────────
         Node2VecWalk walker = new Node2VecWalk(graph, adjacency, config.p(), config.q());
@@ -189,7 +189,9 @@ public final class Node2VecLearner implements EmbeddingLearner {
         }
 
         // ─── 9. Build EmbeddingTable from the trained SameDiff matrices ───────────
+        // EmbeddingTable copies the entity matrix before try-with-resources closes the trainer.
         return new EmbeddingTable(entityIds, trainer);
+        }
     }
 
     // ── Helper ───────────────────────────────────────────────────────────────────

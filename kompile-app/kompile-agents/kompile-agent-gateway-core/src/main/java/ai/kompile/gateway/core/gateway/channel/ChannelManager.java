@@ -26,14 +26,34 @@ public class ChannelManager {
     private final Map<String, ChannelAdapter> adapters = new ConcurrentHashMap<>();
 
     public void registerAdapter(ChannelAdapter adapter) {
-        adapters.put(adapter.getChannelName(), adapter);
-        log.info("Registered channel adapter: {}", adapter.getChannelName());
+        registerAdapter(adapter.getChannelName(), adapter);
     }
 
-    public void unregisterAdapter(String channelName) {
+    /** Register one runtime by its persistent connection name. */
+    public synchronized void registerAdapter(String connectionName, ChannelAdapter adapter) {
+        Objects.requireNonNull(connectionName, "connectionName");
+        Objects.requireNonNull(adapter, "adapter");
+        ChannelAdapter previous = adapters.get(connectionName);
+        if (previous != null && previous != adapter) {
+            try {
+                previous.stop();
+            } catch (RuntimeException e) {
+                log.warn("Failed to stop previous adapter for {}: {}", connectionName, e.getMessage());
+            }
+        }
+        adapters.put(connectionName, adapter);
+        log.info("Registered {} channel adapter for connection {}",
+                adapter.getChannelName(), connectionName);
+    }
+
+    public synchronized void unregisterAdapter(String channelName) {
         ChannelAdapter adapter = adapters.remove(channelName);
         if (adapter != null) {
-            adapter.stop();
+            try {
+                adapter.stop();
+            } catch (RuntimeException e) {
+                log.warn("Failed to stop adapter for {}: {}", channelName, e.getMessage());
+            }
             log.info("Unregistered channel adapter: {}", channelName);
         }
     }
@@ -73,7 +93,36 @@ public class ChannelManager {
     }
 
     public Optional<ChannelAdapter> getAdapter(String channelName) {
-        return Optional.ofNullable(adapters.get(channelName));
+        ChannelAdapter exact = adapters.get(channelName);
+        if (exact != null) {
+            return Optional.of(exact);
+        }
+        // Provider ids remain convenient when exactly one named connection uses that provider.
+        List<ChannelAdapter> providerMatches = adapters.values().stream()
+                .filter(adapter -> adapter.getChannelName().equals(channelName))
+                .toList();
+        return providerMatches.size() == 1 ? Optional.of(providerMatches.get(0)) : Optional.empty();
+    }
+
+    /** Exact named lookup; unlike {@link #getAdapter(String)}, never falls back to provider id. */
+    public Optional<ChannelAdapter> getConnectionAdapter(String connectionName) {
+        return Optional.ofNullable(adapters.get(connectionName));
+    }
+
+    public List<ChannelAdapter> getAdaptersByProvider(String providerId) {
+        return adapters.values().stream()
+                .filter(adapter -> adapter.getChannelName().equals(providerId))
+                .toList();
+    }
+
+    /** Named provider runtimes for ingress routers that must preserve connection ownership. */
+    public Map<String, ChannelAdapter> getConnectionAdaptersByProvider(String providerId) {
+        Map<String, ChannelAdapter> matches = new LinkedHashMap<>();
+        adapters.entrySet().stream()
+                .filter(entry -> entry.getValue().getChannelName().equals(providerId))
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> matches.put(entry.getKey(), entry.getValue()));
+        return Map.copyOf(matches);
     }
 
     public List<ChannelAdapter> getAllAdapters() {
@@ -85,14 +134,15 @@ public class ChannelManager {
     }
 
     public List<ChannelStatus> getStatus() {
-        return adapters.values().stream()
-                .map(this::toStatus)
+        return adapters.entrySet().stream()
+                .map(entry -> toStatus(entry.getKey(), entry.getValue()))
+                .sorted(Comparator.comparing(ChannelStatus::channelName))
                 .toList();
     }
 
-    private ChannelStatus toStatus(ChannelAdapter adapter) {
+    private ChannelStatus toStatus(String connectionName, ChannelAdapter adapter) {
         return new ChannelStatus(
-                adapter.getChannelName(),
+                connectionName,
                 adapter.isRunning(),
                 adapter.getAdapterConfig()
         );

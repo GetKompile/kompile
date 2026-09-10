@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
@@ -15,6 +16,7 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.sun.net.httpserver.HttpServer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -25,7 +27,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.BufferedReader;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +43,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -73,6 +80,31 @@ class LocalProjectCrawlBackendTest {
     }
 
     @Test
+    void archiveLearningReportsNonArchivableTargetWithoutDisablingRun() throws Exception {
+        Files.writeString(projectRoot.resolve("archive-alias.md"),
+                "# Archive alias\nThe local archive warning must remain accurate.\n",
+                StandardCharsets.UTF_8);
+
+        ObjectNode request = mapper.createObjectNode()
+                .put("dryRun", true)
+                .put("async", false);
+        request.putArray("documents").addObject().put("path", "archive-alias.md");
+        request.putObject("knowledgeBase").put("id", 45);
+        request.putArray("archivedSteps").add("LEARNING");
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper)
+                .execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        Object rawWarnings = result.getMetadata().get("warnings");
+        assertTrue(rawWarnings instanceof List<?>);
+        String warnings = rawWarnings.toString();
+        assertTrue(warnings.contains("ENRICHMENT"), warnings);
+        assertTrue(warnings.contains("not archivable locally"), warnings);
+        assertFalse(warnings.contains("ignored distributed-only configuration"), warnings);
+    }
+
+    @Test
     void emptyRequestBootstrapsAndSearchesTheCurrentFolder() throws Exception {
         Files.writeString(projectRoot.resolve("folder-note.md"),
                 "The folder bootstrap contains the silver osprey marker.\n",
@@ -81,6 +113,11 @@ class LocalProjectCrawlBackendTest {
         CrawlDocumentsTool crawl = new CrawlDocumentsTool((String) null, mapper);
         assertFalse(crawl.parameterSchema().has("anyOf"),
                 "The local folder bootstrap must not require documents or codeProjects selectors.");
+        JsonNode runtimeSchema = crawl.parameterSchema().path("properties")
+                .path("modelRuntime").path("properties");
+        assertFalse(runtimeSchema.has("autoBootstrap"));
+        assertFalse(runtimeSchema.has("stagingExecutable"));
+        assertFalse(runtimeSchema.has("stagingJar"));
 
         ToolResult bootstrapped = crawl.execute(mapper.createObjectNode().put("async", false), context);
 
@@ -125,6 +162,38 @@ class LocalProjectCrawlBackendTest {
         ToolResult verified = new AskGraphVerifyTool((String) null, mapper)
                 .execute(verification, context);
         assertFalse(verified.isError(), verified.getOutput());
+    }
+
+    @Test
+    void folderBootstrapDoesNotReuseMixedSummaryMetadataAsExecutableComponents()
+            throws Exception {
+        Files.writeString(projectRoot.resolve("legacy-note.md"),
+                "The legacy aggregate crawl contains the bronze petrel marker.\n",
+                StandardCharsets.UTF_8);
+        ToolResult initial = new CrawlDocumentsTool((String) null, mapper)
+                .execute(mapper.createObjectNode().put("async", false), context);
+        assertFalse(initial.isError(), initial.getOutput());
+
+        String knowledgeBase = (String) initial.getMetadata().get("knowledgeBase");
+        Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
+        Files.delete(crawl.resolve(LocalProjectGraphBackend.GRAPH_FILE));
+        Files.delete(crawl.resolve("mcp-request.json"));
+        ObjectNode legacySummary = mapper.createObjectNode()
+                .put("profileId", knowledgeBase)
+                .put("name", "Legacy aggregate crawl")
+                .put("status", "COMPLETED")
+                .put("loader", "mixed")
+                .put("chunker", "mixed");
+        legacySummary.putArray("sources").add(projectRoot.toString());
+        mapper.writerWithDefaultPrettyPrinter().writeValue(
+                crawl.resolve("crawl-result.json").toFile(), legacySummary);
+
+        ToolResult bootstrapped = new LocalProjectCrawlBackend(mapper)
+                .ensureFolderKnowledgeBase(context);
+
+        assertFalse(bootstrapped.isError(), bootstrapped.getOutput());
+        assertTrue(Files.isRegularFile(
+                crawl.resolve(LocalProjectGraphBackend.GRAPH_FILE)));
     }
 
     @Test
@@ -288,6 +357,62 @@ class LocalProjectCrawlBackendTest {
         assertFalse(statusResult.isError(), statusResult.getOutput());
         assertEquals("project-local", statusResult.getMetadata().get("backend"));
         assertTrue(statusResult.getOutput().contains("\"documentCount\" : 2"));
+    }
+
+    @Test
+    void materializesLocatorFreeExternalSourcesWithoutPathOrUrl() throws Exception {
+        // Locator-free identity must pass the exactly-one-of path/url gate with no path or
+        // url at all. GDRIVE with fileIds metadata is a fully offline example: dry-run must
+        // reach pipeline preview instead of the locator error.
+        ObjectNode request = mapper.createObjectNode().put("async", false).put("dryRun", true);
+        request.putObject("knowledgeBase").put("name", "locator-free");
+        ObjectNode source = request.putArray("documents").addObject();
+        source.put("sourceType", "GDRIVE");
+        source.putObject("properties").put("accessToken", "test-token").put("fileIds", "f-1");
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertFalse(result.getOutput().contains("exactly one of path or url"), result.getOutput());
+        int jsonStart = result.getOutput().indexOf('{');
+        assertTrue(jsonStart >= 0, result.getOutput());
+        JsonNode preview = mapper.readTree(result.getOutput().substring(jsonStart));
+        assertEquals("DRY_RUN", preview.path("status").asText(null));
+    }
+
+    @Test
+    void materializesTypedConfluenceExportsLocallyWithoutPersistingCredentials() throws Exception {
+        Path export = Files.createDirectories(projectRoot.resolve("confluence-export"));
+        Files.writeString(export.resolve("roadmap.html"),
+                "<html><head><title>Roadmap</title></head><body>local-confluence-puffin-marker</body></html>",
+                StandardCharsets.UTF_8);
+        ObjectNode request = mapper.createObjectNode().put("async", false);
+        request.putObject("knowledgeBase").put("name", "external-local");
+        ObjectNode source = request.putArray("documents").addObject();
+        source.put("path", export.toAbsolutePath().toString());
+        source.put("sourceType", "CONFLUENCE");
+        source.putObject("properties")
+                .put("apiToken", "must-not-persist")
+                .put("spaceKey", "LOCAL");
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        String knowledgeBase = (String) result.getMetadata().get("knowledgeBase");
+        Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
+        String persisted = Files.readString(crawl.resolve("mcp-request.json"));
+        assertFalse(persisted.contains("must-not-persist"), persisted);
+        assertTrue(persisted.contains("externalSourceType"), persisted);
+        String documents = Files.readString(crawl.resolve("documents.jsonl"));
+        assertTrue(documents.contains("confluence.exportPath"), documents);
+        assertFalse(documents.contains("must-not-persist"), documents);
+        ObjectNode searchParams = mapper.createObjectNode()
+                .put("query", "local-confluence-puffin-marker")
+                .put("knowledgeBase", knowledgeBase);
+        ToolResult search = new KnowledgeSearchCliTool((String) null, mapper)
+                .execute(searchParams, context);
+        assertFalse(search.isError(), search.getOutput());
+        assertTrue(search.getOutput().contains("local-confluence-puffin-marker"), search.getOutput());
     }
 
     @Test
@@ -500,6 +625,98 @@ class LocalProjectCrawlBackendTest {
         assertEquals("vlm-ocr-pdf", document.path("pipelineId").asText());
         assertEquals("VLM", document.path("pipelineType").asText());
         assertTrue(chunk.path("text").asText().contains("WAILING CAVERNS"));
+    }
+
+    @Test
+    void remoteChatVlmRunsThroughCrawlDocumentsAndPersistsSearchableOutput() throws Exception {
+        AtomicReference<JsonNode> captured = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            captured.set(mapper.readTree(exchange.getRequestBody()));
+            String body = "data: {\"choices\":[{\"delta\":{\"content\":"
+                    + mapper.writeValueAsString("# Remote vision\n\nremote-chat-ibis-marker")
+                    + "},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream response = exchange.getResponseBody()) {
+                response.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            new ChatConfig("custom", null, "remote-vision-model",
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/v1")
+                    .saveProject(projectRoot);
+            Path imagePath = projectRoot.resolve("remote-image.png");
+            BufferedImage image = new BufferedImage(8, 8, BufferedImage.TYPE_INT_RGB);
+            assertTrue(ImageIO.write(image, "png", imagePath.toFile()));
+            image.flush();
+
+            ObjectNode request = mapper.createObjectNode().put("async", false);
+            request.putObject("knowledgeBase").put("name", "remote-chat-vlm");
+            request.putArray("documents").addObject()
+                    .put("path", imagePath.toString()).put("pipelineId", "remote-vlm");
+            ObjectNode pipeline = request.putArray("pipelines").addObject()
+                    .put("pipelineId", "remote-vlm").put("pipelineType", "VLM")
+                    .put("loaderName", "auto").put("chunkerName", "no-op");
+            pipeline.putObject("processor").put("type", "CHAT_MODEL");
+
+            ToolResult result = new CrawlDocumentsTool((String) null, mapper)
+                    .execute(request, context);
+
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals("COMPLETED", result.getMetadata().get("status"));
+            Path crawl = projectRoot.resolve("data/crawls/remote-chat-vlm");
+            assertTrue(Files.readString(crawl.resolve("chunks.jsonl"))
+                    .contains("remote-chat-ibis-marker"));
+            JsonNode persistedDocument = mapper.readTree(
+                    Files.readAllLines(crawl.resolve("documents.jsonl")).get(0));
+            assertEquals("remote-vlm", persistedDocument.path("pipelineId").asText());
+            assertEquals("VLM", persistedDocument.path("pipelineType").asText());
+
+            JsonNode userContent = null;
+            for (JsonNode message : captured.get().path("messages")) {
+                if ("user".equals(message.path("role").asText())) {
+                    userContent = message.path("content");
+                    break;
+                }
+            }
+            assertTrue(userContent != null && userContent.isArray(), String.valueOf(captured.get()));
+            assertEquals("image_url", userContent.get(0).path("type").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void remoteChatDryRunResolvesProviderWithoutARequestOrLocalArtifact() throws Exception {
+        new ChatConfig("custom", null, "remote-dry-run-model", "http://127.0.0.1:1/v1")
+                .saveProject(projectRoot);
+        Path imagePath = projectRoot.resolve("remote-dry-run.png");
+        BufferedImage image = new BufferedImage(4, 4, BufferedImage.TYPE_INT_RGB);
+        assertTrue(ImageIO.write(image, "png", imagePath.toFile()));
+        image.flush();
+
+        ObjectNode request = mapper.createObjectNode().put("async", false).put("dryRun", true);
+        request.putObject("knowledgeBase").put("name", "remote-chat-preview");
+        request.putArray("documents").addObject()
+                .put("path", imagePath.toString()).put("pipelineId", "remote-vlm");
+        request.putArray("pipelines").addObject()
+                .put("pipelineId", "remote-vlm")
+                .put("pipelineType", "VLM")
+                .putObject("processor").put("type", "CHAT_MODEL");
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("\"execution\" : \"CHAT_MODEL\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"provider\" : \"custom\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"credentialsPersistedInCrawl\" : false"),
+                result.getOutput());
+        assertFalse(result.getOutput().contains("modelPath"), result.getOutput());
+        assertFalse(Files.exists(projectRoot.resolve("data/crawls/remote-chat-preview")));
     }
 
     @Test

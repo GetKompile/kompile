@@ -57,7 +57,14 @@ public final class PipelineRuntimeSupervisor {
         boolean cancel(Duration timeout);
     }
 
-    private record SessionRuntime(PipelineRuntimeSession session) implements ManagedRuntime {
+    private static final class SessionRuntime implements ManagedRuntime {
+        private final PipelineRuntimeSession session;
+        private volatile String watchdogId;
+
+        private SessionRuntime(PipelineRuntimeSession session) {
+            this.session = session;
+        }
+
         @Override
         public RunningExecution start(Map<String, Object> input) throws Exception {
             return start(input, null);
@@ -87,11 +94,29 @@ public final class PipelineRuntimeSupervisor {
 
         @Override
         public long pid() {
-            return session.pid();
+            long pid = session.pid();
+            registerWatchdog(pid);
+            return pid;
+        }
+
+        /** Lazy: the pid is only knowable once the child has actually spawned. */
+        private void registerWatchdog(long pid) {
+            if (watchdogId == null && pid > 0) {
+                synchronized (this) {
+                    if (watchdogId == null) {
+                        watchdogId = LocalSubprocessWatchdog.get().register(
+                                "pipeline-runtime-" + pid, pid, "pipeline-runtime",
+                                "pooled unified pipeline runtime child");
+                    }
+                }
+            }
         }
 
         @Override
         public void close() {
+            if (watchdogId != null) {
+                LocalSubprocessWatchdog.get().deregister(watchdogId);
+            }
             session.close();
         }
     }

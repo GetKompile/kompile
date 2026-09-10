@@ -99,6 +99,7 @@ public class ProjectRestorationService {
         Path root = requireProjectDirectory(backend.currentProjectRoot());
         CatalogState catalog = loadCatalog(root);
         Map<String, FactSheet> sheetsByName = runtimeSheetsByName();
+        Map<String, FactSheet> sheetsByPortableId = runtimeSheetsByPortableId();
         List<String> warnings = new ArrayList<>();
         int plannedFactSheets = 0;
         int restoredFactSheets = 0;
@@ -107,41 +108,70 @@ public class ProjectRestorationService {
 
         for (KompileProjectFactSheet portable : catalog.factSheets()) {
             String name = trimToNull(portable.getName());
+            String portableId = canonicalPortableId(portable.getPortableId());
             if (name == null) {
                 warnings.add("Skipped a fact sheet catalog entry without a name.");
                 skipped++;
                 continue;
             }
-            if (sheetsByName.containsKey(name)) continue;
+            FactSheet identityMatch = portableId == null ? null : sheetsByPortableId.get(portableId);
+            FactSheet nameMatch = sheetsByName.get(name);
+            if (identityMatch != null && nameMatch != null
+                    && !Objects.equals(identityMatch.getId(), nameMatch.getId())) {
+                warnings.add("Skipped fact sheet '" + name
+                        + "' because its portable identity and name resolve to different runtime sheets.");
+                skipped++;
+                continue;
+            }
+            if (identityMatch != null) {
+                sheetsByName.put(name, identityMatch);
+                continue;
+            }
+            if (nameMatch != null && portableId == null) continue;
+            if (nameMatch != null && trimToNull(nameMatch.getPortableId()) != null
+                    && !portableId.equals(nameMatch.getPortableId())) {
+                warnings.add("Skipped fact sheet '" + name
+                        + "' because the runtime sheet has a different portable identity.");
+                skipped++;
+                continue;
+            }
             plannedFactSheets++;
             plannedSheetNames.add(name);
             if (dryRun) continue;
             try {
-                FactSheet created = factSheets.createSheet(
-                        name,
-                        portable.getDescription(),
-                        portable.getColor(),
-                        portable.getIcon(),
-                        portableRelativePath(root, portable.getVectorStorePath()),
-                        portableRelativePath(root, portable.getKeywordIndexPath()),
-                        portable.getEmbeddingModel(),
-                        portable.getEmbeddingModelSource(),
-                        null,
-                        portable.isRerankingEnabled(),
-                        portable.getRerankerType(),
-                        null,
-                        null,
-                        null,
-                        null,
-                        null);
+                FactSheet created = nameMatch != null ? nameMatch : factSheets.createSheet(
+                            name,
+                            portable.getDescription(),
+                            portable.getColor(),
+                            portable.getIcon(),
+                            portableRelativePath(root, portable.getVectorStorePath()),
+                            portableRelativePath(root, portable.getKeywordIndexPath()),
+                            portable.getEmbeddingModel(),
+                            portable.getEmbeddingModelSource(),
+                            null,
+                            portable.isRerankingEnabled(),
+                            portable.getRerankerType(),
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
                 if (created != null) {
+                    if (portableId != null) {
+                        created = factSheets.assignPortableId(created, portableId);
+                    }
                     created.setEnableGraphBuilding(true);
                     created.setGraphBuilderType(portable.getGraphBuilderType());
                     created.setGraphStorageType(portable.getGraphStorageType());
                     sheetsByName.put(name, created);
+                    if (portableId != null) sheetsByPortableId.put(portableId, created);
                 }
                 restoredFactSheets++;
             } catch (RuntimeException failure) {
+                if (portableId != null) {
+                    throw new IllegalStateException(
+                            "Could not restore portable fact sheet '" + name + "'", failure);
+                }
                 warnings.add("Could not restore fact sheet '" + name + "': " + failure.getMessage());
                 skipped++;
             }
@@ -149,6 +179,8 @@ public class ProjectRestorationService {
 
         if (!dryRun) {
             sheetsByName = runtimeSheetsByName();
+            sheetsByPortableId = runtimeSheetsByPortableId();
+            addPortableCatalogAliases(catalog.factSheets(), sheetsByName, sheetsByPortableId);
         }
 
         List<NoteSyncConnection> runtimeConnections = connections.findAll();
@@ -230,13 +262,20 @@ public class ProjectRestorationService {
         Path normalized = requireProjectDirectory(root);
         CatalogState catalog = loadCatalog(normalized);
         Map<String, FactSheet> sheetsByName = active ? runtimeSheetsByName() : Map.of();
+        Map<String, FactSheet> sheetsByPortableId = active ? runtimeSheetsByPortableId() : Map.of();
+        if (active) {
+            addPortableCatalogAliases(catalog.factSheets(), sheetsByName, sheetsByPortableId);
+        }
         List<NoteSyncConnection> runtimeConnections =
                 active ? connections.findAll() : List.of();
         List<RestorationItem> items = new ArrayList<>();
 
         for (KompileProjectFactSheet portable : catalog.factSheets()) {
             String name = trimToNull(portable.getName());
-            boolean restored = active && name != null && sheetsByName.containsKey(name);
+            String portableId = canonicalPortableId(portable.getPortableId());
+            boolean restored = active && (portableId != null
+                    ? sheetsByPortableId.containsKey(portableId)
+                    : name != null && sheetsByName.containsKey(name));
             items.add(new RestorationItem(
                     "fact-sheet-" + stablePart(name),
                     "FACT_SHEET",
@@ -464,6 +503,40 @@ public class ProjectRestorationService {
                         sheet -> sheet,
                         (first, ignored) -> first,
                         LinkedHashMap::new));
+    }
+
+    private Map<String, FactSheet> runtimeSheetsByPortableId() {
+        return factSheets.getAllSheets().stream()
+                .filter(sheet -> trimToNull(sheet.getPortableId()) != null)
+                .collect(Collectors.toMap(
+                        sheet -> canonicalPortableId(sheet.getPortableId()),
+                        sheet -> sheet,
+                        (first, ignored) -> first,
+                        LinkedHashMap::new));
+    }
+
+    private static void addPortableCatalogAliases(
+            List<KompileProjectFactSheet> catalog,
+            Map<String, FactSheet> sheetsByName,
+            Map<String, FactSheet> sheetsByPortableId) {
+        for (KompileProjectFactSheet portable : catalog) {
+            String portableId = canonicalPortableId(portable.getPortableId());
+            String name = trimToNull(portable.getName());
+            if (portableId == null || name == null) continue;
+            FactSheet identityMatch = sheetsByPortableId.get(portableId);
+            if (identityMatch == null) continue;
+            FactSheet previous = sheetsByName.putIfAbsent(name, identityMatch);
+            if (previous != null && !Objects.equals(previous.getId(), identityMatch.getId())) {
+                throw new IllegalArgumentException(
+                        "Portable fact-sheet identity and catalog name resolve to different runtime sheets: "
+                                + name);
+            }
+        }
+    }
+
+    private static String canonicalPortableId(String value) {
+        String normalized = trimToNull(value);
+        return normalized == null ? null : FactSheetService.canonicalPortableId(normalized);
     }
 
     private NoteSyncConnection findRuntimeConnection(

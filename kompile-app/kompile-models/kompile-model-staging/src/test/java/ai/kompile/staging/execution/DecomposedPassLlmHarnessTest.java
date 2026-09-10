@@ -110,8 +110,8 @@ class DecomposedPassLlmHarnessTest {
     private static final int MAX_OUTPUT_TOKENS = Math.max(1,
             Math.min(Math.min(1024, CONTEXT_TOKENS), Math.max(128, CONTEXT_TOKENS / 2)));
 
-    private static final String CHUNK_ID = "chunk-fpna-1";
-    private static final String DOCUMENT_ID = "doc-fpna-board-minutes";
+    private static final String CHUNK_ID = "chunk-planning-1";
+    private static final String DOCUMENT_ID = "doc-planning-board-minutes";
 
     private static final String SOURCE_TEXT =
             "Acme Corporation hired Jane Chen as CFO in March 2025. "

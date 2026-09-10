@@ -20,13 +20,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
- * Builders for the JSONL event stream emitted by {@code kompile exec --json}.
+ * Builders for the JSONL event stream emitted by {@code kompile exec --json}
+ * and {@code kompile chat --output-format stream-json}.
  *
  * <p>Each event is a single-line JSON object with a {@code "type"} discriminator:
  * <ul>
- *   <li>{@code session} — emitted once at start: {@code session_id}, {@code model}, {@code cwd}</li>
+ *   <li>{@code session} — emitted once at start with effective non-secret configuration</li>
  *   <li>{@code text}    — a streamed assistant text chunk: {@code text}</li>
- *   <li>{@code tool}    — a completed tool call: {@code name}, {@code ok}, {@code ms}</li>
+ *   <li>{@code tool_start}/{@code tool} — tool lifecycle records</li>
+ *   <li>{@code usage}   — provider-reported token counts</li>
  *   <li>{@code result}  — emitted once at end: full {@code text}, {@code session_id}, {@code tools}, {@code exit}</li>
  *   <li>{@code error}   — a fatal error: {@code message}</li>
  * </ul>
@@ -98,6 +100,29 @@ public final class ExecJsonEvents {
                 n.put("session_id", event.sessionId());
                 if (!event.toolName().isBlank()) n.put("model", event.toolName());
                 if (!event.rawInput().isBlank()) n.put("cwd", event.rawInput());
+                event.metadata().forEach((key, value) -> {
+                    if (key != null && !key.isBlank() && value != null && !value.isBlank()) {
+                        if ("rag".equals(key) || "memory".equals(key)) {
+                            n.put(key, Boolean.parseBoolean(value));
+                        } else {
+                            n.put(key, value);
+                        }
+                    }
+                });
+            }
+            case BACKEND_STARTED -> {
+                n.put("type", "backend");
+                n.put("session_id", event.sessionId());
+                if (!event.toolName().isBlank()) n.put("agent", event.toolName());
+                if (!event.callId().isBlank()) n.put("process_id", event.callId());
+            }
+            case SOURCES -> {
+                n.put("type", "sources");
+                putJson(n, "sources", event.text(), mapper);
+            }
+            case STATS -> {
+                n.put("type", "stats");
+                putJson(n, "stats", event.text(), mapper);
             }
             case ASSISTANT_DELTA -> {
                 n.put("type", "text");
@@ -115,6 +140,13 @@ public final class ExecJsonEvents {
                 n.put("name", event.toolName());
                 n.put("ok", event.ok());
                 n.put("ms", event.durationMs());
+            }
+            case TOKEN_USAGE -> {
+                n.put("type", "usage");
+                putLong(n, "input_tokens", event.metadata().get("input_tokens"));
+                putLong(n, "output_tokens", event.metadata().get("output_tokens"));
+                putLong(n, "cache_read_tokens", event.metadata().get("cache_read_tokens"));
+                putLong(n, "cache_creation_tokens", event.metadata().get("cache_creation_tokens"));
             }
             case RUN_COMPLETED -> {
                 n.put("type", "result");
@@ -142,6 +174,23 @@ public final class ExecJsonEvents {
             return Integer.parseInt(value);
         } catch (RuntimeException ignored) {
             return 0;
+        }
+    }
+
+    private static void putLong(ObjectNode node, String field, String value) {
+        try {
+            node.put(field, Math.max(0L, Long.parseLong(value)));
+        } catch (RuntimeException ignored) {
+            node.put(field, 0L);
+        }
+    }
+
+    private static void putJson(
+            ObjectNode node, String field, String value, ObjectMapper mapper) {
+        try {
+            node.set(field, mapper.readTree(value));
+        } catch (Exception ignored) {
+            node.put(field, value == null ? "" : value);
         }
     }
 

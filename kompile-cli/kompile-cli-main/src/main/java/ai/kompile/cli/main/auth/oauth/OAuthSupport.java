@@ -257,7 +257,14 @@ final class OAuthSupport {
     private static String oauthErrorCode(Response response) {
         try {
             JsonNode body = MAPPER.readTree(response.body());
-            return optionalText(body, "error");
+            String code = optionalText(body, "error");
+            if (code != null) return code;
+            JsonNode error = body == null ? null : body.get("error");
+            if (error != null && error.isObject()) {
+                code = optionalText(error, "code");
+                return code != null ? code : optionalText(error, "type");
+            }
+            return null;
         } catch (Exception ignored) {
             return null;
         }

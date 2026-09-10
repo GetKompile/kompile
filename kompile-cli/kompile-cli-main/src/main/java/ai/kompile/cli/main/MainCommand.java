@@ -29,12 +29,14 @@ import ai.kompile.cli.main.chat.PassthroughCommand;
 import ai.kompile.cli.main.chat.ResumeAllCommand;
 import ai.kompile.cli.main.chat.ResumeCommand;
 import ai.kompile.cli.main.chat.SessionCommand;
+import ai.kompile.cli.main.chat.SessionRestartLauncher;
 import ai.kompile.cli.main.chat.exec.ExecCommand;
 import ai.kompile.cli.main.chat.harness.HarnessCommand;
 import ai.kompile.cli.main.chat.harness.eval.EvalCommand;
 import ai.kompile.cli.main.chat.skill.SkillsCommand;
 import ai.kompile.cli.main.codeindex.CodeIndexCommand;
 import ai.kompile.cli.main.coordination.EditCoordinatorCommand;
+import ai.kompile.cli.main.mcp.McpCommand;
 import ai.kompile.cli.main.mcp.McpStdioCommand;
 import ai.kompile.cli.main.build.BuildMain;
 import ai.kompile.cli.main.build.DeployCommand;
@@ -74,6 +76,7 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "kompile",
         subcommands = {
                 Info.class,
+                UpdateCommand.class,
                 Bootstrap.class,
                 Init.class,
                 ConfigureCommand.class,
@@ -109,6 +112,7 @@ import java.util.concurrent.Callable;
                 KnowledgeCommand.class,
                 KclawCommand.class,
                 // Infrastructure commands
+                McpCommand.class,
                 McpStdioCommand.class,
                 ServeCommand.class,
                 DaemonCommand.class,
@@ -148,13 +152,30 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
+        String[] effectiveArgs;
+        try {
+            // A /restart replacement is a real process, but it must not initialize
+            // libraries, MCP tools, or a second terminal reader until the old owner
+            // has flushed the transcript and completed normal shutdown.
+            effectiveArgs = SessionRestartLauncher.awaitRestartParentAndStrip(args);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("Session restart interrupted while waiting for the previous process to exit.");
+            System.exit(1);
+            return;
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            System.err.println("Session restart failed: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+
         configureStartupLogging();
 
         // The native CLI owns folder-local model subprocesses. Route the embedding child before
         // normal CLI bootstrap so re-executing this binary cannot accidentally enter picocli or
         // contact a model-staging service.
-        if (isEmbeddingSubprocessRequest(args)) {
-            EmbeddingSubprocessMain.main(Arrays.copyOfRange(args, 1, args.length));
+        if (isEmbeddingSubprocessRequest(effectiveArgs)) {
+            EmbeddingSubprocessMain.main(Arrays.copyOfRange(effectiveArgs, 1, effectiveArgs.length));
             return;
         }
 
@@ -177,7 +198,7 @@ public class MainCommand implements Callable<Integer> {
 
         int exitCode;
         try {
-            exitCode = commandLine.execute(args);
+            exitCode = commandLine.execute(effectiveArgs);
         } catch (NoClassDefFoundError e) {
             // Shade plugin classloader can lose picocli inner classes during shutdown
             exitCode = 0;

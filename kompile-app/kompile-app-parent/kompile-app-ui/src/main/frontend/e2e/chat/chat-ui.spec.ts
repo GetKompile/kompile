@@ -7,7 +7,7 @@
  * settings panel, message rendering, and keyboard shortcuts.
  */
 
-import { test, expect, KompileApiMock, triggerAngularCD } from './fixtures/kompile.fixture';
+import { test, expect, KompileApiMock, triggerAngularCD } from '../fixtures/kompile.fixture';
 
 test.describe('Chat UI — Page Load & Welcome', () => {
 
@@ -219,7 +219,7 @@ test.describe('Chat UI — Settings Panel', () => {
 });
 
 
-test.describe('Chat UI — Agent Selection', () => {
+test.describe('Chat UI — Harness Persona Selection', () => {
 
   test.beforeEach(async ({ api, page }) => {
     await api.setupAll();
@@ -230,22 +230,22 @@ test.describe('Chat UI — Agent Selection', () => {
     await expect(page.getByTestId('agent-select')).toBeVisible();
   });
 
-  test('agent selector should have a "Select agent..." placeholder', async ({ page }) => {
+  test('persona selector should have a "Select persona..." placeholder', async ({ page }) => {
     const firstOption = page.getByTestId('agent-select').locator('option').first();
-    await expect(firstOption).toContainText('Select agent');
+    await expect(firstOption).toContainText('Select persona');
   });
 
-  test('should list available agents from mock', async ({ page }) => {
+  test('should list available harness personas from mock', async ({ page }) => {
     const select = page.getByTestId('agent-select');
     // Wait for agents to populate — the Angular service fetches asynchronously
     await expect(select.locator('option')).not.toHaveCount(1, { timeout: 5_000 });
     const options = select.locator('option');
-    // At least the placeholder + 2 mock agents
+    // At least the placeholder + 2 mock personas
     const count = await options.count();
     expect(count).toBeGreaterThanOrEqual(3);
   });
 
-  test('selecting an agent should update the placeholder text', async ({ page }) => {
+  test('selecting a persona should update the input placeholder', async ({ page }) => {
     await page.getByTestId('agent-select').selectOption({ index: 1 });
 
     // After selection, input placeholder should change

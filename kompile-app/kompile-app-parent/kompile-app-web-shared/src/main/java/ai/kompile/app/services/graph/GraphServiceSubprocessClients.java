@@ -44,6 +44,9 @@ import ai.kompile.knowledgegraph.domain.EntityMention;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
+import ai.kompile.knowledgegraph.generation.GraphGenerationContext;
+import ai.kompile.knowledgegraph.generation.GraphGenerationJournal;
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.service.MatrixGraphConstructor;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
@@ -72,6 +75,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Produces {@code @Primary} concrete-class beans for graph services that delegate store/reasoning calls
@@ -171,6 +176,7 @@ public class GraphServiceSubprocessClients {
         protected final GraphMatrixSubprocessLauncher launcher;
         protected final ObjectMapper mapper;
         private volatile HttpClient httpClient;
+        private final Map<String, Boolean> generationProtocolByEndpoint = new ConcurrentHashMap<>();
 
         protected SubprocessRpcBase(String serviceFqcn,
                                     GraphMatrixSubprocessLauncher launcher,
@@ -183,11 +189,19 @@ public class GraphServiceSubprocessClients {
         // ── Core raw RPC ──────────────────────────────────────────────────────
 
         /** POST /invoke and return the parsed {@code result} JsonNode (never missing). */
-        private JsonNode rpcRaw(String method, Object[] args) {
+        protected JsonNode rpcRaw(String method, Object[] args) {
             try {
                 ObjectNode req = mapper.createObjectNode();
+                req.put("protocolVersion", 2);
                 req.put("service", serviceFqcn);
                 req.put("method", method);
+                if (!isGenerationLifecycleMethod(method)) {
+                    GraphGenerationContext.current().ifPresent(generation -> {
+                        req.set("generation", mapper.valueToTree(generation.target()));
+                        req.put("generationOwnerJobId",
+                                GraphGenerationContext.ownerJobId().orElse("unowned"));
+                    });
+                }
 
                 ArrayNode argsNode = mapper.createArrayNode();
                 if (args != null) {
@@ -196,7 +210,6 @@ public class GraphServiceSubprocessClients {
                     }
                 }
                 req.set("args", argsNode);
-
                 byte[] reqBody = mapper.writeValueAsBytes(req);
                 long maxRequestBytes = positiveLongProperty(
                         "kompile.graph.subprocess.max-request-bytes", DEFAULT_MAX_REQUEST_BYTES);
@@ -205,11 +218,15 @@ public class GraphServiceSubprocessClients {
                             + serviceFqcn + "." + method + " is " + reqBody.length
                             + " bytes; limit is " + maxRequestBytes + ". Split the batch.");
                 }
-                HttpRequest http = HttpRequest.newBuilder(URI.create(launcher.baseUrl() + "/invoke"))
+                GraphRpcEndpointResolver.Endpoint endpoint =
+                        GraphRpcEndpointResolver.resolve(launcher.baseUrl());
+                HttpRequest.Builder httpBuilder = HttpRequest.newBuilder(
+                                URI.create(endpoint.baseUrl() + "/invoke"))
                         .POST(HttpRequest.BodyPublishers.ofByteArray(reqBody))
                         .header("Content-Type", "application/json")
-                        .timeout(INVOKE_TIMEOUT)
-                        .build();
+                        .timeout(INVOKE_TIMEOUT);
+                endpoint.headers().forEach(httpBuilder::header);
+                HttpRequest http = httpBuilder.build();
 
                 HttpResponse<InputStream> resp = client().send(http, HttpResponse.BodyHandlers.ofInputStream());
                 long maxResponseBytes = positiveLongProperty(
@@ -227,8 +244,10 @@ public class GraphServiceSubprocessClients {
                 }
 
                 if (!respNode.path("ok").asBoolean(true)) {
+                    String code = respNode.path("code").asText("RPC_ERROR");
                     throw new RuntimeException("[subprocess-graph-rpc] " + serviceFqcn + "." + method
-                            + " failed: " + respNode.path("error").asText("unknown error"));
+                            + " failed [" + code + "]: "
+                            + respNode.path("error").asText("unknown error"));
                 }
 
                 JsonNode resultNode = respNode.path("result");
@@ -243,6 +262,46 @@ public class GraphServiceSubprocessClients {
                 throw new RuntimeException("[subprocess-graph-rpc] " + serviceFqcn + "." + method
                         + " failed: " + e, e);
             }
+        }
+
+        protected boolean supportsGenerationProtocol() {
+            GraphRpcEndpointResolver.Endpoint endpoint =
+                    GraphRpcEndpointResolver.resolve(launcher.baseUrl());
+            if (endpoint.remote()) return false;
+            Boolean cached = generationProtocolByEndpoint.get(endpoint.baseUrl());
+            if (cached != null) return cached;
+            synchronized (this) {
+                cached = generationProtocolByEndpoint.get(endpoint.baseUrl());
+                if (cached != null) return cached;
+                try {
+                    HttpRequest request = HttpRequest.newBuilder(
+                                    URI.create(endpoint.baseUrl() + "/capabilities"))
+                            .GET().timeout(INVOKE_TIMEOUT).build();
+                    HttpResponse<String> response = client().send(
+                            request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    JsonNode capabilities = mapper.readTree(response.body());
+                    boolean supported = response.statusCode() == 200
+                            && capabilities.path("protocolVersion").asInt(0) >= 2
+                            && capabilities.path("generationLifecycle").asBoolean(false)
+                            && capabilities.path("generationRouting").asBoolean(false)
+                            && capabilities.path("generationAuthority").asBoolean(false);
+                    generationProtocolByEndpoint.put(endpoint.baseUrl(), supported);
+                } catch (Exception unavailable) {
+                    if (unavailable instanceof InterruptedException) Thread.currentThread().interrupt();
+                    return false;
+                }
+                return generationProtocolByEndpoint.getOrDefault(endpoint.baseUrl(), false);
+            }
+        }
+
+        private static boolean isGenerationLifecycleMethod(String method) {
+            return "supportsGraphGenerations".equals(method)
+                    || "beginFactSheetGeneration".equals(method)
+                    || "validateFactSheetGeneration".equals(method)
+                    || "activateFactSheetGeneration".equals(method)
+                    || "abortFactSheetGeneration".equals(method)
+                    || "rollbackFactSheetGeneration".equals(method)
+                    || "getFactSheetGenerationStatus".equals(method);
         }
 
         // ── Typed RPC helpers ─────────────────────────────────────────────────
@@ -595,6 +654,10 @@ public class GraphServiceSubprocessClients {
         private final JavaType typeListNodeUpdate;
         private final JavaType typeListEdgeSpec;
         private final JavaType typeListEdgeMetadataUpdate;
+        private final JavaType typeGenerationRef;
+        private final JavaType typeGenerationValidation;
+        private final JavaType typeGenerationActivation;
+        private final JavaType typeGenerationJournalEntry;
 
         SubprocessKnowledgeGraphServiceClient(GraphMatrixSubprocessLauncher launcher,
                                               ObjectMapper mapper) {
@@ -630,6 +693,92 @@ public class GraphServiceSubprocessClients {
             typeListEdgeSpec        = tf.constructCollectionType(List.class, KnowledgeGraphService.EdgeSpec.class);
             typeListEdgeMetadataUpdate = tf.constructCollectionType(List.class,
                     KnowledgeGraphService.EdgeMetadataUpdate.class);
+            typeGenerationRef         = tf.constructType(GraphGeneration.Ref.class);
+            typeGenerationValidation  = tf.constructType(GraphGeneration.Validation.class);
+            typeGenerationActivation  = tf.constructType(GraphGeneration.Activation.class);
+            typeGenerationJournalEntry = tf.constructType(GraphGenerationJournal.Entry.class);
+        }
+
+        // ── Authoritative graph-generation lifecycle ───────────────────────────
+
+        @Override
+        public boolean supportsGraphGenerations() {
+            return supportsGenerationProtocol();
+        }
+
+        @Override
+        public GraphGeneration.Ref beginFactSheetGeneration(long factSheetId, String generationId) {
+            return beginFactSheetGeneration(factSheetId, generationId,
+                    GraphGenerationContext.ownerJobId().orElse("unowned"));
+        }
+
+        @Override
+        public GraphGeneration.Ref beginFactSheetGeneration(
+                long factSheetId, String generationId, String ownerJobId) {
+            requireGenerationProtocol();
+            return rpc("beginFactSheetGeneration",
+                    new Object[]{factSheetId, generationId, ownerJobId}, typeGenerationRef);
+        }
+
+        @Override
+        public GraphGeneration.Validation validateFactSheetGeneration(GraphGeneration.Ref generation) {
+            requireGenerationProtocol();
+            return rpc("validateFactSheetGeneration", new Object[]{generation}, typeGenerationValidation);
+        }
+
+        @Override
+        public GraphGeneration.Activation activateFactSheetGeneration(GraphGeneration.Ref generation) {
+            return activateFactSheetGeneration(generation, UUID.randomUUID().toString());
+        }
+
+        @Override
+        public GraphGeneration.Activation activateFactSheetGeneration(
+                GraphGeneration.Ref generation, String operationId) {
+            requireGenerationProtocol();
+            return rpc("activateFactSheetGeneration",
+                    new Object[]{generation, operationId}, typeGenerationActivation);
+        }
+
+        @Override
+        public void abortFactSheetGeneration(GraphGeneration.Ref generation) {
+            abortFactSheetGeneration(generation, null);
+        }
+
+        @Override
+        public void abortFactSheetGeneration(GraphGeneration.Ref generation, String failure) {
+            requireGenerationProtocol();
+            rpcVoid("abortFactSheetGeneration", new Object[]{generation, failure});
+        }
+
+        @Override
+        public GraphGeneration.Activation rollbackFactSheetGeneration(
+                long factSheetId, long expectedRevision) {
+            return rollbackFactSheetGeneration(
+                    factSheetId, expectedRevision, UUID.randomUUID().toString());
+        }
+
+        @Override
+        public GraphGeneration.Activation rollbackFactSheetGeneration(
+                long factSheetId, long expectedRevision, String operationId) {
+            requireGenerationProtocol();
+            return rpc("rollbackFactSheetGeneration",
+                    new Object[]{factSheetId, expectedRevision, operationId},
+                    typeGenerationActivation);
+        }
+
+        @Override
+        public Optional<GraphGenerationJournal.Entry> getFactSheetGenerationStatus(long factSheetId) {
+            requireGenerationProtocol();
+            JsonNode node = rpcRaw("getFactSheetGenerationStatus", new Object[]{factSheetId});
+            if (node == null || node.isNull()) return Optional.empty();
+            return Optional.of(mapper.convertValue(node, typeGenerationJournalEntry));
+        }
+
+        private void requireGenerationProtocol() {
+            if (!supportsGenerationProtocol()) {
+                throw new UnsupportedOperationException(
+                        "Graph subprocess does not advertise authoritative generation protocol v2");
+            }
         }
 
         // ── Node management ───────────────────────────────────────────────────
@@ -1247,6 +1396,13 @@ public class GraphServiceSubprocessClients {
         public GraphPruneResult pruneNodes(Collection<String> nodeIds, boolean softDelete,
                                             Duration grace, boolean dryRun) {
             return rpc("pruneNodes", new Object[]{nodeIds, softDelete, grace, dryRun},
+                    typeGraphPruneResult);
+        }
+
+        @Override
+        public GraphPruneResult pruneNodes(Collection<String> nodeIds, boolean softDelete,
+                                            Duration grace, boolean dryRun, Long factSheetId) {
+            return rpc("pruneNodesScoped", new Object[]{nodeIds, softDelete, grace, dryRun, factSheetId},
                     typeGraphPruneResult);
         }
 

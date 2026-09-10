@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -30,9 +31,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -66,6 +69,9 @@ class IndexAutoRefresherTest {
                     public void greet() {}
                 }
                 """);
+        Path virtualEnv = projectDir.resolve(".venv/lib");
+        Files.createDirectories(virtualEnv);
+        Files.writeString(virtualEnv.resolve("Ignored.py"), "class Ignored:\n    pass\n");
         indexer = new LocalCodeIndexer();
         indexer.index(projectDir, PROJECT_ID, null, null, silent());
     }
@@ -135,5 +141,81 @@ class IndexAutoRefresherTest {
         String note = IndexAutoRefresher.maybeRefresh(indexer,
                 "no-such-project-" + System.nanoTime(), 0);
         assertNull(note);
+    }
+
+    @Test
+    @Order(5)
+    void virtualEnvironmentTreesAreIgnored() throws Exception {
+        assertTrue(indexer.search(PROJECT_ID, "Ignored", null, 10).isEmpty(),
+                "virtual-environment dependencies must not pollute the project index");
+    }
+
+    @Test
+    @Order(6)
+    void invalidUtf8ReportsPathAndFailedRefreshCount() throws Exception {
+        Path broken = projectDir.resolve("Broken.java");
+        Files.write(broken, new byte[] {(byte) 0xc3, (byte) 0x28});
+        try {
+            String generationBefore = String.valueOf(indexer.getStats(PROJECT_ID).get("indexedAt"));
+            ByteArrayOutputStream diagnostics = new ByteArrayOutputStream();
+            LocalCodeIndexer.IndexResult result = indexer.index(
+                    projectDir, PROJECT_ID, null, null,
+                    new PrintStream(diagnostics, true, StandardCharsets.UTF_8));
+
+            assertEquals(1, result.errors());
+            assertEquals(generationBefore,
+                    String.valueOf(indexer.getStats(PROJECT_ID).get("indexedAt")),
+                    "a failed-only pass must not mint a committed index generation");
+            String rendered = diagnostics.toString(StandardCharsets.UTF_8);
+            assertTrue(rendered.contains("Broken.java"), rendered);
+            assertTrue(rendered.contains("invalid UTF-8"), rendered);
+
+            String note = IndexAutoRefresher.maybeRefresh(indexer, PROJECT_ID, 0);
+            assertNotNull(note);
+            assertTrue(note.contains("1 failed"), note);
+            assertTrue(note.contains("0 files re-indexed"), note);
+        } finally {
+            Files.deleteIfExists(broken);
+            IndexAutoRefresher.maybeRefresh(indexer, PROJECT_ID, 0);
+        }
+    }
+
+    @Test
+    @Order(7)
+    void implicitRefreshPreservesStoredScope() throws Exception {
+        String scopedProjectId = PROJECT_ID + "-scoped";
+        Path scopedRoot = Files.createTempDirectory("auto-refresher-scoped");
+        try {
+            Files.writeString(scopedRoot.resolve("Alpha.java"), "final class Alpha {}\n");
+            Files.writeString(scopedRoot.resolve("ignored.json"), "{\"ignored\":true}\n");
+            indexer.index(scopedRoot, scopedProjectId, "*.java", null, silent());
+
+            Files.writeString(scopedRoot.resolve("Beta.java"), "final class Beta {}\n");
+            String note = IndexAutoRefresher.maybeRefresh(indexer, scopedProjectId, 0);
+
+            assertNotNull(note);
+            assertEquals("*.java", indexer.getStats(scopedProjectId).get("includePatterns"));
+            assertFalse(indexer.search(scopedProjectId, "Beta", null, 10).isEmpty());
+            assertTrue(indexer.search(scopedProjectId, "ignored.json", null, 10).isEmpty());
+        } finally {
+            deleteRecursively(LocalCodeIndexer.getIndexDir(scopedProjectId));
+            deleteRecursively(scopedRoot);
+        }
+    }
+
+    @Test
+    @Order(8)
+    void expectedIndexContentionDoesNotBecomeATuiAlert() throws Exception {
+        List<String> alerts = new ArrayList<>();
+        Runnable cleanup = CodeIndexDiagnostics.installAlertSink(alerts::add);
+        try (IndexLockManager.LockToken ignored = IndexLockManager.acquireWriteLock(
+                PROJECT_ID, LocalCodeIndexer.getIndexDir(PROJECT_ID))) {
+            IndexAutoRefresher.RefreshOutcome outcome =
+                    IndexAutoRefresher.refresh(indexer, PROJECT_ID, 0, null, null);
+            assertFalse(outcome.successful());
+            assertTrue(alerts.isEmpty(), "routine lock contention must stay out of the alert lane");
+        } finally {
+            cleanup.run();
+        }
     }
 }

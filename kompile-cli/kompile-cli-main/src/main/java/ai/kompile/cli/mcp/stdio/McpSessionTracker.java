@@ -19,6 +19,7 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.harness.*;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -52,7 +53,18 @@ public class McpSessionTracker {
     private final JudgeLlmEvaluator judge;
 
     public McpSessionTracker(ObjectMapper objectMapper) {
-        this.metrics = new ChatSessionMetrics("mcp-stdio-" + System.currentTimeMillis());
+        this(objectMapper, null);
+    }
+
+    public McpSessionTracker(ObjectMapper objectMapper, String transcriptId) {
+        this(objectMapper, transcriptId, null);
+    }
+
+    public McpSessionTracker(ObjectMapper objectMapper, String transcriptId, Path workingDirectory) {
+        this.metrics = new ChatSessionMetrics(
+                transcriptId == null || transcriptId.isBlank()
+                        ? "mcp-stdio-" + System.currentTimeMillis()
+                        : transcriptId.trim());
         this.config = HarnessConfig.load(objectMapper);
         this.store = new ModelPerformanceStore(config.getMaxRecordAge(), config.getMaxRecords());
         this.store.loadFromFile();
@@ -60,7 +72,8 @@ public class McpSessionTracker {
         this.scorer = new CompositeScoreCalculator(config);
 
         // Build standalone judge from harness config (works when judgeProvider is set)
-        JudgeLlmEvaluator candidate = new JudgeLlmEvaluator(objectMapper, config);
+        JudgeLlmEvaluator candidate = new JudgeLlmEvaluator(
+                JudgeBackendFactory.create(config, objectMapper, workingDirectory), objectMapper);
         if (candidate.isAvailable()) {
             this.judge = candidate;
             System.err.println("[MCP] Judge LLM available (provider: " + config.getJudgeProvider() + ")");

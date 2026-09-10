@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -500,6 +501,52 @@ class BackgroundProcessManagerTest {
             assertFalse(tool.execute(cancel, null).isError());
             assertNull(manager.getMonitor(entry.getId()));
             assertTrue(manager.kill(entry.getId()));
+        }
+
+        @Test
+        void processToolForcesMonitorsAndAllowsConcurrentLaunches() throws Exception {
+            ProcessManagementTool tool = new ProcessManagementTool(manager);
+            ObjectMapper mapper = new ObjectMapper();
+            assertTrue(tool.parameterSchema().path("properties").path("monitor")
+                    .path("default").asBoolean());
+            PermissionService permissions = new PermissionService();
+            permissions.setAutoApproveAll(true);
+            ToolContext context = new ToolContext(
+                    "concurrent-process-test", null, permissions,
+                    Path.of(System.getProperty("user.dir")), null);
+
+            ObjectNode firstLaunch = mapper.createObjectNode();
+            firstLaunch.put("action", "launch");
+            firstLaunch.put("command", "exec sleep 10");
+            firstLaunch.put("description", "first concurrent process");
+            firstLaunch.put("monitor", false);
+            ObjectNode secondLaunch = mapper.createObjectNode();
+            secondLaunch.put("action", "launch");
+            secondLaunch.put("command", "exec sleep 10");
+            secondLaunch.put("description", "second concurrent process");
+
+            ToolResult first = tool.execute(firstLaunch, context);
+            ToolResult second = tool.execute(secondLaunch, context);
+            assertFalse(first.isError(), first::getOutput);
+            assertFalse(second.isError(), second::getOutput);
+            String firstId = first.getMetadata().get("processId").toString();
+            String secondId = second.getMetadata().get("processId").toString();
+            assertNotEquals(firstId, secondId);
+            assertEquals(Boolean.TRUE, first.getMetadata().get("monitored"));
+            assertEquals(Boolean.TRUE, second.getMetadata().get("monitored"));
+            assertEquals(Boolean.TRUE, first.getMetadata().get("monitorForced"),
+                    "an explicit monitor=false must be ignored at the host boundary");
+            assertEquals(Boolean.FALSE, second.getMetadata().get("monitorForced"),
+                    "an omitted monitor flag should use the host default");
+            assertTrue(manager.get(firstId).isRunning());
+            assertTrue(manager.get(secondId).isRunning());
+            assertNotNull(manager.getMonitor(firstId));
+            assertNotNull(manager.getMonitor(secondId));
+            assertEquals(2, manager.listRunning().size());
+            assertEquals(2, manager.listMonitors().size());
+
+            assertTrue(manager.kill(firstId));
+            assertTrue(manager.kill(secondId));
         }
     }
 

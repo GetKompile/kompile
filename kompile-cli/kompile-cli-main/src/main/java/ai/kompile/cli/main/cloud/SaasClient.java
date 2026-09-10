@@ -160,6 +160,23 @@ public class SaasClient {
     }
 
     /**
+     * Performs an authenticated {@code PUT} request with a JSON body.
+     *
+     * @param path     server-relative path
+     * @param jsonBody request body as a JSON string
+     * @return parsed response body as {@link JsonNode}
+     * @throws IOException if the request fails or the server returns an error
+     */
+    public JsonNode put(String path, String jsonBody) throws IOException {
+        HttpRequest request = newAuthRequest(path)
+                .header(HttpConstants.CONTENT_TYPE, HttpConstants.APPLICATION_JSON)
+                .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
+                .build();
+        String body = send(request, "PUT " + path);
+        return MAPPER.readTree(body);
+    }
+
+    /**
      * Performs an authenticated {@code DELETE} request.
      *
      * @param path server-relative path
@@ -190,6 +207,26 @@ public class SaasClient {
      */
     public boolean isAuthenticated() {
         return token != null && !token.isEmpty();
+    }
+
+    /** HTTP failure with a status code that callers can handle without parsing text. */
+    public static class HttpException extends IOException {
+        private final int statusCode;
+        private final String responseBody;
+
+        HttpException(int statusCode, String message, String responseBody) {
+            super(message);
+            this.statusCode = statusCode;
+            this.responseBody = responseBody;
+        }
+
+        public int getStatusCode() {
+            return statusCode;
+        }
+
+        public String getResponseBody() {
+            return responseBody;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -261,18 +298,19 @@ public class SaasClient {
         int status = response.statusCode();
 
         if (status == 401) {
-            throw new IOException(
+            throw new HttpException(status,
                     "Authentication required for " + opName
-                    + ". Run 'kompile cloud login' first.");
+                    + ". Run 'kompile cloud login' first.", response.body());
         }
         if (status == 403) {
-            throw new IOException(
-                    "Forbidden: you do not have permission to perform " + opName + ".");
+            throw new HttpException(status,
+                    "Forbidden: you do not have permission to perform " + opName + ".",
+                    response.body());
         }
         if (status < 200 || status >= 300) {
-            throw new IOException(
+            throw new HttpException(status,
                     "Request failed [" + status + "] for " + opName
-                    + ": " + response.body());
+                    + ": " + response.body(), response.body());
         }
 
         return response.body() == null ? "" : response.body();

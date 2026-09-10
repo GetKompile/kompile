@@ -600,16 +600,26 @@ class PassthroughStreamParserTest {
         }
 
         @Test
-        void turnCompleted_withUsage() {
+        void turnCompleted_withUsage_normalizesInclusiveCachedInput() {
             String line = "{\"type\":\"turn.completed\",\"usage\":{" +
                     "\"input_tokens\":5000,\"output_tokens\":1200,\"cached_input_tokens\":3000}}";
             PassthroughEvent event = parser.parseCodexLine(line);
 
             assertInstanceOf(TurnComplete.class, event);
             TurnComplete tc = (TurnComplete) event;
-            assertEquals(5000, tc.inputTokens());
+            assertEquals(2000, tc.inputTokens());
             assertEquals(1200, tc.outputTokens());
             assertEquals(3000, tc.cacheReadTokens());
+        }
+
+        @Test
+        void turnCompleted_inconsistentCachedInput_clampsOrdinaryInputToZero() {
+            String line = "{\"type\":\"turn.completed\",\"usage\":{" +
+                    "\"input_tokens\":100,\"output_tokens\":5,\"cached_input_tokens\":120}}";
+            TurnComplete tc = (TurnComplete) parser.parseCodexLine(line);
+
+            assertEquals(0, tc.inputTokens());
+            assertEquals(120, tc.cacheReadTokens());
         }
 
         @Test

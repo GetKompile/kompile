@@ -208,7 +208,7 @@ class AppPreferences(context: Context) {
                 .putString(KEY_MODEL_KV_CACHE_OPTIMIZATION, value.kvCacheOptimization.name)
                 .putInt(KEY_MODEL_TENSOR_BATCH_SIZE, value.tensorBatchSize)
                 .putBoolean(KEY_MODEL_USE_MEMORY_MAPPING, value.useMemoryMapping)
-                .putString(KEY_MODEL_DIAGNOSTIC_MODE, value.diagnosticMode.name)
+                .putString(KEY_MODEL_DIAGNOSTIC_MODE, value.diagnosticMode.wireValue)
                 .apply()
         }
 

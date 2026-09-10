@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -35,7 +37,8 @@ import java.util.UUID;
  * <p>
  * The chat process writes a small policy file and injects its path into child
  * process environments. Any nested {@code kompile mcp-stdio} server then loads
- * the same rules and blocks forbidden tool calls before the tool executor runs.
+ * the same rules and, for LLM-backed chat enforcement, the same live reminder files
+ * before reviewing tool calls ahead of execution.
  * </p>
  */
 public class EnforcerRuntimePolicy {
@@ -50,28 +53,56 @@ public class EnforcerRuntimePolicy {
     private final Path contextFile;
     private final EnforcerPolicy policy;
     private final HarnessConfig harnessConfig;
+    private final ReminderManager reminderManager;
+    private final String reminderSnapshot;
 
     public EnforcerRuntimePolicy(String sessionId, Path policyFile,
                                  Path contextFile,
                                  EnforcerPolicy policy, HarnessConfig harnessConfig) {
+        this(sessionId, policyFile, contextFile, policy, harnessConfig, null, "");
+    }
+
+    private EnforcerRuntimePolicy(String sessionId, Path policyFile,
+                                  Path contextFile,
+                                  EnforcerPolicy policy, HarnessConfig harnessConfig,
+                                  ReminderManager reminderManager, String reminderSnapshot) {
         this.sessionId = sessionId;
         this.policyFile = policyFile;
         this.contextFile = contextFile;
         this.policy = policy;
         this.harnessConfig = harnessConfig;
+        this.reminderManager = reminderManager;
+        this.reminderSnapshot = reminderSnapshot == null ? "" : reminderSnapshot;
     }
 
     public static EnforcerRuntimePolicy create(Path workingDir, EnforcerPolicy policy,
                                                HarnessConfig harnessConfig,
                                                ObjectMapper objectMapper) throws IOException {
         String sessionId = "enforcer-" + UUID.randomUUID().toString().substring(0, 8);
-        return create(workingDir, sessionId, policy, harnessConfig, objectMapper);
+        return create(workingDir, sessionId, policy, harnessConfig, objectMapper, null);
+    }
+
+    /** Create a runtime policy that also exposes the chat's live reminders to nested judges. */
+    public static EnforcerRuntimePolicy create(Path workingDir, EnforcerPolicy policy,
+                                               HarnessConfig harnessConfig,
+                                               ObjectMapper objectMapper,
+                                               ReminderManager reminderManager) throws IOException {
+        String sessionId = "enforcer-" + UUID.randomUUID().toString().substring(0, 8);
+        return create(workingDir, sessionId, policy, harnessConfig, objectMapper, reminderManager);
     }
 
     public static EnforcerRuntimePolicy create(Path workingDir, String sessionId,
                                                EnforcerPolicy policy,
                                                HarnessConfig harnessConfig,
                                                ObjectMapper objectMapper) throws IOException {
+        return create(workingDir, sessionId, policy, harnessConfig, objectMapper, null);
+    }
+
+    public static EnforcerRuntimePolicy create(Path workingDir, String sessionId,
+                                               EnforcerPolicy policy,
+                                               HarnessConfig harnessConfig,
+                                               ObjectMapper objectMapper,
+                                               ReminderManager reminderManager) throws IOException {
         Path baseDir = workingDir.toAbsolutePath().normalize()
                 .resolve(".kompile").resolve("enforcer");
         Files.createDirectories(baseDir);
@@ -85,8 +116,22 @@ public class EnforcerRuntimePolicy {
         root.put("rules", policy.getRules());
         root.put("maxCorrections", policy.getMaxCorrections());
         root.put("returnAttempts", policy.isReturnAttempts());
+        root.put("enabled", true);
+        String reminderSnapshot = reminderManager == null
+                ? "" : reminderManager.enforcementConstraints();
+        boolean hasReminderFiles = reminderManager != null
+                && reminderManager.sessionFile() != null
+                && reminderManager.projectFile() != null;
+        if (hasReminderFiles) {
+            root.put("reminderSessionFile", reminderManager.sessionFile().toString());
+            root.put("reminderProjectFile", reminderManager.projectFile().toString());
+        } else if (!reminderSnapshot.isBlank()) {
+            // Embedded/in-memory callers have no files for child processes to reopen.
+            root.put("reminderConstraints", reminderSnapshot);
+        }
         ObjectNode judge = root.putObject("judge");
         if (harnessConfig != null) {
+            judge.put("globalEnabled", harnessConfig.isJudgeGlobalEnabled());
             putIfPresent(judge, "mode", harnessConfig.getJudgeMode());
             putIfPresent(judge, "provider", harnessConfig.getJudgeProvider());
             putIfPresent(judge, "model", harnessConfig.getJudgeModel());
@@ -103,7 +148,8 @@ public class EnforcerRuntimePolicy {
         Files.writeString(policyFile, objectMapper.writerWithDefaultPrettyPrinter()
                 .writeValueAsString(root), StandardCharsets.UTF_8);
         EnforcerConversationContext.empty().write(contextFile, objectMapper);
-        return new EnforcerRuntimePolicy(sessionId, policyFile, contextFile, policy, harnessConfig);
+        return new EnforcerRuntimePolicy(sessionId, policyFile, contextFile, policy, harnessConfig,
+                reminderManager, reminderSnapshot);
     }
 
     public static EnforcerRuntimePolicy loadFromEnvironment(ObjectMapper objectMapper) {
@@ -136,6 +182,9 @@ public class EnforcerRuntimePolicy {
 
             HarnessConfig harnessConfig = HarnessConfig.load(objectMapper);
             JsonNode judge = root.path("judge");
+            if (judge.has("globalEnabled")) {
+                harnessConfig.setJudgeGlobalEnabled(judge.path("globalEnabled").asBoolean(true));
+            }
             setIfText(judge, "mode", harnessConfig::setJudgeMode);
             setIfText(judge, "provider", harnessConfig::setJudgeProvider);
             setIfText(judge, "model", harnessConfig::setJudgeModel);
@@ -148,11 +197,25 @@ public class EnforcerRuntimePolicy {
                 harnessConfig.setJudgeServerPort(judge.path("serverPort").asInt());
             }
 
+            String reminderSnapshot = root.path("reminderConstraints").asText("");
+            ReminderManager reminderManager = null;
+            String reminderSessionFile = root.path("reminderSessionFile").asText("");
+            String reminderProjectFile = root.path("reminderProjectFile").asText("");
+            if (!reminderSessionFile.isBlank() && !reminderProjectFile.isBlank()) {
+                try {
+                    reminderManager = ReminderManager.forStorage(objectMapper,
+                            Path.of(reminderSessionFile), Path.of(reminderProjectFile));
+                } catch (RuntimeException ignored) {
+                    // A malformed optional path disables reminder constraints, not the MCP server.
+                }
+            }
+
             return new EnforcerRuntimePolicy(sessionId, policyFile.toAbsolutePath().normalize(),
                     contextFile,
-                    new EnforcerPolicy(rules, maxCorrections, returnAttempts), harnessConfig);
+                    new EnforcerPolicy(rules, maxCorrections, returnAttempts), harnessConfig,
+                    reminderManager, reminderSnapshot);
         } catch (Exception e) {
-            System.err.println("[Enforcer] Failed to load runtime policy: " + e.getMessage());
+            EnforcerDiagnostics.alert("[Enforcer] Failed to load runtime policy: " + e.getMessage());
             return null;
         }
     }
@@ -186,6 +249,41 @@ public class EnforcerRuntimePolicy {
 
     public HarnessConfig getHarnessConfig() {
         return harnessConfig;
+    }
+
+    /** Live reminder constraints for the parent judge and nested MCP tool guards. */
+    public String getReminderConstraints() {
+        if (reminderManager != null) {
+            return reminderManager.enforcementConstraints();
+        }
+        return reminderSnapshot;
+    }
+
+    /** Read the live session switch so nested MCP processes honor /judge off immediately. */
+    public boolean isEnabled(ObjectMapper objectMapper) {
+        try {
+            JsonNode root = objectMapper.readTree(Files.readString(policyFile, StandardCharsets.UTF_8));
+            return root.path("enabled").asBoolean(true);
+        } catch (Exception ignored) {
+            // A transient read/replace race must not invent a block.
+            return false;
+        }
+    }
+
+    /** Atomically update the live session switch shared with nested MCP processes. */
+    public synchronized void setEnabled(boolean enabled, ObjectMapper objectMapper) throws IOException {
+        ObjectNode root = (ObjectNode) objectMapper.readTree(
+                Files.readString(policyFile, StandardCharsets.UTF_8));
+        root.put("enabled", enabled);
+        Path tmp = policyFile.resolveSibling(policyFile.getFileName() + ".tmp");
+        Files.writeString(tmp, objectMapper.writerWithDefaultPrettyPrinter()
+                .writeValueAsString(root), StandardCharsets.UTF_8);
+        try {
+            Files.move(tmp, policyFile, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicUnsupported) {
+            Files.move(tmp, policyFile, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     public void cleanup() {

@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.harness;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 /**
  * Abstraction over how the judge LLM generates text.
  * <p>
@@ -40,6 +42,28 @@ public interface JudgeBackend {
      * @throws Exception on generation failure
      */
     String generate(String userPrompt, String systemPrompt) throws Exception;
+
+    /**
+     * Generate a machine verdict under a request-scoped JSON Schema when the transport supports
+     * structured output. Other backends retain the prompt contract and bounded repair fallback.
+     */
+    default String generateJson(
+            String userPrompt, String systemPrompt, JsonSchema outputSchema) throws Exception {
+        return generate(userPrompt, systemPrompt);
+    }
+
+    record JsonSchema(String name, JsonNode schema, boolean strict) {
+        public JsonSchema {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("JSON schema name must not be blank");
+            }
+            if (schema == null || !schema.isObject()) {
+                throw new IllegalArgumentException("JSON schema must be an object");
+            }
+            name = name.strip();
+            schema = schema.deepCopy();
+        }
+    }
 
     /**
      * Whether this backend is ready to serve requests.

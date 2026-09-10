@@ -10,6 +10,8 @@ import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalCrawlCapabilities;
+import ai.kompile.cli.main.project.LocalExternalSourceLoaderRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -230,9 +232,9 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelines.put("description",
                 "Named ingest pipeline definitions. Start with pipelineId and pipelineType; use "
                         + "registeredPipelineId to inherit a built-in/project default, then explicitly override "
-                        + "model selection and VLM generation under modelId/modelBindings and options. VLM/OCR "
-                        + "select the PDF compatibility adapter; generic pipelines select UNIFIED_PIPELINE with "
-                        + "a concrete pipelineDefinition.");
+                        + "model selection and generation under modelId/modelBindings and options. Artifact-backed "
+                        + "VLM/OCR/LLM pipelines use UNIFIED_PIPELINE with a concrete pipelineDefinition. "
+                        + "CHAT_MODEL uses an isolated project/global Kompile chat call and never persists credentials.");
         ObjectNode pipeline = pipelines.putObject("items");
         pipeline.put("type", "object");
         ObjectNode pipelineProperties = pipeline.putObject("properties");
@@ -240,7 +242,7 @@ public final class CrawlDocumentsTool implements CliTool {
                 .put("description", "Stable id referenced by documents[].pipelineId, routes, or defaultPipelineId.");
         pipelineProperties.putObject("pipelineType").put("type", "string")
                 .put("description", "Portable category. Built-ins include STANDARD_TEXT, CODE, TABLE_AWARE, "
-                        + "KEYWORD_ONLY, VLM, and OCR; arbitrary categories are allowed when a processor is registered.");
+                        + "KEYWORD_ONLY, LLM, CHAT_MODEL, VLM, and OCR; arbitrary categories are allowed when a processor is registered.");
         pipelineProperties.putObject("registeredPipelineId").put("type", "string")
                 .put("description", "Optional built-in, project, or pipelineRegistry.defaults id to inherit. Inherited options are effective defaults (including VLM outputFormat and generation settings); use pipelines[].modelId/modelBindings and pipelines[].options to make model/output/generation choices explicit, then use dryRun=true to inspect the composed result.");
         pipelineProperties.putObject("executorId").put("type", "string")
@@ -282,18 +284,32 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineProperties.putObject("pipelineDefinitionPath").put("type", "string");
         pipelineProperties.putObject("pipelineDefinitionId").put("type", "string");
         pipelineProperties.putObject("options").put("type", "object")
-                .put("description", "Pipeline-specific options. VLM/OCR generation runs to model EOS within the declared context by default; use maxResponseBytes as the output safety limit and maxNewTokens only as an explicit diagnostic override. Other options include outputFormat, pdfRenderDpi, pageBatchSize, pageRange, temperature, topP, beamSize, doSample, and maxPages.");
+                .put("description", "Pipeline-specific options. Local VLM/OCR generation runs to model EOS within the declared context by default; use maxResponseBytes as the output safety limit and maxNewTokens only as an explicit diagnostic override. CHAT_MODEL options include provider, modelId, thinking, prompt, systemPrompt, outputFormat, maxInputChars, maxResponseChars, maxImageBytes, pdfRenderDpi, pageBatchSize, maxPages, and pageRange (for example 7-9). Omitted thinking inherits host chat policy; nonblank thinking is request-scoped. Other local options include temperature, topP, beamSize, and doSample.");
         pipelineProperties.putObject("chunkerOptions").put("type", "object");
         ObjectNode processor = pipelineProperties.putObject("processor");
         processor.put("type", "object");
         processor.put("description",
-                "Canonical execution contract. Every model-backed pipeline uses UNIFIED_PIPELINE plus a definition.");
+                "Model execution contract. UNIFIED_PIPELINE runs a concrete artifact-backed definition in the pooled local runtime. CHAT_MODEL invokes the configured direct Kompile chat provider in the MCP host so credentials never enter pipeline JSON.");
         ObjectNode processorProperties = processor.putObject("properties");
         processorProperties.putObject("type").put("type", "string")
-                .putArray("enum").add("UNIFIED_PIPELINE");
+                .putArray("enum").add("UNIFIED_PIPELINE").add("CHAT_MODEL");
         processorProperties.putObject("pipelineDefinition").put("type", "object");
         processorProperties.putObject("pipelineDefinitionPath").put("type", "string");
         processorProperties.putObject("pipelineDefinitionId").put("type", "string");
+        processorProperties.putObject("modelSource").put("type", "string")
+                .put("description", "For CHAT_MODEL use chat; provider credentials are resolved from project/global chat configuration.");
+        processorProperties.putObject("provider").put("type", "string")
+                .put("description", "Native CHAT_MODEL provider: codex, claude, or registered direct provider id; omitted uses configured chat. Does not change active chat.");
+        processorProperties.putObject("modelId").put("type", "string");
+        processorProperties.putObject("thinking").put("type", "string")
+                .put("description", "Optional request-scoped provider-native thinking/effort value; omission inherits host chat policy.");
+        processorProperties.putObject("operation").put("type", "string")
+                .put("description", "CHAT_MODEL operation: text, image, pdf, graph_extraction, or json_schema. Probe the selected provider/model first.");
+        processorProperties.putObject("jsonSchema").put("type", "object");
+        processorProperties.putObject("prompt").put("type", "string");
+        processorProperties.putObject("systemPrompt").put("type", "string");
+        processorProperties.putObject("pageRange").put("type", "string")
+                .put("description", "Optional inclusive PDF pages, for example 7-9 or 1-3,5; bounds are validated before inference.");
         processorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
         pipeline.putArray("required").add("pipelineId");
         ObjectNode modelSelection = schema.putObject("modelSelection");
@@ -307,6 +323,8 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineTypeGuide.put("VLM/OCR",
                 "pipelineType + modelId/modelBindings compiled to UnifiedPipelineDefinition and PDF compatibility worker; "
                         + "the worker is launched inside the selected asynchronous crawl job.");
+        pipelineTypeGuide.put("CHAT_MODEL",
+                "Use pipelineId=chat-model-document or processor.type=CHAT_MODEL for text/image/PDF extraction through the configured direct chat provider. PDFs are rendered into bounded image batches; no local model artifact is resolved.");
         pipelineTypeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
                 "pipelineType + loaderName/chunkerName/options; model steps use the same runtime contract.");
         pipelineTypeGuide.put("CUSTOM",
@@ -357,15 +375,17 @@ public final class CrawlDocumentsTool implements CliTool {
         modelProperties.putObject("modelId").put("type", "string")
                 .put("description", "Project/catalog model selection. Defaults to id.");
         modelProperties.putObject("role").put("type", "string");
-        modelProperties.putObject("source").put("type", "string");
+        modelProperties.putObject("source").put("type", "string")
+                .put("description", "Artifact/catalog source for UNIFIED_PIPELINE; use chat for a CHAT_MODEL binding.");
+        modelProperties.putObject("provider").put("type", "string")
+                .put("description", "Native CHAT_MODEL provider selection (codex, claude, or registered direct provider id). Uses detached host credentials without changing active chat. No credentials/endpoints here.");
         modelProperties.putObject("repository").put("type", "string");
         modelProperties.putObject("revision").put("type", "string");
         modelProperties.putObject("localPath").put("type", "string");
         modelProperties.putObject("format").put("type", "string");
         modelProperties.putObject("type").put("type", "string");
-        modelProperties.putObject("autoBootstrap").put("type", "boolean");
         modelProperties.putObject("runtime").put("type", "object")
-                .put("description", "Per-model staging/runtime overrides; these take precedence over top-level modelRuntime defaults.");
+                .put("description", "Per-model read-only execution overrides; these take precedence over top-level modelRuntime defaults.");
         model.putArray("required").add("id");
         ObjectNode executors = registryProperties.putObject("executors");
         executors.put("type", "array");
@@ -374,10 +394,14 @@ public final class CrawlDocumentsTool implements CliTool {
         ObjectNode executorProperties = executor.putObject("properties");
         executorProperties.putObject("executorId").put("type", "string");
         executorProperties.putObject("type").put("type", "string")
-                .putArray("enum").add("UNIFIED_PIPELINE");
+                .putArray("enum").add("UNIFIED_PIPELINE").add("CHAT_MODEL");
         executorProperties.putObject("pipelineDefinitionId").put("type", "string");
         executorProperties.putObject("pipelineDefinitionPath").put("type", "string");
         executorProperties.putObject("pipelineDefinition").put("type", "object");
+        executorProperties.putObject("provider").put("type", "string");
+        executorProperties.putObject("modelId").put("type", "string");
+        executorProperties.putObject("prompt").put("type", "string");
+        executorProperties.putObject("systemPrompt").put("type", "string");
         executorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
         executor.putArray("required").add("executorId").add("type");
         addObjectArray(props, "routeRules",
@@ -410,21 +434,11 @@ public final class CrawlDocumentsTool implements CliTool {
 
         ObjectNode modelRuntime = props.putObject("modelRuntime");
         modelRuntime.put("type", "object");
-        modelRuntime.put("description", "Folder-local model lifecycle for LOCAL_MODEL routes. Native CLI runs "
-                + "bootstrap and serve through standalone native children; JVM development may use the "
-                + "same executable-JAR ABI. The child exists only for this MCP crawl. This object supplies "
-                + "defaults; pipelineRegistry.models[].runtime can override them per bound model.");
+        modelRuntime.put("description", "Read-only execution overrides for folder-local models already provisioned "
+                + "by model_runtime. LOCAL_MODEL and encoder routes use MCP-owned pooled subprocesses; crawl "
+                + "execution never invokes model staging or mutates the model inventory.");
         ObjectNode modelRuntimeProperties = modelRuntime.putObject("properties");
-        modelRuntimeProperties.putObject("autoBootstrap").put("type", "boolean");
         modelRuntimeProperties.putObject("localPath").put("type", "string");
-        modelRuntimeProperties.putObject("source").put("type", "string");
-        modelRuntimeProperties.putObject("repository").put("type", "string");
-        modelRuntimeProperties.putObject("revision").put("type", "string");
-        modelRuntimeProperties.putObject("format").put("type", "string");
-        modelRuntimeProperties.putObject("type").put("type", "string");
-        modelRuntimeProperties.putObject("stagingExecutable").put("type", "string");
-        modelRuntimeProperties.putObject("stagingJar").put("type", "string")
-                .put("description", "JVM-development-only executable JAR; native CLI runs require stagingExecutable.");
         modelRuntimeProperties.putObject("servingExecutable").put("type", "string");
         modelRuntimeProperties.putObject("servingJar").put("type", "string")
                 .put("description", "JVM-development-only executable JAR; native CLI runs require servingExecutable.");
@@ -433,6 +447,67 @@ public final class CrawlDocumentsTool implements CliTool {
                         + "distribution-aware JavaRuntimeLocator is used (including SDKMAN/Graal Java 17).");
         modelRuntimeProperties.putObject("heapSize").put("type", "string");
         modelRuntimeProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
+        com.fasterxml.jackson.databind.node.ObjectNode weightDtypeProp =
+                modelRuntimeProperties.putObject("weightDtype");
+        weightDtypeProp.put("type", "string");
+        weightDtypeProp.putArray("enum")
+                .add("auto").add("fp32").add("fp16").add("bf16").add("fp8")
+                .add("fp8_e5m2").add("int8").add("int4");
+        weightDtypeProp.put("description", "Weight storage dtype for the "
+                + "staged SDZ created from a raw source artifact. auto (default) keeps weights "
+                + "exactly as authored — GGUF packed quantization stays packed (runtime-quantized "
+                + "matmul), non-quantized tensors stay dense. Explicit dtypes convert at stage "
+                + "time. The staged filename records the dtype; changing it converts fresh.");
+        modelRuntimeProperties.putObject("embeddingPlacement").put("type", "string")
+                .put("description", "Device placement for the embedding subprocess used by the "
+                        + "corpus topic-model pre-pass: cpu, gpu, gpu:<device>, gpu:<device>:<maxBytes> "
+                        + "(per-device memory cap). Default inherit — launcher defaults apply. "
+                        + "Delivered via ND4J backend priorities/default device, never CUDA_VISIBLE_DEVICES.");
+        com.fasterxml.jackson.databind.node.ObjectNode conversionBackendProp =
+                modelRuntimeProperties.putObject("conversionBackend");
+        conversionBackendProp.put("type", "string");
+        conversionBackendProp.putArray("enum").add("cpu").add("gpu").add("auto");
+        conversionBackendProp.put("description", "ND4J backend for the one-shot staged conversion child "
+                + "(raw artifact → optimized cached SDZ). Default cpu: conversion is I/O "
+                + "and dequantize work; gpu opt-in. Both backends live on the serving jar "
+                + "classpath; the child picks via org.nd4j.backend priority properties.");
+        modelRuntimeProperties.putObject("nd4jConfigJson").put("type", "string")
+                .put("description", "Explicit ND4J environment config JSON for the serving child. "
+                        + "When omitted, the managed nd4j-environment-config.json (dist config dir, "
+                        + "then ~/.kompile/config) is forwarded automatically.");
+        modelRuntimeProperties.putObject("optimizerEnabled").put("type", "boolean")
+                .put("description", "Explicit serving-child graph optimizer override; takes precedence over nd4jConfigJson.");
+        modelRuntimeProperties.putObject("optimizerFp16").put("type", "boolean")
+                .put("description", "Explicit serving-child FP16 optimizer override; takes precedence over nd4jConfigJson.");
+        ObjectNode deviceLimits = modelRuntimeProperties.putObject("deviceMemoryLimitsBytes");
+        deviceLimits.put("type", "array").put("minItems", 1)
+                .put("description", "Optional serving-child memory ceilings in bytes, one positive integer per "
+                        + "visible logical device in device order. Preserves tighter existing limits. Startup "
+                        + "fails if a ceiling cannot be enforced; process and watchdog limits remain active.");
+        deviceLimits.putObject("items").put("type", "integer").put("minimum", 1)
+                .put("maximum", Long.MAX_VALUE);
+        modelRuntimeProperties.putObject("chatTemplate").put("type", "string")
+                .put("description", "Chat template override for the serving child; null = model-owned template.");
+        modelRuntimeProperties.putObject("kvCacheType").put("type", "string")
+                .put("description", "KV cache strategy for the serving child (e.g. STATIC, PAGED); "
+                        + "null = model-owned default.");
+        modelRuntimeProperties.putObject("maxKvCacheLength").put("type", "integer").put("minimum", 0)
+                .put("description", "KV cache length ceiling; 0/null = model-owned default.");
+        modelRuntimeProperties.putObject("maxPrefillLength").put("type", "integer").put("minimum", 0)
+                .put("description", "Prefill length ceiling; 0/null = model-owned default.");
+        modelRuntimeProperties.putObject("continuationEnabled").put("type", "boolean")
+                .put("description", "Retained-KV continuation for long generations; null = model default "
+                        + "(enabled for direct GGUF decoders).");
+        modelRuntimeProperties.putObject("continuationChunkTokens").put("type", "integer").put("minimum", 1)
+                .put("description", "Token chunk size for retained-KV continuation; null = default.");
+        modelRuntimeProperties.putObject("prefixCacheEnabled").put("type", "boolean")
+                .put("description", "Enable cross-request KV prefix reuse for local SameDiff serving. "
+                        + "Requires STATIC KV cache; false/null preserves the model runtime default.");
+        modelRuntimeProperties.putObject("prefixCacheMaxBytes").put("type", "integer").put("minimum", 0)
+                .put("description", "Maximum device bytes retained by the local prefix block pool; "
+                        + "0/null uses the bounded runtime heuristic.");
+        modelRuntimeProperties.putObject("prefixCacheBlockSize").put("type", "integer").put("minimum", 0)
+                .put("description", "Prefix matching granularity in tokens; 0/null uses the runtime default.");
         modelRuntimeProperties.putObject("environment").put("type", "object")
                 .putObject("additionalProperties").put("type", "string");
 
@@ -442,12 +517,16 @@ public final class CrawlDocumentsTool implements CliTool {
                 + "enables the same GraphExtractionOrchestrator used by the parallel batch crawl.");
         ObjectNode graphProperties = graphExtraction.putObject("properties");
         graphProperties.putObject("llmProvider").put("type", "string")
-                .put("description", "Model runtime shorthand: serving/kompile-local launches Kompile's "
+                .put("description", "Native text chat: chat uses the configured provider; chat:<provider> selects it explicitly "
+                        + "(e.g. chat:codex, chat:claude). No CLI subprocess/tools, no request credentials. "
+                        + "Legacy runtime shorthand: serving/kompile-local launches Kompile's "
                         + "request-scoped serving subprocess; claude, codex/openai, gemini/google, "
                         + "opencode, qwen, pi, or an exact *-cli id launches that CLI agent. "
                         + "Use processingRoute for an explicit fallback chain or API endpoint.");
         graphProperties.putObject("modelName").put("type", "string")
-                .put("description", "Request-scoped model override passed to the selected serving, CLI, or API backend.");
+                .put("description", "Request-scoped model override forwarded to the selected native chat, serving, CLI, or API backend.");
+        graphProperties.putObject("thinking").put("type", "string")
+                .put("description", "CHAT_MODEL only: optional request-scoped provider-native thinking/effort value; omission inherits host chat policy.");
         graphProperties.putObject("temperature").put("type", "number");
         graphProperties.putObject("maxTokens").put("type", "integer").put("minimum", 1);
         graphProperties.putObject("minConfidence").put("type", "number")
@@ -468,12 +547,14 @@ public final class CrawlDocumentsTool implements CliTool {
 
         ObjectNode processingRoute = props.putObject("processingRoute");
         processingRoute.put("type", "object");
-        processingRoute.put("description", "Request-scoped model execution chain. The local MCP path "
+        processingRoute.put("description", "Request-scoped semantic graph-extraction model chain (separate from document processor.type). The local MCP path "
+                + "runs CHAT_MODEL via native chat with project/global credentials (text only, no tools). CHAT_MODEL stays host-local even with a managed URL. "
                 + "launches Kompile's serving subprocess for LOCAL_MODEL, launches CLI_AGENT subprocesses, "
                 + "or calls API_AGENT endpoints without a running app server. Every local subprocess is "
                 + "stopped when the crawl job reaches a terminal state; poll instead of waiting in the tool call.");
         ObjectNode routeProperties = processingRoute.putObject("properties");
-        routeProperties.putObject("fallbackEnabled").put("type", "boolean");
+        routeProperties.putObject("fallbackEnabled").put("type", "boolean")
+                .put("description", "False pins the first enabled text-capable backend by priority; no backup or default fallback.");
         routeProperties.putObject("servingLaneEnabled").put("type", "boolean");
         ObjectNode backends = routeProperties.putObject("backends");
         backends.put("type", "array").put("minItems", 1);
@@ -483,17 +564,22 @@ public final class CrawlDocumentsTool implements CliTool {
         backendProperties.putObject("id").put("type", "string");
         backendProperties.putObject("displayName").put("type", "string");
         backendProperties.putObject("type").put("type", "string")
-                .putArray("enum").add("CLI_AGENT").add("API_AGENT").add("LOCAL_MODEL");
+                .putArray("enum").add("CLI_AGENT").add("API_AGENT").add("LOCAL_MODEL").add("CHAT_MODEL");
+        backendProperties.putObject("provider").put("type", "string")
+                .put("description", "CHAT_MODEL native provider (e.g. codex, claude, openai, custom); omitted uses configured provider. Not a CLI id.");
         backendProperties.putObject("agentName").put("type", "string")
                 .put("description", "CLI registry id for CLI_AGENT; 'serving' for Kompile's request-scoped LOCAL_MODEL subprocess.");
         backendProperties.putObject("endpointUrl").put("type", "string")
                 .put("description", "OpenAI-compatible base URL for API_AGENT (the dispatcher appends /chat/completions).");
-        backendProperties.putObject("apiKey").put("type", "string");
+        backendProperties.putObject("apiKey").put("type", "string")
+                .put("description", "API_AGENT only. CHAT_MODEL rejects apiKey/endpointUrl; configure credentials/endpoints in ChatConfig.");
         backendProperties.putObject("modelName").put("type", "string");
+        backendProperties.putObject("thinking").put("type", "string")
+                .put("description", "CHAT_MODEL only: optional request-scoped provider-native thinking/effort value; omission inherits host chat policy.");
         backendProperties.putObject("priority").put("type", "integer");
         backendProperties.putObject("maxConcurrent").put("type", "integer").put("minimum", 0);
         backendProperties.putObject("requestsPerMinute").put("type", "integer").put("minimum", 0);
-        addStringArray(backendProperties, "capabilities", "Backend capabilities such as llm.");
+        addStringArray(backendProperties, "capabilities", "CHAT_MODEL accepts only llm/text (also when omitted); embedding, vlm, tools and required-choice claims are rejected.");
         backend.putArray("required").add("id").add("type");
 
         for (String field : List.of(
@@ -538,8 +624,7 @@ public final class CrawlDocumentsTool implements CliTool {
         // A dry-run must use the local backend even when an application client is reachable:
         // the local path is the only one that guarantees no remote knowledge-base mutation and
         // validates the same request-scoped pipeline that a real local crawl would execute.
-        if (params.path("dryRun").asBoolean(false)
-                || !client.isAvailable() || requiresRequestScopedPipelineExecution(params)) {
+        if (requiresLocalExecution(params) || !client.isAvailable()) {
             return localBackend.crawlDocuments(params, context);
         }
 
@@ -588,7 +673,8 @@ public final class CrawlDocumentsTool implements CliTool {
                         : ("DIRECTORY".equals(sourceType) ? 3 : 0));
                 source.put("maxDocuments", selected.has("maxDocuments")
                         ? selected.path("maxDocuments").asInt()
-                        : ("DIRECTORY".equals(sourceType) ? 0 : 1));
+                        : ("DIRECTORY".equals(sourceType)
+                        || LocalExternalSourceLoaderRegistry.supports(sourceType) ? 0 : 1));
                 copyIfPresent(selected, source, "includePatterns");
                 copyIfPresent(selected, source, "excludePatterns");
                 copyIfPresent(selected, source, "allowedContentTypes");
@@ -661,9 +747,6 @@ public final class CrawlDocumentsTool implements CliTool {
             String status = body.path("status").asText("UNKNOWN");
             long factSheetId = body.path("factSheetId").asLong(0);
             int sourceCount = body.path("sourceCount").asInt(sources.size());
-            List<String> bindingWarnings = body.hasNonNull("factSheetId")
-                    ? bindCodeProjectsToFactSheet(sources, factSheetId)
-                    : List.of();
             List<String> configurationWarnings = pipelineConfigurationWarnings(request);
 
             StringBuilder output = new StringBuilder("Selected-document crawl ")
@@ -694,15 +777,13 @@ public final class CrawlDocumentsTool implements CliTool {
             metadata.put("sourceCount", sourceCount);
             metadata.put("codeProjectCount", codeProjectResolution.added());
             metadata.put("factSheetId", factSheetId);
-            metadata.put("codeProjectFactSheetBindings", bindingWarnings.isEmpty() ? "updated" : "partial");
-            if (!bindingWarnings.isEmpty()) {
-                metadata.put("bindingWarnings", bindingWarnings);
-            }
+            metadata.put("codeProjectFactSheetBindings",
+                    codeProjectResolution.added() > 0 ? "managed-by-crawl" : "not-applicable");
             metadata.put("configurationWarnings", configurationWarnings);
-            metadata.put("requestedConfiguration", request.deepCopy());
+            metadata.put("requestedConfiguration", LocalCrawlJobStore.redact(request));
             JsonNode effectiveConfiguration = firstConfigurationNode(body);
             if (effectiveConfiguration != null) {
-                metadata.put("effectiveConfiguration", effectiveConfiguration.deepCopy());
+                metadata.put("effectiveConfiguration", LocalCrawlJobStore.redact(effectiveConfiguration));
             }
             metadata.put("scheduled", body.path("scheduled").asBoolean(false));
             metadata.put("nextTools", List.of(
@@ -785,6 +866,12 @@ public final class CrawlDocumentsTool implements CliTool {
                 }
                 added++;
                 if (!existingRoots.add(rootPath)) {
+                    for (JsonNode existing : sources) {
+                        if (rootPath.equals(text(existing, "pathOrUrl")) && existing instanceof ObjectNode object) {
+                            applyCodeProjectMetadata(project, rootPath, object);
+                            break;
+                        }
+                    }
                     continue;
                 }
                 appendCodeProjectSource(project, rootPath, sources);
@@ -827,7 +914,16 @@ public final class CrawlDocumentsTool implements CliTool {
         copyProjectPatterns(project, source, "includePatterns", List.of());
         copyProjectPatterns(project, source, "excludePatterns", DEFAULT_CODE_EXCLUDES);
 
-        ObjectNode properties = source.putObject("properties");
+        applyCodeProjectMetadata(project, rootPath, source);
+    }
+
+    private void applyCodeProjectMetadata(JsonNode project, String rootPath, ObjectNode source) {
+        String projectId = firstNonBlank(text(project, "codeProjectId"), text(project, "id"));
+        String projectName = firstNonBlank(text(project, "name"), projectId, rootPath);
+
+        JsonNode configured = source.get("properties");
+        ObjectNode properties = configured != null && configured.isObject()
+                ? (ObjectNode) configured : source.putObject("properties");
         properties.put("kompileCodeProject", true);
         properties.put("projectManaged", true);
         properties.put("pipelineType", "CODE");
@@ -849,19 +945,25 @@ public final class CrawlDocumentsTool implements CliTool {
                 bindings.add(value.asLong());
             }
         }
-        if (bindings.size() > 1) {
+        boolean explicitTarget = request.hasNonNull("factSheetId") || request.hasNonNull("factSheetName");
+        if (bindings.size() > 1 && !explicitTarget) {
             return "Selected Kompile code projects are bound to different fact sheets: " + bindings;
         }
         if (bindings.isEmpty()) {
             return null;
         }
         long boundId = bindings.iterator().next();
-        if (request.hasNonNull("factSheetId") && request.path("factSheetId").asLong() != boundId) {
-            return "knowledgeBase.id conflicts with the selected code project's factSheetId=" + boundId;
+        if (explicitTarget) {
+            // Managed crawl owns rebinding. Remove stale source scope so only the request's resolved
+            // fact sheet reaches the server-side structural projection barrier.
+            for (JsonNode source : sources) {
+                if (source.path("properties") instanceof ObjectNode properties) {
+                    properties.remove("factSheetId");
+                }
+            }
+            return null;
         }
-        if (!request.hasNonNull("factSheetId") && !request.hasNonNull("factSheetName")) {
-            request.put("factSheetId", boundId);
-        }
+        request.put("factSheetId", boundId);
         return null;
     }
 
@@ -914,31 +1016,6 @@ public final class CrawlDocumentsTool implements CliTool {
             runtime.put("embeddingWarmStartEpochs", input.path("warmStartEpochs").asInt());
         }
         return null;
-    }
-
-    private List<String> bindCodeProjectsToFactSheet(ArrayNode sources, long factSheetId) {
-        Set<String> projectIds = new LinkedHashSet<>();
-        for (JsonNode source : sources) {
-            String projectId = text(source.path("properties"), "codeProjectId");
-            if (projectId != null) {
-                projectIds.add(projectId);
-            }
-        }
-        List<String> warnings = new ArrayList<>();
-        for (String projectId : projectIds) {
-            try {
-                ObjectNode binding = mapper.createObjectNode().put("factSheetId", factSheetId);
-                GroundingBackendClient.GroundingResponse response = client.post(
-                        CODE_PROJECTS_PATH + "/" + projectId + "/fact-sheet",
-                        mapper.writeValueAsString(binding));
-                if (response.statusCode() >= 400) {
-                    warnings.add(projectId + ": HTTP " + response.statusCode());
-                }
-            } catch (Exception e) {
-                warnings.add(projectId + ": " + e.getMessage());
-            }
-        }
-        return warnings;
     }
 
     private void copyProjectPatterns(JsonNode project,
@@ -1073,9 +1150,34 @@ public final class CrawlDocumentsTool implements CliTool {
         return null;
     }
 
+    /** Host credentials and request-scoped processor contracts must never be lost through a managed DTO. */
+    static boolean requiresLocalExecution(JsonNode params) {
+        return params != null && params.isObject() && (params.path("dryRun").asBoolean(false)
+                || params.path("config").path("dryRun").asBoolean(false)
+                || LocalProjectGraphBackend.usesNativeChat(params)
+                || requiresRequestScopedPipelineExecution(params) || requiresProjectLocalSource(params));
+    }
+
     private static boolean requiresRequestScopedPipelineExecution(JsonNode params) {
         return hasRequestScopedPipelineContract(params)
                 || hasRequestScopedPipelineContract(params == null ? null : params.get("config"));
+    }
+
+    private static boolean requiresProjectLocalSource(JsonNode params) {
+        return containsSourceType(params == null ? null : params.get("documents"), "OBSIDIAN")
+                || containsSourceType(params == null ? null : params.get("sources"), "OBSIDIAN")
+                || containsSourceType(params == null ? null : params.path("config").get("documents"), "OBSIDIAN")
+                || containsSourceType(params == null ? null : params.path("config").get("sources"), "OBSIDIAN");
+    }
+
+    private static boolean containsSourceType(JsonNode sources, String requiredType) {
+        if (sources == null || !sources.isArray()) return false;
+        for (JsonNode source : sources) {
+            String sourceType = text(source, "sourceType");
+            if (sourceType != null && requiredType.equalsIgnoreCase(
+                    sourceType.replace('-', '_'))) return true;
+        }
+        return false;
     }
 
     private static boolean hasRequestScopedPipelineContract(JsonNode request) {
@@ -1084,6 +1186,10 @@ public final class CrawlDocumentsTool implements CliTool {
         }
         if (request.hasNonNull("pipelineRegistry") || request.hasNonNull("registeredPipelines")
                 || request.hasNonNull("modelRuntime")) {
+            return true;
+        }
+        if (LocalCrawlCapabilities.CHAT_MODEL_PIPELINE.equalsIgnoreCase(
+                text(request, "defaultPipelineId"))) {
             return true;
         }
         return containsRequestScopedProcessor(request.get("pipelines"))
@@ -1096,10 +1202,18 @@ public final class CrawlDocumentsTool implements CliTool {
             return false;
         }
         for (JsonNode value : values) {
-            if (value.isObject() && List.of(
-                    "registeredPipelineId", "executorId", "processor", "pipelineDefinition",
-                    "pipelineDefinitionId", "pipelineDefinitionPath").stream().anyMatch(value::hasNonNull)) {
-                return true;
+            if (value.isObject()) {
+                if ("CHAT_MODEL".equalsIgnoreCase(text(value, "pipelineType"))
+                        || LocalCrawlCapabilities.CHAT_MODEL_PIPELINE.equalsIgnoreCase(
+                        text(value, "pipelineId"))) {
+                    return true;
+                }
+                if (List.of(
+                        "registeredPipelineId", "executorId", "processor", "pipelineDefinition",
+                        "pipelineDefinitionId", "pipelineDefinitionPath", "modelBindings", "modelDefinitions", "modelRefs")
+                        .stream().anyMatch(value::hasNonNull)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -1174,8 +1288,11 @@ public final class CrawlDocumentsTool implements CliTool {
         return null;
     }
 
-    private static String firstNonBlank(String first, String second) {
-        return first != null && !first.isBlank() ? first : second;
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
     }
 
     private String copyArrayOverride(JsonNode source, ObjectNode target, String sourceName, String targetName) {

@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.web.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -32,7 +33,24 @@ import java.util.List;
 @AllArgsConstructor
 public class LlmGenerateRequest {
     private String prompt;
+
+    /**
+     * Optional durable generation identity. A null value selects the legacy, non-durable
+     * generation contract; any present value is validated as a canonical UUID.
+    */
+    private String runId;
+    private String subjectId;
+    private Long derivedFromRevision;
+    private String referenceLanguage;
+    private String learningLanguage;
+    private String modelRole;
+    private String promptVersion;
+    private String policyVersion;
+    private String responseSchemaVersion;
+    private String promptHash;
+
     @Builder.Default
+    @JsonAlias("maxNewTokens")
     private int maxTokens = 256;
     @Builder.Default
     private double temperature = 1.0;

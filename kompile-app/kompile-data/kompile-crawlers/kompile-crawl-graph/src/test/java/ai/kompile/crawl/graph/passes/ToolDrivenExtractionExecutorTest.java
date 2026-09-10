@@ -786,6 +786,109 @@ class ToolDrivenExtractionExecutorTest {
     }
 
     @Test
+    void complementarySourceAssertionRepairsAccumulateACompleteTypedEntityTable() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A named person", null),
+                        new NodeType("COMPANY", "A named company", null)),
+                List.of(), List.of());
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "source-assertion-chunk",
+                "source-assertion-document",
+                "lfm",
+                "source-assertion-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                new CrawlCorpusSnapshot("source-assertion-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                null,
+                false);
+        backend.configureCompactProposalCardinality(2, 0);
+        backend.configureCompactEntityCandidates(
+                List.of("Alex Rivera", "Acme Robotics"),
+                List.of("PERSON", "COMPANY"));
+        backend.configureStrictExtractionTypes(List.of("PERSON", "COMPANY"), List.of());
+        backend.beginTypedEntityPhase();
+
+        AtomicInteger round = new AtomicInteger();
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        ToolDrivenExtractionExecutor.Result result =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera is a person. Acme Robotics is a company.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            boolean first = round.getAndIncrement() == 0;
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    first ? "<first-partial>" : "<complementary>",
+                                    "",
+                                    List.of(new ToolDrivenExtractionExecutor.ToolRequest(
+                                            "entities-" + round.get(),
+                                            "submit_typed_entities",
+                                            Map.of("entities", first
+                                                    ? List.of(
+                                                            Map.of("name", "Alex Rivera", "type", "PERSON"),
+                                                            Map.of("name", "Acme Robotics", "type", "PERSON"))
+                                                    : List.of(
+                                                            Map.of("name", "Alex Rivera", "type", "COMPANY"),
+                                                            Map.of("name", "Acme Robotics", "type", "COMPANY"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT,
+                                4_096,
+                                8_192,
+                                512,
+                                3.5,
+                                "TEST"),
+                        null);
+
+        assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(List.of("Alex Rivera", "Acme Robotics"),
+                result.extraction().entities().stream().map(entity -> entity.name()).toList());
+        assertEquals(List.of("PERSON", "COMPANY"),
+                result.extraction().entities().stream().map(entity -> entity.type()).toList());
+        assertEquals(2, round.get(),
+                "the phase must stop as soon as accumulated validator-clean rows cover all candidates");
+        assertTrue(requests.get(1).messages().get(1).content()
+                .contains("SOURCE_ENTITY_TYPE_ASSERTION"));
+        assertTrue(requests.get(1).messages().get(1).content()
+                .contains("Validator-clean entity rows are already retained"));
+
+        backend.beginTypedEntityPhase();
+        AtomicInteger partialCalls = new AtomicInteger();
+        ToolDrivenExtractionExecutor.Result partial =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera is a person. Acme Robotics is a company.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            partialCalls.incrementAndGet();
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<partial>", "",
+                                    List.of(new ToolDrivenExtractionExecutor.ToolRequest(
+                                            "partial", "submit_typed_entities", Map.of(
+                                            "entities", List.of(
+                                                    Map.of("name", "Alex Rivera", "type", "PERSON"),
+                                                    Map.of("name", "Acme Robotics", "type", "PERSON"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT, 4_096, 8_192, 512, 3.5, "TEST"),
+                        null);
+        assertFalse(partial.usable(),
+                "retry exhaustion must not expose a partial exact-cardinality phase as usable");
+        assertEquals(2, partialCalls.get(),
+                "the identical rejected-output guard should stop the partial retry promptly");
+    }
+
+    @Test
     void relationValidationRetryNamesRejectedRowSchemaAndExactRepairShape() {
         GraphSchema schema = new GraphSchema(
                 List.of(
@@ -864,7 +967,7 @@ class ToolDrivenExtractionExecutorTest {
                             String retry = request.messages().get(1).content();
                             assertTrue(retry.contains("PREVIOUS RELATION SUBMISSION WAS REJECTED"));
                             assertTrue(retry.contains(
-                                    "RELATION REPAIR CARD (replace rejected rows only)"));
+                                    "RELATION REPAIR CARD (correct rejected positions)"));
                             assertTrue(retry.contains("Rejected rows:"));
                             assertTrue(retry.contains("row 0"));
                             assertTrue(retry.contains("\"source\":1"));
@@ -875,9 +978,9 @@ class ToolDrivenExtractionExecutorTest {
                             assertTrue(retry.contains(
                                     "(PERSON)-[:WORKS_AT]->(COMPANY)"));
                             assertTrue(retry.contains(
-                                    "NEXT: invoke this native call with corrected or missing rows only: "
-                                            + "submit_relations with a relations array populated only with actual "
-                                            + "integer lookup indices and allowed ontology relation labels"));
+                                    "NEXT: invoke this native call with the complete positional table: "
+                                            + "submit_relations with the complete positional relations array, using "
+                                            + "the immutable integer endpoints and allowed ontology relation labels"));
                             assertTrue(retry.contains(
                                     "copy both endpoint names from the same explicit predicate"));
                             assertTrue(retry.contains(
@@ -1165,11 +1268,13 @@ class ToolDrivenExtractionExecutorTest {
                                                         Map.of(
                                                                 "nodeTypes", List.of(Map.of(
                                                                         "label", "EMAIL_ADDRESS",
-                                                                        "description", "An email address identifying a graph entity")),
+                                                                        "description", "An email address identifying a graph entity",
+                                                                        "parentType", "CONCEPT")),
                                                                 "relationshipTypes", List.of(Map.of(
                                                                         "type", "IDENTIFIES",
                                                                         "description", "An email address identifies a person",
-                                                                        "aliases", List.of("email_for"))),
+                                                                        "aliases", List.of("email_for"),
+                                                                        "connectionFamily", "IDENTITY")),
                                                                 "patterns", List.of(
                                                                         "(EMAIL_ADDRESS)-[:IDENTIFIES]->(PERSON)")))),
                                         List.of());
@@ -1404,7 +1509,7 @@ class ToolDrivenExtractionExecutorTest {
 
         ToolDrivenExtractionExecutor.Result result =
                 new ToolDrivenExtractionExecutor().extractStructured(
-                        "The ingestion Inventory identifies M. Chen as VP, FP&A and J. Park as Sr. Analyst; Controller owns escalation.",
+                        "The ingestion Inventory identifies M. Chen as VP, Planning and J. Park as Sr. Analyst; Controller owns escalation.",
                         null,
                         backend,
                         (passId, request) -> {
@@ -1425,8 +1530,8 @@ class ToolDrivenExtractionExecutorTest {
                                                                                 "name", "J. Park",
                                                                                 "type", "PERSON"),
                                                                         Map.of(
-                                                                                "id", "VP, FP&A",
-                                                                                "name", "VP, FP&A",
+                                                                                "id", "VP, Planning",
+                                                                                "name", "VP, Planning",
                                                                                 "type", "APPROVAL_ROLE"),
                                                                         Map.of(
                                                                                 "id", "Controller",
@@ -1439,11 +1544,11 @@ class ToolDrivenExtractionExecutorTest {
                                                                 "relations", List.of(
                                                                         Map.of(
                                                                                 "source", "M. Chen",
-                                                                                "target", "VP, FP&A",
+                                                                                "target", "VP, Planning",
                                                                                 "type", "HAS_ROLE"),
                                                                         Map.of(
                                                                                 "source", "J. Park",
-                                                                                "target", "VP, FP&A",
+                                                                                "target", "VP, Planning",
                                                                                 "type", "HAS_ROLE"),
                                                                         Map.of(
                                                                                 "source", "J. Park",
@@ -1496,7 +1601,7 @@ class ToolDrivenExtractionExecutorTest {
                                                                 "relations", List.of(
                                                                         Map.of(
                                                                                 "source", "M. Chen",
-                                                                                "target", "VP, FP&A",
+                                                                                "target", "VP, Planning",
                                                                                 "type", "HAS_ROLE"),
                                                                         Map.of(
                                                                                 "source", "J. Park",
@@ -1506,7 +1611,7 @@ class ToolDrivenExtractionExecutorTest {
                             }
                             assertTrue(retryPrompt.contains("\"id\":\"M. Chen\""),
                                     "a regressive patch must not erase the prior complete seed");
-                            assertTrue(retryPrompt.contains("\"id\":\"VP, FP&A\""),
+                            assertTrue(retryPrompt.contains("\"id\":\"VP, Planning\""),
                                     "prior relation endpoints must survive into the next fresh request");
                             return new ToolDrivenExtractionExecutor.StructuredResponse(
                                     "<corrected-native-submit>", "", List.of(
@@ -1519,7 +1624,7 @@ class ToolDrivenExtractionExecutorTest {
                                                                             "type", "PERSON"),
                                                                     Map.of(
                                                                             "id", "vp-fpa",
-                                                                            "name", "VP, FP&A",
+                                                                            "name", "VP, Planning",
                                                                             "type",
                                                                             "APPROVAL_ROLE")),
                                                             "relations", List.of(Map.of(
@@ -1576,7 +1681,7 @@ class ToolDrivenExtractionExecutorTest {
 
         ToolDrivenExtractionExecutor.Result result =
                 new ToolDrivenExtractionExecutor().extractStructured(
-                        "M. Chen is VP, FP&A.",
+                        "M. Chen is VP, Planning.",
                         null,
                         backend,
                         (passId, request) -> {
@@ -1596,7 +1701,7 @@ class ToolDrivenExtractionExecutorTest {
                                                                                         "value")),
                                                                         Map.of(
                                                                                 "id", "role",
-                                                                                "name", "VP, FP&A",
+                                                                                "name", "VP, Planning",
                                                                                 "type", "ROLE")),
                                                                 "relationships", List.of(Map.of(
                                                                         "source", "person",
@@ -1623,7 +1728,7 @@ class ToolDrivenExtractionExecutorTest {
                                                                             "type", "PERSON"),
                                                                     Map.of(
                                                                             "id", "role",
-                                                                            "name", "VP, FP&A",
+                                                                            "name", "VP, Planning",
                                                                             "type", "ROLE")),
                                                             "relations", List.of(Map.of(
                                                                     "source", "person",
@@ -1656,7 +1761,10 @@ class ToolDrivenExtractionExecutorTest {
     void schemaIntegerAcceptsMathematicallyIntegralJsonNumbers() {
         Map<String, Object> schema = Map.of(
                 "type", "object",
-                "properties", Map.of("target", Map.of("type", "integer")),
+                "properties", Map.of("target", Map.of(
+                        "type", "integer",
+                        "const", 1,
+                        "enum", List.of(1))),
                 "required", List.of("target"));
 
         ToolArgumentSchemaValidator.ValidationResult integralDecimal =
@@ -1668,6 +1776,47 @@ class ToolDrivenExtractionExecutorTest {
         assertFalse(fractionalDecimal.valid());
         assertTrue(fractionalDecimal.errors().stream()
                 .anyMatch(error -> error.contains("$.target must be integer")));
+    }
+
+    @Test
+    void schemaPrefixItemsEnforcePositionAndRejectAdditionalItems() {
+        Map<String, Object> positionalArray = Map.of(
+                "type", "array",
+                "prefixItems", List.of(
+                        Map.of("type", "string", "const", "Alex Rivera"),
+                        Map.of("type", "string", "const", "Acme Robotics")),
+                "items", false,
+                "minItems", 2,
+                "maxItems", 2,
+                "uniqueItems", true);
+        Map<String, Object> schema = Map.of(
+                "type", "object",
+                "properties", Map.of("entities", positionalArray),
+                "required", List.of("entities"));
+
+        ToolArgumentSchemaValidator.ValidationResult valid =
+                ToolArgumentSchemaValidator.validate(
+                        schema, Map.of("entities", List.of("Alex Rivera", "Acme Robotics")));
+        ToolArgumentSchemaValidator.ValidationResult swapped =
+                ToolArgumentSchemaValidator.validate(
+                        schema, Map.of("entities", List.of("Acme Robotics", "Alex Rivera")));
+        ToolArgumentSchemaValidator.ValidationResult extra =
+                ToolArgumentSchemaValidator.validate(
+                        Map.of(
+                                "type", "object",
+                                "properties", Map.of("entities", Map.of(
+                                        "type", "array",
+                                        "prefixItems", List.of(Map.of(
+                                                "type", "string", "const", "Alex Rivera")),
+                                        "items", false)),
+                                "required", List.of("entities")),
+                        Map.of("entities", List.of("Alex Rivera", "unexpected")));
+
+        assertTrue(valid.valid(), () -> valid.errors().toString());
+        assertFalse(swapped.valid());
+        assertTrue(swapped.errors().stream().anyMatch(error -> error.contains("must equal")));
+        assertFalse(extra.valid());
+        assertTrue(extra.errors().stream().anyMatch(error -> error.contains("positional entries")));
     }
 
     @Test

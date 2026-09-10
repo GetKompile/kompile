@@ -49,8 +49,24 @@ public class RemoteJudgeBackend implements JudgeBackend {
     }
 
     @Override
+    public String generateJson(
+            String userPrompt, String systemPrompt, JsonSchema outputSchema) throws Exception {
+        DirectLlmClient.StreamResult result = client.streamOneShotJson(
+                userPrompt, systemPrompt, modelOverride,
+                outputSchema.name(), outputSchema.schema(), outputSchema.strict());
+        return result.text;
+    }
+
+    @Override
     public boolean isAvailable() {
         return client != null;
+    }
+
+    @Override
+    public void close() {
+        if (client != null) {
+            client.close();
+        }
     }
 
     @Override

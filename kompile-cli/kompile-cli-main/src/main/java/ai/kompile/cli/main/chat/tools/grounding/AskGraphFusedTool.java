@@ -55,11 +55,10 @@ public class AskGraphFusedTool implements CliTool {
 
     @Override
     public String description() {
-        return "Run ALL reasoning engines concurrently (rule-based grounding, soft-logic PSL, "
-                + "Bayesian MEBN, causal attribution, structural/semantic hybrid, and graph-RAG) "
-                + "for a target and return a single unified evidence trace showing how each modality "
-                + "contributed. Use this when you need a comprehensive, multi-perspective explanation "
-                + "rather than a single-mode derivation.";
+        return "Explain a target using the configured graph backend's evidence. Managed backends can "
+                + "fuse applicable reasoning engines; the local fallback reports retrieval-only evidence, "
+                + "not a fabricated fused confidence or multi-engine run. Optional chatModel.provider/modelId "
+                + "adds host-native interpretation, clearly separate from engine results.";
     }
 
     @Override
@@ -67,11 +66,12 @@ public class AskGraphFusedTool implements CliTool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
         props.putObject("target")
                 .put("type", "string")
                 .put("description", "The atom key, entity id, or natural-language question to explain. "
-                        + "All applicable engines will run concurrently against this target.");
+                        + "Available evidence modalities depend on the configured graph backend.");
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
@@ -96,7 +96,10 @@ public class AskGraphFusedTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Fused multi-modal explain");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) throws ToolExecutionException {
         String target = params.path("target").asText("");
         if (target.isBlank()) {
             return ToolResult.error("target is required");

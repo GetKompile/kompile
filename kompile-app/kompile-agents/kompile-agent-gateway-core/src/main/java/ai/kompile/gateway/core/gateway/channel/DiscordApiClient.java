@@ -63,6 +63,7 @@ public interface DiscordApiClient {
     record DiscordMessage(
             String id,
             String channelId,
+            String guildId,
             DiscordUser author,
             String content,
             long timestamp,

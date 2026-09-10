@@ -20,9 +20,9 @@ import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
-import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.RealtimeEnforcementTap;
+import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
@@ -70,7 +70,7 @@ import org.jline.terminal.TerminalBuilder;
  */
 @CommandLine.Command(
         name = "passthrough",
-        description = "Interactive passthrough to a CLI agent (claude, codex, opencode, gemini)",
+        description = "Interactive passthrough to a CLI agent (claude, codex, opencode, gemini; DeepSeek Harness uses managed chat passthrough)",
         mixinStandardHelpOptions = true
 )
 public class PassthroughCommand implements Callable<Integer> {
@@ -112,12 +112,6 @@ public class PassthroughCommand implements Callable<Integer> {
     // Cached resolved MCP URL (to avoid double-probing)
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
-    /**
-     * The user's per-session answer to the enforcer activation prompt. Asked at most
-     * once per process; a project enforcer config never activates without a "y" here.
-     */
-    private Boolean enforcerSessionChoice;
-
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     // ANSI color codes
@@ -130,6 +124,11 @@ public class PassthroughCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (SubprocessAgentRunner.requiresManagedOneShot(agent)) {
+            System.err.println("DeepSeek Harness does not ship an interactive terminal profile.");
+            System.err.println("Use: kompile chat --mode passthrough --agent dsh");
+            return 2;
+        }
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
             LineReader lineReader = LineReaderBuilder.builder()
                     .terminal(terminal)
@@ -199,20 +198,16 @@ public class PassthroughCommand implements Callable<Integer> {
                         System.out.println(GREEN + "Skills installed (" + installed + " into " + agent + " native commands)" + RESET);
                     }
                 }
-                // Enforcer is per-session opt-in: a project config on disk never activates
-                // silently — prompt the user (once per process) before enforcing.
+                // Project judge policy activates deterministically; the persistent global
+                // switch disables it everywhere without another startup question.
                 Path enforcerRulesFile = null;
                 RealtimeEnforcementTap realtimeTap =
                         RealtimeEnforcementTap.inactive();
                 EnforcerConfig enforcerConfig =
                         EnforcerConfig.load(Path.of(workingDir).toAbsolutePath());
-                if (enforcerConfig != null && enforcerConfig.isEnforcementEnabled()
-                        && enforcerSessionChoice == null) {
-                    enforcerSessionChoice = EnforcerActivationPrompt
-                            .confirmViaReader(lineReader, enforcerConfig);
-                }
-                if (enforcerConfig != null && !Boolean.TRUE.equals(enforcerSessionChoice)) {
-                    enforcerConfig = null; // declined (or nothing to enforce) — run un-enforced
+                if (!HarnessConfig.load(objectMapper).isJudgeGlobalEnabled()
+                        || enforcerConfig == null || !enforcerConfig.isEnforcementEnabled()) {
+                    enforcerConfig = null;
                 }
                 if (enforcerConfig != null && enforcerConfig.isKeywordMode()) {
                     try {
@@ -220,7 +215,7 @@ public class PassthroughCommand implements Callable<Integer> {
                         if (rulesText != null && !rulesText.isBlank()) {
                             enforcerRulesFile = injectEnforcerRules(Path.of(workingDir).toAbsolutePath(), rulesText);
                             if (enforcerRulesFile != null) {
-                                System.out.println(GREEN + "Enforcer active" + RESET
+                                System.out.println(GREEN + "Judge policy active" + RESET
                                         + DIM + " (keyword mode, "
                                         + rulesText.split("\n").length + " rules)" + RESET);
                             }
@@ -237,10 +232,10 @@ public class PassthroughCommand implements Callable<Integer> {
                     realtimeTap = RealtimeEnforcementTap.fromConfig(
                             agent, Path.of(workingDir).toAbsolutePath(), enforcerConfig, objectMapper,
                             (reason, correction, toolCall) -> System.err.println(YELLOW
-                                    + "[enforcer] realtime " + (toolCall ? "tool call" : "output")
+                                    + "[judge] realtime " + (toolCall ? "tool call" : "output")
                                     + " violation: " + reason + RESET));
                     if (realtimeTap.isActive()) {
-                        System.out.println(GREEN + "Enforcer active" + RESET + DIM + " (judge mode, realtime)" + RESET);
+                        System.out.println(GREEN + "Judge active" + RESET + DIM + " (policy mode, realtime)" + RESET);
                     }
                 }
                 System.out.println();
@@ -1013,7 +1008,7 @@ public class PassthroughCommand implements Callable<Integer> {
                 long outputTokens = usage.path("output").asLong(0);
                 long cacheRead = usage.path("cacheRead").asLong(0);
                 long cacheWrite = usage.path("cacheWrite").asLong(0);
-                if (inputTokens > 0 || outputTokens > 0) {
+                if (inputTokens > 0 || outputTokens > 0 || cacheRead > 0 || cacheWrite > 0) {
                     metrics.recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrite);
                 }
             }

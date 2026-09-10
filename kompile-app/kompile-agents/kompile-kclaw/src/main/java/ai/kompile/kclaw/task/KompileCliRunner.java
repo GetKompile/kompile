@@ -42,15 +42,30 @@ public class KompileCliRunner {
     private final ObjectMapper mapper;
     private final String configuredBinary;
     private final long timeoutMs;
+    private final File workingDirectory;
 
     public KompileCliRunner(ObjectMapper mapper, String configuredBinary, long timeoutMs) {
+        this(mapper, configuredBinary, timeoutMs, new File(System.getProperty("user.dir", ".")));
+    }
+
+    public KompileCliRunner(
+            ObjectMapper mapper,
+            String configuredBinary,
+            long timeoutMs,
+            File workingDirectory) {
         this.mapper = mapper;
         this.configuredBinary = configuredBinary;
         this.timeoutMs = timeoutMs > 0 ? timeoutMs : 600_000L;
+        this.workingDirectory = workingDirectory != null && workingDirectory.isDirectory()
+                ? workingDirectory : new File(System.getProperty("user.dir", "."));
     }
 
     /** Outcome of a kompile exec run. */
     public record Result(boolean success, String output, String error) {}
+
+    public boolean isAvailable() {
+        return resolveBinary() != null;
+    }
 
     public Result run(String task, String model) {
         String bin = resolveBinary();
@@ -68,44 +83,44 @@ public class KompileCliRunner {
             cmd.add("--model");
             cmd.add(model);
         }
-        cmd.add(task);
+        cmd.add("-"); // prompt is written to stdin; never expose channel content in argv
 
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.directory(workingDirectory);
             Process process = pb.start();
-            process.getOutputStream().close(); // no stdin
 
-            // Drain stdout (JSONL) on a daemon thread so waitFor() can bound the run.
+            // Drain both streams concurrently so verbose diagnostics cannot fill stderr and deadlock.
             List<String> lines = new CopyOnWriteArrayList<>();
-            Thread reader = new Thread(() -> {
-                try (BufferedReader r = new BufferedReader(
-                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        lines.add(line);
-                    }
-                } catch (Exception e) {
-                    log.debug("kompile exec reader error: {}", e.getMessage());
-                }
-            }, "kompile-exec-reader");
-            reader.setDaemon(true);
-            reader.start();
+            List<String> diagnostics = new CopyOnWriteArrayList<>();
+            Thread reader = drain(process.getInputStream(), lines, "kompile-exec-stdout");
+            Thread errorReader = drain(process.getErrorStream(), diagnostics, "kompile-exec-stderr");
+
+            try (java.io.OutputStream stdin = process.getOutputStream()) {
+                stdin.write(task.getBytes(StandardCharsets.UTF_8));
+                stdin.write('\n');
+                stdin.flush();
+            }
 
             boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroyForcibly();
                 reader.join(2000);
+                errorReader.join(2000);
                 ParsedOutput partial = parseOutput(mapper, lines);
                 return new Result(false, partial.text(), "kompile exec timed out after " + timeoutMs + "ms");
             }
             reader.join(2000);
+            errorReader.join(2000);
 
             int exit = process.exitValue();
             ParsedOutput parsed = parseOutput(mapper, lines);
             if (exit == 0) {
                 return new Result(true, parsed.text(), null);
             }
-            String err = parsed.error() != null ? parsed.error() : ("kompile exec exited with code " + exit);
+            String err = parsed.error() != null
+                    ? parsed.error()
+                    : lastDiagnostic(diagnostics, "kompile exec exited with code " + exit);
             return new Result(false, parsed.text(), err);
 
         } catch (Exception e) {
@@ -115,6 +130,31 @@ public class KompileCliRunner {
 
     /** Parsed view of a kompile {@code exec --json} stream. */
     record ParsedOutput(String text, String error) {}
+
+    private static Thread drain(
+            java.io.InputStream stream, List<String> destination, String name) {
+        Thread reader = new Thread(() -> {
+            try (BufferedReader lines = new BufferedReader(
+                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = lines.readLine()) != null) {
+                    if (destination.size() < 10_000) destination.add(line);
+                }
+            } catch (Exception e) {
+                // The process may close a stream during timeout/cancellation.
+            }
+        }, name);
+        reader.setDaemon(true);
+        reader.start();
+        return reader;
+    }
+
+    private static String lastDiagnostic(List<String> diagnostics, String fallback) {
+        if (diagnostics.isEmpty()) return fallback;
+        String message = diagnostics.get(diagnostics.size() - 1).trim();
+        if (message.isEmpty()) return fallback;
+        return message.length() <= 500 ? message : message.substring(0, 500);
+    }
 
     /**
      * Parse {@code kompile exec --json} JSONL lines into a final text + optional error.

@@ -15,11 +15,37 @@
 #   ./build-kompile-platform.sh linux-x86_64 --publish \
 #       --deploy-repository https://repo.example/snapshots
 #
+# Preset entry points (recommended over raw invocations):
+#   build-kompile-cpu.sh        CPU (nd4j-native, AVX-2) product distro
+#   build-kompile-cpu-full.sh   CPU with every native image
+#   build-kompile-cpu-onednn.sh CPU + OneDNN product distro
+#   build-kompile-cpu-arm.sh    Linux ARM64 CPU product distro
+#   build-kompile-macos.sh      macOS ARM64 product distro
+#   build-kompile-cuda.sh       CUDA 12.9 product distro
+#   build-kompile-cuda-12.6.sh  CUDA 12.6 product distro
+#   build-kompile-cuda-13.1.sh  CUDA 13.1 (Blackwell) product distro
+#   build-kompile-rocm.sh       ZLUDA/ROCm product distro
+#   build-kompile-windows.sh    Windows x86_64 product distro
+#   build-kompile-windows-cuda.sh  Windows CUDA 12.9 product distro
+#   build-kompile-local.sh      Lean local (CLI + request-scoped workers)
+#   build-kompile-local-cpu.sh  Lean local CPU preset
+#   build-kompile-local-cuda.sh Lean local CUDA 12.9 preset
+#   build-kompile-cli-only.sh   cli-only dist: CLI images, no servers/runtime
+#   build-kompile-hosted.sh     hosted dist: full web product, no local backend
+#   build-kompile-full.sh       full dist: CPU product + bundled runtime
+#   build-kompile-target.sh     Named images only (e.g. cli,app), no dist
+#   build-kompile-servers.sh    Server images only (app/chat/crawl/staging)
+#   build-kompile-dev-cli.sh    Dev lane: CLI dist (--jars default / --native)
+#   build-kompile-dev-web.sh    Dev lane: web dist (--jars default / --native)
+#   build-kompile-native-only.sh  Rebuild images from installed Maven jars
+#   build-kompile-all.sh        Multi-platform orchestrator
+#
 # Options:
 #   --native-targets T   Comma-separated native image targets (default: cli)
-#                        Valid: cli, component-cli, app, chat, crawl-manager,
-#                        sample, app-lite, staging, model-serving, pipeline-serving,
-#                        ingest, vector, embedding, model-init, training, or all
+#                        Valid: cli, agent, app-cli, model, component, app,
+#                        chat, crawl-manager, sample, app-lite, staging,
+#                        model-serving, pipeline-serving, ingest, vector,
+#                        embedding, model-init, training, or all
 #   --variant V          Distribution variant (default: auto-detect from platform)
 #                        Valid: cli-only, local, hosted, cpu-intel, cpu-arm, cuda, amd-zluda
 #   --dl4j-branch B      DL4J branch to clone/checkout (default: master)
@@ -89,7 +115,7 @@ while [[ $# -gt 0 ]]; do
       printf '  %s\n' "${KOMPILE_PLATFORMS[@]}"
       exit 0 ;;
     --help|-h)
-      head -41 "$0" | tail -39
+      head -76 "$0" | tail -74
       exit 0 ;;
     -*)
       echo "Unknown option: $1" >&2; exit 1 ;;

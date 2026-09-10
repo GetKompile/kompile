@@ -450,6 +450,12 @@
             <include>**/*IT.java</include>
           </includes>
           <groups>integration,e2e,subprocess,pipeline</groups>
+          <!-- ITs must never wedge the build: kill the fork if it outlives the
+               test by a wide margin (observed: Triton capture re-entry loop
+               kept a failed fork alive ~1h44m on 2026-08-29). The model-crawl
+               IT with cold Triton compile + full retry cycle runs ~50-60 min,
+               so 60 min is the working bound; kill anything beyond that. -->
+          <forkedProcessTimeoutInSeconds>3600</forkedProcessTimeoutInSeconds>
         </configuration>
         <executions>
           <execution>

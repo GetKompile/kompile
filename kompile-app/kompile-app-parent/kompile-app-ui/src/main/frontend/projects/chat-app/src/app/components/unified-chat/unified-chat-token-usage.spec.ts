@@ -49,7 +49,10 @@ describe('UnifiedChatComponent - Token Usage', () => {
       'getChatStats', 'getSources', 'getModifiedFiles', 'sendMessage', 'cancelStreaming',
       'getCompaction'
     ]);
-    agentServiceSpy = jasmine.createSpyObj('AgentService', ['getAgents', 'getAvailableAgents']);
+    agentServiceSpy = jasmine.createSpyObj('AgentService', [
+      'getAgents', 'getAvailableAgents', 'getChatHarnessAgents',
+      'refreshChatHarnessAgents', 'getKompileLocalStatus'
+    ], { agents$: new Subject<any[]>().asObservable() });
     chatStorageServiceSpy = jasmine.createSpyObj('ChatStorageService', [
       'getSessions', 'saveSession', 'deleteSession', 'getSession'
     ]);
@@ -65,6 +68,11 @@ describe('UnifiedChatComponent - Token Usage', () => {
     ragServiceSpy.getStatus.and.returnValue(of({ available: false }));
     agentServiceSpy.getAgents.and.returnValue(of([]));
     agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
+    agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
+    agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
+    agentServiceSpy.getKompileLocalStatus.and.returnValue(of({
+      connected: false, modelLoaded: false, stagingUrl: null
+    } as any));
     chatStorageServiceSpy.getSessions.and.returnValue([]);
     chatHistoryServiceSpy.getSessions.and.returnValue(of([]));
     folderServiceSpy.getFolders.and.returnValue(of([]));

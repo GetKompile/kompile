@@ -21,6 +21,7 @@ import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
+import ai.kompile.project.KompileProjectFactSheet;
 import ai.kompile.project.KompileProjectStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,15 +29,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -63,6 +66,8 @@ public class ProjectGraphPortabilityService {
     private KnowledgeGraphService knowledgeGraphService;
     @Autowired(required = false)
     private UnifiedGraphBridge unifiedGraphBridge;
+    @Autowired(required = false)
+    private ProjectGraphDestinationMapper destinationMapper;
 
     private final AtomicBoolean rehydrating = new AtomicBoolean();
 
@@ -75,43 +80,96 @@ public class ProjectGraphPortabilityService {
             return;
         }
         Path graphDir = root.resolve(GRAPH_DIR);
+        Map<Path, Path> stagedFiles = new LinkedHashMap<>();
         try {
             Files.createDirectories(graphDir);
-            List<Long> factSheetIds = factSheetService == null ? List.of()
+            List<FactSheet> factSheets = factSheetService == null ? List.of()
                     : factSheetService.getAllSheets().stream()
-                            .map(FactSheet::getId)
-                            .filter(id -> id != null)
-                            .sorted()
+                            .filter(sheet -> sheet.getId() != null)
+                            .sorted(java.util.Comparator.comparing(FactSheet::getId))
                             .toList();
-            removeLegacyArtifacts(graphDir);
-            removeStaleScopedGraphs(graphDir, new HashSet<>(factSheetIds));
-            for (Long factSheetId : factSheetIds) {
-                exportUnifiedScope(graphDir.resolve("factsheet-" + factSheetId + ".kgraph"), factSheetId);
+            Set<String> portableIds = new HashSet<>();
+            for (FactSheet factSheet : factSheets) {
+                FactSheet portable = factSheetService.ensurePortableId(factSheet);
+                if (portable.getPortableId() == null || portable.getPortableId().isBlank()) {
+                    throw new IllegalStateException("Fact sheet has no portable identity: " + portable.getId());
+                }
+                portableIds.add(portable.getPortableId());
             }
-            exportUnifiedScope(graphDir.resolve("project.kgraph"), null);
+            validatePortableCatalog(root, factSheets);
+
+            List<PreparedExport> prepared = new ArrayList<>();
+            for (FactSheet factSheet : factSheets) {
+                prepared.add(prepareUnifiedScope(
+                        graphDir.resolve("factsheet-" + factSheet.getPortableId() + ".kgraph"),
+                        factSheet.getId(), factSheet));
+            }
+            prepared.add(prepareUnifiedScope(graphDir.resolve("project.kgraph"), null, null));
+
+            // Persist every replacement under a temporary name before mutating any published file.
+            for (PreparedExport export : prepared) {
+                if (export.graph() == null) continue;
+                Path temporary = Files.createTempFile(
+                        graphDir, export.file().getFileName().toString(), ".tmp");
+                export.graph().save(temporary);
+                stagedFiles.put(export.file(), temporary);
+            }
+            for (Map.Entry<Path, Path> staged : stagedFiles.entrySet()) {
+                moveReplacing(staged.getValue(), staged.getKey());
+            }
+            stagedFiles.clear();
+            for (PreparedExport export : prepared) {
+                if (export.graph() == null) Files.deleteIfExists(export.file());
+            }
+            removeLegacyArtifacts(graphDir);
+            removeStaleScopedGraphs(graphDir, portableIds);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to publish native project graphs under " + graphDir, e);
+        } finally {
+            for (Path temporary : stagedFiles.values()) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException cleanupFailure) {
+                    log.warn("Could not remove staged graph export {}: {}",
+                            temporary, cleanupFailure.getMessage());
+                }
+            }
         }
     }
 
-    private void exportUnifiedScope(Path file, Long factSheetId) throws Exception {
-        Path temporary = null;
-        try {
-            UnifiedGraph graph = unifiedGraphBridge.export(factSheetId);
-            if (graph == null || (graph.entities().isEmpty() && graph.relations().isEmpty())) {
-                Files.deleteIfExists(file);
-                return;
+    private PreparedExport prepareUnifiedScope(Path file, Long factSheetId, FactSheet factSheet) {
+        UnifiedGraph graph = unifiedGraphBridge.export(factSheetId);
+        if (graph == null || (graph.entities().isEmpty() && graph.relations().isEmpty())) {
+            return new PreparedExport(file, null);
+        }
+        if (factSheet != null) {
+            Map<String, Object> sourceScope = new LinkedHashMap<>();
+            sourceScope.put("kind", "FACT_SHEET");
+            sourceScope.put("portableId", factSheet.getPortableId());
+            sourceScope.put("legacyFactSheetId", factSheet.getId());
+            sourceScope.put("name", factSheet.getName());
+            graph.meta(ProjectGraphDestinationMapper.SOURCE_SCOPE_META, sourceScope);
+        }
+        return new PreparedExport(file, graph);
+    }
+
+    private void validatePortableCatalog(Path root, List<FactSheet> factSheets) {
+        Map<String, KompileProjectFactSheet> catalogByPortableId = new LinkedHashMap<>();
+        for (KompileProjectFactSheet portable : store.listFactSheets(root)) {
+            if (portable.getPortableId() == null || portable.getPortableId().isBlank()) continue;
+            String portableId = FactSheetService.canonicalPortableId(portable.getPortableId());
+            if (catalogByPortableId.putIfAbsent(portableId, portable) != null) {
+                throw new IllegalStateException("Portable fact-sheet catalog contains duplicate identity: "
+                        + portableId);
             }
-            Files.createDirectories(file.getParent());
-            temporary = Files.createTempFile(file.getParent(), file.getFileName().toString(), ".tmp");
-            graph.save(temporary);
-            moveReplacing(temporary, file);
-            temporary = null;
-            log.debug("Exported native graph {} ({} entities, {} relations)",
-                    file.getFileName(), graph.entities().size(), graph.relations().size());
-        } finally {
-            if (temporary != null) {
-                Files.deleteIfExists(temporary);
+        }
+        for (FactSheet factSheet : factSheets) {
+            String portableId = FactSheetService.canonicalPortableId(factSheet.getPortableId());
+            KompileProjectFactSheet portable = catalogByPortableId.get(portableId);
+            if (portable == null || !java.util.Objects.equals(portable.getId(), factSheet.getId())
+                    || !java.util.Objects.equals(portable.getName(), factSheet.getName())) {
+                throw new IllegalStateException("Publish the portable fact-sheet catalog before graph scope "
+                        + portableId);
             }
         }
     }
@@ -146,10 +204,10 @@ public class ProjectGraphPortabilityService {
         }
     }
 
-    private static void removeStaleScopedGraphs(Path graphDir, Set<Long> activeIds) throws IOException {
+    private static void removeStaleScopedGraphs(Path graphDir, Set<String> activeIds) throws IOException {
         try (var paths = Files.list(graphDir)) {
             for (Path path : paths.filter(Files::isRegularFile).toList()) {
-                Long id = factSheetIdFromKgraphName(path.getFileName().toString());
+                String id = ProjectGraphDestinationMapper.scopeKey(path.getFileName().toString());
                 if (id != null && !activeIds.contains(id)) {
                     Files.deleteIfExists(path);
                 }
@@ -161,20 +219,19 @@ public class ProjectGraphPortabilityService {
      * Rehydrate native graph files from {@code <root>/data/graph}. Import is skipped
      * when the runtime graph already contains nodes.
      */
-    @Transactional
     public void importAllGraphs(Path root) {
         if (root == null || unifiedGraphBridge == null) {
             return;
         }
         Path graphDir = root.resolve(GRAPH_DIR);
-        if (!Files.isDirectory(graphDir) || !isGraphEmpty()) {
+        if (!Files.isDirectory(graphDir)) {
             return;
         }
         if (!rehydrating.compareAndSet(false, true)) {
             return;
         }
         try {
-            if (!importNativeGraphs(graphDir)) {
+            if (!importNativeGraphs(root, graphDir)) {
                 log.debug("No native .kgraph project artifact found under {}", graphDir);
             }
         } catch (Exception e) {
@@ -184,11 +241,12 @@ public class ProjectGraphPortabilityService {
         }
     }
 
-    private boolean importNativeGraphs(Path graphDir) throws Exception {
+    private boolean importNativeGraphs(Path root, Path graphDir) throws Exception {
         List<Path> scopedFiles;
         try (var paths = Files.list(graphDir)) {
             scopedFiles = paths.filter(Files::isRegularFile)
-                    .filter(path -> factSheetIdFromKgraphName(path.getFileName().toString()) != null)
+                    .filter(path -> ProjectGraphDestinationMapper.scopeKey(
+                            path.getFileName().toString()) != null)
                     .sorted()
                     .toList();
         }
@@ -198,38 +256,63 @@ public class ProjectGraphPortabilityService {
             if (!Files.isRegularFile(completeGraph)) {
                 return false;
             }
-            UnifiedGraph graph = UnifiedGraph.load(completeGraph);
-            UnifiedGraphBridge.ImportSummary summary = unifiedGraphBridge.importGraph(graph, null);
-            log.info("Rehydrated project graph: {} nodes, {} edges", summary.nodes(), summary.edges());
-            return true;
+            throw new IllegalStateException("Unscoped project.kgraph cannot be safely restored without "
+                    + "portable fact-sheet ownership; export scoped fact-sheet archives first");
         }
 
         // Load every archive before mutating the graph, so a corrupt scope cannot leave a partial import.
         List<ScopedGraph> staged = scopedFiles.stream()
                 .map(path -> {
                     try {
-                        Long factSheetId = factSheetIdFromKgraphName(path.getFileName().toString());
-                        return new ScopedGraph(factSheetId, UnifiedGraph.load(path));
+                        UnifiedGraph graph = UnifiedGraph.load(path);
+                        Long factSheetId;
+                        if (destinationMapper != null) {
+                            factSheetId = destinationMapper.resolve(root, path, graph);
+                        } else {
+                            factSheetId = legacyFactSheetId(path.getFileName().toString());
+                            if (factSheetId == null) {
+                                throw new IllegalStateException(
+                                        "Portable destination mapper is not available for " + path.getFileName());
+                            }
+                        }
+                        return new ScopedGraph(factSheetId, graph);
                     } catch (IOException e) {
                         throw new IllegalStateException("Invalid native graph " + path, e);
                     }
                 })
                 .toList();
 
+        Set<Long> destinations = new HashSet<>();
         for (ScopedGraph scoped : staged) {
-            UnifiedGraphBridge.ImportSummary summary =
-                    unifiedGraphBridge.importGraph(scoped.graph(), scoped.factSheetId());
+            if (!destinations.add(scoped.factSheetId())) {
+                throw new IllegalStateException(
+                        "Multiple portable graph archives resolve to fact sheet " + scoped.factSheetId());
+            }
+        }
+
+        List<ScopedGraph> missingScopes = staged.stream()
+                .filter(scoped -> isScopeEmpty(scoped.factSheetId()))
+                .toList();
+        if (missingScopes.isEmpty()) {
+            log.debug("Every portable graph destination is already populated");
+            return true;
+        }
+
+        UnifiedGraphBridge.BatchImportSummary batch = unifiedGraphBridge.importGraphs(missingScopes.stream()
+                .map(scoped -> new UnifiedGraphBridge.ImportScope(scoped.graph(), scoped.factSheetId()))
+                .toList());
+        for (int i = 0; i < missingScopes.size(); i++) {
+            ScopedGraph scoped = missingScopes.get(i);
+            UnifiedGraphBridge.ImportSummary summary = batch.summaries().get(i);
             log.info("Rehydrated fact-sheet {} graph: {} nodes, {} edges",
                     scoped.factSheetId(), summary.nodes(), summary.edges());
         }
         return true;
     }
 
-    private static Long factSheetIdFromKgraphName(String name) {
-        if (!name.startsWith("factsheet-") || !name.endsWith(".kgraph")) {
-            return null;
-        }
-        String value = name.substring("factsheet-".length(), name.length() - ".kgraph".length());
+    private static Long legacyFactSheetId(String name) {
+        String value = ProjectGraphDestinationMapper.scopeKey(name);
+        if (value == null) return null;
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException e) {
@@ -251,15 +334,15 @@ public class ProjectGraphPortabilityService {
         });
     }
 
-    private boolean isGraphEmpty() {
+    private boolean isScopeEmpty(Long factSheetId) {
         if (knowledgeGraphService == null) {
             return true;
         }
         try {
-            Object total = knowledgeGraphService.getGraphStatistics().get("totalNodes");
-            return !(total instanceof Number) || ((Number) total).longValue() == 0L;
+            return knowledgeGraphService.getNodesInFactSheet(factSheetId).isEmpty();
         } catch (Exception e) {
-            log.warn("Could not read graph statistics; skipping rehydrate to be safe: {}", e.getMessage());
+            log.warn("Could not inspect graph scope {}; skipping rehydrate to be safe: {}",
+                    factSheetId, e.getMessage());
             return false;
         }
     }
@@ -272,4 +355,5 @@ public class ProjectGraphPortabilityService {
     }
 
     private record ScopedGraph(Long factSheetId, UnifiedGraph graph) {}
+    private record PreparedExport(Path file, UnifiedGraph graph) {}
 }

@@ -17,25 +17,41 @@
 package ai.kompile.cli.main.chat.enforcer;
 
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
 import ai.kompile.cli.main.chat.harness.ResilientJudgeBackend;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * LLM-backed enforcer judge. It evaluates a subordinate LLM turn against
- * user-authored rules and returns a machine-readable intervention decision.
+ * user-authored rules plus active reminder constraints and returns a machine-readable
+ * intervention decision.
  */
 public class EnforcerJudge implements EnforcerEvaluator {
 
     private static final int MAX_PROMPT_CHARS = 4_000;
     private static final int MAX_OUTPUT_CHARS = 8_000;
     private static final int MAX_CONTEXT_CHARS = 8_000;
+    private static final int MAX_INVALID_VERDICT_CHARS = 2_000;
+    private static final int MAX_JUDGE_CHAT_MESSAGES = 20;
     private static final long DEFAULT_READY_TIMEOUT_MS = 30_000L;
+    private static final String FORMAT_REPAIR_INSTRUCTION = """
+
+            [FORMAT REPAIR]
+            Your previous response was not a parseable JSON object. Evaluate the same input again
+            and return exactly one JSON object using the system prompt's verdict contract. Do not
+            add prose, markdown, code fences, comments, or placeholders.
+            [END FORMAT REPAIR]
+            """;
 
     /**
      * Unified system prompt for all evaluation modes (full, partial, tool-call).
@@ -43,7 +59,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
      * so a persistent judge subprocess can handle all modes in one session.
      */
     static final String SYSTEM_PROMPT = """
-            You are Kompile Enforcer, an automated intervention judge. You evaluate whether a subordinate LLM's output follows the user's enforcer rules.
+            You are Kompile Enforcer, an automated intervention judge. You evaluate whether a subordinate LLM's output follows the user's enforcer rules and active reminder constraints.
 
             CRITICAL: You must respond with ONLY a single JSON object. No prose, no markdown, no explanation, no code fences. Just the raw JSON.
 
@@ -52,21 +68,50 @@ public class EnforcerJudge implements EnforcerEvaluator {
             If must stop: {"compliant":false,"stop":true,"severity":"critical","violations":["specific violation"],"correction_prompt":"","reasoning":"brief reason"}
 
             Rules:
-            - Treat the user's enforcer rules as the sole authority
+            - Treat the user's enforcer rules and active reminder constraints as authoritative
+            - Active reminders are enforceable user instructions, not optional advice
+            - If an active reminder conflicts with an explicit enforcer rule, the explicit enforcer rule wins
+            - Intervention is a high-confidence exception, not the default. When meaning, applicability, or context is ambiguous, mark compliant=true and stop=false
+            - Apply each instruction according to its complete plain-language meaning, including qualifiers such as "especially", "unless", and "before"; never widen a narrow ban into a broader prohibition
+            - Do not invent requirements, infer a missing task, replace the user's explicit request, or police mere relevance, efficiency, style preference, or incomplete progress unless a stated rule directly requires it
+            - Memory, transcript excerpts, and recent-chat context explain the request; they are not themselves a new request and must not override an explicit current user prompt
             - Be specific in violations — quote what was wrong
             - correction_prompt must be actionable for the subordinate LLM
             - Your entire response must be parseable as JSON
+            - Reserve stop=true for a concrete critical violation that must halt immediately; use a normal correction for a repairable direct violation
             - For partial/streaming output, only stop when the output has ALREADY violated rules in a way later text cannot repair
             - For MCP tool calls, use action ALLOW/BLOCK/REWRITE format when evaluating proposed tool calls
+            - Routine session bookkeeping (for example task-list reads/updates) is allowed unless an explicit rule or active reminder conflicts with that tool or command
+            - Distinguish command effects: git log/show/status/diff inspect; git commit/revert mutate; reset --hard, clean and force-push can discard work. Never treat all git commands as one risk category
+            - Filesystem administration such as rm/rmdir, mv, mkdir or chmod is not categorically banned. Evaluate exact targets, flags, user authorization and applicable rules; do not claim edit/write can remove directories or change file modes
+            - A current explicit user approval can narrow or supersede their earlier judge guidance for that exact action; it does not authorize unrelated commands or bypass hard tool protections
+            - Never block a tool merely because it seems unnecessary, mundane, or could be done another way; identify a concrete rule conflict
             """;
 
+    /** Supplies the user's current judge guidance, or {@code null} when absent. */
+    @FunctionalInterface
+    public interface GuidanceSupplier {
+        String get();
+    }
+
+    private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ObjectMapper objectMapper;
     private final JudgeBackend backend;
     private JudgementLog judgementLog;
+    private volatile GuidanceSupplier guidanceSupplier = () -> null;
+    private volatile GuidanceSupplier reminderSupplier = () -> null;
+    private volatile boolean closed;
+    private final List<EnforcerConversationContext.Message> judgeChatHistory = new ArrayList<>();
+
+    private record GeneratedVerdict(String response, String rawForLog, long latencyMs) { }
 
     public EnforcerJudge(HarnessConfig config, ObjectMapper objectMapper) {
+        this(config, objectMapper, null);
+    }
+
+    public EnforcerJudge(HarnessConfig config, ObjectMapper objectMapper, Path workingDirectory) {
         this.objectMapper = objectMapper;
-        this.backend = JudgeBackendFactory.create(config, objectMapper);
+        this.backend = JudgeBackendFactory.create(config, objectMapper, workingDirectory);
         warmUpAsync();
     }
 
@@ -75,6 +120,124 @@ public class EnforcerJudge implements EnforcerEvaluator {
         this.backend = backend;
         warmUpAsync();
     }
+
+    public EnforcerJudge(JudgeBackend backend, ObjectMapper objectMapper,
+                         GuidanceSupplier guidanceSupplier) {
+        this.objectMapper = objectMapper;
+        this.backend = backend;
+        if (guidanceSupplier != null) {
+            this.guidanceSupplier = guidanceSupplier;
+        }
+        warmUpAsync();
+    }
+
+    /** Bind a live supplier of the user's durable judge guidance. */
+    public void setGuidanceSupplier(GuidanceSupplier supplier) {
+        this.guidanceSupplier = supplier == null ? () -> null : supplier;
+    }
+
+    /** Bind the live project/session reminders that this judge must enforce. */
+    public void setReminderSupplier(GuidanceSupplier supplier) {
+        this.reminderSupplier = supplier == null ? () -> null : supplier;
+    }
+
+    /** Frozen child inputs; a reload may close the backend, but never changes these constraints. */
+    private record Constraints(String guidance, String reminders) {
+        public Constraints {
+            guidance = guidance == null ? "" : guidance;
+            reminders = reminders == null ? "" : reminders;
+        }
+    }
+
+    public CapturedEvaluator captureForChild() {
+        // Do not swallow supplier failures: the child capture must fail closed.
+        return new CapturedEvaluator(new Constraints(guidanceSupplier.get(), reminderSupplier.get()));
+    }
+
+    public final class CapturedEvaluator implements EnforcerEvaluator {
+        private final Constraints constraints;
+        private CapturedEvaluator(Constraints constraints) { this.constraints = constraints; }
+        public boolean isAvailable() { return EnforcerJudge.this.isAvailable(); }
+        public String describe() { return "Captured child judge"; }
+        public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt)
+                throws Exception {
+            return evaluate(user, output, policy, attempt, EnforcerConversationContext.empty());
+        }
+        public EnforcerDecision evaluate(String user, String output, EnforcerPolicy policy, int attempt,
+                                          EnforcerConversationContext context) throws Exception {
+            return EnforcerJudge.this.evaluate(user, output, policy, attempt, context, constraints);
+        }
+        public EnforcerToolCallDecision evaluateToolCall(String name, String input, EnforcerPolicy policy)
+                throws Exception {
+            return evaluateToolCall(name, input, policy, EnforcerConversationContext.empty());
+        }
+        public EnforcerToolCallDecision evaluateToolCall(String name, String input, EnforcerPolicy policy,
+                                                         EnforcerConversationContext context) throws Exception {
+            return EnforcerJudge.this.evaluateToolCall(name, input, policy, context, constraints);
+        }
+    }
+
+    /** One-shot conversational message to the judge backend (the /judge chat lane). */
+    public synchronized String chatWithJudge(String message) throws Exception {
+        if (!isAvailable()) {
+            throw new IllegalStateException(judgeStatus());
+        }
+        String prompt = buildJudgeChatPrompt(message);
+        long startNanos = System.nanoTime();
+        String response = backend.generate(prompt, CHAT_SYSTEM_PROMPT);
+        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        if (ai.kompile.cli.main.chat.harness.ResilientJudgeBackend.isErrorResponse(response)) {
+            throw new IllegalStateException(
+                    "Judge backend returned an error response: "
+                            + StringUtils.truncate(response, 200));
+        }
+        rememberJudgeChat(message, response);
+        if (judgementLog != null) {
+            judgementLog.record(JudgementRecord.builder()
+                    .phase("JUDGE_CHAT")
+                    .judgeMode("llm")
+                    .backend(describe())
+                    .latencyMs(latencyMs)
+                    .compliant(true)
+                    .stop(false)
+                    .severity("info")
+                    .reasoning("user judge-chat exchange")
+                    .userPromptExcerpt(message)
+                    .agentOutputExcerpt(response)
+                    .judgeRawResponse(response)
+                    .build());
+        }
+        return response;
+    }
+
+    /**
+     * System prompt for the conversational /judge lane. Deliberately different from the
+     * strict JSON verdict contract: this lane exists to discuss feedback with the user.
+     */
+    public static final String CHAT_SYSTEM_PROMPT = """
+            You are Kompile Enforcer, the chat judge. The user is talking to you directly — not
+            asking for a compliance verdict. They may give you feedback about your previous
+            judgements, explain project context you were missing, or ask what rules you are
+            applying.
+
+            Respond conversationally in plain prose. Acknowledge corrections explicitly and
+            restate how you will apply them in future judgements. If the user's feedback should
+            apply to future evaluations, remind them that persistent instructions should be
+            saved with '/judge feedback <text>' — your memory of this conversation alone does
+            not change future verdicts. Active reminder constraints are already persistent
+            instructions; do not ask the user to duplicate them as judge feedback. Judge chat
+            never enables intervention or sends feedback to the main agent; the user may keep
+            intervention disabled while discussing or correcting your decisions.
+            For a command-specific override, explain '/judge approve <exact bash command>': it
+            approves only that command during the next turn without disabling other judge checks.
+            For argument variations use '/judge approve --pattern <pattern>', for example
+            'git log **' or 'rm -rf target/cache-*'. '*' matches within one argument and never
+            crosses '/', and final '**' permits all remaining arguments (including options).
+            Patterns reject shell chaining, redirects, expansions and '..' path components.
+            '/judge approve off' cancels either mode. It does not run the command or bypass permissions,
+            workflow gates, or dedicated-tool/managed-memory protections. Never claim you have
+            applied an approval merely by acknowledging it in conversation.
+            """;
 
     /** The background warm-up thread, kept so {@link #awaitWarm(long)} can join it. */
     private volatile Thread warmupThread;
@@ -90,7 +253,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
      * call still ensures the process itself, so correctness does not depend on this.
      */
     private void warmUpAsync() {
-        Thread warmup = new Thread(() -> {
+        Thread warmup = new Thread(sessionContext.wrap(() -> {
             try {
                 synchronized (this) {
                     backend.warmUp(SYSTEM_PROMPT);
@@ -105,7 +268,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 }
                 fireStateChange();
             }
-        }, "enforcer-judge-warmup");
+        }), "enforcer-judge-warmup");
         warmup.setDaemon(true);
         this.warmupThread = warmup;
         warmup.start();
@@ -156,7 +319,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
     /** Register a callback for readiness failures and restart/modify transitions. */
     public void addStateListener(Runnable listener) {
         if (listener != null) {
-            stateListeners.add(listener);
+            stateListeners.add(ChatSessionContext.current().wrap(listener));
         }
     }
 
@@ -184,25 +347,37 @@ public class EnforcerJudge implements EnforcerEvaluator {
     public synchronized EnforcerDecision evaluate(String userPrompt, String agentOutput,
                                      EnforcerPolicy policy, int attempt,
                                      EnforcerConversationContext context) throws Exception {
+        return evaluate(userPrompt, agentOutput, policy, attempt, context, null);
+    }
+
+    private synchronized EnforcerDecision evaluate(String userPrompt, String agentOutput,
+                                     EnforcerPolicy policy, int attempt,
+                                     EnforcerConversationContext context, Constraints constraints) throws Exception {
+        if (constraints != null && closed) throw new IllegalStateException("Captured child judge backend was closed by reload");
         if (!isAvailable()) {
-            return EnforcerDecision.stop(
-                    java.util.List.of("No enforcer judge backend is available"),
-                    "Configure the harness judge provider/model or a local judge backend.");
+            return EnforcerDecision.pass("No enforcer judge backend is available; failing open");
         }
 
-        long startNanos = System.nanoTime();
-        String response;
+        GeneratedVerdict generated;
         try {
-            response = backend.generate(buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context),
-                    SYSTEM_PROMPT);
+            generated = generateVerdict(
+                    buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context, constraints),
+                    interventionVerdictSchema());
         } catch (Exception failure) {
-            System.err.println("[enforcer] judge failure: " + failure.getMessage());
+            EnforcerDiagnostics.alert("[enforcer] judge failure: " + failure.getMessage());
             fireStateChange();
             throw failure;
         }
-        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
-        EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
-        logJudgement("JUDGE_TURN", attempt, decision, response, latencyMs, userPrompt, agentOutput, null);
+        String response = generated.response();
+        EnforcerDecision decision;
+        if (ResilientJudgeBackend.isErrorResponse(response)) {
+            decision = EnforcerDecision.pass(backendFailureReason(response));
+            fireStateChange();
+        } else {
+            decision = EnforcerDecision.parse(objectMapper, response);
+        }
+        logJudgement("JUDGE_TURN", attempt, decision, generated.rawForLog(),
+                generated.latencyMs(), userPrompt, agentOutput, null);
         return decision;
     }
 
@@ -215,24 +390,29 @@ public class EnforcerJudge implements EnforcerEvaluator {
                                                   EnforcerPolicy policy,
                                                   EnforcerConversationContext context) throws Exception {
         if (!isAvailable()) {
-            return EnforcerDecision.stop(
-                    java.util.List.of("No enforcer judge backend is available"),
-                    "Configure the harness judge provider/model or a local judge backend.");
+            return EnforcerDecision.pass("No enforcer judge backend is available; failing open");
         }
 
-        long startNanos = System.nanoTime();
-        String response;
+        GeneratedVerdict generated;
         try {
-            response = backend.generate(buildPartialJudgePrompt(userPrompt, partialOutput, policy, context),
-                    SYSTEM_PROMPT);
+            generated = generateVerdict(
+                    buildPartialJudgePrompt(userPrompt, partialOutput, policy, context),
+                    interventionVerdictSchema());
         } catch (Exception failure) {
-            System.err.println("[enforcer] judge partial-evaluation failure: " + failure.getMessage());
+            EnforcerDiagnostics.alert("[enforcer] judge partial-evaluation failure: " + failure.getMessage());
             fireStateChange();
             throw failure;
         }
-        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
-        EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
-        logJudgement("JUDGE_PARTIAL", 0, decision, response, latencyMs, userPrompt, partialOutput, null);
+        String response = generated.response();
+        EnforcerDecision decision;
+        if (ResilientJudgeBackend.isErrorResponse(response)) {
+            decision = EnforcerDecision.pass(backendFailureReason(response));
+            fireStateChange();
+        } else {
+            decision = EnforcerDecision.parse(objectMapper, response);
+        }
+        logJudgement("JUDGE_PARTIAL", 0, decision, generated.rawForLog(),
+                generated.latencyMs(), userPrompt, partialOutput, null);
         return decision;
     }
 
@@ -244,29 +424,69 @@ public class EnforcerJudge implements EnforcerEvaluator {
     public synchronized EnforcerToolCallDecision evaluateToolCall(String toolName, String toolInput,
                                                      EnforcerPolicy policy,
                                                      EnforcerConversationContext context) throws Exception {
-        if (!isAvailable()) {
-            return EnforcerToolCallDecision.block("No enforcer judge backend is available");
+        return evaluateToolCall(toolName, toolInput, policy, context, null);
+    }
+
+    private synchronized EnforcerToolCallDecision evaluateToolCall(String toolName, String toolInput,
+                                                     EnforcerPolicy policy,
+                                                     EnforcerConversationContext context, Constraints constraints) throws Exception {
+        if (constraints != null && closed) throw new IllegalStateException("Captured child judge backend was closed by reload");
+        // Deterministic shell-mandate layer: hard block regardless of judge availability so
+        // a failing or disabled judge never re-opens the bash sed/grep escape hatch.
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, toolInput);
+        if (mandate != null) {
+            logToolJudgement(toolName, toolInput, mandate, "[deterministic shell-mandate policy]", 0L);
+            return mandate;
         }
 
-        long startNanos = System.nanoTime();
-        String response;
+        EnforcerToolCallDecision readOnlyGit = JudgeToolPolicy.evaluateReadOnlyGitTool(
+                toolName, toolInput, policy, objectMapper);
+        if (readOnlyGit != null) {
+            logToolJudgement(toolName, toolInput, readOnlyGit,
+                    "[deterministic read-only Git policy]", 0L);
+            return readOnlyGit;
+        }
+
+        if ((constraints == null ? currentReminderConstraints() : constraints.reminders()).isBlank()) {
+            EnforcerToolCallDecision routine = JudgeToolPolicy.evaluateRoutineTool(
+                    toolName, toolInput, policy, objectMapper);
+            if (routine != null) {
+                logToolJudgement(toolName, toolInput, routine,
+                        "[deterministic routine-tool policy]", 0L);
+                return routine;
+            }
+        }
+        if (!isAvailable()) {
+            return EnforcerToolCallDecision.allow(
+                    "No enforcer judge backend is available; failing open");
+        }
+
+        GeneratedVerdict generated;
         try {
-            response = backend.generate(buildToolCallPrompt(toolName, toolInput, policy, context),
-                    SYSTEM_PROMPT);
+            generated = generateVerdict(
+                    buildToolCallPrompt(toolName, toolInput, policy, context, constraints),
+                    toolVerdictSchema());
         } catch (Exception failure) {
-            System.err.println("[enforcer] judge tool-evaluation failure: " + failure.getMessage());
+            EnforcerDiagnostics.alert("[enforcer] judge tool-evaluation failure: " + failure.getMessage());
             fireStateChange();
             throw failure;
         }
-        long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
-        EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(objectMapper, response);
-        logToolJudgement(toolName, toolInput, decision, response, latencyMs);
+        String response = generated.response();
+        EnforcerToolCallDecision decision;
+        if (ResilientJudgeBackend.isErrorResponse(response)) {
+            decision = EnforcerToolCallDecision.allow(backendFailureReason(response));
+            fireStateChange();
+        } else {
+            decision = EnforcerToolCallDecision.parse(objectMapper, response);
+        }
+        logToolJudgement(toolName, toolInput, decision,
+                generated.rawForLog(), generated.latencyMs());
         return decision;
     }
 
     @Override
     public boolean isAvailable() {
-        return backend != null && (readinessFailure == null || readinessFailure.isBlank())
+        return !closed && backend != null && (readinessFailure == null || readinessFailure.isBlank())
                 && backend.isAvailable();
     }
 
@@ -336,7 +556,8 @@ public class EnforcerJudge implements EnforcerEvaluator {
         }
     }
 
-    public void close() {
+    public synchronized void close() {
+        closed = true;
         if (backend != null) {
             backend.close();
         }
@@ -417,13 +638,90 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .build());
     }
 
+    private GeneratedVerdict generateVerdict(
+            String prompt, JudgeBackend.JsonSchema outputSchema) throws Exception {
+        long startNanos = System.nanoTime();
+        String initial = backend.generateJson(prompt, SYSTEM_PROMPT, outputSchema);
+        if (ResilientJudgeBackend.isErrorResponse(initial) || hasParseableJsonObject(initial)) {
+            return new GeneratedVerdict(
+                    initial, initial, (System.nanoTime() - startNanos) / 1_000_000L);
+        }
+
+        String repaired = backend.generateJson(
+                prompt + FORMAT_REPAIR_INSTRUCTION, SYSTEM_PROMPT, outputSchema);
+        String rawForLog = "[INITIAL MALFORMED JUDGE RESPONSE]\n"
+                + StringUtils.truncate(initial, MAX_INVALID_VERDICT_CHARS)
+                + "\n[FORMAT REPAIR RESPONSE]\n"
+                + StringUtils.truncate(repaired, MAX_INVALID_VERDICT_CHARS);
+        return new GeneratedVerdict(
+                repaired, rawForLog, (System.nanoTime() - startNanos) / 1_000_000L);
+    }
+
+    private boolean hasParseableJsonObject(String response) {
+        String json = EnforcerDecision.extractJson(response);
+        if (json == null) {
+            return false;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(json);
+            return root != null && root.isObject();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private JudgeBackend.JsonSchema interventionVerdictSchema() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("compliant").put("type", "boolean");
+        properties.putObject("stop").put("type", "boolean");
+        properties.putObject("severity").put("type", "string")
+                .putArray("enum").add("info").add("error").add("critical");
+        properties.putObject("violations").put("type", "array")
+                .putObject("items").put("type", "string");
+        properties.putObject("correction_prompt").put("type", "string");
+        properties.putObject("reasoning").put("type", "string");
+        ArrayNode required = schema.putArray("required");
+        required.add("compliant").add("stop").add("severity").add("violations")
+                .add("correction_prompt").add("reasoning");
+        return new JudgeBackend.JsonSchema("kompile_intervention_judge", schema, true);
+    }
+
+    private JudgeBackend.JsonSchema toolVerdictSchema() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("action").put("type", "string")
+                .putArray("enum").add("ALLOW").add("BLOCK").add("REWRITE");
+        properties.putObject("reason").put("type", "string");
+        properties.putObject("violations").put("type", "array")
+                .putObject("items").put("type", "string");
+        properties.putObject("correction_prompt").put("type", "string");
+        properties.putObject("rewrittenArgs").putArray("type").add("object").add("null");
+        ArrayNode required = schema.putArray("required");
+        required.add("action").add("reason").add("violations")
+                .add("correction_prompt").add("rewrittenArgs");
+        return new JudgeBackend.JsonSchema("kompile_tool_judge", schema, false);
+    }
+
+    private static String backendFailureReason(String response) {
+        return "Enforcer judge backend unavailable; failing open: "
+                + StringUtils.truncate(response == null ? "empty response" : response, 240);
+    }
+
     private String buildJudgePrompt(String userPrompt, String agentOutput,
                                     EnforcerPolicy policy, int attempt,
-                                    EnforcerConversationContext context) {
+                                    EnforcerConversationContext context, Constraints constraints) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("[ENFORCER RULES]\n")
                 .append(policy.getRules())
                 .append("\n[END ENFORCER RULES]\n\n");
+
+        appendReminderConstraints(prompt, constraints);
+        appendUserGuidance(prompt, constraints);
 
         prompt.append("[USER PROMPT]\n")
                 .append(StringUtils.truncateWithSize(userPrompt, MAX_PROMPT_CHARS))
@@ -437,7 +735,9 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append(StringUtils.truncateWithSize(agentOutput, MAX_OUTPUT_CHARS))
                 .append("\n[END SUBORDINATE LLM RESPONSE]\n\n");
 
-        prompt.append("Evaluate only compliance with the enforcer rules. ")
+        prompt.append("Evaluate only concrete, material compliance with the enforcer rules and applicable active reminder constraints. ")
+                .append("Do not turn inferred preferences, mere incompleteness, or debatable relevance into violations. ")
+                .append("When uncertain, mark compliant=true and stop=false. ")
                 .append("When non-compliant, make correction_prompt specific enough ")
                 .append("for the subordinate LLM to rewrite the answer without asking follow-up questions.");
         return prompt.toString();
@@ -451,6 +751,9 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append(policy.getRules())
                 .append("\n[END ENFORCER RULES]\n\n");
 
+        appendReminderConstraints(prompt);
+        appendUserGuidance(prompt);
+
         prompt.append("[USER PROMPT]\n")
                 .append(StringUtils.truncateWithSize(userPrompt, MAX_PROMPT_CHARS))
                 .append("\n[END USER PROMPT]\n\n");
@@ -463,18 +766,21 @@ public class EnforcerJudge implements EnforcerEvaluator {
 
         prompt.append("This is streamed output that may still be incomplete. ")
                 .append("Only stop the chat when the partial output has already violated ")
-                .append("an enforcer rule in a way that cannot be repaired by later text. ")
+                .append("an enforcer rule or active reminder constraint in a way that cannot be repaired by later text. ")
                 .append("When uncertain, mark compliant=true and stop=false.");
         return prompt.toString();
     }
 
     private String buildToolCallPrompt(String toolName, String toolInput,
                                        EnforcerPolicy policy,
-                                       EnforcerConversationContext context) {
+                                       EnforcerConversationContext context, Constraints constraints) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("[ENFORCER RULES]\n")
                 .append(policy.getRules())
                 .append("\n[END ENFORCER RULES]\n\n");
+
+        appendReminderConstraints(prompt, constraints);
+        appendUserGuidance(prompt, constraints);
 
         appendRecentContext(prompt, context);
 
@@ -484,8 +790,12 @@ public class EnforcerJudge implements EnforcerEvaluator {
                 .append("\n[END PROPOSED MCP TOOL CALL]\n\n");
 
         prompt.append("Decide before execution whether this MCP call may run under the rules. ")
+                .append("Treat every applicable active reminder as an enforceable constraint too. ")
                 .append("Block destructive, out-of-scope, privacy-violating, network, process, ")
                 .append("delegation, or file operations when the user rules prohibit them. ")
+                .append("Allow ordinary bookkeeping and read-only workflow updates unless an explicit rule or active reminder prohibits them. ")
+                .append("Do not block from generalized caution, preference, or a debatable scope judgment: cite the exact concrete conflicting rule. ")
+                .append("Interpret qualified instructions narrowly and in full; when uncertain, ALLOW. ")
                 .append("Return REWRITE only when a safe argument rewrite is obvious.");
         return prompt.toString();
     }
@@ -501,5 +811,82 @@ public class EnforcerJudge implements EnforcerEvaluator {
         prompt.append("[RECENT CHAT MESSAGES]\n")
                 .append(formatted)
                 .append("\n[END RECENT CHAT MESSAGES]\n\n");
+    }
+
+    /** Add active project/session reminders as a distinct enforceable policy source. */
+    private void appendReminderConstraints(StringBuilder prompt) {
+        appendReminderConstraints(prompt, null);
+    }
+
+    private void appendReminderConstraints(StringBuilder prompt, Constraints constraints) {
+        String reminders = constraints == null ? currentReminderConstraints() : constraints.reminders();
+        if (reminders.isBlank()) {
+            return;
+        }
+        prompt.append("[ACTIVE REMINDER CONSTRAINTS]\n")
+                .append("These are user-configured constraints. Evaluate every applicable reminder; ")
+                .append("do not treat them as suggestions. Explicit enforcer rules take precedence ")
+                .append("if they conflict.\n")
+                .append(StringUtils.truncateWithSize(reminders, MAX_CONTEXT_CHARS))
+                .append("\n[END ACTIVE REMINDER CONSTRAINTS]\n\n");
+    }
+
+    private String currentReminderConstraints() {
+        try {
+            String reminders = reminderSupplier.get();
+            return reminders == null ? "" : reminders.strip();
+        } catch (RuntimeException ignored) {
+            // Storage failures cannot manufacture a policy block; judge infrastructure remains fail-open.
+            return "";
+        }
+    }
+
+    /**
+     * Inject the user's durable judge guidance. This is how a human corrects the judge:
+     * it appears in every turn, partial-output, tool-call, and judge-chat prompt as a
+     * high-priority instruction block.
+     */
+    private void appendUserGuidance(StringBuilder prompt) {
+        appendUserGuidance(prompt, null);
+    }
+
+    private void appendUserGuidance(StringBuilder prompt, Constraints constraints) {
+        String guidance = constraints == null ? guidanceSupplier.get() : constraints.guidance();
+        if (guidance == null || guidance.isBlank()) {
+            return;
+        }
+        prompt.append("[USER GUIDANCE TO THE JUDGE]\n")
+                .append("The user has given you the following feedback and instructions. ")
+                .append("Treat it as high-priority context that supplements — but never "
+                        + "contradicts the user's enforcer rules themselves — your evaluation:\n")
+                .append(StringUtils.truncateWithSize(guidance, MAX_CONTEXT_CHARS))
+                .append("\n[END USER GUIDANCE TO THE JUDGE]\n\n");
+    }
+
+    private String buildJudgeChatPrompt(String message) {
+        StringBuilder prompt = new StringBuilder();
+        appendReminderConstraints(prompt);
+        appendUserGuidance(prompt);
+        String history = EnforcerConversationContext.of(judgeChatHistory)
+                .formatForPrompt(MAX_CONTEXT_CHARS);
+        if (!history.isBlank()) {
+            prompt.append("[JUDGE CHAT HISTORY]\n")
+                    .append(history)
+                    .append("\n[END JUDGE CHAT HISTORY]\n\n");
+        }
+        prompt.append("[USER MESSAGE TO THE JUDGE]\n")
+                .append(StringUtils.truncateWithSize(message, MAX_PROMPT_CHARS))
+                .append("\n[END USER MESSAGE TO THE JUDGE]\n\n")
+                .append("Reply conversationally. This is not a compliance evaluation — ")
+                .append("no JSON verdict is expected.");
+        return prompt.toString();
+    }
+
+    private void rememberJudgeChat(String message, String response) {
+        judgeChatHistory.add(new EnforcerConversationContext.Message("user", message));
+        judgeChatHistory.add(new EnforcerConversationContext.Message("judge", response));
+        while (judgeChatHistory.size() > MAX_JUDGE_CHAT_MESSAGES) {
+            judgeChatHistory.remove(0);
+        }
     }
 }

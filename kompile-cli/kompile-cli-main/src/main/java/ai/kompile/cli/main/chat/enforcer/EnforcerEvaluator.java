@@ -30,6 +30,15 @@ public interface EnforcerEvaluator {
         return evaluate(userPrompt, agentOutput, policy, attempt);
     }
 
+    /**
+     * Intercept a proposed MCP tool call before the main chat REPL executes it.
+     * Evaluators that only score final text remain advisory and allow by default.
+     */
+    default EnforcerToolCallDecision evaluateToolCall(
+            String toolName, String toolInput, EnforcerPolicy policy) throws Exception {
+        return EnforcerToolCallDecision.allow("Evaluator has no tool-call policy");
+    }
+
     boolean isAvailable();
 
     /**

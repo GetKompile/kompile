@@ -177,7 +177,16 @@ public class TaskRegistry {
      * COMPLETED or FAILED depending on context.
      */
     public void reconcileWithProcess(TaskRecord record) {
-        if (!record.isActive() || record.getPid() <= 0) return;
+        if (!record.isActive()) return;
+        if (record.getPid() <= 0) {
+            long ownerPid = record.getOwnerPid();
+            if (ownerPid > 0 && !isProcessAlive(ownerPid)) {
+                record.markFailed(-1,
+                        "Supervising process disappeared (pid " + ownerPid + " no longer running)");
+                persist(record);
+            }
+            return;
+        }
 
         if (!isProcessAlive(record.getPid())) {
             // Process is gone — check if there's an output file to determine success
@@ -200,7 +209,7 @@ public class TaskRegistry {
     public int reconcileAll() {
         int changed = 0;
         for (TaskRecord r : readAll()) {
-            if (r.isActive() && r.getPid() > 0) {
+            if (r.isActive() && (r.getPid() > 0 || r.getOwnerPid() > 0)) {
                 TaskRecord.Status before = r.getStatus();
                 reconcileWithProcess(r);
                 if (r.getStatus() != before) changed++;

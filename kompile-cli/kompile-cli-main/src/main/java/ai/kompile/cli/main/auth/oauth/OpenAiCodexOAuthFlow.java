@@ -6,11 +6,14 @@
 package ai.kompile.cli.main.auth.oauth;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.common.auth.OAuthCredentialLifecycle;
+import ai.kompile.cli.main.auth.OAuthCredentialIdentity;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,6 +35,7 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     private static final String SCOPE = "openid profile email offline_access";
     private static final String ACCOUNT_CLAIM = "https://api.openai.com/auth";
     private static final int DEVICE_TIMEOUT_SECONDS = 15 * 60;
+    private static final long TOKEN_EXPIRY_SKEW_SECONDS = 60;
 
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
@@ -263,33 +267,41 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                         "grant_type", "refresh_token",
                         "client_id", CLIENT_ID,
                         "refresh_token", credential.getRefresh()))));
-        return parseToken(response, "OpenAI Codex token refresh", credential.getRefresh());
+        return parseToken(response, "OpenAI Codex token refresh", credential);
     }
 
     private ManagedCredential parseToken(
             OAuthSupport.Response response,
             String context,
-            String previousRefreshToken) throws IOException {
+            ManagedCredential previous) throws IOException {
         OAuthSupport.requireSuccess(response, context);
         JsonNode body = OAuthSupport.json(response, context);
         String access = OAuthSupport.requiredText(body, "access_token", context);
         String refresh = OAuthSupport.optionalText(body, "refresh_token");
         if (refresh == null) {
-            refresh = previousRefreshToken;
+            refresh = previous == null ? null : previous.getRefresh();
         }
         if (refresh == null || refresh.isBlank()) {
             throw new IOException(context + " is missing 'refresh_token'");
         }
         long expiresIn = OAuthSupport.requiredPositiveLong(body, "expires_in", context);
-        String accountId = extractAccountId(access);
-        return ManagedCredential.oauth(
+        Map<String, String> metadata = OAuthCredentialIdentity.tokenMetadata(PROVIDER_ID, body, previous);
+        if (!metadata.containsKey("accountId")) {
+            throw new IOException(context + " carries no ChatGPT account id");
+        }
+        return OAuthCredentialIdentity.normalize(PROVIDER_ID, ManagedCredential.oauth(
                 access,
                 refresh,
                 OAuthSupport.expiryFromNow(expiresIn, 0L),
-                Map.of("accountId", accountId));
+                metadata));
     }
 
     private static String extractAccountId(String accessToken) throws IOException {
+        return extractAccountId(accessToken, false);
+    }
+
+    private static String extractAccountId(String accessToken, boolean rejectExpiredToken)
+            throws IOException {
         try {
             String[] parts = accessToken.split("\\.");
             if (parts.length != 3) {
@@ -297,6 +309,9 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
             }
             byte[] decoded = Base64.getUrlDecoder().decode(parts[1]);
             JsonNode payload = OAuthSupport.MAPPER.readTree(decoded);
+            if (rejectExpiredToken) {
+                requireLiveToken(payload);
+            }
             JsonNode auth = payload.get(ACCOUNT_CLAIM);
             String accountId = auth == null ? null : OAuthSupport.optionalText(auth, "chatgpt_account_id");
             if (accountId == null) {
@@ -322,7 +337,31 @@ public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     }
 
     static RequestAuth toRequestAuthFromAccessToken(String accessToken) throws IOException {
-        return requestAuth(accessToken, extractAccountId(accessToken));
+        return requestAuth(accessToken, extractAccountId(accessToken, true));
+    }
+
+    /**
+     * Legacy stored tokens have no refresh flow, so an expired one can only be
+     * fixed by signing in again. Refuse to send a dead token upstream instead
+     * of surfacing a bare HTTP 401 from model discovery and chat.
+     */
+    private static void requireLiveToken(JsonNode payload) throws IOException {
+        JsonNode exp = payload.get("exp");
+        if (exp == null || !exp.canConvertToLong()) {
+            return;
+        }
+        long expiresAtSeconds = exp.asLong();
+        long nowSeconds = System.currentTimeMillis() / 1000L;
+        if (expiresAtSeconds <= nowSeconds + TOKEN_EXPIRY_SKEW_SECONDS) {
+            String message = "The stored OpenAI Codex access token expired on "
+                    + (expiresAtSeconds >= 0 && expiresAtSeconds <= Long.MAX_VALUE / 1000L
+                    ? Instant.ofEpochMilli(expiresAtSeconds * 1000L) : "an invalid date")
+                    + "; run 'kompile auth login openai-codex' to sign in again";
+            if (expiresAtSeconds <= nowSeconds) {
+                throw new OAuthCredentialLifecycle.ReauthenticationRequiredException(message);
+            }
+            throw new IOException(message);
+        }
     }
 
     @Override

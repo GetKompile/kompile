@@ -208,8 +208,8 @@ class ProjectServiceSubcommandRegistrationTest {
         Files.createDirectories(spDir);
         Path serviceDir = tmp.resolve("data/logs");
         Files.createDirectories(serviceDir);
-        Path stagingErr = serviceDir.resolve("fpna-staging.err.log");
-        Path appOut = serviceDir.resolve("fpna-app.out.log");
+        Path stagingErr = serviceDir.resolve("service-staging.err.log");
+        Path appOut = serviceDir.resolve("planning-app.out.log");
         Files.write(stagingErr, List.of("staging line"));
         Files.write(appOut, List.of("app line"));
 
@@ -217,9 +217,9 @@ class ProjectServiceSubcommandRegistrationTest {
         cmd.subprocessLogsBaseDir = spDir;
 
         Map<String, Path> discovered = cmd.discoverLogFiles(tmp);
-        assertTrue(discovered.containsKey("data/logs/fpna-staging.err.log"),
+        assertTrue(discovered.containsKey("data/logs/service-staging.err.log"),
                 "project staging stderr log must be discovered by default; got: " + discovered.keySet());
-        assertTrue(discovered.containsKey("data/logs/fpna-app.out.log"),
+        assertTrue(discovered.containsKey("data/logs/planning-app.out.log"),
                 "project app stdout log must be discovered by default; got: " + discovered.keySet());
     }
 
@@ -258,9 +258,9 @@ class ProjectServiceSubcommandRegistrationTest {
     void logsCommand_monitorSelectionKeepsLatestSubprocessLogAndServiceLogs(@TempDir Path tmp) throws IOException {
         Path oldEmbedding = tmp.resolve("embedding-old.log");
         Path newEmbedding = tmp.resolve("embedding-new.log");
-        Path serviceErr = tmp.resolve("fpna-staging.err.log");
+        Path serviceErr = tmp.resolve("service-staging.err.log");
         Path oldStagingOut = tmp.resolve("staging-server.out.log");
-        Path newStagingOut = tmp.resolve("kompile-fpna-v12-staging.out.log");
+        Path newStagingOut = tmp.resolve("kompile-project-alpha-staging.out.log");
         Files.write(oldEmbedding, List.of("old"));
         Files.write(newEmbedding, List.of("new"));
         Files.write(serviceErr, List.of("service"));
@@ -275,19 +275,19 @@ class ProjectServiceSubcommandRegistrationTest {
         Map<String, Path> selected = ProjectServiceCommand.Logs.selectMonitorLogFiles(Map.of(
                 "embedding/old.log", oldEmbedding,
                 "embedding/new.log", newEmbedding,
-                "data/logs/fpna-staging.err.log", serviceErr,
+                "data/logs/service-staging.err.log", serviceErr,
                 "data/logs/staging-server.out.log", oldStagingOut,
-                "data/logs/kompile-fpna-v12-staging.out.log", newStagingOut));
+                "data/logs/kompile-project-alpha-staging.out.log", newStagingOut));
 
         assertFalse(selected.containsKey("embedding/old.log"),
                 "default monitor scan must not include stale historical subprocess logs");
         assertEquals(newEmbedding, selected.get("embedding/new.log"),
                 "default monitor scan should keep the newest log for each subprocess type");
-        assertEquals(serviceErr, selected.get("data/logs/fpna-staging.err.log"),
+        assertEquals(serviceErr, selected.get("data/logs/service-staging.err.log"),
                 "service stderr logs should remain selected independently");
         assertFalse(selected.containsKey("data/logs/staging-server.out.log"),
                 "default monitor scan should prefer the latest staging stdout log over stale generic logs");
-        assertEquals(newStagingOut, selected.get("data/logs/kompile-fpna-v12-staging.out.log"),
+        assertEquals(newStagingOut, selected.get("data/logs/kompile-project-alpha-staging.out.log"),
                 "default monitor scan should keep the newest staging stdout log");
     }
 

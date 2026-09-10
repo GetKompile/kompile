@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,21 +44,28 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class ToolResultStore {
 
+    private static final int DEFAULT_MAX_SUMMARY_ENTRIES = 200;
+    private static final int DEFAULT_MAX_SUMMARY_CHARS = 32_768;
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
                     .withZone(ZoneId.systemDefault());
 
     private final String sessionId;
     private final Path resultDir;
-    private final AtomicInteger counter = new AtomicInteger(0);
+    private final AtomicInteger counter;
     private final Map<String, Path> savedResults = new ConcurrentHashMap<>();
 
     public ToolResultStore(String sessionId) {
-        this.sessionId = sessionId;
-        this.resultDir = KompileHome.homeDirectory().toPath()
+        this(sessionId, KompileHome.homeDirectory().toPath()
                 .resolve("conversations")
                 .resolve(sessionId)
-                .resolve("tool-results");
+                .resolve("tool-results"));
+    }
+
+    ToolResultStore(String sessionId, Path resultDir) {
+        this.sessionId = sessionId;
+        this.resultDir = resultDir.toAbsolutePath().normalize();
+        this.counter = new AtomicInteger(maxIndexedStep());
     }
 
     /**
@@ -160,21 +168,68 @@ public class ToolResultStore {
      * Generate a summary of all saved results for injection into compacted context.
      */
     public String generateResultsSummary() {
+        int maxEntries = Math.max(1, Integer.getInteger(
+                "kompile.chat.maxToolResultSummaryEntries", DEFAULT_MAX_SUMMARY_ENTRIES));
+        int maxChars = Math.max(1_024, Integer.getInteger(
+                "kompile.chat.maxToolResultSummaryChars", DEFAULT_MAX_SUMMARY_CHARS));
+        return generateResultsSummary(maxEntries, maxChars);
+    }
+
+    String generateResultsSummary(int maxEntries, int maxChars) {
         List<ResultEntry> results = listResults();
         if (results.isEmpty()) return "";
 
+        // A resumed chat creates a fresh store instance. Older versions reset the
+        // step counter and appended the same result paths on every turn, so retain
+        // only the newest index record for each durable file.
+        Map<Path, ResultEntry> uniqueByFile = new LinkedHashMap<>();
+        for (ResultEntry result : results) {
+            Path key = result.file.toAbsolutePath().normalize();
+            uniqueByFile.remove(key);
+            uniqueByFile.put(key, result);
+        }
+        List<ResultEntry> unique = new ArrayList<>(uniqueByFile.values());
+        int firstIncluded = Math.max(0, unique.size() - Math.max(1, maxEntries));
+
         StringBuilder sb = new StringBuilder();
         sb.append("Previous tool results saved to: ").append(resultDir).append("\n");
-        sb.append("Use the `read` tool to access any of these files:\n\n");
+        sb.append("Use the `read` tool to access these recent files; the complete "
+                + "index is at ").append(resultDir.resolve("_index.txt")).append(":\n\n");
 
-        for (ResultEntry entry : results) {
+        if (firstIncluded > 0) {
+            sb.append("  ... ").append(firstIncluded)
+                    .append(" older unique result files omitted from this prompt ...\n");
+        }
+
+        for (int i = firstIncluded; i < unique.size(); i++) {
+            ResultEntry entry = unique.get(i);
             sb.append(String.format("  %04d  %-20s  %s  %s%n",
                     entry.step, entry.toolName,
                     entry.isError ? "ERROR" : "OK",
                     entry.file));
         }
 
-        return sb.toString();
+        return limitSummary(sb.toString(), Math.max(1_024, maxChars));
+    }
+
+    private int maxIndexedStep() {
+        int max = 0;
+        for (ResultEntry entry : listResults()) {
+            max = Math.max(max, entry.step);
+        }
+        return max;
+    }
+
+    private String limitSummary(String summary, int maxChars) {
+        if (summary.length() <= maxChars) return summary;
+        String marker = "\n  ... additional older entries omitted to keep the system prompt "
+                + "bounded; read " + resultDir.resolve("_index.txt")
+                + " for the complete index ...\n";
+        int headerEnd = summary.indexOf("\n\n");
+        String header = headerEnd >= 0 ? summary.substring(0, headerEnd + 2) : "";
+        int tailChars = Math.max(0, maxChars - header.length() - marker.length());
+        int tailStart = Math.max(header.length(), summary.length() - tailChars);
+        return header + marker + summary.substring(tailStart);
     }
 
     private void appendToIndex(int step, String toolName, String callId,

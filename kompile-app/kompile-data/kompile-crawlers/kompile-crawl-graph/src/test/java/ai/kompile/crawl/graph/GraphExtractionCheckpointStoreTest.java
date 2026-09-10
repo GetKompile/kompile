@@ -61,9 +61,9 @@ class GraphExtractionCheckpointStoreTest {
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .llmProvider("opencode")
                 .modelName("deepseek-v4-flash-free")
-                .schemaPresetId("fpna")
+                .schemaPresetId("planning")
                 .build();
-        RetrievedDoc doc = doc("doc-random-1", "/fpna/a.xlsx", 0, "Revenue forecast text");
+        RetrievedDoc doc = doc("doc-random-1", "/planning/a.xlsx", 0, "Revenue forecast text");
 
         store.recordCompletedBatch(42L, config, List.of(doc), "crawl-1", 12, 8);
 
@@ -77,9 +77,9 @@ class GraphExtractionCheckpointStoreTest {
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .llmProvider("local")
                 .modelName("lfm2.5-1.2b-instruct")
-                .schemaPresetId("fpna")
+                .schemaPresetId("planning")
                 .build();
-        RetrievedDoc doc = doc("doc-random-1", "/fpna/a.xlsx", 0, "Revenue forecast text");
+        RetrievedDoc doc = doc("doc-random-1", "/planning/a.xlsx", 0, "Revenue forecast text");
 
         store.recordCompletedBatch(42L, config, List.of(doc), "crawl-1", 12, 8);
         Path expected = tempDir.resolve("data/graph/42/graph-extraction-checkpoints.json");
@@ -96,9 +96,9 @@ class GraphExtractionCheckpointStoreTest {
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .llmProvider("local")
                 .modelName("lfm2.5-1.2b-instruct")
-                .schemaPresetId("fpna")
+                .schemaPresetId("planning")
                 .build();
-        RetrievedDoc doc = doc("doc-a", "/fpna/a.xlsx", 0, "same text");
+        RetrievedDoc doc = doc("doc-a", "/planning/a.xlsx", 0, "same text");
         store.recordCompletedBatch(42L, config, List.of(doc), "crawl-1", 1, 1);
 
         Path secondProject = tempDir.resolve("second-project");
@@ -111,8 +111,8 @@ class GraphExtractionCheckpointStoreTest {
 
     @Test
     void chunkKeyIgnoresRegeneratedDocumentIdWhenStableMetadataExists() {
-        RetrievedDoc firstRun = doc("random-id-run-1", "/fpna/a.xlsx", 3, "same text");
-        RetrievedDoc secondRun = doc("random-id-run-2", "/fpna/a.xlsx", 3, "same text");
+        RetrievedDoc firstRun = doc("random-id-run-1", "/planning/a.xlsx", 3, "same text");
+        RetrievedDoc secondRun = doc("random-id-run-2", "/planning/a.xlsx", 3, "same text");
 
         assertEquals(store.chunkKey(firstRun), store.chunkKey(secondRun));
     }
@@ -122,14 +122,14 @@ class GraphExtractionCheckpointStoreTest {
         GraphExtractionConfig original = GraphExtractionConfig.builder()
                 .llmProvider("opencode")
                 .modelName("deepseek-v4-flash-free")
-                .schemaPresetId("fpna")
+                .schemaPresetId("planning")
                 .build();
         GraphExtractionConfig changedModel = GraphExtractionConfig.builder()
                 .llmProvider("opencode")
                 .modelName("another-model")
-                .schemaPresetId("fpna")
+                .schemaPresetId("planning")
                 .build();
-        RetrievedDoc doc = doc("doc-a", "/fpna/a.xlsx", 1, "same text");
+        RetrievedDoc doc = doc("doc-a", "/planning/a.xlsx", 1, "same text");
 
         store.recordCompletedBatch(null, original, List.of(doc), "crawl-1", 1, 2);
 
@@ -158,6 +158,24 @@ class GraphExtractionCheckpointStoreTest {
 
         assertNotEquals(store.configFingerprint(first), store.configFingerprint(changed),
                 "changing canonical entity/relation facts must invalidate extraction checkpoints");
+    }
+
+    @Test
+    void fingerprintIncludesHierarchyAndConnectionFamilyMetadata() {
+        GraphExtractionConfig first = GraphExtractionConfig.builder()
+                .standardizedSchema(new GraphSchema(
+                        List.of(new NodeType("EMPLOYEE", "Employee", null, "PERSON")),
+                        List.of(new RelationshipType("EMAILED", "Sent email", null,
+                                List.of(), "COMMUNICATION")), null))
+                .build();
+        GraphExtractionConfig changed = GraphExtractionConfig.builder()
+                .standardizedSchema(new GraphSchema(
+                        List.of(new NodeType("EMPLOYEE", "Employee", null, "GROUP")),
+                        List.of(new RelationshipType("EMAILED", "Sent email", null,
+                                List.of(), "SOCIAL")), null))
+                .build();
+
+        assertNotEquals(store.configFingerprint(first), store.configFingerprint(changed));
     }
 
     @Test

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.coordination;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
@@ -241,7 +242,7 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                                 p.getAgentName(),
                                 StringUtils.truncate(p.getCommand(), 30),
                                 p.getState(),
-                                formatAge(p.getStartedAt()));
+                                FormatUtils.formatDuration(p.getDuration()));
                     }
                     System.out.println("\n" + processes.size() + " process(es)");
                 }

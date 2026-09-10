@@ -21,6 +21,14 @@ import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.GraphMergeStrategy;
 import ai.kompile.core.graphrag.agent.MultiAgentGraphBuilder.MergedGraphResult;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent.ExtractionConfig;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.graphbuilder.BuilderConfig;
+import ai.kompile.core.graphbuilder.ProposedTriple;
+import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Entity;
+import ai.kompile.knowledgegraph.builder.service.ManagedExtractionInputs;
+import ai.kompile.knowledgegraph.builder.service.ExtractionJobService;
+import ai.kompile.knowledgegraph.builder.domain.ExtractionJob;
+import ai.kompile.knowledgegraph.builder.controller.KnowledgeGraphBuilderController.ExtractionJobResponse;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService.AgentInfo;
 import ai.kompile.knowledgegraph.agent.MultiAgentExtractionService.PersistenceSummary;
@@ -70,6 +78,9 @@ public class MultiAgentGraphController {
     /** Optional — registry of LLM providers for extraction. */
     @Autowired(required = false)
     private ExtractionLlmServiceRegistry llmServiceRegistry;
+
+    @Autowired(required = false)
+    private ExtractionJobService jobService;
 
     @Autowired
     public MultiAgentGraphController(
@@ -183,6 +194,140 @@ public class MultiAgentGraphController {
         return ResponseEntity.ok(
                 new ExtractAndPersistResponse(ExtractionResponse.from(result), summary, null));
     }
+
+    /** Resolve full source text and validate managed capabilities BEFORE host model inference. */
+    @PostMapping("/prepare-host")
+    public ResponseEntity<?> prepareHost(@RequestBody HostExtractionRequest request) {
+        try {
+            List<RetrievedDoc> chunks = hostInputs(request);
+            return ResponseEntity.ok(Map.of("execution", "HOST_NATIVE_CHAT", "chunkTexts", chunks,
+                    "synchronous", true, "credentials", "host-only"));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** Merge host-produced graph with explicitly selected managed agents; never accepts credentials. */
+    @PostMapping("/complete-host")
+    public ResponseEntity<?> completeHost(@RequestBody HostExtractionRequest request) {
+        ExtractionJob job = null;
+        try {
+            List<RetrievedDoc> chunks = hostInputs(request);
+            checkHostCancellation(null);
+            validateHostGraph(request.graph());
+            if (request.createJob()) {
+                job = jobService.createJob(request.extraction().factSheetId(), "native-chat", request.jobConfig());
+                jobService.startJob(job.getJobId(), chunks.size());
+            }
+            MergedGraphResult result = extractionService.mergeHostGraph(request.graph(), chunks,
+                    request.extraction().agentIds(), request.extraction().mergeStrategy(), buildConfig(request.extraction()));
+            checkHostCancellation(job);
+            validateHostGraph(result.mergedGraph());
+            Map<String, Object> response = new java.util.LinkedHashMap<>();
+            response.put("execution", "HOST_NATIVE_CHAT");
+            response.put("synchronous", true);
+            response.put("extraction", ExtractionResponse.from(result));
+            if (request.persist()) {
+                PersistenceSummary summary = extractionService.persistToGraph(result, knowledgeGraphService,
+                        request.extraction().factSheetId());
+                response.put("persistence", summary);
+                if (!summary.errors().isEmpty()) {
+                    response.put("error", "Managed graph persistence was incomplete");
+                    return ResponseEntity.ok(response);
+                }
+            }
+            if (job != null) {
+                Map<String, Entity> entities = new HashMap<>();
+                result.mergedGraph().getEntities().forEach(e -> entities.put(e.getId(), e));
+                List<ProposedTriple> triples = new ArrayList<>();
+                for (var edge : result.mergedGraph().getRelationships()) {
+                    Entity source = entities.get(edge.getSource());
+                    Entity target = entities.get(edge.getTarget());
+                    if (source == null || target == null) throw new IllegalArgumentException("Merged graph has dangling endpoints");
+                    triples.add(new ProposedTriple(source.getTitle(), source.getType(), edge.getType(),
+                            target.getTitle(), target.getType(), edge.getConfidence() == null ? 0.5 : edge.getConfidence(),
+                            null, null, edge.getDescription(), Map.of("execution", "HOST_NATIVE_CHAT",
+                                    "sourceChunkIds", chunks.stream().map(RetrievedDoc::getId).toList())));
+                }
+                checkHostCancellation(job);
+                int count = jobService.createProposalsFromTriples(job.getJobId(), job.getFactSheetId(), triples);
+                checkHostCancellation(job);
+                jobService.updateJobProgress(job.getJobId(), chunks.size(), count);
+                jobService.completeJob(job.getJobId(), count);
+                response.put("job", ExtractionJobResponse.from(jobService.getJob(job.getJobId()).orElseThrow()));
+            }
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            boolean cancelled = e instanceof java.util.concurrent.CancellationException || Thread.currentThread().isInterrupted();
+            if (job != null) jobService.getJob(job.getJobId()).filter(j -> !j.isTerminal()).ifPresent(j -> {
+                if (cancelled) jobService.cancelJob(j.getJobId());
+                else jobService.failJob(j.getJobId(), "Host extraction completion failed");
+            });
+            // Model/provider exceptions may contain credentials or full request bodies.
+            log.warn("Host graph completion failed ({})", e.getClass().getSimpleName());
+            return ResponseEntity.status(cancelled ? 409 : 400).body(Map.of("error",
+                    cancelled ? "Host graph completion cancelled" : "Host graph completion failed"));
+        }
+    }
+
+    private void checkHostCancellation(ExtractionJob job) {
+        if (Thread.currentThread().isInterrupted() || job != null && jobService.getJob(job.getJobId())
+                .map(ExtractionJob::isTerminal).orElse(true)) {
+            throw new java.util.concurrent.CancellationException("Host extraction is no longer runnable");
+        }
+    }
+
+    private List<RetrievedDoc> hostInputs(HostExtractionRequest request) {
+        if (request == null || request.extraction() == null) throw new IllegalArgumentException("extraction is required");
+        ExtractionRequest extraction = request.extraction();
+        extractionService.validateHostSelection(extraction.agentIds(), extraction.mergeStrategy());
+        if (request.persist() || request.createJob()) {
+            if (extraction.factSheetId() == null || extraction.factSheetId() <= 0)
+                throw new IllegalArgumentException("A positive factSheetId is required for managed writes");
+            if (knowledgeGraphService == null) throw new IllegalStateException("Managed graph storage is unavailable");
+        }
+        if (request.persist() && request.createJob())
+            throw new IllegalArgumentException("Use either direct persistence or job proposals, not both");
+        if (request.createJob()) {
+            if (jobService == null) throw new IllegalStateException("Managed extraction jobs are unavailable");
+            if (jobService.hasRunningJob(extraction.factSheetId())) throw new IllegalStateException("A job is already running");
+            BuilderConfig config = request.jobConfig();
+            if (config == null || config.modelProvider() == null || config.modelProvider().isBlank()
+                    || config.modelName() == null || config.modelName().isBlank())
+                throw new IllegalArgumentException("Host jobs require the resolved provider and exact model");
+            if ((config.additionalOptions() != null && !config.additionalOptions().isEmpty()) || config.customPrompt() != null)
+                throw new IllegalArgumentException("Host job records accept model selection and proposal settings only");
+        }
+        return ManagedExtractionInputs.resolve(knowledgeGraphService, extraction.factSheetId(), request.chunkIds(), buildChunks(extraction));
+    }
+
+    private static void validateHostGraph(Graph graph) {
+        if (graph == null || graph.getEntities() == null || graph.getRelationships() == null
+                || graph.getEntities().size() > 4000 || graph.getRelationships().size() > 10000)
+            throw new IllegalArgumentException("A bounded graph with entities and relationships is required");
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (var entity : graph.getEntities()) {
+            if (entity == null || entity.getId() == null || entity.getId().isBlank() || !ids.add(entity.getId())
+                    || entity.getTitle() == null || entity.getTitle().isBlank()
+                    || entity.getType() == null || entity.getType().isBlank())
+                throw new IllegalArgumentException("Invalid or duplicate host entity");
+            validateConfidence(entity.getConfidence());
+        }
+        for (var edge : graph.getRelationships()) {
+            if (edge == null || !ids.contains(edge.getSource()) || !ids.contains(edge.getTarget())
+                    || edge.getType() == null || edge.getType().isBlank())
+                throw new IllegalArgumentException("Invalid host relationship endpoints/type");
+            validateConfidence(edge.getConfidence());
+        }
+    }
+
+    private static void validateConfidence(Double confidence) {
+        if (confidence != null && (!Double.isFinite(confidence) || confidence < 0 || confidence > 1))
+            throw new IllegalArgumentException("Confidence must be finite and in [0,1]");
+    }
+
+    public record HostExtractionRequest(ExtractionRequest extraction, List<String> chunkIds,
+            boolean persist, boolean createJob, BuilderConfig jobConfig, Graph graph) {}
 
     // ═══════════════════════════════════════════════════════════════════════════
     // HTML file extraction endpoint

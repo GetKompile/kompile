@@ -103,7 +103,7 @@ public class ConfigureCommand implements Callable<Integer> {
                         "Enforcer: project rules, banned tools, judge mode, semantic matching",
                         "Judge/performance harness: judge backend and quality scoring",
                         "Code indexing: index this or another source tree",
-                        "MCP: choose profile/schema and generate launch settings",
+                        "MCP: choose profile/schema and manage custom servers",
                         "Tool gateway: LLM-based tool evaluation rules",
                         "Agent defaults: model and per-model thinking for Codex, Claude, OpenCode",
                         "Show status only"
@@ -564,7 +564,7 @@ public class ConfigureCommand implements Callable<Integer> {
     }
 
     @Command(name = "mcp", mixinStandardHelpOptions = true,
-            description = "Guide MCP profile/schema selection and print launch settings.")
+            description = "Guide MCP profile/schema selection and custom-server setup.")
     public static class McpConfigureCommand implements Callable<Integer> {
         @Option(names = "--agent", description = "Target agent: claude, codex, gemini, qwen, opencode")
         String agent;
@@ -614,6 +614,11 @@ public class ConfigureCommand implements Callable<Integer> {
                 System.out.println();
                 System.out.println("For managed passthrough, Kompile injects these settings automatically:");
                 System.out.println("  kompile chat --mode passthrough --agent " + selectedAgent);
+                System.out.println();
+                System.out.println("Install and manage custom MCP servers with:");
+                System.out.println("  kompile mcp add <name> -- <command> [args...]");
+                System.out.println("  kompile mcp add --transport http <name> <url>");
+                System.out.println("  kompile mcp list");
                 return 0;
             } catch (Exception e) {
                 System.err.println("MCP setup failed: " + e.getMessage());

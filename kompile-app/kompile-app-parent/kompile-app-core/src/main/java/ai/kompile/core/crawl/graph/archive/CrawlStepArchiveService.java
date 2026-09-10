@@ -17,6 +17,7 @@
 package ai.kompile.core.crawl.graph.archive;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import org.springframework.ai.document.Document;
 
 import java.util.List;
@@ -95,5 +96,33 @@ public interface CrawlStepArchiveService {
             String name,
             Long factSheetId,
             List<String> archivedSteps,
-            Map<String, Object> rawSnapshot) {}
+            Map<String, Object> rawSnapshot,
+            GraphSchema frozenGraphSchema,
+            Map<String, Object> corpusTopicEvidence,
+            Boolean deriveOntology) {
+        /** Binary/source-compatible constructor for schema-v1 archive implementations. */
+        public ArchivedJobSnapshot(
+                String jobId, String name, Long factSheetId,
+                List<String> archivedSteps, Map<String, Object> rawSnapshot) {
+            this(jobId, name, factSheetId, archivedSteps, rawSnapshot, null, Map.of(), null);
+        }
+
+        /** Source-compatible constructor for schema-v2 callers predating policy persistence. */
+        public ArchivedJobSnapshot(
+                String jobId, String name, Long factSheetId,
+                List<String> archivedSteps, Map<String, Object> rawSnapshot,
+                GraphSchema frozenGraphSchema) {
+            this(jobId, name, factSheetId, archivedSteps, rawSnapshot,
+                    frozenGraphSchema, Map.of(), null);
+        }
+
+        /** Source-compatible constructor for schema-v2 callers with ontology policy persistence. */
+        public ArchivedJobSnapshot(
+                String jobId, String name, Long factSheetId,
+                List<String> archivedSteps, Map<String, Object> rawSnapshot,
+                GraphSchema frozenGraphSchema, Boolean deriveOntology) {
+            this(jobId, name, factSheetId, archivedSteps, rawSnapshot,
+                    frozenGraphSchema, Map.of(), deriveOntology);
+        }
+    }
 }

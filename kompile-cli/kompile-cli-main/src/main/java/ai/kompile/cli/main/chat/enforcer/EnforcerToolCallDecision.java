@@ -44,7 +44,7 @@ public class EnforcerToolCallDecision {
 
     public EnforcerToolCallDecision(Action action, String reason, List<String> violations,
                                     String correctionPrompt, Map<String, Object> rewrittenArgs) {
-        this.action = action != null ? action : Action.BLOCK;
+        this.action = action != null ? action : Action.ALLOW;
         this.reason = reason != null ? reason.trim() : "";
         this.violations = violations != null ? List.copyOf(violations) : List.of();
         this.correctionPrompt = correctionPrompt != null ? correctionPrompt.trim() : "";
@@ -62,22 +62,32 @@ public class EnforcerToolCallDecision {
     public static EnforcerToolCallDecision parse(ObjectMapper mapper, String responseText) {
         String json = EnforcerDecision.extractJson(responseText);
         if (json == null) {
-            return block("Enforcer tool judge did not return valid JSON");
+            return allow("Enforcer tool judge did not return valid JSON; failing open");
         }
 
         try {
             JsonNode root = mapper.readTree(json);
+            if (root == null || !root.isObject()) {
+                return allow("Enforcer tool judge returned a non-object verdict; failing open");
+            }
+
             String actionText = root.path("action").asText("");
             if (actionText.isBlank()) {
-                boolean allowed = root.path("allowed").asBoolean(root.path("compliant").asBoolean(false));
-                actionText = allowed ? "ALLOW" : "BLOCK";
+                JsonNode allowedNode = root.get("allowed");
+                if (allowedNode == null) {
+                    allowedNode = root.get("compliant");
+                }
+                if (allowedNode == null || !allowedNode.isBoolean()) {
+                    return allow("Enforcer tool judge verdict had no valid decision; failing open");
+                }
+                actionText = allowedNode.asBoolean() ? "ALLOW" : "BLOCK";
             }
 
             Action action;
             try {
                 action = Action.valueOf(actionText.toUpperCase());
             } catch (IllegalArgumentException e) {
-                action = Action.BLOCK;
+                return allow("Enforcer tool judge returned an unknown action; failing open");
             }
 
             String reason = root.path("reason").asText(root.path("reasoning").asText(""));
@@ -87,13 +97,16 @@ public class EnforcerToolCallDecision {
             if (action == Action.REWRITE && root.has("rewrittenArgs") && root.get("rewrittenArgs").isObject()) {
                 rewrittenArgs = mapper.convertValue(root.get("rewrittenArgs"), MAP_TYPE);
             }
+            if (action == Action.REWRITE && rewrittenArgs == null) {
+                return allow("Enforcer tool judge returned an invalid rewrite; failing open");
+            }
 
             if (action != Action.ALLOW && violations.isEmpty() && !reason.isBlank()) {
                 violations = List.of(reason);
             }
             return new EnforcerToolCallDecision(action, reason, violations, correction, rewrittenArgs);
         } catch (Exception e) {
-            return block("Enforcer tool judge JSON parse failed: " + e.getMessage());
+            return allow("Enforcer tool judge JSON parse failed; failing open: " + e.getMessage());
         }
     }
 

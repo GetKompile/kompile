@@ -75,8 +75,6 @@ internal object SdxPlatformRuntimeOwner {
 
     private const val STATUS_OK = 0
     private const val RESOLVED_MODEL_SCHEMA = "sdx-resolved-text-model-v1"
-    private const val TENSOR_G3_TARGET_PROFILE = "android-arm64-nnapi-accelerator"
-    private const val TENSOR_G3_MAX_PROMPT_TOKENS = 256
 
     fun open(
         context: Context,
@@ -127,13 +125,13 @@ internal object SdxPlatformRuntimeOwner {
             }
 
             checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.PREPARE_DEVICE_CACHE)
-            val modelCache = File(applicationContext.noBackupFilesDir, "sdx-model-cache")
+            val modelCache = SdxStorageLayout.modelCacheRoot(applicationContext)
             require(modelCache.isDirectory || modelCache.mkdirs()) {
                 "Unable to create the app-owned SDX model cache: ${modelCache.absolutePath}"
             }
-            val deviceCache = File(applicationContext.codeCacheDir, "sdx-device-compilation")
+            val deviceCache = SdxStorageLayout.dspCacheRoot(applicationContext)
             require(deviceCache.isDirectory || deviceCache.mkdirs()) {
-                "Unable to create the device compilation cache: ${deviceCache.absolutePath}"
+                "Unable to create the DSP disk cache: ${deviceCache.absolutePath}"
             }
 
             val library = SdxAndroidLlmLibrary.configure(applicationContext, effectiveDiagnosticMode)
@@ -411,11 +409,6 @@ internal object SdxPlatformRuntimeOwner {
                 tokenCount.status,
                 "SDX could not count rendered prompt tokens"
             )
-            val maxPromptTokens = if (BuildConfig.SDX_TARGET_PROFILE == TENSOR_G3_TARGET_PROFILE) {
-                TENSOR_G3_MAX_PROMPT_TOKENS
-            } else {
-                Int.MAX_VALUE
-            }
             trace.record(
                 "render_prompt_return",
                 attemptId,
@@ -425,17 +418,9 @@ internal object SdxPlatformRuntimeOwner {
                     "prompt_utf8_sha256" to utf8Sha256(prompt),
                     "prompt_utf8_hex_prefix" to utf8HexPrefix(prompt),
                     "prompt_tokens" to tokenCount.count,
-                    "max_prompt_tokens" to maxPromptTokens
+                    "context_policy" to "native_fixed_plan_rolling_window"
                 )
             )
-            if (tokenCount.count > maxPromptTokens) {
-                throw ChatException(
-                    "Rendered chat prompt has ${tokenCount.count} tokens; the " +
-                        "${BuildConfig.SDX_TARGET_PROFILE} safety limit is $maxPromptTokens. " +
-                        "The request was stopped before NNAPI execution to prevent a low-memory termination. " +
-                        "Start a new conversation or ask a shorter graph question."
-                )
-            }
 
             val callbackFailure = AtomicReference<Throwable?>()
             val chunkCount = AtomicInteger(0)

@@ -25,17 +25,33 @@ public interface ChannelAdapter {
 
     boolean isRunning();
 
+    default boolean isReady() {
+        return isRunning();
+    }
+
+    default String getLastError() {
+        return null;
+    }
+
     AdapterConfig getAdapterConfig();
 
     void updateConfig(AdapterConfig config);
 
     /**
-     * Proactively send a message to a target on this channel (e.g. a Discord/Slack channel id).
-     * Default: unsupported (logged no-op). Adapters that can push outbound messages override this.
+     * Proactively send a message to a target on this channel.
+     *
+     * <p>Unsupported delivery is an error, never a logged no-op: callers use the result to keep
+     * task state and connection health truthful.</p>
      */
-    default void send(String target, String content) {
-        org.slf4j.LoggerFactory.getLogger(getClass())
-                .warn("Outbound send not supported for channel '{}'", getChannelName());
+    default DeliveryResult send(String target, String content) {
+        throw new UnsupportedOperationException(
+                "Outbound send is not supported for channel " + getChannelName());
+    }
+
+    record DeliveryResult(boolean accepted, String message) {
+        public static DeliveryResult accepted(String message) {
+            return new DeliveryResult(true, message);
+        }
     }
 
     record AdapterConfig(

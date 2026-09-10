@@ -76,6 +76,7 @@ class GraphImportToolTest {
         assertTrue(schema.path("required").toString().contains("path"));
         assertNotNull(schema.path("properties").path("path"));
         assertNotNull(schema.path("properties").path("factSheetId"));
+        assertNotNull(schema.path("properties").path("requireManaged"));
     }
 
     @Test
@@ -118,12 +119,14 @@ class GraphImportToolTest {
 
         mockServer.expect(requestTo("http://localhost/api/graph/unified/import"))
                 .andExpect(method(HttpMethod.POST))
-                .andRespond(withSuccess("{\"nodes\":5,\"edges\":3,\"embeddings\":5,\"atoms\":7}",
+                .andRespond(withSuccess("{\"nodes\":5,\"edges\":3,\"embeddings\":5,\"atoms\":7,"
+                                + "\"profile\":\"MANAGED\",\"durability\":\"COMPENSATING\"}",
                         MediaType.APPLICATION_JSON));
 
         ObjectNode params = om.createObjectNode();
         params.put("path", kg.toString());
-        params.put("factSheetId", 42);
+        params.put("factSheetId", 5_000_000_000L);
+        params.put("requireManaged", true);
 
         ToolResult result = tool.execute(params, ctx);
 
@@ -132,6 +135,9 @@ class GraphImportToolTest {
                 "projected>0 must surface reasoning-readiness: " + result.getOutput());
         assertEquals(7, result.getMetadata().get("atoms"));
         assertEquals(5, result.getMetadata().get("nodes"));
+        assertEquals(5_000_000_000L, result.getMetadata().get("factSheetId"));
+        assertEquals("MANAGED", result.getMetadata().get("profile"));
+        assertTrue(result.getOutput().contains("MANAGED (COMPENSATING)"));
         mockServer.verify();
     }
 }

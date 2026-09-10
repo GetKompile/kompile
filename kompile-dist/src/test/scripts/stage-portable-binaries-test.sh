@@ -26,13 +26,15 @@ make_source "kompile-app/kompile-models/kompile-model-staging/target/kompile-mod
 make_source "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving" model-serving
 make_source "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving" pipeline-serving
 make_source "kompile-app/kompile-app-parent/kompile-app-chat/target/kompile-chat" chat
+make_source "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/kompile-crawl-manager" crawl-manager
 make_source "kompile-app/kompile-app-parent/kompile-app-main/target/libjava.so" identical-shim
 make_source "kompile-app/kompile-app-parent/kompile-app-chat/target/libjava.so" identical-shim
+make_source "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/libjava.so" identical-shim
 
 bash "${STAGER}" "${REPO}" "${DEST}" "${NORMALIZER}"
 
 for staged in kompile kompile-agent kompile-app-cli kompile-model kompile-component kompile-server \
-        kompile-model-staging kompile-model-serving kompile-pipeline-serving kompile-chat; do
+        kompile-model-staging kompile-model-serving kompile-pipeline-serving kompile-chat kompile-crawl-manager; do
     [ -x "${DEST}/${staged}" ] || {
         echo "ERROR: expected staged executable is missing: ${staged}" >&2
         exit 1

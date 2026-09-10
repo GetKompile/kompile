@@ -17,6 +17,7 @@
 package ai.kompile.crawler.remote;
 
 import ai.kompile.core.loaders.DocumentSourceDescriptor.SourceType;
+import ai.kompile.core.crawl.graph.SourceCredentialRedactor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,11 +26,10 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * SFTP remote folder client using JSch-compatible subprocess execution.
+ * SFTP remote folder client using OpenSSH batch-mode subprocess execution.
  *
- * <p>This implementation uses the system's {@code sftp} command to avoid
- * adding a heavy SSH library dependency. For production deployments with
- * high volume, a JSch or Apache Mina SSHD dependency can be substituted.</p>
+ * <p>All remote operations are sent to {@code sftp -b -}; paths never become a remote shell
+ * command. Passwords use {@code sshpass -e} and therefore never appear in process arguments.</p>
  *
  * <p>Properties:</p>
  * <ul>
@@ -69,6 +69,12 @@ public class SftpFolderClient implements RemoteFolderClient {
         this.privateKeyPath = stringProp(properties, "privateKeyPath", null);
         this.knownHostsPath = stringProp(properties, "knownHostsPath", null);
         this.strictHostKeyChecking = stringProp(properties, "strictHostKeyChecking", "yes");
+        if (!"yes".equalsIgnoreCase(strictHostKeyChecking)
+                && !"no".equalsIgnoreCase(strictHostKeyChecking)) {
+            throw new IOException("strictHostKeyChecking must be 'yes' or 'no'");
+        }
+        this.host = safeHost(host);
+        this.username = safeUsername(username);
 
         // Parse remote path
         String path = pathOrUrl;
@@ -85,18 +91,15 @@ public class SftpFolderClient implements RemoteFolderClient {
                 path = "/";
             }
         }
-        this.remotePath = path.isEmpty() ? "/" : path;
+        this.remotePath = safeBatchPath(path.isEmpty() ? "/" : path, "remote path");
 
         // Verify sftp command is available
         try {
-            Process proc = new ProcessBuilder("which", "sftp")
+            Process proc = new ProcessBuilder("sftp", "-h")
                     .redirectErrorStream(true).start();
             if (!proc.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
                 proc.destroyForcibly();
                 throw new IOException("sftp command check timed out");
-            }
-            if (proc.exitValue() != 0) {
-                throw new IOException("sftp command not found on PATH");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -118,86 +121,50 @@ public class SftpFolderClient implements RemoteFolderClient {
                                 List<RemoteFileEntry> results) throws IOException {
         if (maxDepth > 0 && currentDepth >= maxDepth) return;
 
-        List<String> command = buildSshCommand("ls", "-l", dir);
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command)
-                    .redirectErrorStream(true);
-            if (password != null) {
-                pb.environment().put("SSHPASS", password);
-            }
-            Process proc = pb.start();
-            List<String> lines;
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream()))) {
-                lines = reader.lines().toList();
-            }
-            if (!proc.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
-                throw new IOException("SFTP listing timed out for " + dir);
-            }
+        List<String> lines = executeBatch(
+                "ls -l " + quoteBatchPath(dir), 120, "listing " + dir,
+                BoundedProcessRunner.MAX_LISTING_OUTPUT_BYTES);
 
-            List<String> subdirs = new ArrayList<>();
-            for (String line : lines) {
-                if (line.isBlank() || line.startsWith("total")) continue;
-                // Parse ls -l output: permissions links owner group size month day time/year name
-                String[] parts = line.split("\\s+", 9);
-                if (parts.length < 9) continue;
+        List<String> subdirs = new ArrayList<>();
+        for (String line : lines) {
+            if (line.isBlank() || line.startsWith("total")) continue;
+            // Parse ls -l output: permissions links owner group size month day time/year name
+            String[] parts = line.split("\\s+", 9);
+            if (parts.length < 9) continue;
 
-                String perms = parts[0];
-                String name = parts[8];
-                if (name.equals(".") || name.equals("..")) continue;
+            String perms = parts[0];
+            String name = parts[8];
+            if (name.equals(".") || name.equals("..")) continue;
 
-                String fullPath = dir.endsWith("/") ? dir + name : dir + "/" + name;
+            String fullPath = dir.endsWith("/") ? dir + name : dir + "/" + name;
 
-                if (perms.startsWith("d")) {
-                    subdirs.add(fullPath);
-                } else if (perms.startsWith("-")) {
-                    long size = -1;
-                    try { size = Long.parseLong(parts[4]); } catch (NumberFormatException e) {
-                        log.debug("Could not parse SFTP file size from '{}': {}", parts[4], e.getMessage());
-                    }
-
-                    results.add(new RemoteFileEntry(
-                            fullPath, name, size, 0L, null, null));
+            if (perms.startsWith("d")) {
+                subdirs.add(fullPath);
+            } else if (perms.startsWith("-")) {
+                long size = -1;
+                try { size = Long.parseLong(parts[4]); } catch (NumberFormatException e) {
+                    log.debug("Could not parse SFTP file size from '{}': {}", parts[4], e.getMessage());
                 }
-            }
 
-            for (String subdir : subdirs) {
-                listRecursive(subdir, currentDepth + 1, maxDepth, results);
+                results.add(new RemoteFileEntry(
+                        fullPath, name, size, 0L, null, null));
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("SFTP listing interrupted", e);
+        }
+
+        for (String subdir : subdirs) {
+            listRecursive(subdir, currentDepth + 1, maxDepth, results);
         }
     }
 
     @Override
     public void download(String remoteKey, Path localDest) throws IOException {
         Files.createDirectories(localDest.getParent());
-        List<String> command = buildScpCommand(remoteKey, localDest.toString());
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command).redirectErrorStream(true);
-            if (password != null) {
-                pb.environment().put("SSHPASS", password);
-            }
-            Process proc = pb.start();
-            String output;
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream()))) {
-                output = String.join("\n", reader.lines().toList());
-            }
-            if (!proc.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)) {
-                proc.destroyForcibly();
-                throw new IOException("SCP download timed out for " + remoteKey);
-            }
-            int exitCode = proc.exitValue();
-            if (exitCode != 0) {
-                throw new IOException("SCP download failed for " + remoteKey
-                        + " (exit " + exitCode + "): " + output);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("SFTP download interrupted for " + remoteKey, e);
+        String safeRemote = safeBatchPath(remoteKey, "remote key");
+        String safeLocal = safeBatchPath(localDest.toAbsolutePath().toString(), "local destination");
+        executeBatch("get " + quoteBatchPath(safeRemote) + " " + quoteBatchPath(safeLocal),
+                300, "download " + remoteKey);
+        if (!Files.isRegularFile(localDest)) {
+            throw new IOException("SFTP download did not create " + localDest);
         }
     }
 
@@ -206,13 +173,13 @@ public class SftpFolderClient implements RemoteFolderClient {
         // No persistent connection to close
     }
 
-    private List<String> buildSshCommand(String... sshArgs) {
+    private List<String> buildSftpCommand() {
         List<String> cmd = new ArrayList<>();
         if (password != null) {
             cmd.addAll(List.of("sshpass", "-e"));
         }
-        cmd.add("ssh");
-        cmd.addAll(List.of("-p", String.valueOf(port)));
+        cmd.add("sftp");
+        cmd.addAll(List.of("-q", "-b", "-", "-P", String.valueOf(port)));
         if (privateKeyPath != null) {
             cmd.addAll(List.of("-i", privateKeyPath));
         }
@@ -223,29 +190,62 @@ public class SftpFolderClient implements RemoteFolderClient {
             cmd.addAll(List.of("-o", "UserKnownHostsFile=" + knownHostsPath));
         }
         cmd.add(username + "@" + host);
-        cmd.addAll(Arrays.asList(sshArgs));
         return cmd;
     }
 
-    private List<String> buildScpCommand(String remoteSrc, String localDest) {
-        List<String> cmd = new ArrayList<>();
+    private List<String> executeBatch(
+            String command, long timeoutSeconds, String operation) throws IOException {
+        return executeBatch(command, timeoutSeconds, operation,
+                BoundedProcessRunner.DEFAULT_MAX_OUTPUT_BYTES);
+    }
+
+    private List<String> executeBatch(
+            String command, long timeoutSeconds, String operation, int maxOutputBytes)
+            throws IOException {
+        ProcessBuilder builder = new ProcessBuilder(buildSftpCommand()).redirectErrorStream(true);
         if (password != null) {
-            cmd.addAll(List.of("sshpass", "-e"));
+            builder.environment().put("SSHPASS", password);
         }
-        cmd.add("scp");
-        cmd.addAll(List.of("-P", String.valueOf(port)));
-        if (privateKeyPath != null) {
-            cmd.addAll(List.of("-i", privateKeyPath));
+        BoundedProcessRunner.Result result = BoundedProcessRunner.run(
+                builder, command + "\nbye\n", java.time.Duration.ofSeconds(timeoutSeconds),
+                "SFTP " + operation, maxOutputBytes);
+        if (result.truncated()) {
+            throw new IOException("SFTP " + operation
+                    + " produced more than " + maxOutputBytes + " bytes of connector output");
         }
-        if ("no".equalsIgnoreCase(strictHostKeyChecking)) {
-            cmd.addAll(List.of("-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null"));
-        } else if (knownHostsPath != null) {
-            cmd.addAll(List.of("-o", "UserKnownHostsFile=" + knownHostsPath));
+        if (result.exitCode() != 0) {
+            throw new IOException("SFTP " + operation + " failed (exit "
+                    + result.exitCode() + "): "
+                    + SourceCredentialRedactor.redact(result.output()));
         }
-        cmd.add(username + "@" + host + ":" + remoteSrc);
-        cmd.add(localDest);
-        return cmd;
+        return result.lines();
+    }
+
+    static String quoteBatchPath(String value) throws IOException {
+        return "\"" + safeBatchPath(value, "batch path") + "\"";
+    }
+
+    private static String safeBatchPath(String value, String label) throws IOException {
+        if (value == null || value.indexOf('\0') >= 0 || value.indexOf('\r') >= 0
+                || value.indexOf('\n') >= 0 || value.indexOf('"') >= 0
+                || value.indexOf(';') >= 0 || value.startsWith("!")) {
+            throw new IOException("SFTP " + label + " contains unsupported command characters");
+        }
+        return value;
+    }
+
+    private static String safeHost(String value) throws IOException {
+        if (value == null || !value.matches("[A-Za-z0-9._:\\[\\]-]+")) {
+            throw new IOException("SFTP host contains unsupported characters");
+        }
+        return value;
+    }
+
+    private static String safeUsername(String value) throws IOException {
+        if (value == null || !value.matches("[A-Za-z0-9._+-]+")) {
+            throw new IOException("SFTP username contains unsupported characters");
+        }
+        return value;
     }
 
     private static String requireProp(Map<String, Object> props, String key) throws IOException {

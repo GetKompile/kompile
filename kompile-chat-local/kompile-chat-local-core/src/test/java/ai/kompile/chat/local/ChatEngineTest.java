@@ -8,8 +8,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -192,6 +194,152 @@ class ChatEngineTest {
         }
     }
 
+    @Test
+    void testToolEnabledRoundStreamsThinkingWithoutToolProtocolText() throws Exception {
+        Path kgraph = buildAndSaveTinyGraph();
+        try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
+            AtomicInteger calls = new AtomicInteger();
+            ChatModel model = new ChatModel() {
+                @Override
+                public ChatResponse generate(ChatRequest request, GenOptions opts) {
+                    throw new AssertionError("streaming path must be used");
+                }
+
+                @Override
+                public ChatResponse generateStreaming(
+                        ChatRequest request,
+                        GenOptions opts,
+                        java.util.function.Consumer<String> consumer) {
+                    if (calls.getAndIncrement() == 0) {
+                        consumer.accept("\n<th");
+                        consumer.accept("ink>Inspecting ");
+                        consumer.accept("the graph</thi");
+                        consumer.accept("nk>{\"tool_call\":true}");
+                        return toolCall(
+                                "graph_reasoning_query", Map.of("operation", "OVERVIEW"));
+                    }
+                    consumer.accept("structured final payload must remain buffered");
+                    return ChatResponse.content("The graph is ready.");
+                }
+
+                @Override
+                public boolean isAvailable() {
+                    return true;
+                }
+
+                @Override
+                public String modelId() {
+                    return "thinking-stream-test";
+                }
+            };
+            List<String> streamed = new ArrayList<>();
+            ChatEngine engine = new ChatEngine(new InferenceRouter(model, null), bridge, 4);
+
+            ChatEngine.TurnResult result = engine.chatStreaming(
+                    List.of(), "What is in the graph?", GenOptions.defaults(),
+                    new ChatStreamListener() {
+                        @Override
+                        public void onText(String text) {
+                            streamed.add(text);
+                        }
+                    });
+
+            assertEquals("The graph is ready.", result.answer());
+            assertEquals("<think>Inspecting the graph</think>", String.join("", streamed));
+        }
+    }
+
+    @Test
+    void testToolProtocolCannotInjectThinkingMarker() {
+        List<String> streamed = new ArrayList<>();
+        ChatModel model = streamingModel(
+                "{\"arguments\":{\"query\":\"<think>secret</think>\"}}",
+                ChatResponse.content("Safe answer."));
+        ChatEngine engine = new ChatEngine(
+                new InferenceRouter(model, null), unusedToolBackend(), 4);
+
+        ChatEngine.TurnResult result = engine.chatStreaming(
+                List.of(), "Answer this", GenOptions.defaults(), textListener(streamed));
+
+        assertEquals("Safe answer.", result.answer());
+        assertTrue(streamed.isEmpty(), "tool JSON must never become visible reasoning");
+    }
+
+    @Test
+    void testTruncatedThinkingBlockFlushesAtAttemptCompletion() {
+        List<String> streamed = new ArrayList<>();
+        ChatModel model = streamingModel(
+                "<think>unfinished reasoning",
+                ChatResponse.content("Safe answer."));
+        ChatEngine engine = new ChatEngine(
+                new InferenceRouter(model, null), unusedToolBackend(), 4);
+
+        ChatEngine.TurnResult result = engine.chatStreaming(
+                List.of(), "Answer this", GenOptions.defaults(), textListener(streamed));
+
+        assertEquals("Safe answer.", result.answer());
+        assertEquals("<think>unfinished reasoning</think>", String.join("", streamed));
+    }
+
+    @Test
+    void testToolDisabledRoundStreamsAllTextChunks() {
+        ChatModel model = new ChatModel() {
+            @Override
+            public ChatResponse generate(ChatRequest request, GenOptions opts) {
+                throw new AssertionError("streaming path must be used");
+            }
+
+            @Override
+            public ChatResponse generateStreaming(
+                    ChatRequest request,
+                    GenOptions opts,
+                    java.util.function.Consumer<String> consumer) {
+                consumer.accept("Hello ");
+                consumer.accept("back.");
+                return ChatResponse.content("Hello back.");
+            }
+
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String modelId() {
+                return "content-stream-test";
+            }
+        };
+        GraphToolBackend bridge = new GraphToolBackend() {
+            @Override
+            public String catalogJson() {
+                throw new AssertionError("ordinary chat must not load tools");
+            }
+
+            @Override
+            public String execute(String toolName, String argsJson) {
+                throw new AssertionError("ordinary chat must not execute tools");
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        List<String> streamed = new ArrayList<>();
+        ChatEngine engine = new ChatEngine(
+                new InferenceRouter(model, null), bridge, 4, ChatEngine.ToolRouting.RELEVANT);
+
+        ChatEngine.TurnResult result = engine.chatStreaming(
+                List.of(), "Hello", GenOptions.defaults(), new ChatStreamListener() {
+                    @Override
+                    public void onText(String text) {
+                        streamed.add(text);
+                    }
+                });
+
+        assertEquals("Hello back.", result.answer());
+        assertEquals("Hello back.", String.join("", streamed));
+    }
+
     // ── 5. Router fallback ───────────────────────────────────────────────────
 
     @Test
@@ -338,6 +486,61 @@ class ChatEngineTest {
 
     private static ChatResponse protocolFailure(String error) {
         return new ChatResponse("", "", "", List.of(), List.of(error));
+    }
+
+    private static ChatModel streamingModel(String streamedText, ChatResponse response) {
+        return new ChatModel() {
+            @Override
+            public ChatResponse generate(ChatRequest request, GenOptions opts) {
+                throw new AssertionError("streaming path must be used");
+            }
+
+            @Override
+            public ChatResponse generateStreaming(
+                    ChatRequest request,
+                    GenOptions opts,
+                    java.util.function.Consumer<String> consumer) {
+                consumer.accept(streamedText);
+                return response;
+            }
+
+            @Override
+            public boolean isAvailable() {
+                return true;
+            }
+
+            @Override
+            public String modelId() {
+                return "stream-test";
+            }
+        };
+    }
+
+    private static GraphToolBackend unusedToolBackend() {
+        return new GraphToolBackend() {
+            @Override
+            public String catalogJson() {
+                return "[]";
+            }
+
+            @Override
+            public String execute(String toolName, String argsJson) {
+                throw new AssertionError("tool execution was not expected");
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    private static ChatStreamListener textListener(List<String> streamed) {
+        return new ChatStreamListener() {
+            @Override
+            public void onText(String text) {
+                streamed.add(text);
+            }
+        };
     }
 
     /** Start a simple HTTP server on a random port. Caller must call server.stop(0). */

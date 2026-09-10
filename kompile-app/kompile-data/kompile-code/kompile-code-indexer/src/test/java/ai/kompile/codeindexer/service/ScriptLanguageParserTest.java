@@ -158,7 +158,7 @@ class ScriptLanguageParserTest {
         assertTrue(doc.contains("configuration"), "Docstring should contain description");
     }
 
-    // ── Ruby ─────────────���────────────────────────���─────────────────────
+    // ── Ruby ─────────────────────────────────────────────────────────────────
 
     @Test
     void parseRubyClass() {

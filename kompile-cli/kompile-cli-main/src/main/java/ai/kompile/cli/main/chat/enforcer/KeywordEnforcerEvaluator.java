@@ -241,6 +241,13 @@ public class KeywordEnforcerEvaluator implements EnforcerEvaluator {
      */
     public EnforcerToolCallDecision evaluateToolCall(String toolName, String toolArgs,
                                                      EnforcerPolicy policy) {
+        // Deterministic shell-mandate layer: block bash calls that bypass the dedicated
+        // file/search tools, independent of the user's rule list.
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateFromSerializedArgs(toolName, toolArgs);
+        if (mandate != null) {
+            return mandate;
+        }
+
         List<String> violations = new ArrayList<>();
         boolean shouldStop = false;
 

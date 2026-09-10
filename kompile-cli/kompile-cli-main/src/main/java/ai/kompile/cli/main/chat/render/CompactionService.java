@@ -94,12 +94,16 @@ public class CompactionService {
         return Math.max(0.50d, Math.min(0.95d, ratio));
     }
 
-    /** Effective headroom, derived from output capacity unless explicitly configured. */
+    /**
+     * Effective headroom, derived from output capacity unless explicitly configured.
+     * Automatic output headroom is capped at half the window: some catalogs report
+     * output capacity equal to the whole context, which must not consume the input budget.
+     */
     public int effectiveReserveTokens() {
         int reserve = explicitReserveTokens;
         if (reserve <= 0) {
             int safety = Math.max(256, Math.min(8_192, maxTokens / 20));
-            long automatic = (long) maxOutputTokens + safety;
+            long automatic = (long) Math.min(maxOutputTokens, maxTokens / 2) + safety;
             reserve = (int) Math.min(Integer.MAX_VALUE, automatic);
         }
         return Math.min(reserve, Math.max(0, maxTokens - 1_024));

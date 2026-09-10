@@ -72,7 +72,7 @@ public class EmailConnectionFactory {
     /**
      * Builds the JavaMail properties for the given configuration.
      */
-    private Properties buildProperties(EmailConnectionConfig config) {
+    Properties buildProperties(EmailConnectionConfig config) {
         Properties props = new Properties();
         String protocol = getProtocolName(config);
         String prefix = "mail." + protocol + ".";
@@ -91,12 +91,12 @@ public class EmailConnectionFactory {
             case TLS:
                 props.put(prefix + "ssl.enable", "true");
                 props.put(prefix + "ssl.protocols", "TLSv1.2 TLSv1.3");
-                props.put(prefix + "ssl.trust", "*");
+                props.put(prefix + "ssl.checkserveridentity", "true");
                 break;
             case STARTTLS:
                 props.put(prefix + "starttls.enable", "true");
                 props.put(prefix + "starttls.required", "true");
-                props.put(prefix + "ssl.trust", "*");
+                props.put(prefix + "ssl.checkserveridentity", "true");
                 break;
             case NONE:
                 // No encryption

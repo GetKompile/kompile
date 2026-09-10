@@ -55,6 +55,10 @@ public class GraphImportCommand implements Callable<Integer> {
             description = "Scope import to a fact sheet")
     private Long factSheetId;
 
+    @CommandLine.Option(names = "--require-managed",
+            description = "Fail unless the target provides complete managed import semantics")
+    private boolean requireManaged;
+
     @Override
     public Integer call() {
         if (!SUPPORTED_FORMATS.contains(format.toLowerCase())) {
@@ -111,6 +115,7 @@ public class GraphImportCommand implements Callable<Integer> {
         files.put("file", filePath);
         Map<String, String> form = new LinkedHashMap<>();
         if (factSheetId != null) form.put("factSheetId", String.valueOf(factSheetId));
+        if (requireManaged) form.put("requireManaged", "true");
 
         String response = client.uploadMultipart("/api/graph/unified/import", files, form);
         if (app.isJsonOutput()) {
@@ -122,6 +127,8 @@ public class GraphImportCommand implements Callable<Integer> {
         OutputFormatter.printKv("Nodes", result.path("nodes").asInt());
         OutputFormatter.printKv("Edges", result.path("edges").asInt());
         OutputFormatter.printKv("Embeddings", result.path("embeddings").asInt());
+        OutputFormatter.printKv("Profile", result.path("profile").asText("LEGACY"));
+        OutputFormatter.printKv("Durability", result.path("durability").asText("UNKNOWN"));
         return 0;
     }
 

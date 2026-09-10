@@ -10,9 +10,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -53,12 +52,14 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
     public static final class Lease<R> implements AutoCloseable {
         private final R resource;
         private final BooleanSupplier healthy;
+        private final Runnable markUsed;
         private final Runnable release;
         private final AtomicBoolean closed = new AtomicBoolean(false);
 
-        private Lease(R resource, BooleanSupplier healthy, Runnable release) {
+        private Lease(R resource, BooleanSupplier healthy, Runnable markUsed, Runnable release) {
             this.resource = resource;
             this.healthy = healthy;
+            this.markUsed = markUsed;
             this.release = release;
         }
 
@@ -66,6 +67,7 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
             if (closed.get()) {
                 throw new IllegalStateException("Resource lease is closed");
             }
+            markUsed.run();
             return resource;
         }
 
@@ -90,8 +92,10 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
         private R resource;
         private int leases;
         private boolean starting;
+        private boolean closing;
         private boolean removed;
-        private long lastReleasedNanos;
+        private long lastUsedNanos;
+        private long reapGeneration;
         private ScheduledFuture<?> pendingReap;
 
         private Entry(K key) {
@@ -106,7 +110,8 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
     private final IntSupplier maxResources;
     private final HealthCheck<R> healthCheck;
     private final ResourceCloser<R> closer;
-    private final ScheduledExecutorService reaper;
+    private final ScheduledThreadPoolExecutor reaper;
+    private int activeIdleTeardowns;
     private boolean closed;
 
     public ReusableResourcePool(
@@ -120,11 +125,13 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
         this.maxResources = Objects.requireNonNull(maxResources, "maxResources");
         this.healthCheck = Objects.requireNonNull(healthCheck, "healthCheck");
         this.closer = Objects.requireNonNull(closer, "closer");
-        this.reaper = Executors.newSingleThreadScheduledExecutor(r -> {
+        this.reaper = new ScheduledThreadPoolExecutor(1, r -> {
             Thread thread = new Thread(r, name + "-reaper");
             thread.setDaemon(true);
             return thread;
         });
+        this.reaper.setRemoveOnCancelPolicy(true);
+        this.reaper.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
     /**
@@ -150,13 +157,14 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
                 requireOpen();
                 entry = entries.get(key);
                 if (entry != null) {
-                    if (entry.starting) {
+                    if (entry.starting || entry.closing) {
                         awaitChange(deadline, waitMillis);
                         continue;
                     }
                     cancelReap(entry);
                     if (entry.resource != null && healthy(entry.resource)) {
                         entry.leases++;
+                        markUsedLocked(entry);
                         return lease(entry, entry.resource);
                     }
                     staleResource = entry.resource;
@@ -208,6 +216,7 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
             entry.resource = created;
             entry.starting = false;
             entry.leases++;
+            markUsedLocked(entry);
             lock.notifyAll();
             return lease(entry, created);
         }
@@ -217,7 +226,24 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
         return new Lease<>(
                 resource,
                 () -> healthy(resource),
+                () -> markUsed(entry),
                 () -> release(entry));
+    }
+
+    private void markUsed(Entry entry) {
+        synchronized (lock) {
+            if (entry.removed || entries.get(entry.key) != entry) {
+                return;
+            }
+            markUsedLocked(entry);
+            if (entry.leases == 0 && entry.pendingReap != null) {
+                scheduleReap(entry);
+            }
+        }
+    }
+
+    private void markUsedLocked(Entry entry) {
+        entry.lastUsedNanos = System.nanoTime();
     }
 
     private void release(Entry entry) {
@@ -227,7 +253,7 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
             }
             if (entry.leases == 0 && !entry.removed && !entry.starting
                     && entry.resource != null) {
-                entry.lastReleasedNanos = System.nanoTime();
+                markUsedLocked(entry);
                 scheduleReap(entry);
             }
             lock.notifyAll();
@@ -235,35 +261,59 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
     }
 
     private void scheduleReap(Entry entry) {
-        cancelReap(entry);
-        long delay = Math.max(0L, idleMillis.getAsLong());
-        entry.pendingReap = reaper.schedule(() -> reap(entry), delay, TimeUnit.MILLISECONDS);
+        scheduleReap(entry, TimeUnit.MILLISECONDS.toNanos(
+                Math.max(0L, idleMillis.getAsLong())));
     }
 
-    private void reap(Entry entry) {
+    private void scheduleReap(Entry entry, long delayNanos) {
+        cancelReap(entry);
+        long generation = entry.reapGeneration;
+        entry.pendingReap = reaper.schedule(
+                () -> reap(entry, generation), Math.max(0L, delayNanos), TimeUnit.NANOSECONDS);
+    }
+
+    private void reap(Entry entry, long generation) {
         R resource;
         synchronized (lock) {
-            if (entry.removed || entry.starting || entry.leases > 0
+            if (generation != entry.reapGeneration || entry.removed
+                    || entry.starting || entry.leases > 0
                     || entries.get(entry.key) != entry) {
                 return;
             }
-            entries.remove(entry.key, entry);
-            entry.removed = true;
+            long requiredIdleNanos = TimeUnit.MILLISECONDS.toNanos(
+                    Math.max(0L, idleMillis.getAsLong()));
+            long idleNanos = Math.max(0L, System.nanoTime() - entry.lastUsedNanos);
+            if (idleNanos < requiredIdleNanos) {
+                scheduleReap(entry, requiredIdleNanos - idleNanos);
+                return;
+            }
+            // Retain the capacity slot until teardown finishes. In particular, do not load a
+            // replacement GPU model while the previous process is still releasing its memory.
+            entry.closing = true;
+            activeIdleTeardowns++;
             entry.pendingReap = null;
             resource = entry.resource;
             entry.resource = null;
-            lock.notifyAll();
         }
-        closeQuietly(resource);
+        try {
+            closeQuietly(resource);
+        } finally {
+            synchronized (lock) {
+                entries.remove(entry.key, entry);
+                entry.removed = true;
+                activeIdleTeardowns--;
+                lock.notifyAll();
+            }
+        }
     }
 
     private Entry oldestIdleEntry() {
         Entry oldest = null;
         for (Entry entry : entries.values()) {
-            if (entry.removed || entry.starting || entry.leases > 0) {
+            if (entry.removed || entry.starting || entry.closing || entry.leases > 0) {
                 continue;
             }
-            if (oldest == null || entry.lastReleasedNanos < oldest.lastReleasedNanos) {
+            if (oldest == null || entry.lastUsedNanos < oldest.lastUsedNanos) {
                 oldest = entry;
             }
         }
@@ -305,6 +355,7 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
     }
 
     private void cancelReap(Entry entry) {
+        entry.reapGeneration++;
         if (entry.pendingReap != null) {
             entry.pendingReap.cancel(false);
             entry.pendingReap = null;
@@ -315,6 +366,7 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
     public void clear() {
         List<R> resources = detachAll(false);
         resources.forEach(this::closeQuietly);
+        awaitIdleTeardowns();
     }
 
     public int pooledCount() {
@@ -330,11 +382,34 @@ public final class ReusableResourcePool<K, R> implements AutoCloseable {
         }
     }
 
+    int queuedReapTasksForTests() {
+        return reaper.getQueue().size();
+    }
+
     @Override
     public void close() {
         List<R> resources = detachAll(true);
         resources.forEach(this::closeQuietly);
+        awaitIdleTeardowns();
         reaper.shutdownNow();
+    }
+
+    private void awaitIdleTeardowns() {
+        // A daemon reaper may already own a detached child. Shutdown must not return (or
+        // interrupt the reaper) before its graceful/forced process termination completes.
+        boolean interrupted = false;
+        synchronized (lock) {
+            while (activeIdleTeardowns > 0) {
+                try {
+                    lock.wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private List<R> detachAll(boolean closePool) {

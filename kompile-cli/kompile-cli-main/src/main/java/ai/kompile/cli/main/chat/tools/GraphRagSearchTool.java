@@ -24,12 +24,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.ConnectException;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Tool that performs knowledge graph searches via the kompile-app GraphRAG
- * endpoint. Queries entities, relationships, and community summaries in
- * a Neo4j-backed knowledge graph.
+ * Tool that searches the current folder's portable graph in local stdio mode,
+ * or a configured kompile-app GraphRAG endpoint in managed mode. Queries ranked
+ * entities and relationships; managed GLOBAL search may also return community summaries.
  * <p>
  * Uses {@link KompileBackendClient} for auto-detection, reconnection,
  * and configurable timeouts.
@@ -56,7 +57,7 @@ public class GraphRagSearchTool implements CliTool {
     public String description() {
         return "Search the knowledge graph for entities, relationships, and community summaries. " +
                 "Use 'local' search for specific entity lookups and fact retrieval, or 'global' " +
-                "search for broad thematic summaries across the knowledge base. " +
+                "search for broad structural context; 'hybrid' expands ranked matches one hop. " +
                 "Returns structured results including entities, relationships, and context.";
     }
 
@@ -73,8 +74,10 @@ public class GraphRagSearchTool implements CliTool {
 
         ObjectNode searchType = props.putObject("search_type");
         searchType.put("type", "string");
-        searchType.put("description", "Search type: 'local' (entity-centric, specific facts) " +
-                "or 'global' (community-level, broad themes). Default: 'local'");
+        searchType.put("description", "Search type: 'local' (ranked entity lookup), 'hybrid' " +
+                "(ranked lookup plus one-hop expansion), or 'global' (two-hop structural expansion; " +
+                "managed services may add community summaries). Default: 'local'");
+        searchType.putArray("enum").add("local").add("hybrid").add("global");
 
         ObjectNode maxResults = props.putObject("max_results");
         maxResults.put("type", "integer");
@@ -83,6 +86,22 @@ public class GraphRagSearchTool implements CliTool {
         ObjectNode conversationId = props.putObject("conversation_id");
         conversationId.put("type", "string");
         conversationId.put("description", "Conversation ID for context tracking (optional)");
+
+        ObjectNode knowledgeBase = props.putObject("knowledgeBase");
+        knowledgeBase.put("type", "string");
+        knowledgeBase.put("description", "Project-local knowledge-base id to search (optional)");
+
+        ObjectNode factSheetId = props.putObject("factSheetId");
+        factSheetId.put("type", "integer");
+        factSheetId.put("description", "Fact-sheet selector for managed/legacy graphs (optional)");
+
+        ObjectNode codeProjectId = props.putObject("code_project_id");
+        codeProjectId.put("type", "string");
+        codeProjectId.put("description", "Folder-local code-project id filter (optional)");
+
+        ObjectNode entityType = props.putObject("entity_type");
+        entityType.put("type", "string");
+        entityType.put("description", "Folder-local entity type filter, e.g. CLASS or METHOD (optional)");
 
         schema.putArray("required").add("query");
         return schema;
@@ -105,7 +124,13 @@ public class GraphRagSearchTool implements CliTool {
         }
 
         if (!remoteConfigured) {
-            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+            ToolResult local = OfflineToolRuntime.execute(id(), params, context, objectMapper);
+            if (local.isError()) return local;
+            try {
+                return formatResults(query, objectMapper.readTree(local.getOutput()), searchType);
+            } catch (Exception malformedLocalResult) {
+                return local;
+            }
         }
         if (!backend.isAvailable()) {
             return ToolResult.error("The explicitly configured remote graph search service is unavailable at "
@@ -119,6 +144,9 @@ public class GraphRagSearchTool implements CliTool {
             request.put("maxResults", maxResults);
             if (conversationId != null && !conversationId.isEmpty()) {
                 request.put("conversationId", conversationId);
+            }
+            if (params.hasNonNull("factSheetId")) {
+                request.set("factSheetId", params.get("factSheetId"));
             }
 
             HttpResponse<String> response = backend.post(
@@ -150,6 +178,11 @@ public class GraphRagSearchTool implements CliTool {
         sb.append("Knowledge graph search (").append(searchType.toLowerCase()).append("): \"")
                 .append(query).append("\"\n\n");
 
+        String provenance = formatProvenance(result);
+        if (!provenance.isEmpty()) {
+            sb.append(provenance).append("\n");
+        }
+
         JsonNode entities = result.path("entities");
         if (entities.isArray() && !entities.isEmpty()) {
             sb.append("### Entities\n");
@@ -159,6 +192,11 @@ public class GraphRagSearchTool implements CliTool {
                 String desc = entity.path("description").asText("");
                 sb.append("- **").append(name).append("**");
                 if (!type.isEmpty()) sb.append(" (").append(type).append(")");
+                String id = entity.path("id").asText("");
+                if (!id.isEmpty()) sb.append(" [id: `").append(id).append("`]");
+                if (entity.has("score")) {
+                    sb.append(" score=").append(String.format("%.3f", entity.path("score").asDouble()));
+                }
                 if (!desc.isEmpty()) sb.append(": ").append(desc);
                 sb.append("\n");
             }
@@ -169,8 +207,10 @@ public class GraphRagSearchTool implements CliTool {
         if (relationships.isArray() && !relationships.isEmpty()) {
             sb.append("### Relationships\n");
             for (JsonNode rel : relationships) {
-                String source = rel.path("source").asText(rel.path("from").asText("?"));
-                String target = rel.path("target").asText(rel.path("to").asText("?"));
+                String source = rel.path("sourceName").asText(
+                        rel.path("source").asText(rel.path("from").asText("?")));
+                String target = rel.path("targetName").asText(
+                        rel.path("target").asText(rel.path("to").asText("?")));
                 String relType = rel.path("type").asText(rel.path("relationship").asText("related_to"));
                 String desc = rel.path("description").asText("");
                 sb.append("- ").append(source).append(" -> [").append(relType).append("] -> ").append(target);
@@ -225,19 +265,91 @@ public class GraphRagSearchTool implements CliTool {
             }
         }
 
-        if (sb.toString().trim().endsWith("\"")) {
-            return ToolResult.success("No graph results found for: " + query);
-        }
-
         int entityCount = entities.isArray() ? entities.size() : 0;
         int relCount = relationships.isArray() ? relationships.size() : 0;
+        int communityCount = communities.isArray() ? communities.size() : 0;
         int chunkCount = sourceChunks.isArray() ? sourceChunks.size()
                 : (sourceChunkRefs.isArray() ? sourceChunkRefs.size() : 0);
+        Map<String, Object> metadata = resultMetadata(query, searchType, result,
+                entityCount, relCount, chunkCount);
+        if (entityCount == 0 && relCount == 0 && communityCount == 0 && chunkCount == 0) {
+            String noResults = "No graph results found for: " + query;
+            if (!provenance.isEmpty()) {
+                noResults += "\n\n" + provenance;
+            }
+            return ToolResult.success("", noResults, metadata);
+        }
 
-        return ToolResult.success("graph_search: " + query, sb.toString(),
-                Map.of("query", query, "searchType", searchType,
-                        "entityCount", entityCount, "relationshipCount", relCount,
-                        "sourceChunkCount", chunkCount));
+        return ToolResult.success("graph_search: " + query, sb.toString(), metadata);
+    }
+
+    private String formatProvenance(JsonNode result) {
+        JsonNode data = valueNode(result, "data");
+        String ranking = scalarText(valueNode(result, "ranking"));
+        String scoreBasis = scalarText(data == null ? null : valueNode(data, "scoreBasis"));
+        String storedPrior = scalarText(data == null ? null : valueNode(data, "storedPrior"));
+        JsonNode inferenceInvoked = valueNode(result, "inferenceInvoked");
+        if (inferenceInvoked == null && data != null) {
+            inferenceInvoked = valueNode(data, "inferenceInvoked");
+        }
+
+        StringBuilder provenance = new StringBuilder();
+        if (scoreBasis != null && !scoreBasis.isBlank()) {
+            provenance.append("Score basis: ").append(scoreBasis).append("\n");
+        } else if (ranking != null && !ranking.isBlank()) {
+            provenance.append("Score basis: ").append(ranking).append("\n");
+        }
+        if (storedPrior != null && !storedPrior.isBlank()) {
+            provenance.append("Stored prior: ").append(storedPrior).append("\n");
+        }
+        if (inferenceInvoked != null && inferenceInvoked.isValueNode()) {
+            provenance.append("Inference invoked: ").append(inferenceInvoked.asText()).append("\n");
+        }
+        return provenance.toString().stripTrailing();
+    }
+
+    private Map<String, Object> resultMetadata(String query, String searchType, JsonNode result,
+                                                int entityCount, int relationshipCount,
+                                                int sourceChunkCount) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("query", query);
+        metadata.put("searchType", searchType);
+        metadata.put("entityCount", entityCount);
+        metadata.put("relationshipCount", relationshipCount);
+        metadata.put("sourceChunkCount", sourceChunkCount);
+
+        putJsonMetadata(metadata, "ranking", valueNode(result, "ranking"));
+        putJsonMetadata(metadata, "inferenceInvoked", valueNode(result, "inferenceInvoked"));
+
+        JsonNode data = valueNode(result, "data");
+        if (data != null && data.isObject()) {
+            Map<String, Object> rankingData = new LinkedHashMap<>();
+            putJsonMetadata(rankingData, "scoreBasis", valueNode(data, "scoreBasis"));
+            putJsonMetadata(rankingData, "storedPrior", valueNode(data, "storedPrior"));
+            putJsonMetadata(rankingData, "inferenceInvoked", valueNode(data, "inferenceInvoked"));
+            if (!rankingData.isEmpty()) {
+                metadata.put("data", rankingData);
+            }
+            if (!metadata.containsKey("inferenceInvoked")) {
+                putJsonMetadata(metadata, "inferenceInvoked", valueNode(data, "inferenceInvoked"));
+            }
+        }
+        return metadata;
+    }
+
+    private JsonNode valueNode(JsonNode parent, String field) {
+        if (parent == null || !parent.has(field)) return null;
+        JsonNode value = parent.get(field);
+        return value == null || value.isNull() || value.isMissingNode() ? null : value;
+    }
+
+    private String scalarText(JsonNode value) {
+        return value != null && value.isValueNode() ? value.asText() : null;
+    }
+
+    private void putJsonMetadata(Map<String, Object> metadata, String key, JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) return;
+        metadata.put(key, objectMapper.convertValue(value, Object.class));
     }
 
     private String extractError(String body) {

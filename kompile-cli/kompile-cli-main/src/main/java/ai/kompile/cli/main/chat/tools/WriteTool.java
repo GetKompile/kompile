@@ -57,14 +57,15 @@ public class WriteTool implements CliTool {
         return "Create a new file or overwrite an existing file with the given content. " +
                 "Use this tool for creating new files. For modifying existing files, " +
                 "prefer the edit tool which performs targeted string replacements. " +
-                "Parent directories are created automatically if they don't exist.";
+                "Parent directories are created automatically if they don't exist. " +
+                "Managed memory paths are rejected; use the memory tool instead.";
     }
 
     @Override
     public String compactHint() {
         return "Create or OVERWRITE an entire file (no merge — provide the full final content). "
                 + "Use for NEW files; prefer edit to modify existing ones. Parent dirs are "
-                + "auto-created.";
+                + "auto-created. Managed memory → memory tool.";
     }
 
     @Override
@@ -98,7 +99,7 @@ public class WriteTool implements CliTool {
             return ToolResult.error("file_path is required");
         }
 
-        Path path = context.resolvePath(filePath);
+        Path path = context.resolveMutationPath(filePath);
         boolean exists = Files.exists(path);
 
         context.checkPermission(permissionKey(),

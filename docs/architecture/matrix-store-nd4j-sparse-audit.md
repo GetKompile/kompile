@@ -56,7 +56,7 @@ All maps are `ConcurrentHashMap` for thread-safety matching the original `putSca
 | `getSparseEdges(edgeType)` L651 | O(nnz for type) Java scan, no INDArray | COO `SparseEdgeData` |
 | `getNodeCount()` / `getEdgeCountByType()` | O(1) | — |
 
-### 1.3 Memory profile (FP&A crawl, ~4 345 nodes / 15 172 edges, 7 edge types)
+### 1.3 Memory profile (domain-planning crawl, ~4 345 nodes / 15 172 edges, 7 edge types)
 
 - **Before sparse refactor:** 7 × `[9000×9000]` FLOAT = ~2.3 GB VRAM.
 - **After sparse refactor (current):** 15 172 × ~100 B Java overhead ≈ **1.5 MB heap**.
@@ -136,7 +136,7 @@ today.  They do **not** affect the read-side cache (Phase A).
 ### Blocker 1 — CSR insert is O(N + nnz) (crawl is write-heavy)
 
 Inserting one edge into a CSR array requires shifting the suffix of `colIdx`/`values` and
-incrementing all `rowPtr[src+1..n]` entries.  The crawl adds ~48 000 edges per FP&A run
+incrementing all `rowPtr[src+1..n]` entries.  The crawl adds ~48 000 edges per domain-planning run
 across ~4 000 nodes; each insert is O(n + nnz) vs the current O(1) `ConcurrentHashMap.put`.
 Native CSR is fundamentally a **read-optimised** format; the Java COO is the right
 **write-side** structure.

@@ -17,19 +17,26 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.utils.StringUtils;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.UserInterruptException;
 import picocli.CommandLine;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
 /**
@@ -41,18 +48,25 @@ import java.util.stream.Collectors;
  * <p>
  * Usage:
  * <pre>
- *   kompile resume-all                      # resume all sessions
+ *   kompile resume-all                      # confirm all recent sessions or pick individual sessions
+ *   kompile resume-all --yes                # resume recent sessions without prompting
+ *   kompile resume-all --all                # resume every resumable session
+ *   kompile resume-all --recent 5           # resume only the 5 most recent sessions
+ *   kompile resume-all --active-within 30    # resume every session active in the last 30 minutes
  *   kompile resume-all --agent claude       # resume only claude sessions
  *   kompile resume-all --project /path      # resume sessions for a specific project
  *   kompile resume-all --dry-run            # show what would be resumed
- *   kompile resume-all --list               # list all tracked sessions
+ *   kompile resume-all --list               # list the sessions this invocation would resume
+ *   kompile resume-all --set-recent 20      # persist the default recent-session limit
  *   kompile resume-all --set-terminal kitty # configure terminal emulator
  *   kompile resume-all --prune 30           # remove sessions older than 30 days
  * </pre>
  */
 @CommandLine.Command(
         name = "resume-all",
-        description = "Resume all previously tracked agent sessions in new terminal windows",
+        description = "Resume recently tracked agent sessions in new terminal windows " +
+                "(defaults to the " + ResumeConfig.DEFAULT_RECENT_SESSIONS + " most recent; " +
+                "use --all for every resumable session)",
         mixinStandardHelpOptions = true
 )
 public class ResumeAllCommand implements Callable<Integer> {
@@ -66,7 +80,7 @@ public class ResumeAllCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--dry-run", "-n"}, description = "Show what would be resumed without launching", defaultValue = "false")
     private boolean dryRun;
 
-    @CommandLine.Option(names = {"--list", "-l"}, description = "List all tracked sessions", defaultValue = "false")
+    @CommandLine.Option(names = {"--list", "-l"}, description = "List the resumable sessions this invocation would launch", defaultValue = "false")
     private boolean listOnly;
 
     @CommandLine.Option(names = {"--set-terminal"}, description = "Configure the terminal emulator to use (e.g., kitty, gnome-terminal, alacritty)")
@@ -84,8 +98,36 @@ public class ResumeAllCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--status"}, description = "Show terminal detection and config status", defaultValue = "false")
     private boolean showStatus;
 
-    @CommandLine.Option(names = {"--recent", "-r"}, description = "Resume only the N most recent sessions")
+    @CommandLine.Option(names = {"--recent", "-r"}, description = "Resume only the N most recent sessions " +
+            "(default: the configured limit, " + ResumeConfig.DEFAULT_RECENT_SESSIONS + " unless changed via --set-recent)")
     private Integer recentCount;
+
+    @CommandLine.Option(names = {"--all"}, description = "Resume every resumable session, ignoring the recent limit", defaultValue = "false")
+    private boolean resumeAll;
+
+    @CommandLine.Option(names = {"--active-within"}, paramLabel = "MINUTES",
+            description = "Resume sessions active within the last N minutes; ignores the configured " +
+                    "recent limit; combine with --recent to cap matching sessions")
+    private Integer activeWithinMinutes;
+
+    @CommandLine.Option(names = {"--set-recent"}, description = "Persist the default number of recent sessions " +
+            "to ~/.kompile/config/resume.json and exit")
+    private Integer setRecentCount;
+
+    @CommandLine.Option(names = {"--unlock"}, description = "Force one stuck session (kompile or native session ID) " +
+            "back to resumable and exit — workaround for bad/corrupt shutdowns")
+    private String unlockSessionId;
+
+    @CommandLine.Option(names = {"--unlock-all"}, description = "Force every stuck session (abandoned resume claims " +
+            "and dead-PID rows) back to resumable and exit; live sessions are never touched", defaultValue = "false")
+    private boolean unlockAll;
+
+    @CommandLine.Option(names = {"--yes", "-y"},
+            description = "Resume the matching sessions without confirmation (for unattended use)")
+    private boolean assumeYes;
+
+    private BiFunction<List<String>, String, String> sessionPrompt;
+    private Instant activeCutoff;
 
     // ANSI colors
     private static final String RESET = "\033[0m";
@@ -99,11 +141,82 @@ public class ResumeAllCommand implements Callable<Integer> {
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
 
+    /**
+     * Execute the same command from an interactive chat surface. Inline chat
+     * options intentionally use the CLI's normal whitespace-separated syntax.
+     */
+    public static int executeInline(String args) {
+        return executeInline(args, null);
+    }
+
+    /** Borrow the owning surface's input reader rather than competing for stdin. */
+    public static int executeInline(String args, BiFunction<List<String>, String, String> prompt) {
+        List<String> argv = tokenizeInlineArgs(args);
+        ResumeAllCommand command = new ResumeAllCommand();
+        command.sessionPrompt = prompt;
+        return new CommandLine(command).execute(argv.toArray(String[]::new));
+    }
+
+    static List<String> tokenizeInlineArgs(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        boolean escaping = false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (escaping) {
+                current.append(ch);
+                escaping = false;
+            } else if (ch == '\\' && !singleQuoted) {
+                escaping = true;
+            } else if (ch == '\'' && !doubleQuoted) {
+                singleQuoted = !singleQuoted;
+            } else if (ch == '"' && !singleQuoted) {
+                doubleQuoted = !doubleQuoted;
+            } else if (Character.isWhitespace(ch) && !singleQuoted && !doubleQuoted) {
+                addInlineToken(result, current);
+            } else {
+                current.append(ch);
+            }
+        }
+        if (escaping) current.append('\\');
+        if (singleQuoted || doubleQuoted) {
+            throw new IllegalArgumentException("Unterminated quote in resume-all options");
+        }
+        addInlineToken(result, current);
+        return List.copyOf(result);
+    }
+
+    private static void addInlineToken(List<String> result, StringBuilder current) {
+        if (current.length() == 0) return;
+        result.add(current.toString());
+        current.setLength(0);
+    }
+
     @Override
     public Integer call() {
+        if (recentCount != null && recentCount <= 0) {
+            System.out.println(RED + "--recent must be a positive number" + RESET);
+            return 1;
+        }
+        if (activeWithinMinutes != null && activeWithinMinutes <= 0) {
+            System.out.println(RED + "--active-within must be a positive number" + RESET);
+            return 1;
+        }
+        if (resumeAll && recentCount != null) {
+            System.out.println(RED + "--all and --recent cannot be combined" + RESET);
+            return 1;
+        }
         // Handle terminal configuration first
         if (setTerminal != null) {
             return configureTerminal();
+        }
+
+        // Handle recent-limit configuration
+        if (setRecentCount != null) {
+            return configureRecentLimit();
         }
 
         // Handle prune
@@ -116,7 +229,20 @@ public class ResumeAllCommand implements Callable<Integer> {
             return showTerminalStatus();
         }
 
-        // Load registry
+        // Handle lock repair (bad-shutdown workaround)
+        if (unlockAll) {
+            return unlockAllSessions();
+        }
+        if (unlockSessionId != null) {
+            return unlockSession(unlockSessionId);
+        }
+
+        if (activeWithinMinutes != null) {
+            activeCutoff = Instant.now().minus(Duration.ofMinutes(activeWithinMinutes));
+        }
+
+        // Load registry. Selection paths refresh status before applying filters;
+        // refresh preserves or infers real activity timestamps.
         SessionRegistry registry = SessionRegistry.load();
 
         // Handle list
@@ -126,6 +252,24 @@ public class ResumeAllCommand implements Callable<Integer> {
 
         // Main flow: resume sessions
         return resumeSessions(registry);
+    }
+
+    // ── Configure recent limit ────────────────────────────────────────────
+
+    private int configureRecentLimit() {
+        if (setRecentCount <= 0) {
+            System.out.println(RED + "--set-recent must be a positive number" + RESET);
+            return 1;
+        }
+        ResumeConfig config = ResumeConfig.load();
+        config.setRecentSessions(setRecentCount);
+        if (!config.save()) {
+            System.out.println(RED + "Could not persist the recent-session limit" + RESET);
+            return 1;
+        }
+        System.out.println(GREEN + "Default recent-session limit set to " + config.getRecentSessions()
+                + DIM + " (~/.kompile/config/resume.json)" + RESET);
+        return 0;
     }
 
     // ── Configure terminal ──────────────────────────────────────────────────
@@ -155,6 +299,38 @@ public class ResumeAllCommand implements Callable<Integer> {
         return 0;
     }
 
+    // ── Lock repair ─────────────────────────────────────────────────────────
+
+    private int unlockSession(String sessionId) {
+        try {
+            boolean cleared = SessionRegistry.load().clearResumeLock(sessionId);
+            if (cleared) {
+                System.out.println(GREEN + "Cleared stuck lock for session: " + sessionId + RESET);
+                System.out.println(DIM + "  Resume with: kompile resume --session-id " + sessionId + RESET);
+                return 0;
+            }
+            System.out.println(RED + "No tracked session matches: " + sessionId + RESET);
+            return 1;
+        } catch (Exception e) {
+            System.out.println(RED + "Could not clear lock: " + e.getMessage() + RESET);
+            return 1;
+        }
+    }
+
+    private int unlockAllSessions() {
+        try {
+            int repaired = SessionRegistry.load().clearAllResumeLocks();
+            System.out.println(repaired > 0
+                    ? GREEN + "Cleared " + repaired + " stuck session"
+                            + (repaired > 1 ? "s" : "") + RESET
+                    : DIM + "No stuck sessions found" + RESET);
+            return 0;
+        } catch (Exception e) {
+            System.out.println(RED + "Could not clear locks: " + e.getMessage() + RESET);
+            return 1;
+        }
+    }
+
     // ── Status ──────────────────────────────────────────────────────────────
 
     private int showTerminalStatus() {
@@ -179,11 +355,13 @@ public class ResumeAllCommand implements Callable<Integer> {
         long total = registry.size();
         long resumable = registry.getResumable().size();
         long running = registry.getAll().stream().filter(e -> "running".equals(e.getStatus())).count();
+        long resuming = registry.getAll().stream().filter(e -> "resuming".equals(e.getStatus())).count();
 
         System.out.println();
         System.out.println(BOLD + "Session Registry" + RESET);
         System.out.println("  Total:     " + total);
         System.out.println("  Running:   " + running);
+        System.out.println("  Resuming:  " + resuming);
         System.out.println("  Resumable: " + resumable);
         return 0;
     }
@@ -191,19 +369,27 @@ public class ResumeAllCommand implements Callable<Integer> {
     // ── List sessions ───────────────────────────────────────────────────────
 
     private int listSessions(SessionRegistry registry) {
-        registry.refreshStatuses();
-        List<SessionEntry> entries = getFilteredEntries(registry.getAll());
+        List<SessionEntry> entries = getFilteredEntries(registry.getResumable());
+
+        // Match resumeSessions exactly: filter to exited/crash-detected sessions
+        // first, then apply the recent limit. This makes --list a reliable preview.
+        int limit = hasCountLimit() ? effectiveRecentLimit() : Integer.MAX_VALUE;
+        boolean limited = hasCountLimit() && entries.size() > limit;
+        if (limited) {
+            entries = entries.subList(0, limit);
+        }
 
         if (entries.isEmpty()) {
-            System.out.println(DIM + "No tracked sessions" +
+            System.out.println(DIM + "No resumable sessions" +
                     (filterAgent != null ? " for agent '" + filterAgent + "'" : "") +
                     (filterProject != null ? " in project '" + filterProject + "'" : "") +
                     RESET);
             return 0;
         }
 
-        System.out.println(BOLD + "Tracked Sessions" + RESET +
-                DIM + " (" + entries.size() + " total)" + RESET);
+        System.out.println(BOLD + "Resumable Sessions" + RESET +
+                DIM + " (" + entries.size()
+                        + (limited ? " most recent" : "") + ")" + RESET);
         System.out.println();
         System.out.printf("  %-12s %-10s %-12s %-18s %s%n",
                 "SESSION", "AGENT", "STATUS", "STARTED", "PROJECT");
@@ -226,7 +412,7 @@ public class ResumeAllCommand implements Callable<Integer> {
 
             System.out.printf("  %-12s %-10s %s%-12s%s %-18s %s%n",
                     StringUtils.truncate(entry.getKompileSessionId(), 12),
-                    entry.getAgent(),
+                    displayAgent(entry),
                     statusColor, status, RESET,
                     started,
                     projectShort);
@@ -242,24 +428,19 @@ public class ResumeAllCommand implements Callable<Integer> {
             }
         }
 
-        long resumable = entries.stream().filter(e -> "exited".equals(e.getStatus())
-                && ((e.getConversationId() != null && !e.getConversationId().isEmpty())
-                || (e.getKompileSessionId() != null && !e.getKompileSessionId().isEmpty()))).count();
         System.out.println();
-        System.out.println(DIM + "  " + resumable + " resumable" + RESET);
+        System.out.println(DIM + "  " + entries.size() + " resumable" + RESET);
         return 0;
     }
 
     // ── Resume sessions ─────────────────────────────────────────────────────
 
     private int resumeSessions(SessionRegistry registry) {
+        int limit = hasCountLimit() ? effectiveRecentLimit() : Integer.MAX_VALUE;
+        String claimId = dryRun ? null : UUID.randomUUID().toString();
         List<SessionEntry> resumable = getFilteredEntries(registry.getResumable());
-
-        if (recentCount != null && recentCount > 0) {
-            resumable = resumable.stream()
-                    .sorted(Comparator.comparing(SessionEntry::getStartedAt).reversed())
-                    .limit(recentCount)
-                    .collect(Collectors.toList());
+        if (resumable.size() > limit) {
+            resumable = resumable.subList(0, limit);
         }
 
         if (resumable.isEmpty()) {
@@ -269,6 +450,45 @@ public class ResumeAllCommand implements Callable<Integer> {
                     RESET);
             System.out.println(DIM + "  Start a session with: kompile chat" + RESET);
             return 0;
+        }
+
+        if (!dryRun) {
+            if (!assumeYes) {
+                BiFunction<List<String>, String, String> prompt = sessionPrompt;
+                if (prompt == null) {
+                    java.io.Console console = System.console();
+                    if (console == null) {
+                        sessionMenu(resumable).forEach(System.out::println);
+                        System.out.println("No interactive console. Use --yes to resume all matching sessions, or --list to preview.");
+                        return 1;
+                    }
+                    prompt = (lines, question) -> {
+                        lines.forEach(console.writer()::println);
+                        console.flush();
+                        return console.readLine("%s", question);
+                    };
+                }
+                try {
+                    resumable = selectSessions(resumable, prompt);
+                } catch (UserInterruptException | EndOfFileException ignored) {
+                    resumable = List.of();
+                }
+                if (resumable.isEmpty()) {
+                    System.out.println("Resume cancelled — no sessions launched.");
+                    return 0;
+                }
+            }
+            // Claim only the chosen snapshot, after the user has finished deciding.
+            // Concurrent launches must never substitute unseen rows.
+            Set<String> selected = resumable.stream().map(SessionRegistry::resumeIdentity)
+                    .collect(Collectors.toSet());
+            resumable = registry.claimResumable(
+                    entry -> selected.contains(SessionRegistry.resumeIdentity(entry)) && matchesFilters(entry),
+                    newestFirst(), selected.size(), claimId);
+            if (resumable.isEmpty()) {
+                System.out.println("The selected sessions are no longer resumable. No sessions launched.");
+                return 0;
+            }
         }
 
         String kompileBin = resolveKompileBinary();
@@ -285,9 +505,10 @@ public class ResumeAllCommand implements Callable<Integer> {
 
         int launched = 0;
         int failed = 0;
+        Set<String> launchedClaims = new HashSet<>();
 
         for (SessionEntry entry : resumable) {
-            String sessionLabel = entry.getAgent() + " @ " + shortenPath(entry.getProjectDirectory(), 40);
+            String sessionLabel = displayAgent(entry) + " @ " + shortenPath(entry.getProjectDirectory(), 40);
             String title = entry.getTitle() != null && !entry.getTitle().isEmpty()
                     ? entry.getTitle()
                     : sessionLabel;
@@ -312,6 +533,7 @@ public class ResumeAllCommand implements Callable<Integer> {
                 }
 
                 launcher.launch(resumeCmd, projectDir, title);
+                launchedClaims.add(SessionRegistry.resumeIdentity(entry));
                 System.out.println("  " + GREEN + "Launched" + RESET + " " + sessionLabel);
                 launched++;
 
@@ -323,9 +545,22 @@ public class ResumeAllCommand implements Callable<Integer> {
                 System.out.println("  " + RED + "Failed" + RESET + " " + sessionLabel
                         + ": " + e.getMessage());
                 failed++;
+            } catch (RuntimeException e) {
+                System.out.println("  " + RED + "Failed" + RESET + " " + sessionLabel
+                        + ": " + e.getMessage());
+                failed++;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
+            }
+        }
+
+        if (claimId != null) {
+            for (SessionEntry entry : resumable) {
+                String resumeIdentity = SessionRegistry.resumeIdentity(entry);
+                if (!launchedClaims.contains(resumeIdentity)) {
+                    registry.releaseResumeClaim(resumeIdentity, claimId);
+                }
             }
         }
 
@@ -343,12 +578,86 @@ public class ResumeAllCommand implements Callable<Integer> {
         return failed > 0 && launched == 0 ? 1 : 0;
     }
 
+    static List<SessionEntry> selectSessions(List<SessionEntry> entries,
+            BiFunction<List<String>, String, String> prompt) {
+        if (entries.isEmpty()) return List.of();
+        List<String> message = List.of("Found " + entries.size() + " resumable sessions.");
+        while (true) {
+            String answer = prompt.apply(message, "Resume all these sessions? [y/N] (q cancels): ");
+            if (answer == null || isCancel(answer)) return List.of();
+            answer = answer.trim();
+            if (answer.equalsIgnoreCase("y") || answer.equalsIgnoreCase("yes")) return List.copyOf(entries);
+            if (answer.isEmpty() || answer.equalsIgnoreCase("n") || answer.equalsIgnoreCase("no")) break;
+            message = List.of("Please answer yes, no, or q to cancel.");
+        }
+        List<String> menu = sessionMenu(entries);
+        while (true) {
+            String answer = prompt.apply(menu, "Pick session numbers or UUIDs (comma-separated; Enter cancels): ");
+            if (answer == null || answer.isBlank() || isCancel(answer)) return List.of();
+            Set<Integer> selected = new HashSet<>();
+            boolean valid = true;
+            for (String token : answer.trim().split("[,\\s]+")) {
+                int index = -1;
+                for (int i = 0; i < entries.size(); i++) {
+                    if (sessionUuid(entries.get(i)).equalsIgnoreCase(token)) {
+                        index = i;
+                        break;
+                    }
+                }
+                if (index < 0) {
+                    try {
+                        index = Integer.parseInt(token) - 1;
+                    } catch (NumberFormatException ignored) { }
+                }
+                if (index < 0 || index >= entries.size()) {
+                    valid = false;
+                    break;
+                }
+                selected.add(index);
+            }
+            if (valid && !selected.isEmpty()) {
+                List<SessionEntry> result = new ArrayList<>();
+                for (int i = 0; i < entries.size(); i++) {
+                    if (selected.contains(i)) result.add(entries.get(i));
+                }
+                return List.copyOf(result);
+            }
+            menu = new ArrayList<>(sessionMenu(entries));
+            menu.add("Invalid selection. Choose listed numbers or full UUIDs; nothing has been launched.");
+        }
+    }
+
+    private static boolean isCancel(String value) {
+        return value.trim().equalsIgnoreCase("q") || value.trim().equalsIgnoreCase("cancel");
+    }
+
+    private static String sessionUuid(SessionEntry entry) {
+        return entry.getKompileSessionId() != null && !entry.getKompileSessionId().isBlank()
+                ? entry.getKompileSessionId() : entry.getConversationId();
+    }
+
+    private static List<String> sessionMenu(List<SessionEntry> entries) {
+        List<String> lines = new ArrayList<>();
+        lines.add("Sessions found (UUID | title | last active timestamp):");
+        for (int i = 0; i < entries.size(); i++) {
+            SessionEntry entry = entries.get(i);
+            String title = entry.getTitle() == null || entry.getTitle().isBlank()
+                    ? "(untitled)" : entry.getTitle();
+            Instant timestamp = parseInstant(entry.getEndedAt());
+            if (timestamp == null) timestamp = parseInstant(entry.getStartedAt());
+            lines.add((i + 1) + ". " + sessionUuid(entry) + " | "
+                    + title.replaceAll("[\\p{Cntrl}]", " ") + " | "
+                    + (timestamp == null ? "unknown" : timestamp.toString()));
+        }
+        return lines;
+    }
+
     // ── Command building ────────────────────────────────────────────────────
 
     /**
      * Build the resume command for a session entry.
-     * Uses {@code kompile resume --session-id <id> --agent <agent>} which delegates
-     * to the existing ResumeCommand infrastructure.
+     * Uses {@code kompile resume --session-id <id>} and lets ResumeCommand's
+     * default {@code auto} target resolve standard versus provider transcripts.
      * <p>
      * Handles both native binary ("kompile") and JVM mode ("java -jar /path/to.jar")
      * by splitting the kompileBin string on spaces when it contains multiple tokens.
@@ -366,15 +675,15 @@ public class ResumeAllCommand implements Callable<Integer> {
         }
         cmd.add("resume");
 
-        // Prefer the agent's native conversation ID for resume if available
-        String sessionId = (entry.getConversationId() != null && !entry.getConversationId().isEmpty())
-                ? entry.getConversationId()
-                : entry.getKompileSessionId();
+        // Prefer the Kompile wrapper ID: ResumeCommand uses its recorded source and
+        // native-session metadata to choose the correct provider. Passing only a
+        // native ID loses that association and can incorrectly fall back to Claude.
+        String sessionId = entry.getKompileSessionId() != null
+                && !entry.getKompileSessionId().isBlank()
+                ? entry.getKompileSessionId()
+                : entry.getConversationId();
         cmd.add("--session-id");
         cmd.add(sessionId);
-
-        cmd.add("--agent");
-        cmd.add(entry.getAgent());
 
         return cmd;
     }
@@ -383,10 +692,74 @@ public class ResumeAllCommand implements Callable<Integer> {
 
     private List<SessionEntry> getFilteredEntries(List<SessionEntry> entries) {
         return entries.stream()
-                .filter(e -> filterAgent == null || filterAgent.equalsIgnoreCase(e.getAgent()))
-                .filter(e -> filterProject == null || e.getProjectDirectory().startsWith(filterProject))
-                .sorted(Comparator.comparing(SessionEntry::getStartedAt).reversed())
+                .filter(this::matchesFilters)
+                .sorted(newestFirst())
                 .collect(Collectors.toList());
+    }
+
+    private boolean matchesFilters(SessionEntry entry) {
+        return (filterAgent == null || filterAgent.equalsIgnoreCase(displayAgent(entry)))
+                && (filterProject == null
+                || entry.getProjectDirectory().startsWith(filterProject))
+                && (activeCutoff == null || wasActiveAtOrAfter(entry, activeCutoff));
+    }
+
+    /**
+     * A session was active in the window when its recorded end falls inside it.
+     * Legacy/crash rows without a usable end timestamp fall back to their start.
+     */
+    static boolean wasActiveAtOrAfter(SessionEntry entry, Instant cutoff) {
+        if (entry == null || cutoff == null) return false;
+        Instant lastActive = parseInstant(entry.getEndedAt());
+        if (lastActive == null) {
+            lastActive = parseInstant(entry.getStartedAt());
+        }
+        return lastActive != null && !lastActive.isBefore(cutoff);
+    }
+
+    private static Instant parseInstant(String value) {
+        try {
+            return value == null || value.isBlank() ? null : Instant.parse(value);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static Comparator<SessionEntry> newestFirst() {
+        return Comparator.comparing(ResumeAllCommand::startedAtSortKey).reversed();
+    }
+
+    private static Instant startedAtSortKey(SessionEntry entry) {
+        try {
+            return Instant.parse(entry.getStartedAt());
+        } catch (Exception ignored) {
+            return Instant.EPOCH;
+        }
+    }
+
+    private static String displayAgent(SessionEntry entry) {
+        String agent = entry == null ? null : entry.getAgent();
+        return agent == null || agent.isBlank() ? "kompile" : agent;
+    }
+
+    /**
+     * The effective recent-session limit for this invocation: an explicit
+     * --recent wins, otherwise the persisted ResumeConfig value (default 10).
+     * --all bypasses the limit entirely in the callers.
+     */
+    private int effectiveRecentLimit() {
+        if (recentCount != null) {
+            return recentCount;
+        }
+        return ResumeConfig.load().getRecentSessions();
+    }
+
+    /**
+     * An activity window replaces the configured default count. Callers may still
+     * combine it with an explicit --recent cap; --all and --recent are rejected.
+     */
+    private boolean hasCountLimit() {
+        return !resumeAll && (activeWithinMinutes == null || recentCount != null);
     }
 
     // ── Kompile binary resolution ───────────────────────────────────────────

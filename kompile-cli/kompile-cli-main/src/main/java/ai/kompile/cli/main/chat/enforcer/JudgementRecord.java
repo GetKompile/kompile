@@ -36,6 +36,8 @@ import java.util.List;
  * <ul>
  *   <li>{@code JUDGE_TURN} / {@code JUDGE_PARTIAL} / {@code JUDGE_TOOL} — a raw LLM judge call
  *       (carries {@link #judgeRawResponse} + {@link #latencyMs}); the judge transcript.</li>
+ *   <li>{@code JUDGE_CHAT} — a /judge chat exchange with the judge (verdict fields are
+ *       neutral; the raw response holds the judge's conversational reply).</li>
  *   <li>{@code ATTEMPT} — a non-LLM (keyword) per-attempt decision.</li>
  *   <li>{@code RESULT} — the final enforcement outcome for a turn ({@link #status}).</li>
  * </ul>
@@ -54,7 +56,7 @@ public class JudgementRecord {
     /** Owning session id (e.g. {@code enforcer-1a2b3c4d}). */
     private String sessionId;
 
-    /** JUDGE_TURN | JUDGE_PARTIAL | JUDGE_TOOL | ATTEMPT | RESULT. */
+    /** JUDGE_TURN | JUDGE_PARTIAL | JUDGE_TOOL | JUDGE_CHAT | ATTEMPT | RESULT. */
     private String phase;
 
     /** 1-based correction attempt, or 0 when not applicable. */

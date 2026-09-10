@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
+import ai.kompile.cli.main.chat.enforcer.ShellMandatePolicy;
 import ai.kompile.cli.main.chat.render.ProcessManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,9 +38,13 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>{@code bash.readonly} — read-only commands (ls, cat, git status, etc.) — default ALLOW</li>
- *   <li>{@code bash.write} — commands that modify files/state (mvn, npm, git commit, etc.) — default ASK</li>
- *   <li>{@code bash.destructive} — dangerous commands (rm -rf, git push --force, etc.) — default ASK</li>
+ *   <li>{@code bash.write} — permitted system commands that modify state (mvn, npm, git commit, etc.)</li>
+ *   <li>{@code bash.destructive} — dangerous system commands (for example git push --force)</li>
  * </ul>
+ *
+ * <p>Shell content reads/writes with dedicated equivalents are rejected before permission
+ * evaluation. Filesystem administration is risk-classified rather than categorically banned;
+ * managed memory must still be changed through the memory tool.</p>
  *
  * The permission prompt shows the actual command so the user knows what they are approving.
  * Session-level "always" / "never" choices are remembered by PermissionService.
@@ -68,24 +74,54 @@ public class BashTool implements CliTool {
             "jq", "xmllint", "python3", "python", "node", "java"
     );
 
-    /** Git subcommands that are read-only. */
+    /** Git subcommands whose built-in operation is unconditionally read-only. */
     private static final Set<String> GIT_READONLY_SUBCOMMANDS = Set.of(
-            "status", "log", "diff", "show", "branch", "tag",
-            "describe", "remote", "stash list", "shortlog",
-            "blame", "ls-files", "ls-tree", "rev-parse", "rev-list",
-            "config --get", "config --list", "reflog"
+            "status", "log", "diff", "show", "describe", "shortlog",
+            "blame", "ls-files", "ls-tree", "rev-parse", "rev-list"
     );
 
-    /** Git subcommands that are destructive. */
-    private static final Set<String> GIT_DESTRUCTIVE_SUBCOMMANDS = Set.of(
-            "push --force", "push -f", "reset --hard",
-            "clean -f", "clean -fd", "clean -fdx",
-            "branch -D", "branch --delete --force"
+    /** Common Git-global options that preserve a subcommand's risk classification. */
+    private static final Set<String> GIT_READONLY_GLOBAL_OPTIONS = Set.of(
+            "--no-pager", "--paginate", "-p", "--no-replace-objects", "--bare"
     );
+
+    /** Downstream commands that only format the stdout of a read-only Git invocation. */
+    private static final Set<String> GIT_READONLY_OUTPUT_FILTERS = Set.of(
+            "cat", "head", "tail", "less", "more", "wc", "grep", "egrep", "fgrep",
+            "sort", "uniq", "cut", "jq"
+    );
+
+    private static final Set<String> GIT_BRANCH_MUTATION_OPTIONS = Set.of(
+            "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy",
+            "-f", "--force", "--set-upstream-to", "-u", "--unset-upstream",
+            "--edit-description", "--track", "--no-track", "--recurse-submodules"
+    );
+    private static final Set<String> GIT_TAG_MUTATION_OPTIONS = Set.of(
+            "-d", "--delete", "-a", "--annotate", "-s", "--sign", "-u",
+            "--local-user", "-f", "--force"
+    );
+    private static final Set<String> GIT_CONFIG_MUTATION_OPTIONS = Set.of(
+            "--add", "--unset", "--unset-all", "--replace-all", "--rename-section",
+            "--remove-section", "--edit", "-e"
+    );
+
+    /** Option-aware patterns: match complete tokens regardless of option order. */
+    private static final List<Pattern> GIT_DESTRUCTIVE_PATTERNS = List.of(
+            gitOptionPattern("push", "--force(?:-with-lease|-if-includes)?(?:=[^ ]*)?|-f|-[A-Za-z]*f[A-Za-z]*|[+][^ ]+"),
+            gitOptionPattern("reset", "--hard"),
+            gitOptionPattern("clean", "--force|-[A-Za-z]*f[A-Za-z]*"),
+            gitOptionPattern("branch", "-[A-Za-z]*D[A-Za-z]*"),
+            Pattern.compile("^branch(?=.*[ ](?:--delete|-[A-Za-z]*d[A-Za-z]*)(?:[ ]|$))"
+                    + "(?=.*[ ](?:--force|-[A-Za-z]*f[A-Za-z]*)(?:[ ]|$)).*$")
+    );
+
+    private static Pattern gitOptionPattern(String subcommand, String option) {
+        return Pattern.compile("^" + subcommand + "(?:[ ]+[^ ]+)*[ ]+(?:" + option + ")(?:[ ]+.*)?$");
+    }
 
     /** Top-level commands that are inherently destructive. */
     private static final Set<String> DESTRUCTIVE_COMMANDS = Set.of(
-            "rmdir", "shred", "dd", "mkfs", "fdisk",
+            "rmdir", "unlink", "shred", "dd", "mkfs", "fdisk",
             "kill", "killall", "pkill",
             "shutdown", "reboot", "halt", "poweroff",
             "systemctl", "service",
@@ -103,8 +139,6 @@ public class BashTool implements CliTool {
             Pattern.compile("\\|\\s*sudo"),                                          // pipe to sudo
             Pattern.compile("curl\\s+.*\\|\\s*(ba)?sh"),                             // curl | sh
             Pattern.compile("wget\\s+.*\\|\\s*(ba)?sh"),                             // wget | sh
-            Pattern.compile("git\\s+push\\s+.*--force"),                             // git push --force
-            Pattern.compile("git\\s+reset\\s+--hard"),                               // git reset --hard
             Pattern.compile("docker\\s+(rm|rmi|system\\s+prune)"),                   // docker destructive
             Pattern.compile("npm\\s+publish"),                                       // npm publish
             Pattern.compile("mvn\\s+deploy")                                         // mvn deploy
@@ -128,10 +162,10 @@ public class BashTool implements CliTool {
     public String description() {
         return "Execute a shell command via bash and return its output (stdout + stderr). " +
                 "Commands run in the project working directory. Default timeout is 120 seconds. " +
-                "Commands are classified by risk level: read-only commands run freely, " +
-                "write commands and destructive commands require user approval. " +
-                "Prefer dedicated tools (read, grep, glob) over bash equivalents (cat, grep, find) " +
-                "when available.";
+                "Commands are classified by risk level and checked against the permission policy. " +
+                "Shell file reads, writes, redirects, and mutation commands are rejected when a " +
+                "dedicated tool exists. Filesystem administration (rm, mv, mkdir, chmod) is subject to " +
+                "risk permissions and judge policy, not categorically banned. Use memory for persistent memory mutations.";
     }
 
     @Override
@@ -174,6 +208,11 @@ public class BashTool implements CliTool {
 
         if (command.isEmpty()) {
             return ToolResult.error("command is required");
+        }
+
+        EnforcerToolCallDecision mandate = ShellMandatePolicy.evaluateCommand(id(), command);
+        if (mandate != null) {
+            return ToolResult.error(mandate.getCorrectionPrompt());
         }
 
         timeout = Math.min(timeout, MAX_TIMEOUT_SECONDS);
@@ -229,6 +268,51 @@ public class BashTool implements CliTool {
 
     // --- Command classification ---
 
+    /**
+     * Reuse the command parser at higher-level policy gates without duplicating a
+     * second, inevitably divergent shell-risk list.
+     */
+    public static String commandPermissionKey(String command) {
+        return classifyCommand(command == null ? "" : command).permissionKey;
+    }
+
+    public static boolean isReadOnlyCommand(String command) {
+        return classifyCommand(command == null ? "" : command) == CommandRisk.READONLY;
+    }
+
+    /**
+     * Whether every Git invocation in a shell command is a recognized read-only inspection.
+     * Non-Git pipeline filters are allowed only when the complete command remains read-only.
+     */
+    public static boolean isReadOnlyGitCommand(String command) {
+        if (command == null || command.isBlank() || command.contains("GIT_")
+                || command.contains("\n") || command.contains("\r")
+                || command.contains("$(") || command.contains("`")
+                || command.contains("<(") || command.contains(">(")
+                || command.replace("&&", "").contains("&")
+                || classifyCommand(command) != CommandRisk.READONLY) {
+            return false;
+        }
+        boolean sawGit = false;
+        for (String chain : command.split("&&|\\|\\||;")) {
+            if (chain.isBlank()) return false;
+            boolean chainSawGit = false;
+            String[] pipeline = chain.split("\\|");
+            for (int index = 0; index < pipeline.length; index++) {
+                String segment = pipeline[index].trim();
+                String gitArgs = gitArguments(segment);
+                if (gitArgs != null) {
+                    if (classifyGitCommand(gitArgs) != CommandRisk.READONLY) return false;
+                    sawGit = true;
+                    chainSawGit = true;
+                } else if (index == 0 || !chainSawGit || !isReadOnlyGitOutputFilter(segment)) {
+                    return false;
+                }
+            }
+        }
+        return sawGit;
+    }
+
     enum CommandRisk {
         READONLY(PERM_READONLY, "read-only"),
         WRITE(PERM_WRITE, "write"),
@@ -249,7 +333,7 @@ public class BashTool implements CliTool {
      */
     static CommandRisk classifyCommand(String command) {
         // Split on pipes and logical operators to check each segment
-        String[] segments = command.split("[|;&]+");
+        String[] segments = command.split("[|;&\\r\\n]+");
         CommandRisk highest = CommandRisk.READONLY;
 
         for (String segment : segments) {
@@ -321,22 +405,119 @@ public class BashTool implements CliTool {
     private static CommandRisk classifyGitCommand(String args) {
         if (args.isEmpty()) return CommandRisk.READONLY;
 
-        String trimmed = args.trim();
+        String trimmed = stripReadOnlyGitGlobalOptions(args.trim());
+        if (trimmed == null) return CommandRisk.WRITE;
+        if (trimmed.isEmpty()) return CommandRisk.READONLY;
 
         // Check destructive git patterns first
-        for (String destructive : GIT_DESTRUCTIVE_SUBCOMMANDS) {
-            if (trimmed.startsWith(destructive)) {
+        for (Pattern destructive : GIT_DESTRUCTIVE_PATTERNS) {
+            if (destructive.matcher(trimmed).matches()) {
                 return CommandRisk.DESTRUCTIVE;
             }
         }
 
-        // Check read-only git subcommands
-        String subcommand = trimmed.split("\\s+", 2)[0];
+        String[] commandParts = trimmed.split("\\s+", 2);
+        String subcommand = commandParts[0];
+        String rest = commandParts.length > 1 ? commandParts[1] : "";
+        if (hasGitOutputSideEffect(rest)) return CommandRisk.WRITE;
+
+        // Check unconditionally read-only Git subcommands.
         if (GIT_READONLY_SUBCOMMANDS.contains(subcommand)) {
             return CommandRisk.READONLY;
         }
 
-        // All other git commands (add, commit, checkout, merge, etc.) are write
-        return CommandRisk.WRITE;
+        // These Git commands mix query and mutation forms. Only certify narrow,
+        // unmistakable list/query forms; unknown forms retain write classification.
+        String firstArg = rest.isBlank() ? "" : rest.split("\\s+", 2)[0];
+        return switch (subcommand) {
+            case "branch" -> !containsGitOption(rest, GIT_BRANCH_MUTATION_OPTIONS)
+                    && (rest.isBlank() || Set.of(
+                    "-l", "--list", "--show-current", "-a", "--all",
+                    "-r", "--remotes", "-v", "-vv").contains(firstArg))
+                    ? CommandRisk.READONLY : CommandRisk.WRITE;
+            case "tag" -> !containsGitOption(rest, GIT_TAG_MUTATION_OPTIONS)
+                    && (rest.isBlank() || Set.of("-l", "--list").contains(firstArg))
+                    ? CommandRisk.READONLY : CommandRisk.WRITE;
+            case "remote" -> {
+                String action = firstNonOption(rest);
+                yield action == null || "get-url".equals(action)
+                        ? CommandRisk.READONLY : CommandRisk.WRITE;
+            }
+            case "stash" -> Set.of("list", "show").contains(firstArg)
+                    ? CommandRisk.READONLY : CommandRisk.WRITE;
+            case "config" -> !containsGitOption(rest, GIT_CONFIG_MUTATION_OPTIONS)
+                    && Set.of(
+                    "--get", "--get-all", "--get-regexp", "--get-urlmatch",
+                    "--list", "-l").contains(firstArg)
+                    ? CommandRisk.READONLY : CommandRisk.WRITE;
+            case "reflog" -> rest.isBlank() || "show".equals(firstArg)
+                    ? CommandRisk.READONLY : CommandRisk.WRITE;
+            default -> CommandRisk.WRITE;
+        };
+    }
+
+    private static String stripReadOnlyGitGlobalOptions(String args) {
+        List<String> tokens = new ArrayList<>(Arrays.asList(args.split("\\s+")));
+        int index = 0;
+        while (index < tokens.size()) {
+            String option = tokens.get(index);
+            if (GIT_READONLY_GLOBAL_OPTIONS.contains(option)) {
+                index++;
+            } else if (Set.of("-C", "--git-dir", "--work-tree").contains(option)) {
+                if (index + 1 >= tokens.size()) return null;
+                index += 2;
+            } else if (option.startsWith("--git-dir=") || option.startsWith("--work-tree=")) {
+                index++;
+            } else {
+                break;
+            }
+        }
+        return String.join(" ", tokens.subList(index, tokens.size()));
+    }
+
+    private static boolean hasGitOutputSideEffect(String args) {
+        for (String token : args.split("\\s+")) {
+            if ("--output".equals(token) || token.startsWith("--output=")
+                    || "--ext-diff".equals(token) || "--textconv".equals(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsGitOption(String args, Set<String> options) {
+        if (args == null || args.isBlank()) return false;
+        for (String token : args.split("\\s+")) {
+            for (String option : options) {
+                if (token.equals(option) || token.startsWith(option + "=")) return true;
+            }
+        }
+        return false;
+    }
+
+    private static String firstNonOption(String args) {
+        if (args == null || args.isBlank()) return null;
+        for (String token : args.split("\\s+")) {
+            if (!token.startsWith("-")) return token;
+        }
+        return null;
+    }
+
+    private static boolean isReadOnlyGitOutputFilter(String segment) {
+        if (segment == null || segment.isBlank()) return false;
+        String cleaned = segment.replaceAll("^(\\w+=\\S+\\s+)*", "");
+        String base = cleaned.split("\\s+", 2)[0];
+        if (base.contains("/")) base = base.substring(base.lastIndexOf('/') + 1);
+        return GIT_READONLY_OUTPUT_FILTERS.contains(base);
+    }
+
+    private static String gitArguments(String segment) {
+        if (segment.isEmpty()) return null;
+        String cleaned = segment.replaceAll("^(\\w+=\\S+\\s+)*", "")
+                .replaceFirst("^sudo\\s+", "");
+        String[] parts = cleaned.split("\\s+", 2);
+        String base = parts[0];
+        if (base.contains("/")) base = base.substring(base.lastIndexOf('/') + 1);
+        return "git".equals(base) ? (parts.length > 1 ? parts[1] : "") : null;
     }
 }

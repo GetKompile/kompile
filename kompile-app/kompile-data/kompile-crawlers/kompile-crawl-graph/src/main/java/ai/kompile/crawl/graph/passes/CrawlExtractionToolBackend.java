@@ -25,6 +25,7 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.crawl.graph.CrawlOntology;
@@ -111,6 +112,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private volatile List<String> compactRelationTypeOrder = List.of();
     private volatile List<Map<String, String>> compactEntityCandidates = List.of();
     private volatile List<CompactRelationCandidate> compactRelationCandidates = List.of();
+    private volatile Set<String> strictEntityTypes = Set.of();
+    private volatile Set<String> strictRelationTypes = Set.of();
 
     private record CompactRelationCandidate(int source, int target, String proposedType) {
     }
@@ -288,6 +291,17 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 ? List.of() : List.copyOf(entityTypeOrder);
         this.compactRelationTypeOrder = relationTypeOrder == null
                 ? List.of() : List.copyOf(relationTypeOrder);
+    }
+
+    /**
+     * Restricts emitted extraction types for a caller-owned strict schema without removing the
+     * baseline hierarchy from the ontology used for assignability and metadata projection.
+     */
+    public void configureStrictExtractionTypes(
+            List<String> entityTypes, List<String> relationTypes) {
+        this.strictEntityTypes = scopedTypes(entityTypes, schema().getAllNodeLabels());
+        this.strictRelationTypes = scopedTypes(
+                relationTypes, schema().getAllRelationshipTypes());
     }
 
     /**
@@ -567,8 +581,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             GraphSchema currentSchema = schema();
             Map<String, Object> phase = new LinkedHashMap<>();
             phase.put("phase", "TYPED_ENTITIES_ONLY");
-            phase.put("allowedEntityTypes",
-                    currentSchema.getAllNodeLabels().stream().sorted().toList());
+            phase.put("allowedEntityTypes", allowedEntityTypes().stream().sorted().toList());
             phase.put("entityTypeGuide", compactEntityTypeDescription(currentSchema));
             if (!compactEntityCandidates.isEmpty()) {
                 phase.put("sourceEntityCandidates", compactEntityCandidates);
@@ -609,8 +622,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 }
                 phase.put("sourceRelationCandidates", candidates);
             }
-            phase.put("allowedRelationTypes",
-                    currentSchema.getAllRelationshipTypes().stream().sorted().toList());
+            phase.put("allowedRelationTypes", allowedRelationTypes().stream().sorted().toList());
             phase.put("relationTypeGuide", compactRelationTypeDescription(currentSchema));
             phase.put("allowedRelationPatterns",
                     currentSchema.getPatterns() == null ? List.of() : currentSchema.getPatterns());
@@ -699,6 +711,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         boolean discoveringTypes = directCompact
                 && currentSchema.getAllNodeLabels().isEmpty()
                 && currentSchema.getAllRelationshipTypes().isEmpty();
+        boolean closedRelationshipVocabulary = !ontologyUpdatesAllowed
+                && currentSchema.getRelationshipTypes() != null
+                && currentSchema.getRelationshipTypes().isEmpty();
         int inlineEnumLimit = inlineSchemaEnumLimit(tier);
         Map<String, Object> entityProperties = new LinkedHashMap<>();
         entityProperties.put("id", stringSchema(directCompact
@@ -832,6 +847,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             if (compactRelationMaxItems != null) {
                 compactRelations.put("maxItems", compactRelationMaxItems);
             }
+            if (closedRelationshipVocabulary) {
+                compactRelations.put("minItems", 0);
+                compactRelations.put("maxItems", 0);
+            }
 
             submitProperties.put(COMPACT_SUBMIT_FORMAT_FIELD, Map.of(
                     "type", "string",
@@ -845,9 +864,13 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     : "Every source-supported entity. Include an entity object for every relation endpoint "
                             + "that is not already an entity in the current graph."));
             if (!entitiesOnly()) {
-                submitProperties.put("relations", arraySchema(relation,
+                Map<String, Object> relationsSchema = new LinkedHashMap<>(arraySchema(relation,
                         "Every directed relation explicitly stated in SOURCE or a retrieved passage, "
                                 + "between submitted or existing graph entity ids."));
+                if (closedRelationshipVocabulary) {
+                    relationsSchema.put("maxItems", 0);
+                }
+                submitProperties.put("relations", relationsSchema);
             }
         }
         Map<String, Object> submitParameters = objectSchema(
@@ -991,9 +1014,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                                     "Entity name: exact non-empty named-node span copied from Text.",
                                     compactEntityNameMaxLength == null
                                             ? MAX_ENTITY_NAME_CHARS : compactEntityNameMaxLength),
-                            "type", standardizedTypeSchema(
+                            "type", boundedPhasedTypeSchema(
                                     compactEntityTypeDescription(currentSchema),
-                                    currentSchema.getAllNodeLabels(),
+                                    allowedEntityTypes(),
                                     inlineEnumLimit,
                                     compactEntityTypeOrder)),
                     List.of("name", "type"));
@@ -1011,9 +1034,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     nameSchema.put("const", candidate.get("name"));
                     Map<String, Object> properties = new LinkedHashMap<>();
                     properties.put("name", nameSchema);
-                    properties.put("type", standardizedTypeSchema(
+                    properties.put("type", boundedPhasedTypeSchema(
                             compactEntityTypeDescription(currentSchema),
-                            currentSchema.getAllNodeLabels(),
+                            allowedEntityTypes(),
                             inlineEnumLimit,
                             compactEntityTypeOrder));
                     positionalEntities.add(objectSchema(
@@ -1043,9 +1066,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 Map.of(
                         "source", compactEntityIndexSchema("source", entityCount),
                         "target", compactEntityIndexSchema("target", entityCount),
-                        "type", standardizedTypeSchema(
+                        "type", boundedPhasedTypeSchema(
                                 compactRelationTypeDescription(currentSchema),
-                                currentSchema.getAllRelationshipTypes(),
+                                allowedRelationTypes(),
                                 inlineEnumLimit,
                                 compactRelationTypeOrder)),
                 List.of("source", "target", "type"));
@@ -1065,9 +1088,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 Map<String, Object> properties = new LinkedHashMap<>();
                 properties.put("source", sourceSchema);
                 properties.put("target", targetSchema);
-                properties.put("type", standardizedTypeSchema(
+                properties.put("type", boundedPhasedTypeSchema(
                         compactRelationTypeDescription(currentSchema),
-                        currentSchema.getAllRelationshipTypes(),
+                        allowedRelationTypes(),
                         inlineEnumLimit,
                         compactRelationTypeOrder));
                 positionalRelations.add(objectSchema(
@@ -1077,11 +1100,18 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             relations.put("items", false);
         }
         relations.put("uniqueItems", true);
+        boolean closedRelationshipVocabulary = !ontologyUpdatesAllowed
+                && currentSchema.getRelationshipTypes() != null
+                && currentSchema.getRelationshipTypes().isEmpty();
         if (compactRelationMinItems != null) {
             relations.put("minItems", compactRelationMinItems);
         }
         if (compactRelationMaxItems != null) {
             relations.put("maxItems", compactRelationMaxItems);
+        }
+        if (closedRelationshipVocabulary) {
+            relations.put("minItems", 0);
+            relations.put("maxItems", 0);
         }
         return List.of(new ToolDefinition(
                 SUBMIT_RELATIONS,
@@ -1109,12 +1139,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         if (tier == DecomposedPromptTier.COMPACT) {
             Map<String, Object> nodeType = objectSchema(Map.of(
                     "label", Map.of("type", "string"),
-                    "description", Map.of("type", "string")),
+                    "description", Map.of("type", "string"),
+                    "parentType", Map.of("type", "string")),
                     List.of("label", "description"));
             Map<String, Object> relationshipType = objectSchema(Map.of(
                     "type", Map.of("type", "string"),
-                    "description", Map.of("type", "string")),
-                    List.of("type", "description"));
+                    "description", Map.of("type", "string"),
+                    "connectionFamily", Map.of("type", "string")),
+                    List.of("type", "description", "connectionFamily"));
             return objectSchema(Map.of(
                     "nodeTypes", arraySchema(nodeType),
                     "relationshipTypes", arraySchema(relationshipType),
@@ -1131,14 +1163,22 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Map<String, Object> nodeType = objectSchema(Map.of(
                 "label", stringSchema("Canonical reusable entity type label supported by the corpus."),
                 "description", stringSchema("Concise semantic definition of the entity type."),
+                "parentType", Map.of(
+                        "type", "string",
+                        "enum", SchemaHierarchyVocabulary.BASE_ENTITY_TYPES,
+                        "description", "Direct baseline parent for this domain entity type."),
                 "properties", arraySchema(propertyType)),
                 List.of("label", "description"));
         Map<String, Object> relationshipType = objectSchema(Map.of(
                 "type", stringSchema("Canonical directed relationship type supported by the corpus."),
                 "description", stringSchema("Concise semantic definition of the relationship."),
+                "connectionFamily", Map.of(
+                        "type", "string",
+                        "enum", SchemaHierarchyVocabulary.CONNECTION_FAMILIES,
+                        "description", "Semantic family for this specific directed predicate; never the emitted edge type."),
                 "properties", arraySchema(propertyType),
                 "aliases", arraySchema(stringSchema("Source-language predicate or synonym."))),
-                List.of("type", "description"));
+                List.of("type", "description", "connectionFamily"));
         return objectSchema(Map.of(
                 "nodeTypes", arraySchema(nodeType,
                         "New node definitions or missing details for established definitions."),
@@ -1188,6 +1228,15 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         return ontology.snapshot();
     }
 
+    private Set<String> allowedEntityTypes() {
+        return strictEntityTypes.isEmpty() ? schema().getAllNodeLabels() : strictEntityTypes;
+    }
+
+    private Set<String> allowedRelationTypes() {
+        return strictRelationTypes.isEmpty()
+                ? schema().getAllRelationshipTypes() : strictRelationTypes;
+    }
+
     private boolean requiresDescriptions() {
         return policy.effectiveFailureMode()
                 == GraphExtractionValidationPolicy.FailureMode.RETRY
@@ -1215,8 +1264,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Set<String> relationPatterns = new LinkedHashSet<>();
         GraphSchema currentSchema = schema();
         boolean standardizedEntityTypes = !currentSchema.getAllNodeLabels().isEmpty();
-        boolean standardizedRelationTypes =
-                !currentSchema.getAllRelationshipTypes().isEmpty();
+        boolean standardizedRelationTypes = currentSchema.getRelationshipTypes() != null;
 
         if (standardizedEntityTypes) {
             entityTypes.addAll(currentSchema.getAllNodeLabels());
@@ -1274,6 +1322,15 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     "tool", GRAPH_REASONING_QUERY,
                     "operation", "SCHEMA"));
         } else {
+            if (!currentSchema.getNodeParentTypes().isEmpty()) {
+                vocabulary.put("entityTypeParents", currentSchema.getNodeParentTypes());
+            }
+            if (!currentSchema.getRelationshipConnectionFamilies().isEmpty()) {
+                vocabulary.put("relationTypeFamilies",
+                        currentSchema.getRelationshipConnectionFamilies());
+                vocabulary.put("relationFamilyRule",
+                        "Emit the specific relation type, never its connection-family value.");
+            }
             vocabulary.put("relationPatterns", allRelationPatterns);
             int definitionLimit = schemaDefinitionLimit(tier);
             List<Map<String, Object>> nodeDefinitions =
@@ -1439,6 +1496,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 .map(type -> {
                     Map<String, Object> definition = new LinkedHashMap<>();
                     definition.put("type", type.getLabel());
+                    if (type.getParentType() != null && !type.getParentType().isBlank()) {
+                        definition.put("parentType", type.getParentType().trim());
+                    }
                     if (type.getDescription() != null && !type.getDescription().isBlank()) {
                         definition.put("description", type.getDescription().trim());
                     }
@@ -1469,6 +1529,11 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 .map(type -> {
                     Map<String, Object> definition = new LinkedHashMap<>();
                     definition.put("type", type.getType());
+                    if (type.getConnectionFamily() != null
+                            && !type.getConnectionFamily().isBlank()) {
+                        definition.put("connectionFamily",
+                                type.getConnectionFamily().trim());
+                    }
                     if (type.getDescription() != null && !type.getDescription().isBlank()) {
                         definition.put("description", type.getDescription().trim());
                     }
@@ -1511,12 +1576,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 "maxLength", maxLength);
     }
 
-    private static String compactEntityTypeDescription(GraphSchema schema) {
+    private String compactEntityTypeDescription(GraphSchema schema) {
+        Set<String> allowedTypes = allowedEntityTypes();
         List<String> definitions = schema == null || schema.getNodeTypes() == null
                 ? List.of()
                 : schema.getNodeTypes().stream()
                         .filter(type -> type != null && type.getLabel() != null
                                 && !type.getLabel().isBlank())
+                        .filter(type -> allowedTypes.contains(normalizedType(type.getLabel())))
                         .map(type -> typeDefinition(type.getLabel(), type.getDescription()))
                         .filter(value -> !value.isBlank())
                         .sorted()
@@ -1529,12 +1596,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 definitions);
     }
 
-    private static String compactRelationTypeDescription(GraphSchema schema) {
+    private String compactRelationTypeDescription(GraphSchema schema) {
+        Set<String> allowedTypes = allowedRelationTypes();
         List<String> definitions = schema == null || schema.getRelationshipTypes() == null
                 ? List.of()
                 : schema.getRelationshipTypes().stream()
                         .filter(type -> type != null && type.getType() != null
                                 && !type.getType().isBlank())
+                        .filter(type -> allowedTypes.contains(normalizedType(type.getType())))
                         .map(type -> relationTypeDefinition(type, schema))
                         .filter(value -> !value.isBlank())
                         .sorted()
@@ -1604,29 +1673,69 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         result.put("type", "string");
         result.put("description", description);
         result.put("maxLength", MAX_GRAPH_TYPE_CHARS);
-        if (allowedTypes != null && !allowedTypes.isEmpty()
-                && allowedTypes.size() <= inlineEnumLimit) {
-            List<String> normalizedAllowed = allowedTypes.stream()
-                    .filter(value -> value != null && !value.isBlank())
-                    .map(String::trim)
-                    .sorted()
-                    .toList();
-            LinkedHashSet<String> ordered = new LinkedHashSet<>();
-            if (preferredOrder != null) {
-                for (String preferred : preferredOrder) {
-                    if (preferred == null) {
-                        continue;
-                    }
-                    String normalized = preferred.trim();
-                    if (normalizedAllowed.contains(normalized)) {
-                        ordered.add(normalized);
-                    }
-                }
-            }
-            ordered.addAll(normalizedAllowed);
-            result.put("enum", List.copyOf(ordered));
+        List<String> ordered = orderedAllowedTypes(allowedTypes, preferredOrder);
+        if (!ordered.isEmpty() && ordered.size() <= inlineEnumLimit) {
+            result.put("enum", ordered);
         }
         return result;
+    }
+
+    /**
+     * Positional phase tools already opt into a bounded source-derived proposal. Keep their
+     * executable type value constrained as well, prioritizing candidate labels without turning
+     * any one label into a per-row constant. The full authoritative vocabulary remains available
+     * in tool context and is not narrowed for ordinary graph submission tools.
+     */
+    private static Map<String, Object> boundedPhasedTypeSchema(
+            String description,
+            Set<String> allowedTypes,
+            int inlineEnumLimit,
+            List<String> preferredOrder) {
+        Map<String, Object> result = standardizedTypeSchema(
+                description, allowedTypes, inlineEnumLimit, preferredOrder);
+        if (result.containsKey("enum") || inlineEnumLimit <= 0) {
+            return result;
+        }
+        List<String> ordered = orderedAllowedTypes(allowedTypes, preferredOrder);
+        long requiredTypes = preferredOrder == null ? 0L : preferredOrder.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .filter(ordered::contains)
+                .distinct()
+                .count();
+        if (requiredTypes > inlineEnumLimit) {
+            return result;
+        }
+        if (!ordered.isEmpty()) {
+            result.put("enum", ordered.stream().limit(inlineEnumLimit).toList());
+        }
+        return result;
+    }
+
+    private static List<String> orderedAllowedTypes(
+            Set<String> allowedTypes, List<String> preferredOrder) {
+        if (allowedTypes == null || allowedTypes.isEmpty()) {
+            return List.of();
+        }
+        List<String> normalizedAllowed = allowedTypes.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .sorted()
+                .toList();
+        LinkedHashSet<String> ordered = new LinkedHashSet<>();
+        if (preferredOrder != null) {
+            for (String preferred : preferredOrder) {
+                if (preferred == null) {
+                    continue;
+                }
+                String normalized = preferred.trim();
+                if (normalizedAllowed.contains(normalized)) {
+                    ordered.add(normalized);
+                }
+            }
+        }
+        ordered.addAll(normalizedAllowed);
+        return List.copyOf(ordered);
     }
 
     private static Map<String, Object> arraySchema(Map<String, Object> items) {
@@ -1727,6 +1836,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
     @Override
     public Optional<ExtractionResult> acceptedResult() {
+        if (!phaseResultComplete(accepted)) {
+            return Optional.empty();
+        }
         return Optional.ofNullable(accepted);
     }
 
@@ -2029,7 +2141,56 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             return invalidPhaseSubmission(requiredArray,
                     requiredArray + " must be an array.");
         }
+        Integer minItems = "entities".equals(requiredArray)
+                ? compactEntityMinItems : compactRelationMinItems;
+        Integer maxItems = "entities".equals(requiredArray)
+                ? compactEntityMaxItems : compactRelationMaxItems;
+        if (minItems != null && values.size() < minItems) {
+            return invalidPhaseSubmission(requiredArray,
+                    requiredArray + " must contain at least " + minItems + " rows.");
+        }
+        if (maxItems != null && values.size() > maxItems) {
+            return invalidPhaseSubmission(requiredArray,
+                    requiredArray + " must contain at most " + maxItems + " rows.");
+        }
+        if ("entities".equals(requiredArray) && !compactEntityCandidates.isEmpty()) {
+            for (int index = 0; index < values.size(); index++) {
+                JsonNode row = values.get(index);
+                String expectedName = compactEntityCandidates.get(index).get("name");
+                if (!row.isObject() || !row.path("name").isTextual()
+                        || !expectedName.equals(row.path("name").asText())) {
+                    return invalidPhaseSubmission(requiredArray,
+                            "entities[" + index + "].name must equal the immutable source candidate '"
+                                    + expectedName + "'.");
+                }
+            }
+        }
+        if ("relations".equals(requiredArray) && !compactRelationCandidates.isEmpty()) {
+            for (int index = 0; index < values.size(); index++) {
+                JsonNode row = values.get(index);
+                CompactRelationCandidate expected = compactRelationCandidates.get(index);
+                Integer source = exactInteger(row.path("source"));
+                Integer target = exactInteger(row.path("target"));
+                if (!row.isObject() || source == null || target == null
+                        || source != expected.source() || target != expected.target()) {
+                    return invalidPhaseSubmission(requiredArray,
+                            "relations[" + index + "] must use immutable endpoints source="
+                                    + expected.source() + " and target=" + expected.target() + ".");
+                }
+            }
+        }
         return null;
+    }
+
+    private static Integer exactInteger(JsonNode value) {
+        if (value == null || !value.isNumber()) {
+            return null;
+        }
+        try {
+            return value.decimalValue().intValueExact();
+        } catch (ArithmeticException invalidInteger) {
+            return null;
+        }
     }
 
     private ToolExecution invalidPhaseSubmission(String requiredArray, String detail) {
@@ -2215,10 +2376,15 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 staged, policy, schema(), knownEntityTypes());
         List<String> errors = new ArrayList<>(validation.errors());
         List<String> groundingErrors = sourceGroundingErrors(staged, sourceText);
+        List<String> typeScopeErrors = strictTypeScopeErrors(staged);
+        List<String> sourceAssertionErrors = sourceAssertionTypeErrors(staged);
         errors.addAll(groundingErrors);
-        boolean valid = validation.valid() && groundingErrors.isEmpty();
-        Admission admission = groundingErrors.isEmpty()
-                ? admitValidatorCleanItems(delta, staged)
+        errors.addAll(typeScopeErrors);
+        errors.addAll(sourceAssertionErrors);
+        boolean valid = validation.valid() && groundingErrors.isEmpty()
+                && typeScopeErrors.isEmpty() && sourceAssertionErrors.isEmpty();
+        Admission admission = groundingErrors.isEmpty() && typeScopeErrors.isEmpty()
+                ? admitValidatorCleanItems(staged)
                 : new Admission(accepted, 0, 0);
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -2227,21 +2393,29 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         response.put("relations", staged.relations().size());
         response.put("errors", errors);
         response.put("warnings", validation.warnings());
+        if (!valid && typedEntityAccumulationComplete(admission.accepted())) {
+            response.put("ok", true);
+            response.put("accepted", true);
+            response.put("acceptedAcrossRepairRounds", true);
+            response.put("entities", admission.accepted().entities().size());
+            response.put("currentSubmissionErrors", List.copyOf(errors));
+            response.put("errors", List.of());
+            return ToolExecution.terminal(json(response));
+        }
         if (!valid) {
             if (compactWire) {
                 if (typedEntitiesOnly() || relationsOnly()) {
                     response.put("requiredShape", phaseSubmitContract());
                     Map<String, Object> correction = phaseCorrectionContext();
-                    if (groundingErrors.isEmpty()) {
+                    if (groundingErrors.isEmpty() && typeScopeErrors.isEmpty()) {
                         addValidatorCleanRepairSeed(correction, delta, staged, admission);
                     }
                     response.put("correction", correction);
                     response.put("guidance", typedEntitiesOnly()
-                            ? "Keep validator-clean rows already retained. Recheck Text and submit only corrected "
-                                    + "or missing exact name/type rows with submit_typed_entities."
-                            : "Keep validator-clean rows already retained. Recheck Text, independently remap both "
-                                    + "endpoint names to the immutable entity table, and submit only corrected "
-                                    + "or missing directed rows with submit_relations.");
+                            ? "Keep validator-clean rows unchanged. Recheck Text, correct rejected positions, and "
+                                    + "resubmit the complete positional entity array with submit_typed_entities."
+                            : "Keep validator-clean rows unchanged. Recheck Text, independently remap both endpoint "
+                                    + "names, and resubmit the complete positional relation array with submit_relations.");
                 } else {
                     response.put("requiredShape", compactSubmitContract());
                     response.put("correction", compactCorrectionContext());
@@ -2603,17 +2777,16 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         if (typedEntitiesOnly()) {
             correction.put("action", "correct_and_resubmit_submit_typed_entities");
             correction.put("requiredCall",
-                    "submit_typed_entities with an entities array populated only with actual Text names "
-                            + "and allowed ontology node labels");
-            correction.put("allowedEntityTypes",
-                    currentSchema.getAllNodeLabels().stream().sorted().toList());
+                    "submit_typed_entities with the complete positional entities array in immutable candidate order, "
+                            + "using exact Text names and allowed ontology node labels");
+            correction.put("allowedEntityTypes", allowedEntityTypes().stream().sorted().toList());
             correction.put("entityTypeGuide", compactEntityTypeDescription(currentSchema));
             correction.put("rules", List.of(
                     "Use each distinct exact Text referent once, preserving one source spelling.",
                     "For each name independently, re-read its sentence and identify what that referent is before matching one ontology node definition.",
                     "Enum order, requested row count, and unused labels are not type evidence; never reuse a name under a second type.",
                     "A type label, relation label, instruction, example, placeholder, alternate casing, or duplicate is not a missing entity.",
-                    "Submit only corrected or missing rows; validator-clean rows are already retained."));
+                    "Resubmit the complete positional table; keep validator-clean rows unchanged and correct rejected positions."));
             return correction;
         }
         List<Map<String, Object>> entityTable = new ArrayList<>();
@@ -2626,11 +2799,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
         correction.put("action", "correct_and_resubmit_submit_relations");
         correction.put("requiredCall",
-                "submit_relations with a relations array populated only with actual integer lookup indices "
+                "submit_relations with the complete positional relations array, using the immutable integer endpoints "
                         + "and allowed ontology relation labels");
         correction.put("entities", entityTable);
-        correction.put("allowedRelationTypes",
-                currentSchema.getAllRelationshipTypes().stream().sorted().toList());
+        correction.put("allowedRelationTypes", allowedRelationTypes().stream().sorted().toList());
         correction.put("relationTypeGuide", compactRelationTypeDescription(currentSchema));
         correction.put("allowedRelationPatterns",
                 currentSchema.getPatterns() == null ? List.of() : currentSchema.getPatterns());
@@ -2638,7 +2810,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 "For each explicit Text predicate, copy both endpoint names from the same sentence and independently map them to indices.",
                 "Match the relation definition and directed endpoint pattern; source and target are semantic roles, not list order.",
                 "Use no background knowledge and never substitute an endpoint from another predicate.",
-                "Submit only corrected or missing rows; validator-clean rows are already retained."));
+                "Resubmit the complete positional table; keep validator-clean rows unchanged and correct rejected positions."));
         return correction;
     }
 
@@ -2785,8 +2957,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         for (int index = 0; index < staged.entities().size(); index++) {
             List<ExtractedEntity> candidateEntities = mergeEntities(
                     retainedEntities, List.of(staged.entities().get(index)));
-            ValidationResult itemValidation = validateRepairCandidate(
-                    candidateEntities, List.of(), staged.metadata(), knownTypes);
+            ValidationResult itemValidation = withSourceAssertionValidation(
+                    validateRepairCandidate(
+                            candidateEntities, List.of(), staged.metadata(), knownTypes),
+                    staged.entities().get(index), index);
             if (itemValidation.valid()) {
                 retainedEntities = candidateEntities;
                 retainedEntityIndexes.add(index);
@@ -2811,6 +2985,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             }
         }
 
+        retainedEntities = orderTypedPhaseEntities(retainedEntities);
         Map<String, Object> repairSeed = new LinkedHashMap<>();
         repairSeed.put("entities", retainedEntities);
         repairSeed.put("relations", retainedRelations);
@@ -2829,7 +3004,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                         + "omit only rejected items; retained entity ids may be referenced by corrected relations.");
     }
 
-    private Admission admitValidatorCleanItems(JsonNode delta, ExtractionResult staged) {
+    private Admission admitValidatorCleanItems(ExtractionResult staged) {
         Map<String, String> knownTypes = knownEntityTypes();
         List<ExtractedEntity> entities = accepted == null
                 ? new ArrayList<>() : new ArrayList<>(accepted.entities());
@@ -2837,9 +3012,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 ? new ArrayList<>() : new ArrayList<>(accepted.relations());
         int admittedEntityItems = 0;
         int admittedRelationItems = 0;
-        for (ExtractedEntity entity : staged.entities()) {
+        for (int index = 0; index < staged.entities().size(); index++) {
+            ExtractedEntity entity = staged.entities().get(index);
             List<ExtractedEntity> validationCandidate = replaceEntityForValidation(entities, entity);
-            if (validateRepairCandidate(validationCandidate, relations, staged.metadata(), knownTypes).valid()) {
+            ValidationResult itemValidation = withSourceAssertionValidation(
+                    validateRepairCandidate(
+                            validationCandidate, relations, staged.metadata(), knownTypes),
+                    entity, index);
+            if (itemValidation.valid()) {
                 entities = mergeEntities(entities, List.of(entity));
                 admittedEntityItems++;
             }
@@ -2851,6 +3031,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 admittedRelationItems++;
             }
         }
+        entities = orderTypedPhaseEntities(entities);
         ExtractionResult merged = new ExtractionResult(GraphExtractionSchema.SCHEMA_VERSION,
                 List.copyOf(entities), List.copyOf(relations), staged.metadata());
         if (!GraphExtractionValidator.validate(merged, policy, schema(), knownTypes).valid()) {
@@ -2865,8 +3046,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private ExtractionResult mergeAndValidateAccepted(ExtractionMetadata metadata,
                                                        List<ExtractedEntity> entities,
                                                        List<ExtractedRelation> relations) {
-        List<ExtractedEntity> mergedEntities = mergeEntities(
-                accepted == null ? List.of() : accepted.entities(), entities);
+        List<ExtractedEntity> mergedEntities = orderTypedPhaseEntities(mergeEntities(
+                accepted == null ? List.of() : accepted.entities(), entities));
         List<ExtractedRelation> mergedRelations = mergeRelations(
                 accepted == null ? List.of() : accepted.relations(), relations);
         ExtractionResult merged = new ExtractionResult(GraphExtractionSchema.SCHEMA_VERSION,
@@ -2981,6 +3162,129 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             }
         }
         return normalized;
+    }
+
+    private static Set<String> scopedTypes(List<String> requested, Set<String> authoritative) {
+        Set<String> requestedTypes = normalizedVocabulary(requested);
+        if (requestedTypes.isEmpty() || authoritative == null || authoritative.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> authoritativeTypes = normalizedVocabulary(authoritative);
+        requestedTypes.retainAll(authoritativeTypes);
+        return requestedTypes.isEmpty()
+                ? Set.of() : java.util.Collections.unmodifiableSet(requestedTypes);
+    }
+
+    private List<String> strictTypeScopeErrors(ExtractionResult staged) {
+        List<String> errors = new ArrayList<>();
+        if (!strictEntityTypes.isEmpty()) {
+            for (int index = 0; index < staged.entities().size(); index++) {
+                String type = normalizedType(staged.entities().get(index).type());
+                if (type != null && !strictEntityTypes.contains(type)) {
+                    errors.add("[ENTITY_TYPE_SCOPE] $.entities[" + index + "].type '"
+                            + staged.entities().get(index).type() + "' is outside the strict extraction types "
+                            + strictEntityTypes);
+                }
+            }
+        }
+        if (!strictRelationTypes.isEmpty()) {
+            for (int index = 0; index < staged.relations().size(); index++) {
+                String type = normalizedType(staged.relations().get(index).type());
+                if (type != null && !strictRelationTypes.contains(type)) {
+                    errors.add("[RELATION_TYPE_SCOPE] $.relations[" + index + "].type '"
+                            + staged.relations().get(index).type() + "' is outside the strict extraction types "
+                            + strictRelationTypes);
+                }
+            }
+        }
+        return errors;
+    }
+
+    private List<String> sourceAssertionTypeErrors(ExtractionResult staged) {
+        if (!typedEntitiesOnly() || compactEntityCandidates.isEmpty()) {
+            return List.of();
+        }
+        List<String> errors = new ArrayList<>();
+        int compared = Math.min(staged.entities().size(), compactEntityCandidates.size());
+        for (int index = 0; index < compared; index++) {
+            String error = sourceAssertionTypeError(staged.entities().get(index), index);
+            if (error != null) {
+                errors.add(error);
+            }
+        }
+        return errors;
+    }
+
+    private ValidationResult withSourceAssertionValidation(
+            ValidationResult validation, ExtractedEntity actual, int index) {
+        String assertionError = sourceAssertionTypeError(actual, index);
+        if (assertionError == null) {
+            return validation;
+        }
+        List<String> errors = new ArrayList<>(validation.errors());
+        errors.add(assertionError);
+        return new ValidationResult(false, errors, validation.warnings());
+    }
+
+    private String sourceAssertionTypeError(ExtractedEntity actual, int index) {
+        if (!typedEntitiesOnly() || index < 0 || index >= compactEntityCandidates.size()) {
+            return null;
+        }
+        Map<String, String> asserted = compactEntityCandidates.get(index);
+        String assertedName = asserted.get("name");
+        String assertedType = normalizedType(asserted.get("type"));
+        String actualName = actual == null ? null : actual.name();
+        String actualType = actual == null ? null : normalizedType(actual.type());
+        if (actualName == null || assertedName == null
+                || !actualName.strip().equals(assertedName.strip())) {
+            return null; // positional name const/schema validation owns this mismatch
+        }
+        if (assertedType != null && !assertedType.equals(actualType)) {
+            return "[SOURCE_ENTITY_TYPE_ASSERTION] $.entities[" + index + "].type '"
+                    + actual.type() + "' contradicts Text's explicit classification of '"
+                    + assertedName + "' as " + assertedType;
+        }
+        return null;
+    }
+
+    private boolean typedEntityAccumulationComplete(ExtractionResult retained) {
+        return typedEntitiesOnly()
+                && compactEntityMinItems != null
+                && compactEntityMinItems.equals(compactEntityMaxItems)
+                && retained != null
+                && retained.entities().size() == compactEntityMinItems
+                && sourceAssertionTypeErrors(retained).isEmpty();
+    }
+
+    private boolean phaseResultComplete(ExtractionResult retained) {
+        if (retained == null) {
+            return false;
+        }
+        if (typedEntitiesOnly() && compactEntityMinItems != null
+                && compactEntityMinItems.equals(compactEntityMaxItems)) {
+            return retained.entities().size() == compactEntityMinItems
+                    && sourceAssertionTypeErrors(retained).isEmpty();
+        }
+        if (relationsOnly() && compactRelationMinItems != null
+                && compactRelationMinItems.equals(compactRelationMaxItems)) {
+            return retained.relations().size() == compactRelationMinItems;
+        }
+        return true;
+    }
+
+    private List<ExtractedEntity> orderTypedPhaseEntities(List<ExtractedEntity> entities) {
+        if (!typedEntitiesOnly() || compactEntityCandidates.isEmpty()
+                || entities == null || entities.size() < 2) {
+            return entities == null ? List.of() : List.copyOf(entities);
+        }
+        Map<String, Integer> orderById = new LinkedHashMap<>();
+        for (int index = 0; index < compactEntityCandidates.size(); index++) {
+            orderById.put(stableEntityId(compactEntityCandidates.get(index).get("name")), index);
+        }
+        List<ExtractedEntity> ordered = new ArrayList<>(entities);
+        ordered.sort(java.util.Comparator.comparingInt(entity ->
+                orderById.getOrDefault(entity.id(), Integer.MAX_VALUE)));
+        return List.copyOf(ordered);
     }
 
     private static void addTypeDomainConflict(

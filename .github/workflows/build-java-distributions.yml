@@ -209,6 +209,8 @@ jobs:
         env:
           ARCHIVE: ${{ steps.package.outputs.archive }}
           BASE: ${{ steps.package.outputs.base }}
+          VARIANT: ${{ matrix.variant }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           EXTRACTED="${RUNNER_TEMP}/kompile-java-smoke"
@@ -223,8 +225,16 @@ jobs:
               value.extractall(destination)
           PY
           DIST_ROOT="${EXTRACTED}/${BASE}"
+          python3 kompile-dist/src/main/build/verify-persona-artifacts.py \
+            --dist-root "${DIST_ROOT}" \
+            --variant "${VARIANT}" \
+            --platform "${PLATFORM}"
+          if [[ "${VARIANT}" == full && "${PLATFORM}" == linux-x86_64 ]]; then
+            bash kompile-dist/src/test/scripts/persona-jar-stack-test.sh \
+              "${DIST_ROOT}" "${JAVA_HOME}/bin/java"
+          fi
           test -f "${DIST_ROOT}/lib/kompile-cli.jar"
-          python3 - "${DIST_ROOT}/.dist-info.json" <<'PY'
+          python3 - "${DIST_ROOT}/.dist-info.json" <<'PY
           import json
           from pathlib import Path
           import sys

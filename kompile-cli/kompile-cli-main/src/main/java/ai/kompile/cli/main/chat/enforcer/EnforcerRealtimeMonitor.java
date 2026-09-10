@@ -44,7 +44,7 @@ public class EnforcerRealtimeMonitor implements SubprocessAgentRunner.RealtimeMo
     private final EnforcerPolicy policy;
     private final String userPrompt;
     private final EnforcerConversationWindow conversationWindow;
-    private volatile boolean failOpenOnError = false;
+    private volatile boolean failOpenOnError = true;
     private volatile int lastEvaluatedLength;
     private volatile long lastEvaluationMs;
 
@@ -73,8 +73,8 @@ public class EnforcerRealtimeMonitor implements SubprocessAgentRunner.RealtimeMo
 
     /**
      * When the judge errors or times out evaluating a tool call, allow the call (fail-open)
-     * instead of blocking it. Mirrors {@link EnforcerFallbackPolicy#FAIL_OPEN}. Default false
-     * (fail-closed) because tool calls create side effects.
+     * instead of blocking it. Mirrors {@link EnforcerFallbackPolicy#FAIL_OPEN}. Fail-open is
+     * the default; callers may still explicitly opt into {@link EnforcerFallbackPolicy#FAIL_CLOSED}.
      */
     public void setFailOpenOnError(boolean failOpenOnError) {
         this.failOpenOnError = failOpenOnError;

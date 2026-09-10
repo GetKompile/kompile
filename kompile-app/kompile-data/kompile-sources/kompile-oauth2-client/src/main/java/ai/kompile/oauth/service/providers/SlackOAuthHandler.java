@@ -30,6 +30,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -45,6 +46,16 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String USERS_INFO_ENDPOINT = "https://slack.com/api/users.info";
     private static final String REVOKE_ENDPOINT = "https://slack.com/api/auth.revoke";
     private static final String DEFAULT_SCOPES = "channels:history channels:read users:read";
+    private static final List<String> CHANNEL_SCOPES = List.of(
+            "app_mentions:read",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "groups:history",
+            "groups:read",
+            "im:history",
+            "mpim:history",
+            "users:read");
 
     private OAuthSettingsService settingsService;
 
@@ -127,6 +138,15 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
     }
 
     @Override
+    public List<String> getRequiredScopes(String purpose) {
+        LinkedHashSet<String> scopes = new LinkedHashSet<>(getRequiredScopes());
+        if ("channel".equalsIgnoreCase(purpose)) {
+            scopes.addAll(CHANNEL_SCOPES);
+        }
+        return List.copyOf(scopes);
+    }
+
+    @Override
     public List<String> getRelatedSources() {
         return List.of("slack", "slack_history");
     }
@@ -153,10 +173,15 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public String buildAuthorizationUrl(String redirectUri, String state) {
+        return buildAuthorizationUrl(redirectUri, state, null);
+    }
+
+    @Override
+    public String buildAuthorizationUrl(String redirectUri, String state, String purpose) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("client_id", getEffectiveClientId());
         params.put("redirect_uri", redirectUri);
-        params.put("scope", getEffectiveScopes());
+        params.put("scope", String.join(" ", getRequiredScopes(purpose)));
         params.put("state", state);
 
         return AUTHORIZATION_ENDPOINT + "?" + buildQueryString(params);
@@ -209,9 +234,14 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
             OAuthTokenResponse response = OAuthTokenResponse.builder()
                     .accessToken(accessToken)
+                    .refreshToken(json.has("refresh_token")
+                            ? json.get("refresh_token").asText() : null)
                     .tokenType("Bearer")
+                    .expiresIn(json.has("expires_in") && json.get("expires_in").canConvertToLong()
+                            ? json.get("expires_in").asLong() : null)
                     .scope(json.has("scope") ? json.get("scope").asText() : null)
                     .build();
+            response.calculateExpiresAt();
 
             // Store team/workspace info as provider data
             Map<String, String> providerData = new LinkedHashMap<>();
@@ -226,6 +256,9 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
             }
             if (json.has("bot_user_id")) {
                 providerData.put("bot_user_id", json.get("bot_user_id").asText());
+            }
+            if (json.has("app_id")) {
+                providerData.put("app_id", json.get("app_id").asText());
             }
 
             if (!providerData.isEmpty()) {
@@ -245,12 +278,24 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public OAuthTokenResponse refreshAccessToken(String refreshToken) {
-        // Slack bot tokens don't expire by default
-        // Token rotation can be enabled but requires different handling
-        return OAuthTokenResponse.builder()
-                .error("not_supported")
-                .errorDescription("Slack tokens do not expire by default")
-                .build();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+            body.add("grant_type", "refresh_token");
+            body.add("refresh_token", refreshToken);
+            body.add("client_id", getEffectiveClientId());
+            body.add("client_secret", getEffectiveClientSecret());
+            ResponseEntity<String> response = restTemplate.exchange(
+                    TOKEN_ENDPOINT, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+            return parseSlackTokenResponse(response.getBody());
+        } catch (Exception error) {
+            log.error("Slack token refresh failed: {}", error.getMessage());
+            return OAuthTokenResponse.builder()
+                    .error("token_refresh_failed")
+                    .errorDescription(error.getMessage())
+                    .build();
+        }
     }
 
     @Override

@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PID_DIR="$ROOT/.kompile/state/pids"
-for service in app serving staging; do
+for service in chat crawl-manager app serving staging; do
   pid_file="$PID_DIR/$service.pid"
   if [ -f "$pid_file" ]; then
     pid="$(cat "$pid_file")"

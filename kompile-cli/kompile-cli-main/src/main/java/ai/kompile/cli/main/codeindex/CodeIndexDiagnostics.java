@@ -60,11 +60,7 @@ public final class CodeIndexDiagnostics {
         if (line == null) return false;
         String normalized = line.strip().toLowerCase();
         return normalized.startsWith("[code-index]")
-                || normalized.startsWith("[lsp] incremental reindex")
-                || normalized.startsWith("warning:")
-                || normalized.startsWith("error indexing")
-                || normalized.startsWith("error writing")
-                || normalized.contains("connectivity pass failed");
+                || normalized.startsWith("[lsp] incremental reindex");
     }
 
     private record Registration(Consumer<String> sink) {

@@ -20,6 +20,14 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.activity.ActivityIdentity;
+import ai.kompile.cli.main.chat.activity.ConversationActivityDetail;
+import ai.kompile.cli.main.chat.activity.ConversationActivityService;
+import ai.kompile.cli.main.chat.activity.ConversationActivitySummary;
+import ai.kompile.cli.main.chat.activity.LogActivityAdapter;
+import ai.kompile.cli.main.chat.activity.ProjectActivityController;
+import ai.kompile.cli.main.chat.activity.TaskActivityAdapter;
+import ai.kompile.cli.main.chat.activity.TranscriptActivityReader;
 import ai.kompile.cli.mcp.stdio.TaskRecord;
 import ai.kompile.cli.mcp.stdio.TaskRegistry;
 import ai.kompile.utils.FormatUtils;
@@ -69,6 +77,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -93,6 +102,7 @@ import org.jline.terminal.Attributes;
 import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.utils.AttributedString;
 import org.jline.utils.InfoCmp;
 import org.jline.utils.NonBlockingReader;
 import sun.misc.Signal;
@@ -115,6 +125,9 @@ import sun.misc.SignalHandler;
         mixinStandardHelpOptions = true
 )
 public class EmulatedPassthroughCommand implements Callable<Integer> {
+
+    /** Canonical parent transcript UUID supplied by {@link ChatCommand}. */
+    String transcriptId;
 
     @CommandLine.Option(names = {"--agent", "-a"}, description = "Agent command name", defaultValue = "claude")
     String agent;
@@ -161,6 +174,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     // Track whether the managed session has sent at least one message.
     private volatile boolean firstMessageSent = false;
+    /** Set by /clear so ChatCommand can rebuild this managed session in the same JVM. */
+    private volatile boolean newConversationRequested = false;
 
     // Agent session IDs — captured from first structured event, used for multi-turn.
     // Volatile: written by output reader thread, read by main thread in buildCommand.
@@ -181,12 +196,26 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private volatile int activePromptLastCursorCol = -1;
     private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
     private final AtomicBoolean shutdownSignal = new AtomicBoolean(false);
+    private final Object dispatchAdmissionLock = new Object();
+    /** Guarded by dispatchAdmissionLock; closes the final Ctrl+B/idle transition race. */
+    private boolean providerTurnBackgroundable;
     private final AtomicBoolean backgroundSignal = new AtomicBoolean(false);
     private final AtomicBoolean detachedProviderBusy = new AtomicBoolean(false);
     private final AtomicBoolean providerDispatchReserved = new AtomicBoolean(false);
+    private final AtomicBoolean isolatedDispatchReserved = new AtomicBoolean(false);
     private final AtomicInteger backgroundTurnCount = new AtomicInteger(0);
+    /** Terminal background-task events that must reach an agent before ordinary queued input. */
+    private final ConcurrentLinkedDeque<String> backgroundCompletionMessages =
+            new ConcurrentLinkedDeque<>();
     /** Durable task id for the most recently detached passthrough response. */
     private volatile String detachedTaskId;
+    /** Final accepted enforced-attempt output; published once after rollback/retry settles. */
+    private volatile String deferredDetachedResponse;
+    private volatile boolean deferredDetachedCancelled;
+    /** Fresh managed conversation that owns messages sent while the interactive provider is detached. */
+    private volatile SubprocessAgentRunner isolatedConversationRunner;
+    private volatile Thread providerDispatchThread;
+    private volatile Thread isolatedDispatchThread;
     private SignalHandler sigintHandler; // re-installed before each subprocess
 
     // Interactive prompt handling — agent stdin is kept open so we can write responses
@@ -342,6 +371,20 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         KOMPILE_MANAGED
     }
 
+    /** Renderer for the isolated owner; all visible output is routed through safePrintln instead. */
+    private static final class IsolatedTerminalRenderer extends TerminalRenderer {
+        private IsolatedTerminalRenderer() {
+            super(false);
+        }
+
+        @Override public SpinnerHandle startSpinner(String toolName) { return noOpSpinner(); }
+        @Override public SpinnerHandle startStaticSpinner(String chainInfo) { return noOpSpinner(); }
+        @Override public SpinnerHandle startGeneratingSpinner(String chainInfo) { return noOpSpinner(); }
+        @Override public SpinnerHandle startPinnedSpinner(int row, String chainInfo) { return noOpSpinner(); }
+        @Override public void setTerminalTitle(String title) { }
+        @Override public void resetTerminalTitle() { }
+    }
+
     private static final class ActivityItem {
         private final String key;
         private final String label;
@@ -449,9 +492,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // The one identity for this session (F8): Kompile id + enforcer id + agent-native id. Minted at
     // session start; judgement lookups key off it instead of guessing between the two id schemes.
     private volatile SessionIdentity sessionIdentity;
+    private volatile ConversationActivityService conversationActivityService;
+    private volatile ActivityIdentity conversationActivityIdentity;
+    private volatile Path activityProjectRoot;
+    private volatile boolean historicalActivityMode;
+    private volatile String historicalActivityScope = "project";
+    private volatile int historicalActivityOffset;
+    private volatile String historicalActivityFilter = "";
+    private volatile ConversationActivitySummary selectedActivitySummary;
+    private volatile ConversationActivityDetail selectedActivityDetail;
+    private volatile TranscriptActivityReader.TranscriptInspection selectedActivityTranscript;
 
-    // Live enforcement toggle — /enforcer pause|resume flips this. The dispatch gate skips the
-    // judge while paused WITHOUT tearing down the configured enforcer, so it can be resumed.
+    // Live judge toggle — /judge off|on flips this. The dispatch gate and nested MCP policy
+    // file move together so there is only one effective session switch.
     volatile boolean enforcementPaused;
 
     // Diff-archive + diff-pattern features ported from the classic `kompile enforcer` (live-PTY
@@ -475,6 +528,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         Terminal term = null;
+        TranscriptLogScope managedTranscriptLog = null;
         try {
             term = ChatCompleter.buildSystemTerminal();
             this.terminal = term;
@@ -526,7 +580,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
 
             // Session setup
-            String sessionId = "emulated-" + UUID.randomUUID().toString().substring(0, 8);
+            String sessionId = resolveManagedTranscriptId(transcriptId, resumeSessionId);
+            managedTranscriptLog = TranscriptLogScope.open(
+                    sessionId, Path.of(workingDir),
+                    resumeSessionId != null && !resumeSessionId.isBlank());
             // One identity for the session (F8): Kompile's id + the enforcer runtime-policy id
             // (from the env), so judgement lookups no longer have to guess which id is in scope.
             this.sessionIdentity = SessionIdentity.of(
@@ -535,6 +592,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             String reminderSourceSessionId = resumeSessionId;
             ChatHistory history = new ChatHistory(sessionId);
             this.sessionHistory = history;
+            this.activityProjectRoot = Path.of(workingDir).toAbsolutePath().normalize();
+            this.conversationActivityIdentity = ActivityIdentity.conversation(sessionId,
+                    activityProjectRoot);
+            this.conversationActivityService = new ConversationActivityService();
+            this.conversationActivityService.setCurrentSession(conversationActivityIdentity);
             ChatSessionMetrics metrics = new ChatSessionMetrics(sessionId);
             metrics.setAgentName(agent);
             this.messageQueue = new MessageQueue(sessionId);
@@ -545,6 +607,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             } catch (IOException e) {
                 System.err.println("Warning: Could not open chat history: " + e.getMessage());
             }
+            registerManagedSession(sessionId);
             restoreResumedSessionTitle(history);
 
             // MCP tool injection
@@ -561,6 +624,24 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // Initialize unified TUI — KompileTui is the ONE layout manager
             BackgroundTaskManager bgTaskMgr = new BackgroundTaskManager();
             this.bgProcMgr = new BackgroundProcessManager(sessionId, Path.of(workingDir));
+            Path taskRegistryRoot = activityProjectRoot.resolve(".kompile").resolve("task-registry");
+            if (Files.isDirectory(taskRegistryRoot) && conversationActivityService != null) {
+                conversationActivityService.addReader(identity -> new TaskActivityAdapter(() ->
+                        new TaskRegistry(activityProjectRoot).listAll().stream()
+                                .map(record -> new TaskActivityAdapter.TaskObservation(
+                                        record.getSessionId(), record.getTaskId(),
+                                        record.getStatus() == TaskRecord.Status.FAILED))
+                                .toList()));
+            }
+            if (conversationActivityService != null) {
+                conversationActivityService.addReader(identity -> new LogActivityAdapter(() ->
+                        bgProcMgr.listAll().stream()
+                                .map(entry -> new LogActivityAdapter.LogObservation(
+                                        entry.getMetadata().getOrDefault("sessionId", sessionId),
+                                        entry.getId(), entry.getStartTime(), entry.getEndTime(),
+                                        entry.getState() == BackgroundProcessManager.ProcessState.FAILED))
+                                .toList()));
+            }
             this.tui = new KompileTui(bgTaskMgr, bgProcMgr, messageQueue, renderer);
             this.drawLock = tui.getDrawLock();
             // Refresh the activity panel for lifecycle changes and every captured
@@ -571,7 +652,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             tui.setSessionId(sessionId);
             tui.setMode("passthrough");
             tui.setEnforcerActive(enforcerEvaluator != null);
-            // Make the judge + enforcer visible as watcher "processes" (status bar + /processes).
+            // Make the unified judge visible as one watcher in the status/activity surface.
             registerEnforcerWatchers();
             // Tell KompileTui to reserve rows for the input box + status line + activity panel.
             tui.setReservedRowsCalculator((h, w) -> {
@@ -580,33 +661,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 // queue(1)+busy(1)+topBorder(1)+input(ir)+bottomBorder(1)+status(1)+activity(ar)
                 return ir + ar + 5;
             });
+            tui.addResizeListener(this::handleTerminalResize);
             tui.start(terminal);
             initScrollLayout();
-
-            // Layer 2→3 resize propagation: when the user resizes their terminal,
-            // update kompile's scroll layout, resize the VirtualTerminal, and
-            // propagate the new size to the subprocess PTY.
-            terminal.handle(Terminal.Signal.WINCH, signal -> {
-                // Layer 2: update KompileTui's internal state (bars, scroll region)
-                tui.handleResize();
-                // Layer 2: update our input box layout
-                initScrollLayout();
-                // Layer 3: resize VT emulator and subprocess PTY
-                int newRows = terminal.getHeight();
-                int newCols = terminal.getWidth();
-                if (newRows <= 0) newRows = 24;
-                if (newCols <= 0) newCols = 120;
-                if (virtualTerminal != null) {
-                    virtualTerminal.resize(newRows, newCols);
-                }
-                // Layer 3: propagate the new geometry to the subprocess. The L0 AgentProcess sends
-                // SIGWINCH to the whole descendant tree so it reaches the agent running inside
-                // script(1)'s child shell — the old direct-child-only signal missed it (WP2/F7).
-                AgentProcess proc = tuiAgentProcess;
-                if (proc != null && proc.isAlive()) {
-                    proc.resize(newRows, newCols);
-                }
-            });
 
             // Welcome — prints into scroll region
             printWelcomePanel(agentBinary);
@@ -654,8 +711,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             Path reminderWorkingDirectory = Path.of(
                     workingDir == null || workingDir.isBlank() ? "." : workingDir);
-            this.reminderManager = new ReminderManager(
-                    objectMapper, sessionId, reminderWorkingDirectory);
+            if (this.reminderManager == null) {
+                this.reminderManager = new ReminderManager(
+                        objectMapper, sessionId, reminderWorkingDirectory);
+            }
+            scheduleSessionResumeReminderIfNeeded(reminderSourceSessionId);
             if (reminderSourceSessionId != null && !reminderSourceSessionId.isBlank()
                     && !reminderSourceSessionId.equals(sessionId)) {
                 try {
@@ -666,6 +726,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     safePrintln(renderer.dim("  Could not restore session reminders: "
                             + e.getMessage()));
                 }
+            }
+            if (SubprocessAgentRunner.requiresManagedOneShot(agent)) {
+                // DeepSeek Harness ships a one-shot headless profile, not a default
+                // terminal UI. Reuse the managed per-message owner for foreground turns.
+                isolatedConversationRunner();
             }
 
             replThread = Thread.currentThread();
@@ -718,7 +783,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     }
                     if (line.isBlank()) {
                         // A bare Enter while the agent is prompting accepts its default option.
-                        if (agentAwaitingInput) forwardPromptAnswer("");
+                        if (!detachedProviderBusy.get() && agentAwaitingInput) forwardPromptAnswer("");
                         continue;
                     }
                     String trimmed = line.trim();
@@ -729,39 +794,34 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
                     if (trimmed.startsWith("/")) {
                         String result = handleSlashCommand(trimmed, lineReader, history, metrics);
-                        if ("quit".equals(result)) break;
-                    } else if (agentAwaitingInput || isRecentPromptAnswer(trimmed)) {
+                        if ("quit".equals(result) || "clear".equals(result)
+                                || "restart".equals(result)) break;
+                    } else if (!detachedProviderBusy.get()
+                            && (agentAwaitingInput || isRecentPromptAnswer(trimmed))) {
                         // The agent paused mid-turn to ask — forward the typed answer straight to it,
                         // as if the user had answered in the native app (number, yes/no, or text).
                         recordInputHistory(trimmed);
                         safePrintln(renderer.dim("  → " + trimmed));
                         forwardPromptAnswer(trimmed);
-                    } else if (providerDispatchUnavailable()) {
-                        // Agent is processing — queue the message for later dispatch
-                        recordInputHistory(trimmed);
-                        enqueueBusyMessage(trimmed);
-                        safePrintln(DIM + "  Queued: " + RESET + trimmed);
                     } else {
-                        // Agent idle — echo and dispatch, then drain any queued messages
-                        recordInputHistory(trimmed);
-                        safePrintln(BOLD + "  > " + RESET + trimmed);
-                        if (!dispatchToAgentAsync(trimmed, history, metrics)) {
-                            enqueueBusyMessage(trimmed);
-                            safePrintln(DIM + "  Queued: " + RESET + trimmed);
-                        }
+                        admitUserMessage(trimmed, history, metrics);
                     }
                 }
             } finally {
                 replThread = null;
+                beginShutdown();
 
                 // Stop the realtime enforcer JSONL tap (WP9) before tearing down the process.
                 stopEnforcerRealtimeTail();
 
                 // Kill persistent TUI process if running
                 if (tuiProcess != null && tuiProcess.isAlive()) {
+                    if (detachedProviderBusy.get()) cancelSignal.set(true);
                     killProcess(tuiProcess);
                     tuiProcess = null;
                 }
+                cleanupIsolatedConversationRunner();
+                awaitDispatchThreads();
                 // Unregister persistent subprocess from status bar
                 if (tuiSubagentId != null && tui != null) {
                     tui.getStatusBar().unregisterSubagent(tuiSubagentId);
@@ -785,12 +845,17 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     System.out.flush();
                 }
 
-                printSessionSummary(metrics, history, sessionId, startTime);
+                if (newConversationRequested) {
+                    history.logSystem("Conversation cleared; continuing in a new transcript.");
+                } else {
+                    printSessionSummary(metrics, history, sessionId, startTime);
+                }
 
                 Path metricsFile = history.getTranscriptFile()
                         .resolveSibling(sessionId + ".metrics.json");
                 metrics.saveToFile(metricsFile, objectMapper);
                 history.close();
+                markManagedSessionExited(sessionId);
 
                 renderer.resetTerminalTitle();
 
@@ -818,6 +883,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     term.close();
                 } catch (IOException | IOError ignored) {
                 }
+            }
+            if (managedTranscriptLog != null) {
+                managedTranscriptLog.close();
             }
         }
     }
@@ -865,6 +933,24 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 redrawScrollViewportContentLocked();
             }
             drawFixedInputBox();
+        }
+    }
+
+    /** Propagate KompileTui's detected host resize through the managed terminal stack. */
+    private void handleTerminalResize() {
+        initScrollLayout();
+        int newRows = tui != null ? tui.getTerminalHeight() : terminal.getHeight();
+        int newCols = tui != null ? tui.getTerminalWidth() : terminal.getWidth();
+        if (newRows <= 0) newRows = 24;
+        if (newCols <= 0) newCols = 120;
+        if (virtualTerminal != null) {
+            virtualTerminal.resize(newRows, newCols);
+        }
+        // The L0 AgentProcess sends SIGWINCH to the whole descendant tree so it
+        // reaches the agent running inside script(1)'s child shell.
+        AgentProcess proc = tuiAgentProcess;
+        if (proc != null && proc.isAlive()) {
+            proc.resize(newRows, newCols);
         }
     }
 
@@ -1003,7 +1089,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * {@code lastSentMessage} — which is what stops the echo from leaking a duplicate
      * when the agent repaints.
      */
-    private boolean isSentMessageEcho(String strippedLine) {
+    boolean isSentMessageEcho(String strippedLine) {
         String norm = normalizeEchoLine(strippedLine);
         if (norm.isEmpty()) return false;
         for (String echoLine : lastSentEchoLines) {
@@ -1020,7 +1106,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 || (echo.length() >= 16 && norm.length() >= 12 && echo.contains(norm)));
     }
 
-    private void rememberSentMessage(String message) {
+    void rememberSentMessage(String message) {
         lastSentMessage = message;
         if (message == null || message.isBlank()) {
             lastSentEchoLines = Set.of();
@@ -1252,9 +1338,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      */
     private String fitScrollLine(String text, int width) {
         if (text == null || text.isEmpty()) return "";
-        String plain = AnsiConstants.stripAnsi(text);
-        if (plain.length() <= width) return text;
-        return plain.substring(0, Math.max(0, width));
+        AttributedString line = AttributedString.fromAnsi(text);
+        if (line.columnLength() <= width) return text;
+        AttributedString clipped = line.columnSubSequence(0, Math.max(0, width));
+        return clipped.toAnsi();
     }
 
     /** Update the managed status line ("kompile [agent] · status …") below the input box. */
@@ -1718,16 +1805,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 "", "", "", 0);
     }
 
-    /**
-     * Register the judge + enforcer as virtual watcher entries in the background process manager so
-     * they show up in the status bar and the /processes (/activity) menu. Without this the
-     * enforcement machinery ran invisibly during a passthrough session.
-     */
+    /** Register the unified judge as one visible watcher in the activity surface. */
     private void registerEnforcerWatchers() {
         registerEnforcerWatchers(bgProcMgr, enforcerEvaluator, enforcerPolicy);
     }
 
-    /** Register judge + enforcer watcher entries. Package-private + static for testing. */
+    /** Register one judge watcher entry. Package-private + static for testing. */
     static void registerEnforcerWatchers(BackgroundProcessManager mgr,
                                          EnforcerEvaluator evaluator, EnforcerPolicy policy) {
         if (mgr == null || evaluator == null) {
@@ -1740,51 +1823,43 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (policy != null && policy.getRules() != null) {
             ruleCount = (int) policy.getRules().lines().filter(l -> !l.isBlank()).count();
         }
-        BackgroundProcessManager.ProcessEntry enforcerEntry = mgr.registerVirtual(
-                BackgroundProcessManager.ProcessKind.ENFORCER, "enforcer",
-                "Enforcer · " + mode + " · " + ruleCount + " rule" + (ruleCount == 1 ? "" : "s"),
-                Map.of("mode", mode, "rules", String.valueOf(ruleCount), "backend", backend));
-        if (llm) {
-            boolean ready = false;
-            boolean failed = false;
-            String failure = "";
-            if (evaluator instanceof EnforcerJudge judge) {
+        boolean ready = !llm;
+        boolean failed = false;
+        String failure = "";
+        if (evaluator instanceof EnforcerJudge judge) {
+            String state = judge.judgeStatus();
+            ready = state.startsWith("ready");
+            failed = state.startsWith("failed");
+            failure = state;
+        }
+        String lifecycle = ready ? "ready" : failed ? "failed" : "starting";
+        String description = "Judge · " + mode + " · " + ruleCount + " rule"
+                + (ruleCount == 1 ? "" : "s") + " · " + backend
+                + " · " + lifecycle.toUpperCase(Locale.ROOT)
+                + (failed && !failure.isBlank() ? " · " + failure : "");
+        BackgroundProcessManager.ProcessEntry judgeEntry = mgr.registerVirtual(
+                BackgroundProcessManager.ProcessKind.JUDGE, "judge", description,
+                Map.of("backend", backend, "mode", mode, "rules", String.valueOf(ruleCount),
+                        "status", lifecycle, "failure", failure));
+        if (failed) {
+            mgr.fail(judgeEntry.getId(), 1);
+        }
+        if (evaluator instanceof EnforcerJudge judge) {
+            judge.addStateListener(() -> {
                 String state = judge.judgeStatus();
-                ready = state.startsWith("ready");
-                failed = state.startsWith("failed");
-                failure = state;
-            }
-            String lifecycle = ready ? "ready" : failed ? "failed" : "starting";
-            String description = "Judge · " + backend + " · " + lifecycle.toUpperCase(Locale.ROOT)
-                    + (failed && !failure.isBlank() ? " · " + failure : "");
-            BackgroundProcessManager.ProcessEntry judgeEntry = mgr.registerVirtual(
-                    BackgroundProcessManager.ProcessKind.JUDGE, "judge",
-                    description,
-                    Map.of("backend", backend, "mode", mode,
-                            "status", lifecycle,
-                            "failure", failure));
-            if (failed) {
-                mgr.fail(judgeEntry.getId(), 1);
-                mgr.fail(enforcerEntry.getId(), 1);
-            }
-            if (evaluator instanceof EnforcerJudge judge) {
-                judge.addStateListener(() -> {
-                    String state = judge.judgeStatus();
-                    if (state.startsWith("failed")) {
-                        mgr.updateVirtual(judgeEntry.getId(),
-                                "Judge · " + backend + " · FAILED · " + state,
-                                Map.of("backend", backend, "mode", mode,
-                                        "status", "failed", "failure", state));
-                        mgr.fail(judgeEntry.getId(), 1);
-                        mgr.fail(enforcerEntry.getId(), 1);
-                    } else if (state.startsWith("ready")) {
-                        mgr.updateVirtual(judgeEntry.getId(),
-                                "Judge · " + backend + " · READY",
-                                Map.of("backend", backend, "mode", mode,
-                                        "status", "ready", "failure", ""));
-                    }
-                });
-            }
+                if (state.startsWith("failed")) {
+                    mgr.updateVirtual(judgeEntry.getId(),
+                            "Judge · " + backend + " · FAILED · " + state,
+                            Map.of("backend", backend, "mode", mode,
+                                    "status", "failed", "failure", state));
+                    mgr.fail(judgeEntry.getId(), 1);
+                } else if (state.startsWith("ready")) {
+                    mgr.updateVirtual(judgeEntry.getId(),
+                            "Judge · " + backend + " · READY",
+                            Map.of("backend", backend, "mode", mode,
+                                    "status", "ready", "failure", ""));
+                }
+            });
         }
     }
 
@@ -1994,13 +2069,197 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         return removed;
     }
 
+    private boolean handleHistoricalActivitySlash(String args) {
+        String trimmed = args == null ? "" : args.trim();
+        if (trimmed.isBlank()) return false;
+        String[] parts = trimmed.split("\\s+", 2);
+        String action = parts[0].toLowerCase(Locale.ROOT);
+        String value = parts.length > 1 ? parts[1].trim() : "";
+        boolean route = Set.of("session", "project", "global", "history", "outcomes",
+                "transcript", "next", "previous", "prev", "search", "confirm", "annotate")
+                .contains(action)
+                || (historicalActivityMode && Set.of("status", "detail", "enter", "kill", "stop", "cancel")
+                .contains(action));
+        if (!route) return false;
+        if (Set.of("kill", "stop", "cancel").contains(action)) {
+            safePrintln(YELLOW + "  Historical activity is read-only; no process control is available." + RESET);
+            return true;
+        }
+        ConversationActivityService service = conversationActivityService;
+        if (service == null) {
+            safePrintln(YELLOW + "  Activity history is unavailable for this session." + RESET);
+            return true;
+        }
+        try {
+            switch (action) {
+                case "project" -> {
+                    historicalActivityMode = true;
+                    historicalActivityScope = "project";
+                    historicalActivityOffset = 0;
+                    historicalActivityFilter = value;
+                    selectedActivitySummary = null;
+                    selectedActivityDetail = null;
+                    selectedActivityTranscript = null;
+                    printHistoricalRows(service.projectSummaries(activityProjectRoot, 0, 50), "project");
+                }
+                case "global", "history", "outcomes" -> {
+                    historicalActivityMode = true;
+                    historicalActivityScope = "global";
+                    historicalActivityOffset = 0;
+                    historicalActivityFilter = value;
+                    selectedActivitySummary = null;
+                    selectedActivityDetail = null;
+                    selectedActivityTranscript = null;
+                    printHistoricalRows(service.globalSummaries(0, 50), "global");
+                }
+                case "session", "status" -> {
+                    ActivityIdentity identity = activityIdentityFor(value);
+                    selectedActivitySummary = service.session(identity).orElse(
+                            ConversationActivitySummary.empty(identity));
+                    selectedActivityDetail = null;
+                    selectedActivityTranscript = null;
+                    historicalActivityMode = true;
+                    safePrintln(ProjectActivityController.renderSummary(selectedActivitySummary));
+                }
+                case "detail", "enter" -> {
+                    ActivityIdentity identity = selectedActivitySummary == null
+                            ? activityIdentityFor(value) : selectedActivitySummary.identity();
+                    selectedActivityDetail = service.detail(identity,
+                            ai.kompile.cli.main.chat.activity.ActivityReadBudget.DEFAULT);
+                    selectedActivitySummary = selectedActivityDetail.summary();
+                    historicalActivityMode = true;
+                    safePrintln(ProjectActivityController.renderDetail(selectedActivityDetail));
+                }
+                case "transcript" -> {
+                    if (value.isBlank()) throw new IOException("Usage: /activity transcript <path>");
+                    Path requested = Path.of(value).toAbsolutePath().normalize();
+                    IOException failure = null;
+                    for (Path root : List.of(service.storage().conversationsRoot(), activityProjectRoot)) {
+                        try {
+                            selectedActivityTranscript = service.inspectTranscript(requested, root,
+                                    ai.kompile.cli.main.chat.activity.ActivityReadBudget.DEFAULT);
+                            historicalActivityMode = true;
+                            safePrintln(ProjectActivityController.renderTranscript(selectedActivityTranscript));
+                            failure = null;
+                            break;
+                        } catch (IOException denied) {
+                            failure = denied;
+                        }
+                    }
+                    if (failure != null) throw failure;
+                }
+                case "next", "previous", "prev" -> {
+                    int direction = action.equals("next") ? 1 : -1;
+                    int next = Math.max(0, historicalActivityOffset + direction * 50);
+                    List<ConversationActivitySummary> rows = activityRows(service, next, 50);
+                    if (direction > 0 && rows.isEmpty()) {
+                        safePrintln(DIM + "  No later retained activity page." + RESET);
+                    } else {
+                        historicalActivityOffset = next;
+                        printHistoricalRows(rows, activityScope());
+                    }
+                }
+                case "search" -> {
+                    historicalActivityMode = true;
+                    historicalActivityOffset = 0;
+                    historicalActivityFilter = value;
+                    printHistoricalRows(activityRows(service, 0, 50), activityScope());
+                }
+                case "confirm" -> {
+                    ActivityIdentity identity = selectedActivitySummary == null
+                            ? conversationActivityIdentity : selectedActivitySummary.identity();
+                    String[] confirmation = value.split("\\s+", 2);
+                    service.confirmOutcome(identity, confirmation.length == 0 ? "UNVERIFIED" : confirmation[0],
+                            confirmation.length > 1 ? confirmation[1] : "User confirmed outcome", "user", List.of());
+                    selectedActivitySummary = service.session(identity).orElseThrow();
+                    historicalActivityMode = true;
+                    safePrintln(ProjectActivityController.renderSummary(selectedActivitySummary));
+                }
+                case "annotate" -> {
+                    ActivityIdentity identity = selectedActivitySummary == null
+                            ? conversationActivityIdentity : selectedActivitySummary.identity();
+                    service.annotateOutcome(identity, value, value, "user", List.of());
+                    selectedActivitySummary = service.session(identity).orElseThrow();
+                    historicalActivityMode = true;
+                    safePrintln(ProjectActivityController.renderSummary(selectedActivitySummary));
+                }
+                default -> { }
+            }
+        } catch (Exception failure) {
+            safePrintln(YELLOW + "  Activity history unavailable: "
+                    + safeActivityText(failure.getMessage(), 240) + RESET);
+        }
+        return true;
+    }
+
+    private ActivityIdentity activityIdentityFor(String value) {
+        String token = value == null ? "" : value.trim();
+        if (token.isBlank() && conversationActivityIdentity != null) return conversationActivityIdentity;
+        int separator = token.indexOf(':');
+        if (separator > 0 && separator + 1 < token.length()) {
+            return new ActivityIdentity(token.substring(0, separator), token.substring(separator + 1),
+                    "", "", "", activityProjectRoot == null ? "" : activityProjectRoot.toString());
+        }
+        return ActivityIdentity.conversation(token, activityProjectRoot);
+    }
+
+    private List<ConversationActivitySummary> activityRows(ConversationActivityService service,
+                                                             int offset, int limit) {
+        List<ConversationActivitySummary> rows = "project".equals(activityScope())
+                ? service.projectSummaries(activityProjectRoot, offset, limit)
+                : service.globalSummaries(offset, limit);
+        String query = historicalActivityFilter == null
+                ? "" : historicalActivityFilter.toLowerCase(Locale.ROOT).trim();
+        if (query.isBlank()) return rows;
+        return rows.stream().filter(row -> (row.identity().key() + " " + row.title() + " "
+                + row.goal() + " " + row.outcome()).toLowerCase(Locale.ROOT).contains(query)).toList();
+    }
+
+    private String activityScope() {
+        return historicalActivityScope;
+    }
+
+    private void printHistoricalRows(List<ConversationActivitySummary> rows, String scope) {
+        safePrintln("  " + scope + " activity · read-only · page offset=" + historicalActivityOffset);
+        if (rows == null || rows.isEmpty()) {
+            safePrintln(DIM + "  (no retained activity rows; unavailable is not zero)" + RESET);
+        } else {
+            int index = historicalActivityOffset + 1;
+            for (ConversationActivitySummary row : rows) {
+                safePrintln("  [" + (index++) + "] " + row.identity().key() + " · "
+                        + safeActivityText(row.title(), 80)
+                        + " · outcome=" + row.outcome() + " (" + row.evidenceBasis() + ")");
+            }
+        }
+        safePrintln(DIM + "  /activity session <id> · detail · next/previous · search <text> · close" + RESET);
+    }
+
+    private static String safeActivityText(String value, int maximum) {
+        String plain = AnsiConstants.stripAnsi(value == null ? "" : value)
+                .replaceAll("[\\p{Cntrl}&&[^\\t]]", "")
+                .replace('\n', ' ').replace('\r', ' ').strip();
+        if (plain.length() <= maximum) return plain;
+        return maximum <= 1 ? "…" : plain.substring(0, maximum - 1) + "…";
+    }
+
     private void handleActivitySlash(String args) {
         String trimmed = args == null ? "" : args.trim();
+        if (handleHistoricalActivitySlash(trimmed)) return;
         String[] parts = trimmed.isBlank() ? new String[]{"list", ""} : trimmed.split("\\s+", 2);
         String action = parts[0].toLowerCase(Locale.ROOT);
         String value = parts.length > 1 ? parts[1].trim() : "";
+        if (Set.of("agents", "agent", "refresh", "local", "list").contains(action)) {
+            historicalActivityMode = false;
+            selectedActivitySummary = null;
+            selectedActivityDetail = null;
+            selectedActivityTranscript = null;
+        }
         switch (action) {
             case "close", "hide", "off" -> {
+                historicalActivityMode = false;
+                selectedActivitySummary = null;
+                selectedActivityDetail = null;
+                selectedActivityTranscript = null;
                 activityMenuOpen = false;
                 activityMenuMessage = "";
                 redrawActivityPanelOnly();
@@ -3211,14 +3470,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
-    private void enqueueBusyMessage(String message) {
-        if (message == null || message.isBlank() || messageQueue == null) return;
+    private boolean enqueueBusyMessage(String message) {
+        if (message == null || message.isBlank() || messageQueue == null) return false;
         String trimmed = message.trim();
-        messageQueue.enqueue(trimmed);
+        if (messageQueue.enqueue(trimmed) == null) return false;
         recordInputHistory(trimmed);
         busyPrompt = "  Draft saved · ↑ edit · Ctrl+B background";
         drawFixedInputBox();
         updateStatusLine(currentStatus);
+        return true;
     }
 
     private void updateBusyQueuedMessage(String id, String message) {
@@ -3227,7 +3487,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (messageQueue.update(id, trimmed)) {
             busyPrompt = "  Draft updated · ↑ edit · Ctrl+B background";
         } else {
-            messageQueue.enqueue(trimmed);
+            if (messageQueue.enqueue(trimmed) == null) return;
             busyPrompt = "  Draft saved · ↑ edit · Ctrl+B background";
         }
         recordInputHistory(trimmed);
@@ -3283,7 +3543,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void requestAgentBackground() {
-        backgroundSignal.set(true);
+        synchronized (dispatchAdmissionLock) {
+            if (!providerTurnBackgroundable) {
+                updateStatusLine(currentStatus);
+                return;
+            }
+            if (!backgroundSignal.get()) {
+                // Redirect input before the key handler returns. The provider-owner thread
+                // may still be persisting activity metadata when the next key arrives.
+                detachedProviderBusy.set(true);
+                backgroundSignal.set(true);
+                backgroundTurnCount.incrementAndGet();
+            }
+        }
         if (canDispatchQueuedMessageAfterBackground()) {
             busyPrompt = "  Backgrounding current response · next draft will run";
         } else {
@@ -3294,28 +3566,33 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     /** Persist a detached response so it remains visible to /activity and later CLI sessions. */
-    private void registerDetachedTask(String prompt, Process process) {
+    private void registerDetachedTask(String prompt) {
         if (detachedTaskId != null) return;
+        String taskId = TaskRegistry.generateId("passthrough");
+        // Completion delivery must not depend on the optional durable registry.
+        detachedTaskId = taskId;
         try {
             String wd = workingDir == null || workingDir.isBlank() ? "." : workingDir;
             Path workPath = Path.of(wd).toAbsolutePath().normalize();
+            Instant createdAt = Instant.now();
             TaskRecord record = TaskRecord.builder()
-                    .taskId(TaskRegistry.generateId("passthrough"))
+                    .taskId(taskId)
                     .taskType("passthrough")
                     .agentName(agent)
                     .promptSummary(prompt == null ? "" : prompt.strip())
+                    .status(TaskRecord.Status.DETACHED)
+                    .createdAt(createdAt)
+                    .lastActivity(createdAt)
+                    .ownerPid(ProcessHandle.current().pid())
                     .sessionId(agentSessionId)
                     .workDir(workPath.toString())
                     .description("Backgrounded " + agent + " response")
                     .build();
             // The provider process is persistent and belongs to the whole session,
             // not this response. Never expose its PID as a disposable task handle.
-            record.markCompleted(0,
-                    "Response detached; provider session remains reusable", null);
             new TaskRegistry(workPath).create(record);
-            detachedTaskId = record.getTaskId();
             ActivityItem item = new ActivityItem(
-                    detachedTaskId,
+                    taskId,
                     "Backgrounded " + agent + " response",
                     prompt == null ? "response detached" : prompt);
             item.status = "detached";
@@ -3328,55 +3605,86 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
-    private void startDetachedProviderMonitor(
-            String taskId,
-            Process provider,
-            AgentTuiDecoder decoder,
-            long messageSentAt,
-            ChatHistory history,
-            ChatSessionMetrics metrics) {
-        Thread monitor = new Thread(() -> {
-            try {
-                while (!shutdownSignal.get() && provider != null && provider.isAlive()
-                        && detachedProviderBusy.get()) {
-                    boolean completed = decodedTuiTurnComplete(decoder, messageSentAt);
-                    if (completed) break;
-                    Thread.sleep(200);
+    /** Finalize the durable detached response only after its real provider turn ends. */
+    private void completeDetachedTask(String taskId, String response, boolean cancelled) {
+        if (taskId == null || taskId.isBlank()) return;
+        String wd = workingDir == null || workingDir.isBlank() ? "." : workingDir;
+        Path workPath = Path.of(wd).toAbsolutePath().normalize();
+        Path outputPath = workPath.resolve(".kompile").resolve("task-results")
+                .resolve(taskId + ".log");
+        String captured = response == null ? "" : response;
+        try {
+            Files.createDirectories(outputPath.getParent());
+            Files.writeString(outputPath, captured, StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+            outputPath = null;
+        }
+
+        Path finalOutputPath = outputPath;
+        try {
+            new TaskRegistry(workPath).update(taskId, record -> {
+                if (cancelled) {
+                    record.markCancelled();
+                } else {
+                    String summary = captured.isBlank()
+                            ? "Background response completed"
+                            : "Background response completed (" + captured.length() + " chars)";
+                    record.markCompleted(0, summary,
+                            finalOutputPath == null ? null : finalOutputPath.toString());
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } finally {
-                if (detachedProviderBusy.compareAndSet(true, false)) {
-                    synchronized (activityLock) {
-                        for (ActivityItem item : backgroundActivities) {
-                            if (Objects.equals(taskId, item.key)) {
-                                item.status = "completed";
-                                item.addLog("background response completed");
-                                break;
-                            }
-                        }
-                    }
-                    redrawActivityPanel();
-                    if (!shutdownSignal.get()) {
-                        safePrintln(renderer.dim("  Background response completed"));
-                        while (!shutdownSignal.get()
-                                && (providerDispatchReserved.get() || agentBusy)) {
-                            try {
-                                Thread.sleep(50);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                return;
-                            }
-                        }
-                        if (!shutdownSignal.get()) {
-                            drainQueuedMessages(history, metrics, false, false);
-                        }
-                    }
+            });
+        } catch (RuntimeException ignored) {
+            // Activity remains useful even if the optional durable registry is unavailable.
+        }
+
+        synchronized (activityLock) {
+            for (ActivityItem item : backgroundActivities) {
+                if (Objects.equals(taskId, item.key)) {
+                    item.status = cancelled ? "cancelled" : "completed";
+                    item.addLog(cancelled ? "background response cancelled" : "background response completed");
+                    break;
                 }
             }
-        }, "detached-provider-turn-monitor");
-        monitor.setDaemon(true);
-        monitor.start();
+        }
+        synchronized (dispatchAdmissionLock) {
+            if (!cancelled && !shutdownSignal.get()) {
+                String message = backgroundCompletionMessage(taskId, cancelled, finalOutputPath, captured);
+                if (backgroundCompletionMessages.contains(message)) return;
+                backgroundCompletionMessages.addLast(message);
+            }
+        }
+        redrawActivityPanel();
+        if (!shutdownSignal.get() && renderer != null) {
+            safePrintln(renderer.dim(cancelled
+                    ? "  Background response cancelled"
+                    : "  Background response completed · waking agent"));
+        }
+    }
+
+    private String backgroundCompletionMessage(
+            String taskId, boolean cancelled, Path outputPath, String captured) {
+        String preview = captured == null ? "" : captured.strip();
+        if (preview.length() > 2_000) {
+            preview = preview.substring(0, 2_000) + "\n… [truncated; inspect the result log]";
+        }
+        return "[System background task completion]\n"
+                + "Background task " + taskId + " finished with state "
+                + (cancelled ? "cancelled" : "completed") + ".\n"
+                + (outputPath == null ? "" : "Result log: " + outputPath + "\n")
+                + (preview.isBlank() ? "" : "Result preview:\n" + preview + "\n")
+                + "Review the completed task, use its result if relevant, and continue the user's work.";
+    }
+
+    /** Publish one logical enforced turn after all retries and rollback checks have settled. */
+    private void completeDeferredDetachedTask() {
+        String response = deferredDetachedResponse;
+        boolean cancelled = deferredDetachedCancelled;
+        deferredDetachedResponse = null;
+        deferredDetachedCancelled = false;
+        if (detachedTaskId != null && backgroundSignal.get()) {
+            completeDetachedTask(detachedTaskId, response, cancelled);
+        }
+        detachedProviderBusy.set(false);
     }
 
     private Terminal.SignalHandler terminalSigintHandler() {
@@ -3384,6 +3692,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void handleSigint() {
+        SubprocessAgentRunner isolated = isolatedConversationRunner;
+        if (isolated != null && isolated.hasActiveProcess()) {
+            isolated.cancel();
+            updateStatusLine("interrupt sent to " + agent);
+            return;
+        }
         if (agentBusy || detachedProviderBusy.get()) {
             forwardAgentInterrupt(new byte[]{0x03});
         } else {
@@ -3392,7 +3706,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void requestCliShutdown() {
-        shutdownSignal.set(true);
+        beginShutdown();
         Thread rt = replThread;
         if (rt != null) {
             rt.interrupt();
@@ -3403,6 +3717,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 term.close();
             } catch (IOException | IOError ignored) {
             }
+        }
+    }
+
+    private void beginShutdown() {
+        synchronized (dispatchAdmissionLock) {
+            shutdownSignal.set(true);
         }
     }
 
@@ -3420,6 +3740,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private boolean requestAgentCancel() {
+        SubprocessAgentRunner isolated = isolatedConversationRunner;
+        if (isolated != null && isolated.hasActiveProcess()) {
+            isolated.cancel();
+            return true;
+        }
         if (!agentBusy && (activeProcess == null || !activeProcess.isAlive())
                 && waitingThread == null) {
             return false;
@@ -3538,11 +3863,27 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void safePrintln(String text) {
-        String line = text == null ? "" : text;
         LineReader reader = activeLineReader;
         boolean restoreActivePrompt = reader != null && !busyInputActive;
         synchronized (drawLock) {
-            appendScrollbackLineLocked(line);
+            int width = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
+            List<String> lines = new ArrayList<>();
+            for (String line : (text == null ? "" : text).split("\\R", -1)) {
+                List<AttributedString> rows = AttributedString.fromAnsi(line)
+                        .columnSplitLength(Math.max(1, width - 1));
+                if (rows.isEmpty()) {
+                    lines.add("");
+                } else {
+                    for (AttributedString row : rows) {
+                        lines.add(row.toAnsi());
+                    }
+                }
+            }
+            // The viewport addresses retained entries as physical terminal rows. Never retain
+            // embedded newlines or rely on terminal autowrap, which can spill into the input box.
+            for (String line : lines) {
+                appendScrollbackLineLocked(line);
+            }
             boolean keepCursorInInput = busyInputActive;
             boolean redrawFromScrollback = !restoreActivePrompt && !keepCursorInInput;
             if (restoreActivePrompt) {
@@ -3558,10 +3899,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 clampScrollViewportOffsetLocked();
             }
             if (scrollViewportOffset == 0 && !redrawFromScrollback) {
-                // Move cursor to last row of scroll region and print text.
-                System.out.printf("\033[%d;1H\033[2K%s", scrollBottom, line);
-                // Newline at the bottom of the scroll region triggers scroll-up.
-                System.out.print("\n");
+                for (String line : lines) {
+                    // Newline at the bottom of the scroll region triggers scroll-up.
+                    System.out.printf("\033[%d;1H\033[2K%s\n", scrollBottom, line);
+                }
             } else {
                 // When no readLine owns the cursor, redraw from Kompile's scrollback instead of
                 // depending on terminal scroll-region side effects. JLine can leave the submitted
@@ -3607,8 +3948,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      */
     private void renderToBuffer(String text, List<String> buf) {
         String rendered = ascii.renderMarkdown(text);
+        int terminalWidth = terminal != null && terminal.getWidth() > 0
+                ? terminal.getWidth() : 120;
+        int contentWidth = Math.max(1, terminalWidth - 3);
         for (String rl : rendered.split("\n", -1)) {
-            buf.add("  " + rl);
+            List<AttributedString> rows = AttributedString.fromAnsi(rl)
+                    .columnSplitLength(contentWidth);
+            if (rows.isEmpty()) {
+                buf.add("  ");
+                continue;
+            }
+            for (AttributedString row : rows) {
+                buf.add("  " + row.toAnsi());
+            }
         }
     }
 
@@ -3624,11 +3976,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void replayConversationHistory(String sessionId, ChatHistory history) {
         safePrintln(DIM + "  Loading..." + RESET);
 
+        boolean loadedStoredTranscript = false;
         List<ChatHistory.Turn> turns = null;
 
         // Try kompile's own session store first
         try {
             turns = ConversationReader.readKompileSession(sessionId);
+            loadedStoredTranscript = turns != null && !turns.isEmpty();
         } catch (Exception e) {
             // Fall through to external sources
         }
@@ -3649,34 +4003,51 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             return;
         }
 
-        // Buffer all rendered lines — we flush everything at once so the screen
-        // doesn't blitz the user with streaming text.
-        List<String> buf = new ArrayList<>();
+        // Existing Kompile transcripts already contain these turns. Re-rendering
+        // them must not append a second copy on every resume. For an external
+        // native transcript, retain the established behavior of importing the
+        // replayed text into the newly-created Kompile transcript.
+        ChatHistory importTarget = loadedStoredTranscript ? null : history;
+        List<String> buf = renderResumedConversation(turns, importTarget);
 
-        buf.add(DIM + "  ── Resumed conversation (" + turns.size() + " turns) ──" + RESET);
+        // Flush the entire buffer at once
+        for (String line : buf) {
+            safePrintln(line);
+        }
+    }
+
+    /** Render every resumed turn through the same Markdown renderer used live. */
+    List<String> renderResumedConversation(List<ChatHistory.Turn> turns) {
+        return renderResumedConversation(turns, null);
+    }
+
+    private List<String> renderResumedConversation(List<ChatHistory.Turn> turns,
+                                                   ChatHistory importTarget) {
+        List<ChatHistory.Turn> replayTurns = turns == null ? List.of() : turns;
+        List<String> buf = new ArrayList<>();
+        buf.add(DIM + "  ── Resumed conversation (" + replayTurns.size() + " turns) ──" + RESET);
         buf.add("");
 
-        for (ChatHistory.Turn turn : turns) {
+        for (ChatHistory.Turn turn : replayTurns) {
             ArrayNode blocks = turn.rawContentBlocks();
 
             if ("user".equals(turn.role())) {
                 if (blocks != null && !blocks.isEmpty()) {
-                    replayUserBlocks(blocks, history, buf);
+                    replayUserBlocks(blocks, importTarget, buf);
                 } else {
                     String content = turn.content();
                     if (content != null && !content.isBlank() && !isReplayNoise(content)) {
-                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(content));
-                        history.logUserMessage(content);
-                        buf.add("");
+                        replayTextTurn("user", content, buf);
+                        if (importTarget != null) importTarget.logUserMessage(content);
                     }
                 }
             } else {
                 if (blocks != null && !blocks.isEmpty()) {
-                    replayAssistantBlocks(blocks, history, buf);
+                    replayAssistantBlocks(blocks, importTarget, buf);
                 } else {
                     String content = turn.content();
                     if (content != null && !content.isBlank()) {
-                        replayAssistantText(content, history, buf);
+                        replayAssistantText(content, importTarget, buf);
                     }
                 }
             }
@@ -3685,10 +4056,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         buf.add(DIM + "  ── End of history · continue below ──" + RESET);
         buf.add("");
 
-        // Flush the entire buffer at once
-        for (String line : buf) {
-            safePrintln(line);
-        }
+        return buf;
     }
 
     /** Replay user-role content blocks into a buffer. */
@@ -3721,16 +4089,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 case "text" -> {
                     String text = block.has("text") ? block.get("text").asText() : "";
                     if (!text.isBlank() && !isReplayNoise(text)) {
-                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(text));
-                        history.logUserMessage(text);
-                        buf.add("");
+                        replayTextTurn("user", text, buf);
+                        if (history != null) history.logUserMessage(text);
                     }
                 }
                 default -> {
                     if (block.isTextual() && !block.asText().isBlank() && !isReplayNoise(block.asText())) {
-                        buf.add(CYAN + "  You: " + RESET + truncateForReplay(block.asText()));
-                        history.logUserMessage(block.asText());
-                        buf.add("");
+                        replayTextTurn("user", block.asText(), buf);
+                        if (history != null) history.logUserMessage(block.asText());
                     }
                 }
             }
@@ -3741,6 +4107,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void replayAssistantBlocks(ArrayNode blocks,
                                        ChatHistory history, List<String> buf) {
         StringBuilder fullText = new StringBuilder();
+        buf.add(replayRoleLabel("assistant"));
 
         for (JsonNode block : blocks) {
             String type = block.has("type") ? block.get("type").asText() : "";
@@ -3772,7 +4139,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         }
 
-        if (fullText.length() > 0) {
+        if (history != null && fullText.length() > 0) {
             history.logAgentResponse(agent, fullText.toString(), 0);
         }
         buf.add("");
@@ -3781,9 +4148,53 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     /** Replay plain-text assistant response into a buffer. */
     private void replayAssistantText(String content, ChatHistory history, List<String> buf) {
         if (isReplayNoise(content)) return;
+        replayTextTurn("assistant", content, buf);
+        if (history != null) history.logAgentResponse(agent, content, 0);
+    }
+
+    private void replayTextTurn(String role, String content, List<String> buf) {
+        if ("user".equals(role) && content != null) {
+            String displayContent = content.stripLeading();
+            String commandPrefix = "";
+            for (String prefix : List.of("/ask ", "/agent-chat ")) {
+                if (displayContent.startsWith(prefix)) {
+                    commandPrefix = prefix;
+                    displayContent = displayContent.substring(prefix.length()).stripLeading();
+                    break;
+                }
+            }
+            boolean remindersRendered = false;
+            while (displayContent.startsWith("<kompile_reminders>")) {
+                int end = displayContent.indexOf("</kompile_reminders>");
+                if (end < 0) {
+                    break;
+                }
+                String reminders = ReminderManager.reminderBlockContent(displayContent);
+                String section = renderer.renderReminderSection(reminders);
+                if (!section.isBlank()) {
+                    buf.addAll(List.of(section.split("\\R")));
+                }
+                displayContent = displayContent.substring(end + "</kompile_reminders>".length())
+                        .stripLeading();
+                remindersRendered = true;
+            }
+            if (remindersRendered) {
+                if (displayContent.isBlank()) {
+                    return;
+                }
+                content = commandPrefix + displayContent;
+            }
+        }
+        buf.add(replayRoleLabel(role));
         renderToBuffer(content, buf);
-        history.logAgentResponse(agent, content, 0);
         buf.add("");
+    }
+
+    private String replayRoleLabel(String role) {
+        if ("user".equals(role)) {
+            return "  " + renderer.bold(renderer.cyan("You")) + renderer.dim(":");
+        }
+        return "  " + renderer.bold(renderer.green("Assistant")) + renderer.dim(":");
     }
 
     /**
@@ -3829,6 +4240,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * @return the agent's text response (for follow-up question detection)
      */
     private String sendToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        SubprocessAgentRunner isolated = isolatedConversationRunner;
+        if (isolated != null) {
+            return isolated.runMessage(message, history, metrics);
+        }
         return sendToTuiAgent(message, history, metrics);
     }
 
@@ -3841,6 +4256,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * waiting for feature detection replies.
      */
     private String sendToTuiAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        if (shutdownSignal.get()) return "";
         String agentBinary = resolveAgent(agent);
         if (agentBinary == null) {
             safePrintln(renderer.red("  Agent '" + agent + "' not found on PATH."));
@@ -3849,9 +4265,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             return "";
         }
 
-        history.logUserMessage(message);
-        metrics.recordUserTurn(message);
         String outboundMessage = preparePromptForAgent(message);
+        history.logUserMessage(outboundMessage);
+        metrics.recordUserTurn(message);
+        emitReminderSection(outboundMessage);
 
         updateStatusLine("thinking");
         TerminalRenderer.SpinnerHandle spinner = startStatusSpinner(agent);
@@ -3864,6 +4281,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         // Set when the agent surfaces a quota/credit/auth block instead of a response, so the
         // turn ends immediately (with the reason shown) rather than spinning to the idle timeout.
         String blockingNotice = null;
+        boolean turnBackgrounded = false;
+        synchronized (dispatchAdmissionLock) {
+            providerTurnBackgroundable = true;
+        }
 
         // Discard TUI initialization output — only capture post-message response.
         // Wire spinner so it can be stopped, but don't wire fullText until after send.
@@ -3906,15 +4327,17 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 if (enforcerExtraEnv != null) {
                     specBuilder.env(enforcerExtraEnv);
                 }
-                AgentProcess agentProcess =
-                        new ScriptAgentProcess();
-                agentProcess.start(specBuilder.build());
-
-                Process process = agentProcess.process();
-                tuiAgentProcess = agentProcess;
-                tuiProcess = process;
-                activeProcess = process;
-                agentStdin = agentProcess.stdin();
+                AgentProcess agentProcess = new ScriptAgentProcess();
+                final Process process;
+                synchronized (dispatchAdmissionLock) {
+                    if (shutdownSignal.get()) return "";
+                    agentProcess.start(specBuilder.build());
+                    process = agentProcess.process();
+                    tuiAgentProcess = agentProcess;
+                    tuiProcess = process;
+                    activeProcess = process;
+                    agentStdin = agentProcess.stdin();
+                }
 
                     // Open subprocess log files:
                     //   agent-subprocess.log  — text log (append, human-readable annotations)
@@ -4154,16 +4577,16 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // immediately instead of waiting up to a full tick to notice cancelSignal.
             waitingThread = Thread.currentThread();
             while (tuiProcess.isAlive() && !cancelSignal.get()) {
-                if (backgroundSignal.get()) {
-                    backgroundTurnCount.incrementAndGet();
-                    registerDetachedTask(message, tuiProcess);
-                    detachedProviderBusy.set(true);
-                    startDetachedProviderMonitor(
-                            detachedTaskId, tuiProcess, agentDecoder, messageSentAt,
-                            history, metrics);
+                if (backgroundSignal.get() && !turnBackgrounded) {
+                    turnBackgrounded = true;
+                    registerDetachedTask(message);
                     safePrintln(renderer.yellow("  ◐ Response backgrounded")
                             + renderer.dim(" [" + (detachedTaskId == null ? "untracked" : detachedTaskId) + "]"));
-                    break;
+                    // Keep this dispatch thread as the detached turn's physical owner. It must
+                    // continue polling and collecting decoder frames until the provider is idle;
+                    // a separate managed runner receives any newly entered messages.
+                    drainQueuedMessages(history, metrics, false, true);
+                    continue;
                 }
                 // Keep Kompile's wheel capture asserted for the whole response. Re-entering
                 // readLine for the response prompt (JLine re-inits terminal modes) can reset
@@ -4197,6 +4620,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     break;
                 }
                 Thread.sleep(200);
+            }
+
+            // The provider can become idle in the same scheduling slice as Ctrl+B. Preserve
+            // the requested detach semantics even when the loop exits before observing it.
+            if (backgroundSignal.get() && !turnBackgrounded) {
+                turnBackgrounded = true;
+                registerDetachedTask(message);
             }
 
         } catch (Exception e) {
@@ -4293,8 +4723,33 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         finishLiveDecoderScrollbackBlock();
 
+        // Linearize the final background check with the Ctrl+B key handler. Once
+        // this gate closes, a late key press cannot leave detachedProviderBusy set
+        // after the physical provider turn has already become idle.
+        synchronized (dispatchAdmissionLock) {
+            if (backgroundSignal.get() && !turnBackgrounded) {
+                turnBackgrounded = true;
+                registerDetachedTask(message);
+            }
+            providerTurnBackgroundable = false;
+        }
+
+        if (turnBackgrounded) {
+            if (enforcementActive()) {
+                // An enforced logical turn may execute several physical provider attempts.
+                // Keep only the latest accepted/corrected output and publish once outside
+                // the enforcement/rollback loop.
+                deferredDetachedResponse = finalDecodedText;
+                deferredDetachedCancelled = cancelSignal.get();
+            } else {
+                completeDetachedTask(detachedTaskId, finalDecodedText, cancelSignal.get());
+                detachedProviderBusy.set(false);
+            }
+        }
+
         if (tui != null && tuiSubagentId != null) {
-            tui.getStatusBar().updateSubagentStatus(tuiSubagentId, "idle");
+            tui.getStatusBar().updateSubagentStatus(tuiSubagentId,
+                    isolatedDispatchReserved.get() ? "responding" : "idle");
         }
 
         firstMessageSent = true;
@@ -4830,6 +5285,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 if (sessionHistory != null) {
                     sessionHistory.logHarvestedSource(si.sessionId());
                 }
+                recordManagedNativeSessionId(si.sessionId());
             }
             return;
         }
@@ -5245,6 +5701,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * submit key (bare Enter → accept the default option).
      */
     private boolean forwardPromptAnswer(String answer) {
+        if (detachedProviderBusy.get()) return false;
         OutputStream os = agentStdin;
         if (os == null || agentDecoder == null) return false;
         try {
@@ -5276,7 +5733,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * must fall back to their Kompile/line-editor behavior when this returns false.
      */
     private boolean forwardKeyToAgent(byte[] key) {
-        if (agentBusy && tuiTurnSawContent.get() && decoderOwnsScreen() && agentStdin != null) {
+        if (!detachedProviderBusy.get() && agentBusy && tuiTurnSawContent.get()
+                && decoderOwnsScreen() && agentStdin != null) {
             return sendRawToAgentStdin(key);
         }
         return false;
@@ -5289,7 +5747,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * when forwarded; false so the caller falls back to normal line-editor / transcript behavior.
      */
     private boolean forwardNavToAgent(byte[] seq) {
-        if (agentAwaitingInput && agentStdin != null && decoderOwnsScreen()) {
+        if (!detachedProviderBusy.get() && agentAwaitingInput
+                && agentStdin != null && decoderOwnsScreen()) {
             // Switch to mirror on the first nav keystroke so the agent's own screen (moving cursor,
             // tab switches) renders live in place — the decoded transcript can only append fragments.
             enterMirrorForDialog();
@@ -5306,7 +5765,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * line path (which races the mirror teardown). Returns true when it forwarded.
      */
     private boolean forwardConfirmToAgent() {
-        if (agentAwaitingInput && agentStdin != null && decoderOwnsScreen()) {
+        if (!detachedProviderBusy.get() && agentAwaitingInput
+                && agentStdin != null && decoderOwnsScreen()) {
             // For a numbered menu, confirm the currently-highlighted option by sending its DIGIT —
             // some agents (claude's plan menu) act on the number key, not a bare Enter. For a pure
             // arrow/tab dialog with no numbered options, send a bare carriage return.
@@ -5327,6 +5787,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * Escape byte. User Escape is bound to the Kompile cancellation widget and never routes here.
      */
     private boolean forwardEscapeToAgent() {
+        if (detachedProviderBusy.get()) return false;
         boolean childOwnsEscape = agentAwaitingInput || agentBusy;
         if (!childOwnsEscape || agentStdin == null || !decoderOwnsScreen()) return false;
         return sendRawToAgentStdin(new byte[]{0x1B});
@@ -5416,7 +5877,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * cannot affect normal line editing.
      */
     private void runAgentPassthroughLoop() {
-        if (!decoderOwnsScreen() || agentStdin == null || terminal == null) {
+        if (detachedProviderBusy.get() || !decoderOwnsScreen()
+                || agentStdin == null || terminal == null) {
             agentPassthroughActive = false;
             return;
         }
@@ -5471,6 +5933,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     /** Stops the persistent provider child before an explicit session/agent reset. */
     void stopPersistentAgentForSessionReset() {
         stopEnforcerRealtimeTail();
+        cleanupIsolatedConversationRunner();
         AgentProcess owner = tuiAgentProcess;
         Process process = tuiProcess;
         if (owner != null) {
@@ -5547,6 +6010,36 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         safePrintln((enabled ? GREEN : YELLOW) + "  Status bar " + (enabled ? "enabled" : "disabled") + RESET);
     }
 
+    void registerManagedSession(String sessionId) {
+        try {
+            Path directory = Path.of(workingDir == null || workingDir.isBlank()
+                    ? "." : workingDir).toAbsolutePath().normalize();
+            SessionRegistry.load().register(
+                    sessionId, agent, directory.toString(), "passthrough",
+                    ProcessHandle.current().pid());
+        } catch (Exception e) {
+            System.err.println("Warning: Could not track managed session: " + e.getMessage());
+        }
+    }
+
+    void markManagedSessionExited(String sessionId) {
+        try {
+            SessionRegistry.load().markExited(sessionId, ProcessHandle.current().pid());
+        } catch (Exception ignored) {
+            // Best-effort registry tracking must never break terminal cleanup.
+        }
+    }
+
+    private void recordManagedNativeSessionId(String nativeSessionId) {
+        if (nativeSessionId == null || nativeSessionId.isBlank() || sessionIdentity == null) return;
+        try {
+            SessionRegistry.load().setConversationId(
+                    sessionIdentity.kompileSessionId(), nativeSessionId);
+        } catch (Exception ignored) {
+            // The transcript marker remains the source of truth if registry sync fails.
+        }
+    }
+
     // ── Slash commands ─────────────────────────────────────────────────────
 
     private void copyLatestResponse(String rest, ChatHistory history) {
@@ -5569,13 +6062,73 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 : renderer.yellow("  Could not access a clipboard provider."));
     }
 
-    private String handleSlashCommand(String input, LineReader lineReader, ChatHistory history, ChatSessionMetrics metrics) {
+    String handleSlashCommand(String input, LineReader lineReader, ChatHistory history, ChatSessionMetrics metrics) {
         String[] parts = input.split("\\s+", 2);
         String cmd = parts[0].toLowerCase();
         String rest = parts.length > 1 ? parts[1] : "";
 
         switch (cmd) {
             case "/quit", "/exit" -> { return "quit"; }
+            case "/restart", "/reset" -> {
+                if (!rest.isBlank()) {
+                    safePrintln(renderer.dim("  Usage: " + cmd));
+                    break;
+                }
+                String currentSessionId = sessionIdentity == null
+                        ? resumeSessionId : sessionIdentity.kompileSessionId();
+                Path restartDirectory = workingDir == null || workingDir.isBlank()
+                        ? null : Path.of(workingDir);
+                SessionRestartLauncher.LaunchResult result =
+                        SessionRestartLauncher.restartManagedSession(
+                                currentSessionId, restartDirectory, agent);
+                if (!result.started()) {
+                    safePrintln(renderer.yellow(
+                            "  Could not restart this session: " + result.error()));
+                    break;
+                }
+                if (history != null) {
+                    history.logSystem("Session restart requested; replacement process "
+                            + result.processId() + " will resume this transcript.");
+                }
+                safePrintln(renderer.cyan("  Opening the restarted session in a new terminal"
+                        + " (launcher process " + result.processId() + ")..."));
+                return "restart";
+            }
+            case "/reset-all" -> {
+                if (!rest.isBlank()) {
+                    safePrintln(renderer.dim("  Usage: /reset-all"));
+                    break;
+                }
+                String currentSessionId = sessionIdentity == null
+                        ? resumeSessionId : sessionIdentity.kompileSessionId();
+                Path restartDirectory = workingDir == null || workingDir.isBlank()
+                        ? null : Path.of(workingDir);
+                SessionRestartLauncher.RestartAllResult result =
+                        SessionRestartLauncher.restartAllActiveManagedSessions(
+                                currentSessionId, restartDirectory, agent);
+                if (result.activeSessions() == 0) {
+                    safePrintln(renderer.dim("  No active sessions were found."));
+                } else {
+                    safePrintln(renderer.cyan("  Started replacements for "
+                            + result.replacementsStarted() + " of " + result.activeSessions()
+                            + " active session" + (result.activeSessions() == 1 ? "" : "s") + "."));
+                }
+                for (SessionRestartLauncher.RestartFailure failure : result.failures()) {
+                    safePrintln(renderer.yellow(
+                            "  " + failure.sessionId() + ": " + failure.error()));
+                }
+                if (!result.currentSessionRestarted()) {
+                    safePrintln(renderer.yellow(
+                            "  This session stayed open because its replacement could not be started."));
+                    break;
+                }
+                if (history != null) {
+                    history.logSystem("All active sessions reset requested; started replacements for "
+                            + result.replacementsStarted() + " of "
+                            + result.activeSessions() + " sessions.");
+                }
+                return "restart";
+            }
             case "/help" -> printHelp();
             case "/agent" -> switchAgent(rest.isBlank() ? null : rest.trim(), lineReader);
             case "/status" -> printStatus(metrics);
@@ -5583,9 +6136,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/copy" -> copyLatestResponse(rest, history);
             case "/reminder" -> showReminderResult(ReminderManager.Scope.SESSION, rest);
             case "/reminder-global" -> showReminderResult(ReminderManager.Scope.PROJECT, rest);
-            case "/clear" -> initScrollLayout();
+            case "/clear" -> {
+                newConversationRequested = true;
+                return "clear";
+            }
             case "/passthrough", "/keys" -> {
-                if (!decoderOwnsScreen()) {
+                if (detachedProviderBusy.get()) {
+                    safePrintln(renderer.dim("  Pass-through is unavailable while the provider is backgrounded."));
+                } else if (!decoderOwnsScreen()) {
                     safePrintln(renderer.dim("  Pass-through needs a managed (decoder-owned) agent."));
                 } else {
                     // Picked up at the top of the REPL loop on the next iteration.
@@ -5621,11 +6179,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
             case "/rules" -> {
                 if (enforcerPolicy != null) {
-                    for (String line : ascii.panel("Enforcer Rules", enforcerPolicy.getRules()).split("\n")) {
+                    for (String line : ascii.panel("Judge Policy Rules", enforcerPolicy.getRules()).split("\n")) {
                         safePrintln(line);
                     }
                 } else {
-                    safePrintln(renderer.dim("  No enforcer rules active."));
+                    safePrintln(renderer.dim("  No judge policy rules active."));
                 }
             }
             case "/queue" -> {
@@ -5639,6 +6197,17 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/queue-clear" -> clearQueuedMessages();
             case "/queue-status" -> showQueueStatus();
             case "/auto-dequeue" -> toggleAutoDequeue();
+            case "/resources" -> {
+                java.nio.file.Path root = java.nio.file.Path.of(workingDir == null || workingDir.isBlank() ? "." : workingDir);
+                if (ai.kompile.cli.main.chat.tools.ResourceWizard.handles(rest)) {
+                    safePrintln(ai.kompile.cli.main.chat.tools.ResourceWizard.run(root, rest,
+                            lineReader == null ? null : (lines, question) -> {
+                                lines.forEach(this::safePrintln);
+                                positionAtPrompt();
+                                return lineReader.readLine(question);
+                            }));
+                } else safePrintln(ai.kompile.cli.main.chat.tools.ResourcePolicy.command(root, rest));
+            }
             case "/activity", "/processes" -> handleActivitySlash(rest.trim());
             case "/process-output" -> handleActivitySlash("logs " + rest.trim());
             case "/process-kill" -> handleActivitySlash("kill " + rest.trim());
@@ -5651,7 +6220,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/rollback" -> handleEnforcerRollbackSlash(rest.trim());
             case "/diff" -> handleEnforcerDiffSlash(rest.trim());
             case "/purge" -> handleEnforcerPurgeSlash();
-            case "/enforce", "/enforcer" -> handleEnforcerSlash(rest.trim());
+            case "/judge", "/enforce", "/enforcer" -> handleEnforcerSlash(rest.trim());
+            case "/judge-global" -> handleEnforcerSlash("global " + rest.trim());
             default -> {
                 // An unrecognized slash command is the AGENT's own (claude/codex/opencode all take
                 // slash commands like /model, /agents, /config on stdin). Forward it to the managed
@@ -5664,14 +6234,19 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 String agentBinary = resolveAgent(agent);
                 if (agentBinary == null) {
                     safePrintln(renderer.dim("  Unknown command: " + cmd + " (agent '" + agent + "' not found on PATH)"));
-                } else if (providerDispatchUnavailable()) {
-                    safePrintln(renderer.dim("  " + agent + " is busy — finish or cancel the current turn, then retry " + cmd + "."));
                 } else {
-                    String slash = rest.isBlank() ? cmd : cmd + " " + rest;
-                    safePrintln(renderer.dim("  → " + agent + " " + slash));
-                    if (!dispatchToAgentAsync(slash, history, metrics)) {
-                        safePrintln(renderer.dim("  " + agent
-                                + " became busy before dispatch; retry " + cmd + "."));
+                    synchronized (dispatchAdmissionLock) {
+                        if (providerDispatchUnavailable()) {
+                            safePrintln(renderer.dim("  " + agent
+                                    + " is busy — finish or cancel the current turn, then retry " + cmd + "."));
+                        } else {
+                            String slash = rest.isBlank() ? cmd : cmd + " " + rest;
+                            safePrintln(renderer.dim("  → " + agent + " " + slash));
+                            if (!dispatchToAgentAsync(slash, history, metrics)) {
+                                safePrintln(renderer.dim("  " + agent
+                                        + " became busy before dispatch; retry " + cmd + "."));
+                            }
+                        }
                     }
                 }
             }
@@ -5703,11 +6278,30 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
     }
 
+    void setReminderManager(ReminderManager manager) {
+        this.reminderManager = manager;
+    }
+
+    void scheduleSessionResumeReminderIfNeeded(String sourceSessionId) {
+        if (sourceSessionId != null && !sourceSessionId.isBlank()) {
+            reminderManager().scheduleSessionResumeReminder();
+        }
+    }
+
+    /** Show the user the reminder block attached to an outbound agent prompt, if any. */
+    private void emitReminderSection(String outboundMessage) {
+        String section = renderer == null ? "" : renderer.renderReminderSection(
+                ReminderManager.reminderBlockContent(outboundMessage));
+        if (!section.isEmpty()) {
+            safePrintln(section);
+        }
+    }
+
     String preparePromptForAgent(String message) {
         if (message == null || message.stripLeading().startsWith("/")) {
             return message;
         }
-        return reminderManager().prependTo(message);
+        return reminderManager().decorateUserTurn(message);
     }
 
     private void enqueueMessage(String content, ChatSessionMetrics metrics) {
@@ -5717,6 +6311,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         String trimmed = content.trim();
         MessageQueue.QueuedMessage msg = messageQueue.enqueue(trimmed);
+        if (msg == null) return;
         recordInputHistory(trimmed);
         metrics.recordMessageQueued();
         safePrintln(renderer.green("  Queued [") + msg.getId() + renderer.green("] ")
@@ -5740,12 +6335,18 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void sendQueuedMessage(String id, ChatHistory history, ChatSessionMetrics metrics) {
-        if (!reserveProviderDispatch()) {
-            safePrintln(renderer.yellow("  Agent is busy — queued messages will be sent when it finishes."));
-            return;
-        }
-        MessageQueue.QueuedMessage msg;
-        try {
+        synchronized (dispatchAdmissionLock) {
+            boolean isolatedOwnerBusy = shouldUseManagedIsolatedBackgroundFollowup()
+                    && isolatedDispatchReserved.get();
+            boolean providerOwnerBusy = !shouldUseManagedIsolatedBackgroundFollowup()
+                    && (agentBusy || detachedProviderBusy.get() || providerDispatchReserved.get());
+            if (shutdownSignal.get() || !backgroundCompletionMessages.isEmpty()
+                    || isolatedOwnerBusy || providerOwnerBusy) {
+                safePrintln(renderer.yellow(
+                        "  Agent is busy — queued messages will be sent when it finishes."));
+                return;
+            }
+            MessageQueue.QueuedMessage msg;
             if (id == null || id.isBlank()) {
                 msg = messageQueue.dequeue();
             } else {
@@ -5759,15 +6360,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 updateStatusLine(currentStatus);
                 return;
             }
+            if (!dispatchToAgentAsync(msg.getContent(), history, metrics)) {
+                messageQueue.requeueFirst(msg);
+                safePrintln(renderer.yellow(
+                        "  Agent became busy — the draft remains first in the queue."));
+                return;
+            }
             metrics.recordMessageAutoDequeued();
             safePrintln(renderer.dim("  Sending next draft"));
             safePrintln(BOLD + "  > " + RESET + msg.getContent());
-            boolean backgrounded = dispatchToAgent(msg.getContent(), history, metrics);
-            providerDispatchReserved.set(false);
-            drainQueuedMessages(history, metrics, false, backgrounded);
-            return;
-        } finally {
-            providerDispatchReserved.set(false);
         }
     }
 
@@ -5783,6 +6384,46 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                      ChatSessionMetrics metrics,
                                      boolean force,
                                      boolean previousTurnBackgrounded) {
+        if (shutdownSignal.get()) return;
+        if (!backgroundCompletionMessages.isEmpty()) {
+            dispatchPendingBackgroundCompletion(history, metrics);
+            return;
+        }
+        if (shouldUseManagedIsolatedBackgroundFollowup()) {
+            synchronized (dispatchAdmissionLock) {
+                if (!backgroundCompletionMessages.isEmpty()) {
+                    dispatchPendingBackgroundCompletion(history, metrics);
+                    return;
+                }
+                if (shutdownSignal.get() || isolatedDispatchReserved.get()
+                        || messageQueue == null || messageQueue.isEmpty()) {
+                    updateStatusLine(detachedProviderBusy.get()
+                            ? "current response backgrounded" : currentStatus);
+                    return;
+                }
+                if (!isolatedDispatchReserved.compareAndSet(false, true)) return;
+                final SubprocessAgentRunner runner;
+                try {
+                    runner = isolatedConversationRunner();
+                } catch (RuntimeException e) {
+                    isolatedDispatchReserved.set(false);
+                    safePrintln(renderer.red("  Could not start isolated " + agent + ": " + e.getMessage()));
+                    return;
+                }
+                MessageQueue.QueuedMessage msg = messageQueue.dequeue();
+                if (msg != null) {
+                    metrics.recordMessageAutoDequeued();
+                    safePrintln(renderer.green("  Sending draft to isolated " + agent));
+                    safePrintln(BOLD + "  > " + RESET + msg.getContent());
+                    if (!startIsolatedBackgroundFollowup(runner, msg.getContent(), history, metrics)) {
+                        messageQueue.requeueFirst(msg);
+                    }
+                } else {
+                    isolatedDispatchReserved.set(false);
+                }
+            }
+            return;
+        }
         if (detachedProviderBusy.get()) {
             busyPrompt = "  Current response is backgrounded · drafts remain queued until provider idle";
             drawFixedInputBox();
@@ -5797,26 +6438,30 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             updateStatusLine(currentStatus);
             return;
         }
-        if (previousTurnBackgrounded && !force && !canDispatchQueuedMessageAfterBackground()) {
-            busyPrompt = "  Current response is backgrounded · pending draft stays queued for this agent";
-            drawFixedInputBox();
-            updateStatusLine("current response backgrounded");
-            return;
-        }
-        if (!force && !autoDequeueEnabled) {
+        if (!force && !previousTurnBackgrounded && !autoDequeueEnabled) {
             updateStatusLine(currentStatus);
             return;
         }
         int total = messageQueue.size();
         int sent = 0;
         int maxToSend = previousTurnBackgrounded && !force ? 1 : Integer.MAX_VALUE;
-        while (!messageQueue.isEmpty()) {
-            if (sent >= maxToSend) break;
-            if (!reserveProviderDispatch()) break;
-            MessageQueue.QueuedMessage msg = messageQueue.dequeue();
-            if (msg == null) {
-                providerDispatchReserved.set(false);
-                break;
+        while (true) {
+            MessageQueue.QueuedMessage msg;
+            // Queue draining and fresh input must choose one provider owner at
+            // one linearization point. Otherwise both can observe idle and the
+            // fresh input is rendered as sent before losing the reservation.
+            synchronized (dispatchAdmissionLock) {
+                if (!backgroundCompletionMessages.isEmpty()) {
+                    dispatchPendingBackgroundCompletion(history, metrics);
+                    return;
+                }
+                if (sent >= maxToSend || messageQueue.isEmpty()) break;
+                if (!reserveProviderDispatch()) break;
+                msg = messageQueue.dequeue();
+                if (msg == null) {
+                    providerDispatchReserved.set(false);
+                    break;
+                }
             }
             sent++;
             metrics.recordMessageAutoDequeued();
@@ -5876,12 +6521,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         return hasService && hasPolicy && !paused;
     }
 
-    /** The status-bar enforcer tag for the given state. Static + pure for unit testing. */
+    /** The status-bar judge tag for the given state. Static + pure for unit testing. */
     static String enforcerStatusTag(boolean configured, boolean paused) {
         if (!configured) {
             return "";
         }
-        return paused ? " · enforcer paused" : " · enforcer";
+        return paused ? " · judge off" : " · judge";
     }
 
     /** Live enforcement gate used by {@link #dispatchToAgent}. */
@@ -5974,7 +6619,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 EnforcerConfig config =
                         EnforcerSetupWizard.run(wd);
                 if (config != null) {
-                    safePrintln(renderer.green("  Enforcer configured. Restart the session to apply."));
+                    safePrintln(renderer.green("  Judge policy configured. Restart the session to apply."));
                 } else {
                     safePrintln("  Setup cancelled.");
                 }
@@ -5983,7 +6628,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 EnforcerConfig config =
                         EnforcerConfig.load(wd);
                 if (config == null) {
-                    safePrintln(renderer.dim("  No enforcer config. Run /enforcer init to configure."));
+                    safePrintln(renderer.dim("  No judge policy config. Run /judge init to configure."));
                     return;
                 }
                 safePrintln("");
@@ -5999,6 +6644,26 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "status" -> printLiveEnforcerStatus();
             case "pause", "off" -> setEnforcementPaused(true);
             case "resume", "on" -> setEnforcementPaused(false);
+            case "global" -> {
+                String value = parts.length > 1 ? parts[1].toLowerCase(Locale.ROOT) : "status";
+                HarnessConfig config = HarnessConfig.load(objectMapper);
+                if ("status".equals(value) || "show".equals(value)) {
+                    safePrintln("  Judge global setting: " + (config.isJudgeGlobalEnabled()
+                            ? renderer.green("enabled") : renderer.yellow("disabled")));
+                } else if ("on".equals(value) || "enable".equals(value)
+                        || "off".equals(value) || "disable".equals(value)) {
+                    boolean enabled = "on".equals(value) || "enable".equals(value);
+                    config.setJudgeGlobalEnabled(enabled);
+                    config.save(objectMapper);
+                    if (enforcerEvaluator != null) {
+                        setEnforcementPaused(!enabled);
+                    }
+                    safePrintln(enabled ? renderer.green("  Judge enabled globally.")
+                            : renderer.yellow("  Judge disabled globally."));
+                } else {
+                    safePrintln("  Usage: /judge global [on|off|status]");
+                }
+            }
             case "judgements", "judgments", "log" -> {
                 int limit = 10;
                 if (parts.length > 1) {
@@ -6013,21 +6678,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "delete" -> {
                 try {
                     EnforcerConfig.delete(wd);
-                    safePrintln(renderer.dim("  Enforcer config deleted."));
+                    safePrintln(renderer.dim("  Judge policy config deleted."));
                 } catch (Exception e) {
                     safePrintln(renderer.yellow("  Failed: " + e.getMessage()));
                 }
             }
             default -> safePrintln(renderer.dim(
-                    "  Usage: /enforcer [status|pause|resume|judgements [N]|show|init|delete]"));
+                    "  Usage: /judge [status|on|off|global on|off|judgements [N]|show|init|delete]"));
         }
     }
 
     /** Live (in-session) enforcer status: active/paused, backend, rules, retries, judgement count. */
     private void printLiveEnforcerStatus() {
         if (enforcerEvaluator == null) {
-            safePrintln(renderer.dim("  No enforcer active in this session. "
-                    + "Configured rules (if any) are shown by /enforcer show."));
+            safePrintln(renderer.dim("  No judge policy active in this session. "
+                    + "Configured rules (if any) are shown by /judge config."));
             return;
         }
         int ruleCount = enforcerPolicy != null
@@ -6035,44 +6700,68 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         int retries = enforcerPolicy != null ? enforcerPolicy.getMaxCorrections() : 0;
         int judgements = liveEnforcerRecords().size();
         safePrintln("");
-        safePrintln("  Enforcement:  " + (enforcementPaused
-                ? renderer.yellow("paused") : renderer.green("active")));
+        safePrintln("  Session:      " + (enforcementPaused
+                ? renderer.yellow("off") : renderer.green("on")));
+        HarnessConfig globalConfig = HarnessConfig.load(objectMapper);
+        safePrintln("  Global:       " + (globalConfig.isJudgeGlobalEnabled()
+                ? renderer.green("on") : renderer.yellow("off")));
         safePrintln("  Judge:        " + enforcerEvaluator.describe());
         safePrintln("  Rules:        " + ruleCount);
         safePrintln("  Max retries:  " + retries);
         safePrintln("  Judgements:   " + judgements + " recorded this session");
-        safePrintln(renderer.dim("  Control with: /enforcer pause | resume | judgements [N]"));
+        safePrintln(renderer.dim("  Control with: /judge off | on | judgements [N]"));
         safePrintln("");
     }
 
-    /** Pause or resume live enforcement, updating the status bar + TUI chrome. */
+    /** Disable or enable the unified judge, including the nested MCP policy gate. */
     private void setEnforcementPaused(boolean paused) {
         if (enforcerEvaluator == null) {
-            safePrintln(renderer.dim("  No enforcer active in this session."));
+            safePrintln(renderer.dim("  No judge policy active in this session."));
             return;
         }
         if (enforcementPaused == paused) {
-            safePrintln(renderer.dim("  Enforcement is already " + (paused ? "paused." : "active.")));
+            safePrintln(renderer.dim("  Judge is already " + (paused ? "off." : "on.")));
             return;
         }
         enforcementPaused = paused;
+        syncNestedJudgePolicy(!paused);
+        if (paused) {
+            stopEnforcerRealtimeTail();
+        } else {
+            startEnforcerRealtimeTailIfConfigured();
+        }
         redrawStatusLine();
         if (tui != null) {
             tui.setEnforcerActive(!paused);
         }
         if (paused) {
             safePrintln(renderer.yellow(
-                    "  ⏸ Enforcement paused — turns dispatch without judge review. "
-                            + "/enforcer resume to re-enable."));
+                    "  ⏸ Judge off — turns and nested MCP calls dispatch without review. "
+                            + "/judge on to re-enable."));
         } else {
-            safePrintln(renderer.green("  ▶ Enforcement resumed — turns are judged again."));
+            safePrintln(renderer.green("  ▶ Judge on — turns and MCP calls are reviewed again."));
+        }
+    }
+
+    private void syncNestedJudgePolicy(boolean enabled) {
+        if (enforcerExtraEnv == null) return;
+        String policyFile = enforcerExtraEnv.get(EnforcerRuntimePolicy.ENV_POLICY_FILE);
+        if (policyFile == null || policyFile.isBlank()) return;
+        try {
+            EnforcerRuntimePolicy runtime = EnforcerRuntimePolicy.load(Path.of(policyFile), objectMapper);
+            if (runtime != null) {
+                runtime.setEnabled(enabled, objectMapper);
+            }
+        } catch (Exception failure) {
+            safePrintln(renderer.yellow("  Judge session switch could not reach nested MCP policy: "
+                    + failure.getMessage()));
         }
     }
 
     /** Print the most recent judgements recorded by this session's judge. */
     private void printEnforcerJudgements(int limit) {
         if (enforcerEvaluator == null) {
-            safePrintln(renderer.dim("  No enforcer active in this session."));
+            safePrintln(renderer.dim("  No judge policy active in this session."));
             return;
         }
         if (!enforcerEvaluator.recordsJudgements()) {
@@ -6109,6 +6798,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /queue-clear       Clear queued messages
                   /auto-dequeue      Toggle sending queued messages after each turn
                   /activity          Manage background processes, subagents, and logs
+                  /resources help   Configure tool-argument resource rules and preview calls
                   /process-status <id> Inspect process/subagent status
                   /jobs              Alias for the activity/job panel
                   /jobs-remove <id>  Remove a completed retained activity
@@ -6119,7 +6809,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /reminder [text]   List/add session reminders; use clear to reset
                   /reminder-global [text]  Project reminders shared by every session
                   /copy              Copy the latest assistant response
-                  /clear             Clear the screen
+                  /clear             Start a new conversation in this process
+                  /reset             Restart this session in a new process
+                  /reset-all         Restart every active CLI chat session
+                  /restart           Alias for /reset
                   /passthrough|/keys Forward keys straight to the agent (Ctrl+] to exit)
                   /render [mode]     Show or set render mode: mirror · decoded
                   /mode              Show current mode
@@ -6127,8 +6820,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /rollback [id]     Roll back violated turns (or a specific turn)
                   /diff <id>         Show the diff for an archived turn
                   /purge             Purge this session's diff archive
-                  /rules             Show the active enforcer rules
-                  /enforcer [cmd]    Enforcer: status · pause · resume · judgements [N]
+                  /rules             Show the active judge policy rules
+                  /judge [cmd]       Judge: status · on · off · global · judgements [N]
                   /help              Show this help
                   /quit              Exit
 
@@ -6205,7 +6898,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             return;
         }
 
-        if (providerDispatchUnavailable()) {
+        if (providerLifecycleBusy()) {
             safePrintln(renderer.yellow("  Cannot switch agents while a response is active or backgrounded."));
             return;
         }
@@ -6213,6 +6906,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         stopPersistentAgentForSessionReset();
         agent = newAgent;
         resetNativeResumeForFreshSession();
+        if (sessionIdentity != null) {
+            registerManagedSession(sessionIdentity.kompileSessionId());
+        }
         safePrintln(renderer.green("  Switched to " + agent));
         safePrintln(renderer.dim("  Conversation context reset (new agent session)."));
         renderer.setReadyTerminalTitle(readyTerminalTitle());
@@ -6327,6 +7023,24 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     ", " + metrics.getTotalTurns() + " turns" +
                     (metrics.getTotalToolCalls() > 0 ? ", " + metrics.getTotalToolCalls() + " tool calls" : ""));
         }
+    }
+
+    static String newManagedTranscriptId() {
+        return "emulated-" + UUID.randomUUID();
+    }
+
+    static String resolveManagedTranscriptId(String suppliedTranscriptId, String resumedTranscriptId) {
+        if (suppliedTranscriptId != null && !suppliedTranscriptId.isBlank()) {
+            return suppliedTranscriptId.trim();
+        }
+        if (resumedTranscriptId != null && !resumedTranscriptId.isBlank()) {
+            return resumedTranscriptId.trim();
+        }
+        return newManagedTranscriptId();
+    }
+
+    boolean isNewConversationRequested() {
+        return newConversationRequested;
     }
 
     // ── MCP tool injection ─────────────────────────────────────────────────
@@ -6811,21 +7525,37 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * The REPL blocks until the agent finishes, giving real-time streaming output.
      */
     private boolean dispatchToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        if (shutdownSignal.get()) return false;
         if (sessionTitle.initializeFromPrompt(message)) {
+            // Persist the [title] marker so resume keeps the original wording.
+            history.logSessionTitle(sessionTitle.get());
             renderer.setReadyTerminalTitle(sessionTitle.get());
         }
         agentBusy = true;
         beginForegroundTurn();
-        backgroundSignal.set(false);
-        detachedTaskId = null;
+        synchronized (dispatchAdmissionLock) {
+            providerTurnBackgroundable = true;
+            backgroundSignal.set(false);
+            detachedTaskId = null;
+        }
+        deferredDetachedResponse = null;
+        deferredDetachedCancelled = false;
         try {
             if (enforcementActive()) {
-                dispatchEnforced(message, history, metrics);
+                SubprocessAgentRunner turnRunner = isolatedConversationRunner;
+                EnforcerService.AgentTurnExecutor executor = turnRunner == null
+                        ? prompt -> sendToTuiAgent(prompt, history, metrics)
+                        : prompt -> turnRunner.runMessage(prompt, history, metrics);
+                dispatchEnforced(message, history, metrics, executor);
+                completeDeferredDetachedTask();
             } else {
                 sendToAgent(message, history, metrics);
             }
             return backgroundSignal.get();
         } finally {
+            synchronized (dispatchAdmissionLock) {
+                providerTurnBackgroundable = false;
+            }
             agentBusy = false;
             if (!detachedProviderBusy.get()) {
                 agentAwaitingInput = false;
@@ -6848,44 +7578,260 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * While the agent is processing, the user can keep typing — messages get queued.
      * When the agent finishes, queued messages are drained automatically.
      */
-    private boolean dispatchToAgentAsync(String message, ChatHistory history, ChatSessionMetrics metrics) {
-        if (!reserveProviderDispatch()) return false;
-        Thread dispatchThread = new Thread(() -> {
-            boolean backgrounded = false;
-            try {
-                backgrounded = dispatchToAgent(message, history, metrics);
-            } catch (Exception e) {
-                safePrintln(renderer.red("  Agent error: " + e.getMessage()));
-            } finally {
-                providerDispatchReserved.set(false);
+    private boolean admitUserMessage(
+            String message, ChatHistory history, ChatSessionMetrics metrics) {
+        // Completion publication, queue draining, and user admission share one
+        // decision point. Render only the outcome that actually won ownership.
+        synchronized (dispatchAdmissionLock) {
+            if (providerOwnerUnavailable()) {
+                if (enqueueBusyMessage(message)) {
+                    safePrintln(DIM + "  Queued: " + RESET + message);
+                }
+                return false;
             }
+            if (messageQueue != null && !messageQueue.isEmpty()) {
+                if (enqueueBusyMessage(message)) {
+                    safePrintln(DIM + "  Queued: " + RESET + message);
+                }
+                if (autoDequeueEnabled) {
+                    dispatchOldestQueuedMessageAsync(history, metrics);
+                }
+                return false;
+            }
+            if (dispatchToAgentAsync(message, history, metrics, () -> {
+                recordInputHistory(message);
+                safePrintln(BOLD + "  > " + RESET + message);
+            })) {
+                return true;
+            }
+            if (enqueueBusyMessage(message)) {
+                safePrintln(DIM + "  Queued: " + RESET + message);
+            }
+            return false;
+        }
+    }
+
+    /** Start the oldest queued draft without allowing a fresh message to leapfrog it. */
+    private boolean dispatchOldestQueuedMessageAsync(
+            ChatHistory history, ChatSessionMetrics metrics) {
+        MessageQueue.QueuedMessage queued = messageQueue.dequeue();
+        if (queued == null) return false;
+        boolean dispatched = dispatchToAgentAsync(queued.getContent(), history, metrics, () -> {
+            metrics.recordMessageAutoDequeued();
+            safePrintln(renderer.green("  Sending next draft"));
+            safePrintln(BOLD + "  > " + RESET + queued.getContent());
+        });
+        if (!dispatched) {
+            messageQueue.requeueFirst(queued);
+        }
+        return dispatched;
+    }
+
+    private boolean dispatchToAgentAsync(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        return dispatchToAgentAsync(message, history, metrics, () -> { });
+    }
+
+    private boolean dispatchToAgentAsync(
+            String message, ChatHistory history, ChatSessionMetrics metrics,
+            Runnable onAccepted) {
+        if (shutdownSignal.get()) return false;
+        if (shouldUseManagedIsolatedBackgroundFollowup()) {
+            return dispatchIsolatedBackgroundFollowupAsync(message, history, metrics, onAccepted);
+        }
+        if (!reserveProviderDispatch()) return false;
+        try {
+            onAccepted.run();
+        } catch (RuntimeException e) {
+            providerDispatchReserved.set(false);
+            throw e;
+        }
+        Thread dispatchThread = new Thread(() -> {
             try {
-                drainQueuedMessages(history, metrics, false, backgrounded);
+                boolean backgrounded = false;
+                try {
+                    backgrounded = dispatchToAgent(message, history, metrics);
+                } catch (Exception e) {
+                    safePrintln(renderer.red("  Agent error: " + e.getMessage()));
+                } finally {
+                    providerDispatchReserved.set(false);
+                }
+                try {
+                    if (!shutdownSignal.get()) {
+                        drainQueuedMessages(history, metrics, false, backgrounded);
+                    }
+                } finally {
+                    // Redraw prompt hint and return the visible cursor to the active input line.
+                    restoreIdlePromptCursor();
+                }
             } finally {
-                // Redraw prompt hint and return the visible cursor to the active input line.
-                restoreIdlePromptCursor();
+                if (providerDispatchThread == Thread.currentThread()) providerDispatchThread = null;
             }
         }, "agent-dispatch");
         dispatchThread.setDaemon(true);
-        dispatchThread.start();
+        providerDispatchThread = dispatchThread;
+        try {
+            dispatchThread.start();
+            return true;
+        } catch (RuntimeException e) {
+            providerDispatchThread = null;
+            providerDispatchReserved.set(false);
+            return false;
+        }
+    }
+
+    private boolean dispatchIsolatedBackgroundFollowupAsync(
+            String message, ChatHistory history, ChatSessionMetrics metrics,
+            Runnable onAccepted) {
+        synchronized (dispatchAdmissionLock) {
+            if (shutdownSignal.get() || enforcementActive()) return false;
+            if (!isolatedDispatchReserved.compareAndSet(false, true)) return false;
+            final SubprocessAgentRunner runner;
+            try {
+                runner = isolatedConversationRunner();
+            } catch (RuntimeException e) {
+                isolatedDispatchReserved.set(false);
+                safePrintln(renderer.red("  Could not start isolated " + agent + ": " + e.getMessage()));
+                return false;
+            }
+            try {
+                onAccepted.run();
+            } catch (RuntimeException e) {
+                isolatedDispatchReserved.set(false);
+                throw e;
+            }
+            return startIsolatedBackgroundFollowup(runner, message, history, metrics);
+        }
+    }
+
+    private boolean startIsolatedBackgroundFollowup(
+            SubprocessAgentRunner runner, String message,
+            ChatHistory history, ChatSessionMetrics metrics) {
+        Thread dispatchThread = new Thread(() -> {
+            try {
+                if (sessionTitle.initializeFromPrompt(message)) {
+                    // Persist the [title] marker so resume keeps the original wording.
+                    history.logSessionTitle(sessionTitle.get());
+                    renderer.setReadyTerminalTitle(sessionTitle.get());
+                }
+                runner.runMessage(message, history, metrics);
+            } catch (Exception e) {
+                safePrintln(renderer.red("  Agent error: " + e.getMessage()));
+            } finally {
+                isolatedDispatchReserved.set(false);
+            }
+            try {
+                if (!shutdownSignal.get()) {
+                    drainQueuedMessages(history, metrics, false, false);
+                }
+            } finally {
+                restoreIdlePromptCursor();
+                if (isolatedDispatchThread == Thread.currentThread()) isolatedDispatchThread = null;
+            }
+        }, "isolated-agent-dispatch");
+        dispatchThread.setDaemon(true);
+        isolatedDispatchThread = dispatchThread;
+        try {
+            dispatchThread.start();
+            return true;
+        } catch (RuntimeException e) {
+            isolatedDispatchThread = null;
+            isolatedDispatchReserved.set(false);
+            return false;
+        }
+    }
+
+    private synchronized SubprocessAgentRunner isolatedConversationRunner() {
+        if (isolatedConversationRunner != null) return isolatedConversationRunner;
+        TerminalRenderer isolatedRenderer = new IsolatedTerminalRenderer();
+        SubprocessAgentRunner runner = new SubprocessAgentRunner(
+                agent, workingDir, skipPermissions, false, kompileUrl, mcpPort,
+                systemPromptManager, isolatedRenderer, new AsciiRenderer(isolatedRenderer, 100));
+        runner.setLaunchOverrides(model, thinking);
+        runner.setExactResumeRequired(true);
+        runner.setManagedCommandPrefixArguments(mcpCommandPrefixArguments);
+        if (enforcerExtraEnv != null) runner.setExtraEnvironment(enforcerExtraEnv);
+        runner.setOutputConsumer(this::safePrintln);
+        runner.setReminderManager(reminderManager());
+        isolatedConversationRunner = runner;
+        return runner;
+    }
+
+    /** Dispatch one terminal background event ahead of ordinary user drafts. */
+    private boolean dispatchPendingBackgroundCompletion(
+            ChatHistory history, ChatSessionMetrics metrics) {
+        if (shutdownSignal.get() || history == null || metrics == null) return false;
+        synchronized (dispatchAdmissionLock) {
+            if (shutdownSignal.get()) return false;
+            String message = backgroundCompletionMessages.pollFirst();
+            if (message == null) return false;
+            if (!dispatchToAgentAsync(message, history, metrics)) {
+                backgroundCompletionMessages.addFirst(message);
+                return false;
+            }
+        }
+        if (renderer != null) {
+            safePrintln(renderer.cyan("  ↻ Background task finished; waking " + agent));
+        }
         return true;
     }
 
+    private synchronized void cleanupIsolatedConversationRunner() {
+        SubprocessAgentRunner runner = isolatedConversationRunner;
+        isolatedConversationRunner = null;
+        if (runner != null) runner.cleanup();
+        isolatedDispatchReserved.set(false);
+        backgroundCompletionMessages.clear();
+    }
+
+    private void awaitDispatchThreads() {
+        awaitDispatchThread(providerDispatchThread);
+        awaitDispatchThread(isolatedDispatchThread);
+    }
+
+    private void awaitDispatchThread(Thread thread) {
+        if (thread == null || thread == Thread.currentThread()) return;
+        try {
+            thread.join(35_000L);
+            if (thread.isAlive()) {
+                thread.interrupt();
+                thread.join(5_000L);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private boolean providerDispatchUnavailable() {
-        return agentBusy || detachedProviderBusy.get() || providerDispatchReserved.get();
+        return providerOwnerUnavailable()
+                || (messageQueue != null && !messageQueue.isEmpty());
+    }
+
+    private boolean providerOwnerUnavailable() {
+        if (!backgroundCompletionMessages.isEmpty()) return true;
+        if (shouldUseManagedIsolatedBackgroundFollowup()) {
+            return isolatedDispatchReserved.get();
+        }
+        return agentBusy || detachedProviderBusy.get()
+                || providerDispatchReserved.get() || isolatedDispatchReserved.get();
+    }
+
+    private boolean providerLifecycleBusy() {
+        return agentBusy || detachedProviderBusy.get() || !backgroundCompletionMessages.isEmpty()
+                || providerDispatchReserved.get() || isolatedDispatchReserved.get();
     }
 
     private boolean reserveProviderDispatch() {
         return !agentBusy && !detachedProviderBusy.get()
+                && !isolatedDispatchReserved.get()
                 && providerDispatchReserved.compareAndSet(false, true);
     }
 
     private boolean canDispatchQueuedMessageAfterBackground() {
         return switch (backgroundDispatchMode()) {
             case NATIVE_PROVIDER, PROVIDER_FORK -> true;
-            // No response-specific isolated owner exists yet. The persistent
-            // provider is still generating, so writing another prompt would mix turns.
-            case KOMPILE_MANAGED -> false;
+            // The active interactive process remains the detached turn's owner;
+            // new messages are delivered to a fresh managed runner instead.
+            case KOMPILE_MANAGED -> !enforcementActive();
         };
     }
 
@@ -6898,7 +7844,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private boolean shouldUseManagedIsolatedBackgroundFollowup() {
-        return backgroundTurnCount.get() > 0 && backgroundDispatchMode() == BackgroundDispatchMode.KOMPILE_MANAGED;
+        return backgroundTurnCount.get() > 0
+                && backgroundDispatchMode() == BackgroundDispatchMode.KOMPILE_MANAGED
+                && !enforcementActive();
     }
 
     private BackgroundDispatchMode backgroundDispatchMode() {
@@ -6939,6 +7887,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             tap.close();
             enforcerRealtimeTap = null;
         }
+        enforcerTailStarted.set(false);
     }
 
     /**
@@ -6959,7 +7908,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         int score = FallbackSupervisor.scoreForOutcome(result.isAccepted(), lastDecisionSeverity(result));
         FallbackSupervisor.Decision decision = advisor.recordTurnScore(score, !result.isAccepted());
         if (decision.fallback()) {
-            safePrintln(renderer.yellow("[enforcer] " + decision.fromAgent()
+            safePrintln(renderer.yellow("[judge] " + decision.fromAgent()
                     + " is underperforming (" + decision.reason() + "). Consider switching: /agent "
                     + decision.toAgent()));
         }
@@ -6983,12 +7932,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * killing the persistent TUI, and the judge correction is submitted after the decoder sees idle.
      */
     private void onRealtimeEnforcerViolation(String reason, String correctionPrompt, boolean toolCall) {
+        if (enforcementPaused) {
+            return;
+        }
         String kind = toolCall ? "tool call" : "output";
-        safePrintln(renderer.yellow("[enforcer] realtime " + kind + " violation: " + reason));
+        safePrintln(renderer.yellow("[judge] realtime " + kind + " violation: " + reason));
         if (tui != null && tuiSubagentId != null) {
             tui.getStatusBar().updateSubagentStatus(tuiSubagentId, "violation");
         }
-        if (!agentBusy || enforcementPaused) {
+        if (!agentBusy) {
             return;
         }
         if (!realtimeEnforcerActuatedThisTurn.compareAndSet(false, true)) {
@@ -7006,13 +7958,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         try {
             ManagedAgentInputActuator actuator = managedAgentInputActuator();
             if (!actuator.sendEsc()) {
-                safePrintln(renderer.dim("[enforcer] realtime correction skipped: agent input is unavailable"));
+                safePrintln(renderer.dim("[judge] realtime correction skipped: agent input is unavailable"));
                 return;
             }
             updateStatusLine("interrupting violation");
             boolean idle = actuator.awaitIdle(REALTIME_ENFORCER_CANCEL_IDLE_TIMEOUT_MS);
             if (!idle) {
-                safePrintln(renderer.dim("[enforcer] realtime correction continuing before idle confirmation"));
+                safePrintln(renderer.dim("[judge] realtime correction continuing before idle confirmation"));
             }
             if (!agentBusy || agentStdin == null) {
                 return;
@@ -7020,10 +7972,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             String prompt = realtimeCorrectionPrompt(reason, correctionPrompt, toolCall);
             String outboundPrompt = preparePromptForAgent(prompt);
             rememberSentMessage(outboundPrompt);
+            emitReminderSection(outboundPrompt);
             if (actuator.sendTextAndSubmit(outboundPrompt)) {
-                safePrintln(renderer.yellow("[enforcer] sent realtime correction"));
+                safePrintln(renderer.yellow("[judge] sent realtime correction"));
             } else {
-                safePrintln(renderer.dim("[enforcer] realtime correction skipped: submit failed"));
+                safePrintln(renderer.dim("[judge] realtime correction skipped: submit failed"));
             }
         } finally {
             realtimeEnforcerActuationInFlight.set(false);
@@ -7036,7 +7989,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         StringBuilder prompt = new StringBuilder();
         prompt.append("Your previous ").append(toolCall ? "tool call" : "response")
-                .append(" violated the active enforcer rules.");
+                .append(" violated the active judge policy rules.");
         if (reason != null && !reason.isBlank()) {
             prompt.append("\n\nReason: ").append(reason.trim());
         }
@@ -7047,7 +8000,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     /**
      * Enforced dispatch: wraps sendToAgent with EnforcerService retry logic.
      */
-    private void dispatchEnforced(String message, ChatHistory history, ChatSessionMetrics metrics) {
+    private void dispatchEnforced(String message, ChatHistory history, ChatSessionMetrics metrics,
+                                  EnforcerService.AgentTurnExecutor turnExecutor) {
         startEnforcerRealtimeTailIfConfigured();
         if (enforcerConversationWindow != null) {
             enforcerConversationWindow.addUserMessage(message);
@@ -7059,7 +8013,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             try {
                 snapshot = enforcerDiffArchive.beginTurn();
             } catch (IOException e) {
-                safePrintln(renderer.dim("[enforcer] could not begin diff snapshot: " + e.getMessage()));
+                safePrintln(renderer.dim("[judge] could not begin diff snapshot: " + e.getMessage()));
             }
         }
 
@@ -7071,10 +8025,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                         attemptCounter[0]++;
                         if (attemptCounter[0] > 1) {
                             safePrintln(renderer.yellow(
-                                    "[enforcer] violation detected, sending correction (attempt "
+                                    "[judge] violation detected, sending correction (attempt "
                                             + attemptCounter[0] + ")"));
                         }
-                        String output = sendToAgent(agentPrompt, history, metrics);
+                        String output = turnExecutor.run(agentPrompt);
                         if (enforcerConversationWindow != null) {
                             enforcerConversationWindow.finishAssistantMessage(output);
                         }
@@ -7082,7 +8036,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     });
 
             // Complete the diff snapshot + run diff-pattern checks with auto-rollback.
-            result = applyDiffArchive(result, snapshot, history, metrics);
+            result = applyDiffArchive(result, snapshot, history, metrics, turnExecutor);
 
             // WP13: feed the turn outcome to the observe-only fallback advisor; surface a switch
             // suggestion when the current agent degrades. Never switches automatically.
@@ -7092,12 +8046,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 switch (result.getStatus()) {
                     case ACCEPTED -> {
                         if (result.getAttempts().size() > 1) {
-                            safePrintln(renderer.dim("[enforcer] accepted after "
+                            safePrintln(renderer.dim("[judge] accepted after "
                                     + result.getAttempts().size() + " attempts"));
                         }
                     }
                     case BLOCKED -> {
-                        safePrintln(renderer.yellow("[enforcer] blocked: " + result.getMessage()));
+                        safePrintln(renderer.yellow("[judge] blocked: " + result.getMessage()));
                         var attempts = result.getAttempts();
                         if (!attempts.isEmpty() && attempts.get(attempts.size() - 1).decision() != null) {
                             for (String v : attempts.get(attempts.size() - 1).decision().getViolations()) {
@@ -7106,7 +8060,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                         }
                     }
                     case UNAVAILABLE, ERROR ->
-                            safePrintln(renderer.red("[enforcer] " + result.getMessage()));
+                            safePrintln(renderer.red("[judge] " + result.getMessage()));
                 }
             }
 
@@ -7114,7 +8068,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 history.logSystem("Enforcer " + result.getStatus() + ": " + result.getMessage());
             }
         } catch (Exception e) {
-            safePrintln(renderer.red("[enforcer] error: " + e.getMessage()));
+            safePrintln(renderer.red("[judge] error: " + e.getMessage()));
         }
     }
 
@@ -7124,7 +8078,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * headless {@code SubprocessAgentRunner.runMessage}. No-op when diff archiving is off.
      */
     private EnforcerResult applyDiffArchive(EnforcerResult result, EnforcerDiffArchive.TurnSnapshot snapshot,
-                                            ChatHistory history, ChatSessionMetrics metrics) {
+                                            ChatHistory history, ChatSessionMetrics metrics,
+                                            EnforcerService.AgentTurnExecutor turnExecutor) {
         if (enforcerDiffArchive == null || snapshot == null || result == null) {
             return result;
         }
@@ -7132,10 +8087,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         try {
             enforcerDiffArchive.completeTurn(snapshot, violated);
             if (violated) {
-                safePrintln(renderer.yellow("[enforcer] changes archived for rollback: " + snapshot.getTurnId()));
+                safePrintln(renderer.yellow("[judge] changes archived for rollback: " + snapshot.getTurnId()));
             }
         } catch (IOException e) {
-            safePrintln(renderer.dim("[enforcer] could not complete diff snapshot: " + e.getMessage()));
+            safePrintln(renderer.dim("[judge] could not complete diff snapshot: " + e.getMessage()));
         }
 
         if (enforcerDiffPatternEvaluator != null && enforcerDiffPatternEvaluator.isAvailable()
@@ -7146,7 +8101,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     DiffPatternEvaluator.DiffEvaluation diffEval = enforcerDiffPatternEvaluator.evaluate(turnDiff);
                     if (!diffEval.passed()) {
                         enforcerDiffArchive.completeTurn(snapshot, true);
-                        safePrintln(renderer.yellow("[enforcer] code pattern violations in diff:"));
+                        safePrintln(renderer.yellow("[judge] code pattern violations in diff:"));
                         for (DiffPatternEvaluator.DiffViolation v : diffEval.violations()) {
                             safePrintln(renderer.yellow("  - " + v.filePath() + ":" + v.lineNumber()
                                     + " — " + v.rule().getDescription()));
@@ -7155,13 +8110,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                             EnforcerDiffArchive.RollbackResult rr =
                                     enforcerDiffArchive.rollback(snapshot.getTurnId());
                             if (rr.success()) {
-                                safePrintln(renderer.yellow("[enforcer] rolled back changes ("
+                                safePrintln(renderer.yellow("[judge] rolled back changes ("
                                         + rr.restoredFiles().size() + " files restored)"));
                             }
                         }
                         if (diffEval.correctionPrompt() != null) {
-                            safePrintln(renderer.yellow("[enforcer] sending correction to agent..."));
-                            String corrected = sendToAgent(diffEval.correctionPrompt(), history, metrics);
+                            safePrintln(renderer.yellow("[judge] sending correction to agent..."));
+                            String corrected = turnExecutor.run(diffEval.correctionPrompt());
                             if (enforcerConversationWindow != null) {
                                 enforcerConversationWindow.finishAssistantMessage(corrected);
                             }
@@ -7175,8 +8130,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                                 "Code pattern violations: " + violationMsg, "diff-pattern-evaluator");
                     }
                 }
-            } catch (IOException e) {
-                safePrintln(renderer.dim("[enforcer] diff pattern check failed: " + e.getMessage()));
+            } catch (Exception e) {
+                safePrintln(renderer.dim("[judge] diff pattern check failed: " + e.getMessage()));
             }
         }
         return result;
@@ -7214,7 +8169,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     ? enforcerDiffArchive.rollbackViolations()
                     : enforcerDiffArchive.rollback(turnId);
             if (rr.success()) {
-                safePrintln(renderer.green("[enforcer] " + rr.message()));
+                safePrintln(renderer.green("[judge] " + rr.message()));
                 for (String f : rr.restoredFiles()) {
                     safePrintln(renderer.dim("  restored: " + f));
                 }

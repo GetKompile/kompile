@@ -234,11 +234,11 @@ public final class ReasoningGraphProcessGenerator {
             if (graph == null || candidates.isEmpty()) {
                 return;
             }
-            ProcessUnifiedGraphArtifacts.putSuggestions(graph, suggestions());
             for (Candidate candidate : candidates) {
                 ProcessUnifiedGraphArtifacts.putTrace(
                         graph, candidate.suggestion().getId(), candidate.reasoningTrace());
             }
+            ProcessUnifiedGraphArtifacts.putSuggestions(graph, suggestions());
         }
     }
 

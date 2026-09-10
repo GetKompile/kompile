@@ -68,6 +68,12 @@ public class DefaultMultiAgentGraphBuilder implements MultiAgentGraphBuilder {
                             result.metrics().extractionTimeMs());
                 }
             } catch (Exception e) {
+                if (Thread.currentThread().isInterrupted() || e instanceof java.util.concurrent.CancellationException) {
+                    throw new java.util.concurrent.CancellationException("Extraction cancelled");
+                }
+                if (config != null && config.options() != null && Boolean.TRUE.equals(config.options().get("failFast"))) {
+                    throw new IllegalStateException("Extraction agent failed: " + agent.getId(), e);
+                }
                 log.error("Agent '{}' failed during extraction", agent.getId(), e);
                 // Create empty result for failed agent
                 Graph emptyGraph = new Graph();
@@ -77,7 +83,7 @@ public class DefaultMultiAgentGraphBuilder implements MultiAgentGraphBuilder {
                         emptyGraph,
                         new RelationExtractionAgent.AgentMetrics(
                                 agent.getId(), 0, 0, 0, chunks.size(), null,
-                                Map.of("error", e.getMessage()))));
+                                Map.of("error", String.valueOf(e.getMessage())))));
             }
         }
 

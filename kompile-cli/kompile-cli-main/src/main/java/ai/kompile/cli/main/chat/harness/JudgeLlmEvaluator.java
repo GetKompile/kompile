@@ -17,9 +17,12 @@
 package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -64,20 +67,50 @@ public class JudgeLlmEvaluator {
               3 = Some confusion but arrives at right answer
               1 = Contradictory, circular, or incoherent reasoning
 
+            Judge the response against the supplied USER REQUEST, not against injected memory
+            or generic assumptions about what the user might want.
+
             Respond ONLY with valid JSON on a single line:
-            {"correctness": <1-5>, "completeness": <1-5>, "design_quality": <1-5 or null>, "thinking_coherence": <1-5 or null>, "reasoning": "<one sentence>"}
+            {"correctness": <1-5>, "completeness": <1-5>, "design_quality": <1-5 or null>, "thinking_coherence": <1-5 or null>, "reasoning": "<specific corrective feedback when any score is below 3; otherwise one-sentence rationale>"}
 
             Do not add any text before or after the JSON.
             """;
 
+    static final String TOOL_CALL_JUDGE_SYSTEM_PROMPT = """
+            You are the in-process quality judge for Kompile's main chat REPL.
+            Review a proposed MCP tool call before it executes. Judge only whether the call
+            is relevant to the user's request, consistent with the assistant's stated path,
+            and structurally reasonable. Permission and enforcer policy are separate gates.
+
+            Prefer ALLOW unless there is a clear problem. Use BLOCK for an irrelevant,
+            contradictory, malformed, or unjustified call. Use REWRITE only when corrected
+            JSON arguments are unambiguous and preserve the intended operation.
+
+            Respond with exactly one JSON object and no surrounding prose:
+            {"action":"ALLOW|BLOCK|REWRITE","reason":"brief reason","violations":[],"correction_prompt":"actionable feedback for the main chat","rewrittenArgs":null}
+            For REWRITE, rewrittenArgs must be a JSON object. For ALLOW or BLOCK it must be null.
+            """;
+
     private static final int MAX_OUTPUT_FOR_JUDGE = 6_000;
+    private static final int MAX_TASK_PROMPT_FOR_JUDGE = 4_000;
     private static final int MAX_THINKING_FOR_JUDGE = 2_000;
+    private static final int MAX_TOOL_CONTEXT_FOR_JUDGE = 4_000;
+    private static final String FORMAT_REPAIR_INSTRUCTION = """
+
+            [FORMAT REPAIR]
+            Your previous response was not a parseable JSON object. Evaluate the same input again
+            and return exactly one JSON object using the system prompt's schema. Do not add prose,
+            markdown, code fences, comments, or placeholders.
+            [END FORMAT REPAIR]
+            """;
     private static final Set<String> DESIGN_TASK_TYPES = Set.of("code-review", "planning", "incident-response");
 
     private final JudgeBackend backend;
     private final ObjectMapper objectMapper;
     private final BackgroundProcessManager processManager;
     private final String processId;
+    /** Supplies the user's durable judge guidance, or the empty string when absent. */
+    private volatile java.util.function.Supplier<String> guidanceSupplier = () -> "";
 
     /**
      * Primary constructor: uses the main chat's LLM client as fallback.
@@ -185,6 +218,17 @@ public class JudgeLlmEvaluator {
         }
     }
 
+    /** Bind a live supplier of the user's durable judge guidance. */
+    public void setGuidanceSupplier(java.util.function.Supplier<String> supplier) {
+        this.guidanceSupplier = supplier == null ? () -> "" : supplier;
+    }
+
+    /** The current user guidance text (for display by /judge status). */
+    public String currentGuidance() {
+        String guidance = guidanceSupplier.get();
+        return guidance == null ? "" : guidance;
+    }
+
     /**
      * Evaluate agent output quality across multiple dimensions.
      */
@@ -203,11 +247,13 @@ public class JudgeLlmEvaluator {
         String userPrompt = buildUserPrompt(metrics, taskType, agentName);
 
         try {
-            String responseText = backend.generate(userPrompt, JUDGE_SYSTEM_PROMPT);
+            String responseText = generateJsonVerdict(
+                    userPrompt, JUDGE_SYSTEM_PROMPT, qualityVerdictSchema());
 
-            if (responseText == null || responseText.isBlank()) {
+            if (ResilientJudgeBackend.isErrorResponse(responseText)) {
                 markJudgeProcessFailed();
-                return JudgeDimensions.error("Judge returned empty response");
+                return JudgeDimensions.error("Judge backend failed: "
+                        + bounded(responseText, 240));
             }
 
             JudgeDimensions dimensions = parseJudgeResponse(responseText, taskType, metrics.hasThinking());
@@ -222,6 +268,120 @@ public class JudgeLlmEvaluator {
             markJudgeProcessFailed();
             return JudgeDimensions.error("Judge call failed: " + e.getMessage());
         }
+    }
+
+    /** Review a proposed MCP tool call before the main chat executes it. */
+    public EnforcerToolCallDecision evaluateToolCall(
+            String userPrompt, String assistantContext, String toolName, String toolInput)
+            throws Exception {
+        if (backend == null || !backend.isAvailable()) {
+            return EnforcerToolCallDecision.allow("No quality judge backend is available");
+        }
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("[USER REQUEST]\n")
+                .append(bounded(userPrompt, MAX_TOOL_CONTEXT_FOR_JUDGE))
+                .append("\n[END USER REQUEST]\n\n");
+        if (assistantContext != null && !assistantContext.isBlank()) {
+            prompt.append("[ASSISTANT CONTEXT]\n")
+                    .append(bounded(assistantContext, MAX_TOOL_CONTEXT_FOR_JUDGE))
+                    .append("\n[END ASSISTANT CONTEXT]\n\n");
+        }
+        prompt.append("[PROPOSED MCP TOOL CALL]\nname: ")
+                .append(toolName == null ? "" : toolName)
+                .append("\narguments: ")
+                .append(bounded(toolInput, MAX_TOOL_CONTEXT_FOR_JUDGE))
+                .append("\n[END PROPOSED MCP TOOL CALL]\n\n");
+
+        String guidance = guidanceSupplier.get();
+        if (guidance != null && !guidance.isBlank()) {
+            prompt.append("[USER GUIDANCE TO THE JUDGE]\n")
+                    .append("The user has given you the following feedback and instructions. ")
+                    .append("Treat it as high-priority context when reviewing this call:\n")
+                    .append(bounded(guidance, MAX_TOOL_CONTEXT_FOR_JUDGE))
+                    .append("\n[END USER GUIDANCE TO THE JUDGE]");
+        }
+
+        String response = generateJsonVerdict(
+                prompt.toString(), TOOL_CALL_JUDGE_SYSTEM_PROMPT, toolVerdictSchema());
+        if (ResilientJudgeBackend.isErrorResponse(response)) {
+            throw new IllegalStateException("Quality judge returned an error response: "
+                    + bounded(response, 240));
+        }
+        String json = extractJson(response);
+        if (json == null) {
+            throw new IllegalStateException("Quality judge did not return JSON");
+        }
+        objectMapper.readTree(json); // malformed JSON is an evaluator failure, not a policy block
+        return EnforcerToolCallDecision.parse(objectMapper, response);
+    }
+
+    private String generateJsonVerdict(
+            String prompt, String systemPrompt, JudgeBackend.JsonSchema outputSchema)
+            throws Exception {
+        String initial = backend.generateJson(prompt, systemPrompt, outputSchema);
+        if (ResilientJudgeBackend.isErrorResponse(initial) || hasParseableJsonObject(initial)) {
+            return initial;
+        }
+        return backend.generateJson(
+                prompt + FORMAT_REPAIR_INSTRUCTION, systemPrompt, outputSchema);
+    }
+
+    private boolean hasParseableJsonObject(String response) {
+        String json = extractJson(response);
+        if (json == null) {
+            return false;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            return root != null && root.isObject();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private JudgeBackend.JsonSchema qualityVerdictSchema() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        integerScore(properties.putObject("correctness"));
+        integerScore(properties.putObject("completeness"));
+        nullableIntegerScore(properties.putObject("design_quality"));
+        nullableIntegerScore(properties.putObject("thinking_coherence"));
+        properties.putObject("reasoning").put("type", "string");
+        ArrayNode required = schema.putArray("required");
+        required.add("correctness").add("completeness").add("design_quality")
+                .add("thinking_coherence").add("reasoning");
+        return new JudgeBackend.JsonSchema("kompile_quality_judge", schema, true);
+    }
+
+    private JudgeBackend.JsonSchema toolVerdictSchema() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("action").put("type", "string")
+                .putArray("enum").add("ALLOW").add("BLOCK").add("REWRITE");
+        properties.putObject("reason").put("type", "string");
+        properties.putObject("violations").put("type", "array")
+                .putObject("items").put("type", "string");
+        properties.putObject("correction_prompt").put("type", "string");
+        properties.putObject("rewrittenArgs").putArray("type").add("object").add("null");
+        ArrayNode required = schema.putArray("required");
+        required.add("action").add("reason").add("violations")
+                .add("correction_prompt").add("rewrittenArgs");
+        // rewrittenArgs intentionally accepts arbitrary tool-specific properties.
+        return new JudgeBackend.JsonSchema("kompile_tool_judge", schema, false);
+    }
+
+    private static void integerScore(ObjectNode node) {
+        node.put("type", "integer").put("minimum", 1).put("maximum", 5);
+    }
+
+    private static void nullableIntegerScore(ObjectNode node) {
+        node.putArray("type").add("integer").add("null");
+        node.put("minimum", 1).put("maximum", 5);
     }
 
     /**
@@ -265,6 +425,13 @@ public class JudgeLlmEvaluator {
 
     private String buildUserPrompt(TurnMetrics metrics, String taskType, String agentName) {
         StringBuilder prompt = new StringBuilder();
+
+        String taskPrompt = metrics.getTaskPrompt();
+        if (taskPrompt != null && !taskPrompt.isBlank()) {
+            prompt.append("[USER REQUEST]\n")
+                    .append(bounded(taskPrompt, MAX_TASK_PROMPT_FOR_JUDGE))
+                    .append("\n[END USER REQUEST]\n\n");
+        }
 
         // Agent output (main content to evaluate)
         String output = metrics.getAgentOutput();
@@ -359,5 +526,12 @@ public class JudgeLlmEvaluator {
         }
 
         return null;
+    }
+
+    private static String bounded(String value, int maxChars) {
+        if (value == null || value.isBlank()) return "(none)";
+        String text = value.strip();
+        return text.length() <= maxChars
+                ? text : text.substring(0, maxChars) + "\n… [truncated]";
     }
 }

@@ -16,10 +16,16 @@
 
 package ai.kompile.staging.web.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.time.Instant;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Response DTO for LLM text generation.
@@ -35,4 +41,42 @@ public class LlmGenerateResponse {
     private int totalTokens;
     private String finishReason;
     private long totalTimeMs;
+
+    /*
+     * Run-bound fields are deliberately nullable and excluded when absent so the legacy
+     * request/response JSON shape remains unchanged.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private UUID runId;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private UUID subjectId;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Long derivedFromRevision;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String referenceLanguage;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String learningLanguage;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String modelId;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String modelVersion;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String configurationVersion;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String promptVersion;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String policyVersion;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String responseSchemaVersion;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String promptHash;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
+    private Instant completedAt;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Map<String, Object> configurationEvidence;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Double confidence;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String confidenceSource;
 }

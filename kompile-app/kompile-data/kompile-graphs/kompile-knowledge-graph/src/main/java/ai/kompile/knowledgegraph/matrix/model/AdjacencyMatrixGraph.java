@@ -528,6 +528,15 @@ public class AdjacencyMatrixGraph implements AutoCloseable {
                 if (rtSrc != null) rtSrc.remove(tgtIdx);
             }
 
+            // Drop parallel quality/provenance metadata as part of the same logical removal.
+            // Leaving it behind resurrected stale bidirectional/confidence/description fields when
+            // the same endpoints were later re-added and the graph was persisted.
+            Map<Integer, Map<Integer, EdgeMeta>> metaType = edgeMetaData.get(type);
+            if (metaType != null) {
+                Map<Integer, EdgeMeta> metaSrc = metaType.get(srcIdx);
+                if (metaSrc != null) metaSrc.remove(tgtIdx);
+            }
+
             // Clean up reverse index
             Map<Integer, Set<Integer>> rev = reverseIndex.get(type);
             if (rev != null) {

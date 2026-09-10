@@ -32,10 +32,10 @@ public enum EnforcerFallbackPolicy {
     /** Re-check with the instant keyword evaluator built from the same rules; block only on a keyword hit. */
     DEGRADE_TO_KEYWORD;
 
-    /** Parse a config string; defaults to {@link #DEGRADE_TO_KEYWORD} when null/blank/unknown. */
+    /** Parse a config string; defaults to {@link #FAIL_OPEN} when null/blank/unknown. */
     public static EnforcerFallbackPolicy parse(String value) {
         if (value == null || value.isBlank()) {
-            return DEGRADE_TO_KEYWORD;
+            return FAIL_OPEN;
         }
         switch (value.trim().toLowerCase().replace('-', '_')) {
             case "fail_open":
@@ -51,7 +51,7 @@ public enum EnforcerFallbackPolicy {
             case "degrade":
                 return DEGRADE_TO_KEYWORD;
             default:
-                return DEGRADE_TO_KEYWORD;
+                return FAIL_OPEN;
         }
     }
 

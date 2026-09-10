@@ -584,7 +584,7 @@ public class NewYorkTimesCollection extends DocumentCollection<NewYorkTimesColle
     protected List<String> people = new ArrayList<String>();
 
     /**
-     * This field specifies the date of the article�s publication.
+     * This field specifies the date of the article's publication.
      */
     protected Date publicationDate;
 
@@ -680,7 +680,7 @@ public class NewYorkTimesCollection extends DocumentCollection<NewYorkTimesColle
 
     /**
      * This field specifies the location on nytimes.com of the article. The
-     * �Alternative Url� field is preferred to this field on articles published
+     * "Alternative Url" field is preferred to this field on articles published
      * on or after April 02, 2006, as the linked page will have richer content.
      */
     protected URL url;

@@ -16,6 +16,7 @@
 package ai.kompile.app.ontology;
 
 import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Primary;
@@ -35,14 +36,41 @@ import org.springframework.stereotype.Service;
 public class CrawlOntologySchemaEnrichmentProvisioner implements OntologyAutoProvisioner {
 
     private final OntologySchemaEnrichmentService schemaEnrichmentService;
+    private final GraphOntologyBindingService graphOntologyBindingService;
 
-    public CrawlOntologySchemaEnrichmentProvisioner(OntologySchemaEnrichmentService schemaEnrichmentService) {
+    public CrawlOntologySchemaEnrichmentProvisioner(
+            OntologySchemaEnrichmentService schemaEnrichmentService,
+            GraphOntologyBindingService graphOntologyBindingService) {
         this.schemaEnrichmentService = schemaEnrichmentService;
+        this.graphOntologyBindingService = graphOntologyBindingService;
     }
 
     @Override
     public void provisionOntology(long factSheetId) {
+        provisionOntology(factSheetId, null);
+    }
+
+    @Override
+    public void provisionOntology(long factSheetId, GraphSchema graphSchema) {
         try {
+            graphOntologyBindingService.withOntologyMutationLock(
+                    factSheetId, () -> provisionOntologyLocked(factSheetId, graphSchema));
+        } catch (RuntimeException e) {
+            log.warn("Crawl schema enrichment failed for factSheet={} (continuing crawl): {}",
+                    factSheetId, e.toString());
+        }
+    }
+
+    private void provisionOntologyLocked(long factSheetId, GraphSchema graphSchema) {
+        try {
+            if (graphSchema != null) {
+                if (graphOntologyBindingService.mergeFrozenGraphSchema(
+                        factSheetId, graphSchema).isEmpty()) {
+                    log.warn("Frozen crawl schema could not be persisted for factSheet={}; "
+                                    + "continuing best-effort OWL enrichment against any existing binding",
+                            factSheetId);
+                }
+            }
             OwlClassificationResponse response = schemaEnrichmentService.generateSchemaAndTypes(factSheetId);
             if (!response.isOntologyBound()) {
                 log.info("Crawl schema enrichment skipped for factSheet={}: no ontology could be provisioned",
@@ -58,7 +86,7 @@ public class CrawlOntologySchemaEnrichmentProvisioner implements OntologyAutoPro
                     response.getEntitiesClassified(),
                     response.getEdgesMaterialized());
         } catch (RuntimeException e) {
-            log.warn("Crawl schema enrichment failed for factSheet={} (continuing crawl): {}",
+            log.warn("Crawl schema enrichment transaction failed for factSheet={} (continuing crawl): {}",
                     factSheetId, e.toString());
         }
     }

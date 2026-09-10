@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -55,6 +56,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -343,17 +345,41 @@ class GraphHydrationOrchestratorTest {
     }
 
     @Test
-    void hydrationConfigDryRun_passedThroughToPruner() {
-        when(reasoningOrchestrator.runFullReground(8L))
-                .thenReturn(new RegroundResult(0, "run-dry", Set.of()));
-        when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any()))
-                .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, true));
+    void hydrationConfigDryRun_allStagesIsPlanOnly() {
+        // Wire every optional collaborator and enable MEBN explicitly so this proves the early
+        // preview path does not even read config or invoke a potentially mutating collaborator.
+        ReflectionTestUtils.setField(orchestrator, "graphNeuralScoringService", graphNeuralScoringService);
+        ReflectionTestUtils.setField(orchestrator, "kbConfigManager", kbConfigManager);
+        BiConsumer<String, String> progressCallback = org.mockito.Mockito.mock(BiConsumer.class);
 
         HydrationConfig dryRun = new HydrationConfig(Set.of(), 0.4, true);
-        orchestrator.run(8L, dryRun, null);
+        HydrationResult result = orchestrator.run(8L, dryRun, progressCallback);
 
-        verify(pruneCompactOrchestrator).run(anyLong(), anySet(), anyString(),
-                org.mockito.ArgumentMatchers.eq(true), any());
+        assertThat(result).isEqualTo(HydrationResult.empty());
+        assertThat(result.learningMetrics()).isEqualTo(LearningMetrics.skipped());
+        // A normal crawl callback updates pipeline state and writes history, so a dry-run must
+        // suppress it rather than report planned stages as completed progress.
+        verifyNoInteractions(progressCallback);
+        verifyNoInteractions(reasoningOrchestrator, pruneCompactOrchestrator, promotionTracker,
+                ontologyConformanceTagger, mebnRegistrationService, graphNeuralScoringService,
+                kbConfigManager);
+    }
+
+    @Test
+    void hydrationConfigDryRun_stageSubsetStillSkipsAllWork() {
+        BiConsumer<String, String> progressCallback = org.mockito.Mockito.mock(BiConsumer.class);
+        HydrationConfig dryRun = new HydrationConfig(
+                Set.of(GraphHydrationOrchestrator.STAGE_GNN_SCORING), 0.4, true);
+
+        HydrationResult result = orchestrator.run(8L, dryRun, progressCallback);
+
+        assertThat(result.stagesRun()).isZero();
+        assertThat(result.totalFactsChanged()).isZero();
+        assertThat(result.totalFactsPruned()).isZero();
+        assertThat(result.runId()).isNull();
+        verifyNoInteractions(progressCallback, reasoningOrchestrator, pruneCompactOrchestrator,
+                promotionTracker, ontologyConformanceTagger, mebnRegistrationService,
+                graphNeuralScoringService, kbConfigManager);
     }
 
     // ──────────────────────────────────────────────────────────────────────────────

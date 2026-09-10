@@ -21,6 +21,7 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -97,8 +98,11 @@ final class CorpusSchemaOverlayValidator {
         Set<String> generatedRelationshipTypeNames = new LinkedHashSet<>();
         Map<String, Boolean> generatedRelationHasPattern = new LinkedHashMap<>();
 
-        validateGeneratedNodes(generatedOverlay, errors, generatedNodeTypeNames);
+        validateGeneratedNodes(configuredSchema, generatedOverlay, errors, generatedNodeTypeNames);
         validateGeneratedRelationships(generatedOverlay, errors, generatedRelationshipTypeNames, generatedRelationHasPattern);
+        validateTypeKindCollisions(
+                configuredSchema, generatedNodeTypeNames, generatedRelationshipTypeNames, errors);
+        validateHierarchyMetadata(configuredSchema, generatedOverlay, errors);
 
         if (validatePatterns) {
             validatePatterns(configuredSchema, generatedOverlay, generatedNodeTypeNames,
@@ -111,13 +115,45 @@ final class CorpusSchemaOverlayValidator {
         return new Result(errors.isEmpty(), errors);
     }
 
+    private static void validateTypeKindCollisions(
+            GraphSchema configuredSchema,
+            Set<String> generatedNodeTypeNames,
+            Set<String> generatedRelationshipTypeNames,
+            List<String> errors) {
+        Set<String> configuredNodes = new LinkedHashSet<>();
+        addNodeLabels(configuredNodes, configuredSchema);
+        Set<String> configuredRelationships = new LinkedHashSet<>();
+        if (configuredSchema != null && configuredSchema.getRelationshipTypes() != null) {
+            configuredSchema.getRelationshipTypes().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(RelationshipType::getType)
+                    .filter(CorpusSchemaOverlayValidator::hasText)
+                    .map(CorpusSchemaOverlayValidator::canonical)
+                    .forEach(configuredRelationships::add);
+        }
+        generatedNodeTypeNames.stream()
+                .filter(name -> configuredRelationships.contains(name)
+                        || generatedRelationshipTypeNames.contains(name))
+                .forEach(name -> errors.add(
+                        "[SCHEMA_TYPE_KIND_COLLISION] Node type collides with relationship type: " + name));
+        generatedRelationshipTypeNames.stream()
+                .filter(configuredNodes::contains)
+                .forEach(name -> errors.add(
+                        "[SCHEMA_TYPE_KIND_COLLISION] Relationship type collides with node type: " + name));
+    }
+
     private static void validateGeneratedNodes(
+            GraphSchema configuredSchema,
             GraphSchema generatedOverlay,
             List<String> errors,
             Set<String> generatedNodeTypeNames) {
 
         List<NodeType> nodes = generatedOverlay.getNodeTypes();
         Set<String> seenNodeTypes = new HashSet<>();
+        Set<String> availableParents = new LinkedHashSet<>(
+                SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
+        addNodeLabels(availableParents, configuredSchema);
+        addNodeLabels(availableParents, generatedOverlay);
         for (int i = 0; i < safeSize(nodes); i++) {
             NodeType nodeType = nodes.get(i);
             if (nodeType == null) {
@@ -143,12 +179,43 @@ final class CorpusSchemaOverlayValidator {
             }
             generatedNodeTypeNames.add(canonicalLabel);
 
+            String parentType = nodeType.getParentType();
+            if (SchemaHierarchyVocabulary.isBaseEntityType(canonicalLabel)) {
+                String expectedParent = SchemaHierarchyVocabulary.baselineParent(canonicalLabel);
+                if (!java.util.Objects.equals(expectedParent,
+                        hasText(parentType) ? canonical(parentType) : null)) {
+                    errors.add("[SCHEMA_PARENT_BASELINE] Baseline node type " + label
+                            + " must preserve parentType " + expectedParent);
+                }
+            } else if (!hasText(parentType)) {
+                errors.add("[SCHEMA_PARENT_REQUIRED] Generated node type " + label
+                        + " must declare one existing hierarchy parentType");
+            } else if (!TYPE_NAME.matcher(parentType).matches()
+                    || !availableParents.contains(canonical(parentType))) {
+                errors.add("[SCHEMA_PARENT_UNKNOWN] Generated node type " + label
+                        + " parentType must name an existing or same-overlay node type: "
+                        + parentType);
+            } else if (canonicalLabel.equals(canonical(parentType))) {
+                errors.add("[SCHEMA_PARENT_CYCLE] Node type " + label
+                        + " cannot be its own parentType");
+            }
+
             if (!hasText(nodeType.getDescription())) {
                 errors.add("[SCHEMA_DESCRIPTION] Node type " + label + " must have a concise description");
             }
 
             validateProperties(label, nodeType.getProperties(), errors);
         }
+    }
+
+    private static void addNodeLabels(Set<String> target, GraphSchema schema) {
+        if (schema == null || schema.getNodeTypes() == null) return;
+        schema.getNodeTypes().stream()
+                .filter(java.util.Objects::nonNull)
+                .map(NodeType::getLabel)
+                .filter(CorpusSchemaOverlayValidator::hasText)
+                .map(CorpusSchemaOverlayValidator::canonical)
+                .forEach(target::add);
     }
 
     private static void validateProperties(String ownerLabel, List<PropertyType> properties,
@@ -217,6 +284,22 @@ final class CorpusSchemaOverlayValidator {
             generatedRelationshipTypeNames.add(canonicalType);
             generatedRelationHasPattern.putIfAbsent(canonicalType, false);
 
+            String family = relationshipType.getConnectionFamily();
+            if (SchemaHierarchyVocabulary.isConnectionFamily(canonicalType)
+                    || "HIERARCHICAL".equals(canonicalType)) {
+                errors.add("[SCHEMA_CONNECTION_PREDICATE] Relationship type " + type
+                        + " is a family or internal structural edge; emit a specific directed predicate");
+            }
+            if (!hasText(family)) {
+                errors.add("[SCHEMA_CONNECTION_FAMILY_REQUIRED] Generated relationship type "
+                        + type + " must declare connectionFamily");
+            } else if (!TYPE_NAME.matcher(family).matches()
+                    || !SchemaHierarchyVocabulary.isConnectionFamily(family)) {
+                errors.add("[SCHEMA_CONNECTION_FAMILY_UNKNOWN] Relationship type " + type
+                        + " connectionFamily must be one of "
+                        + SchemaHierarchyVocabulary.CONNECTION_FAMILIES + ": " + family);
+            }
+
             if (!hasText(relationshipType.getDescription())) {
                 errors.add("[SCHEMA_DESCRIPTION] Relationship type " + type
                         + " must have a concise description");
@@ -237,6 +320,63 @@ final class CorpusSchemaOverlayValidator {
                         errors.add("[SCHEMA_ALIAS] Relationship type " + type + " has duplicate alias: " + alias);
                     }
                 }
+            }
+        }
+    }
+
+    private static void validateHierarchyMetadata(
+            GraphSchema configuredSchema, GraphSchema generatedOverlay, List<String> errors) {
+        Map<String, String> parents = new LinkedHashMap<>();
+        addParentDeclarations(parents, configuredSchema, false, errors);
+        addParentDeclarations(parents, generatedOverlay, true, errors);
+        for (String child : parents.keySet()) {
+            Set<String> visited = new LinkedHashSet<>();
+            String current = child;
+            while (current != null && visited.add(current)) {
+                current = parents.get(current);
+            }
+            if (current != null) {
+                errors.add("[SCHEMA_PARENT_CYCLE] Entity type hierarchy contains a cycle at "
+                        + current);
+                break;
+            }
+        }
+
+        Map<String, String> families = new LinkedHashMap<>();
+        addFamilyDeclarations(families, configuredSchema, false, errors);
+        addFamilyDeclarations(families, generatedOverlay, true, errors);
+    }
+
+    private static void addParentDeclarations(
+            Map<String, String> parents, GraphSchema schema, boolean rejectConflicts,
+            List<String> errors) {
+        if (schema == null || schema.getNodeTypes() == null) return;
+        for (NodeType type : schema.getNodeTypes()) {
+            if (type == null || !hasText(type.getLabel()) || !hasText(type.getParentType())) continue;
+            String child = canonical(type.getLabel());
+            String parent = canonical(type.getParentType());
+            String existing = parents.putIfAbsent(child, parent);
+            if (rejectConflicts && existing != null && !existing.equals(parent)) {
+                errors.add("[SCHEMA_PARENT_CONFLICT] Node type " + type.getLabel()
+                        + " cannot change parentType from " + existing + " to " + parent);
+            }
+        }
+    }
+
+    private static void addFamilyDeclarations(
+            Map<String, String> families, GraphSchema schema, boolean rejectConflicts,
+            List<String> errors) {
+        if (schema == null || schema.getRelationshipTypes() == null) return;
+        for (RelationshipType type : schema.getRelationshipTypes()) {
+            if (type == null || !hasText(type.getType())
+                    || !hasText(type.getConnectionFamily())) continue;
+            String relation = canonical(type.getType());
+            String family = canonical(type.getConnectionFamily());
+            String existing = families.putIfAbsent(relation, family);
+            if (rejectConflicts && existing != null && !existing.equals(family)) {
+                errors.add("[SCHEMA_CONNECTION_FAMILY_CONFLICT] Relationship type "
+                        + type.getType() + " cannot change connectionFamily from "
+                        + existing + " to " + family);
             }
         }
     }

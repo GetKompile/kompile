@@ -94,10 +94,10 @@ class ProcessDefinitionTest {
     void builder_withMetadata_preservesMap() {
         ProcessDefinition pd = ProcessDefinition.builder()
                 .id("pd-004")
-                .metadata(Map.of("domain", "FP&A", "region", "APAC"))
+                .metadata(Map.of("domain", "Planning", "region", "APAC"))
                 .build();
 
-        assertThat(pd.getMetadata()).containsEntry("domain", "FP&A");
+        assertThat(pd.getMetadata()).containsEntry("domain", "Planning");
         assertThat(pd.getMetadata()).containsEntry("region", "APAC");
     }
 

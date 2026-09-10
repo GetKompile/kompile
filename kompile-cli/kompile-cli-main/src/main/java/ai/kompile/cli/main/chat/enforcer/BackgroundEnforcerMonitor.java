@@ -298,7 +298,7 @@ public class BackgroundEnforcerMonitor {
 
             objectMapper.writeValue(interruptFile.toFile(), array);
         } catch (IOException e) {
-            System.err.println("[enforcer-bg-monitor] Warning: could not write interrupt file "
+            EnforcerDiagnostics.alert("[enforcer-bg-monitor] Warning: could not write interrupt file "
                     + interruptFile + ": " + e.getMessage());
         }
     }
@@ -325,7 +325,7 @@ public class BackgroundEnforcerMonitor {
                 }
             }
         } catch (IOException e) {
-            System.err.println("[enforcer-bg-monitor] Warning: could not read interrupt file "
+            EnforcerDiagnostics.alert("[enforcer-bg-monitor] Warning: could not read interrupt file "
                     + interruptFile + ": " + e.getMessage());
         }
         return result;
@@ -353,7 +353,7 @@ public class BackgroundEnforcerMonitor {
             }
             objectMapper.writeValue(interruptFile.toFile(), array);
         } catch (IOException e) {
-            System.err.println("[enforcer-bg-monitor] Warning: could not acknowledge violations in "
+            EnforcerDiagnostics.alert("[enforcer-bg-monitor] Warning: could not acknowledge violations in "
                     + interruptFile + ": " + e.getMessage());
         }
     }

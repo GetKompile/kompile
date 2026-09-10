@@ -117,6 +117,36 @@ public class EnforcerInitCommand implements Callable<Integer> {
             description = "Judge LLM model")
     String judgeModel;
 
+    // ── Direction monitoring flags (opt-in goal-drift judge) ────────────────
+
+    @CommandLine.Option(names = {"--direction-monitoring"},
+            description = "Enable opt-in goal-drift direction monitoring (default: off)")
+    Boolean directionMonitoring;
+
+    @CommandLine.Option(names = {"--direction-goal"},
+            description = "Session goal the direction judge checks drift against")
+    String directionGoal;
+
+    @CommandLine.Option(names = {"--direction-check-every"},
+            description = "Check every N model iterations plus the final response (default: 3)")
+    Integer directionCheckEvery;
+
+    @CommandLine.Option(names = {"--direction-max-redirects"},
+            description = "Max in-place redirects per turn before halting (default: 2, max 4)")
+    Integer directionMaxRedirects;
+
+    @CommandLine.Option(names = {"--direction-confidence-threshold"},
+            description = "Minimum confidence required to redirect/halt (default: 0.6)")
+    Double directionConfidenceThreshold;
+
+    @CommandLine.Option(names = {"--direction-cross-turn-limit"},
+            description = "Consecutive drift-affected turns before escalation (default: 3; 0 disables)")
+    Integer directionCrossTurnDriftLimit;
+
+    @CommandLine.Option(names = {"--direction-report-only"},
+            description = "Direction judge reports drift but never redirects or halts")
+    Boolean directionReportOnly;
+
     // ── Semantic matching flags ────────────────────────────────────────────
 
     @CommandLine.Option(names = {"--semantic-mode"},
@@ -182,7 +212,12 @@ public class EnforcerInitCommand implements Callable<Integer> {
                 || primaryLanguage != null || archiveDiffs != null
                 || autoRollback != null || judgeProvider != null || judgeModel != null
                 || semanticMode != null || semanticThreshold != null
-                || embeddingUrl != null || synonymDictionaryPath != null;
+                || embeddingUrl != null || synonymDictionaryPath != null
+                || directionMonitoring != null || directionGoal != null
+                || directionCheckEvery != null || directionMaxRedirects != null
+                || directionConfidenceThreshold != null
+                || directionCrossTurnDriftLimit != null
+                || directionReportOnly != null;
     }
 
     private int createFromFlags(Path wd) {
@@ -272,6 +307,31 @@ public class EnforcerInitCommand implements Callable<Integer> {
         if (semanticThreshold != null) config.setSemanticThreshold(semanticThreshold);
         if (embeddingUrl != null) config.setEmbeddingUrl(embeddingUrl);
         if (synonymDictionaryPath != null) config.setSynonymDictionaryPath(synonymDictionaryPath);
+
+        // Direction monitoring (goal-drift judge)
+        if (directionMonitoring != null) config.setDirectionMonitoring(directionMonitoring);
+        if (directionGoal != null) config.setDirectionGoal(directionGoal);
+        if (directionCheckEvery != null) {
+            config.setDirectionCheckEvery(Math.max(1, directionCheckEvery));
+        }
+        if (directionMaxRedirects != null) {
+            config.setDirectionMaxRedirects(Math.max(0, Math.min(
+                    DirectionJudge.Options.HARD_MAX_REDIRECTS, directionMaxRedirects)));
+        }
+        if (directionConfidenceThreshold != null) {
+            double threshold = Double.isFinite(directionConfidenceThreshold)
+                    ? directionConfidenceThreshold
+                    : DirectionJudge.Options.DEFAULT_CONFIDENCE_THRESHOLD;
+            config.setDirectionConfidenceThreshold(
+                    Math.max(0.0, Math.min(1.0, threshold)));
+        }
+        if (directionCrossTurnDriftLimit != null) {
+            config.setDirectionCrossTurnDriftLimit(
+                    Math.max(0, Math.min(
+                            DirectionJudge.Options.HARD_MAX_CROSS_TURN_DRIFT_LIMIT,
+                            directionCrossTurnDriftLimit)));
+        }
+        if (directionReportOnly != null) config.setDirectionReportOnly(directionReportOnly);
     }
 
     private void printSummary(EnforcerConfig config) {
@@ -293,6 +353,20 @@ public class EnforcerInitCommand implements Callable<Integer> {
         }
         System.out.println("  Archive:         " + (config.isArchiveDiffs() ? "enabled" : "disabled"));
         System.out.println("  Auto-rollback:   " + (config.isAutoRollbackOnViolation() ? "yes" : "no"));
+        if (config.isDirectionMonitoring()) {
+            System.out.println("  Direction:       enabled"
+                    + (config.isDirectionReportOnly() ? " (report-only)" : ""));
+            if (config.getDirectionGoal() != null) {
+                System.out.println("  Direction goal:  " + config.getDirectionGoal());
+            }
+            System.out.println("  Direction every: " + config.getDirectionCheckEvery()
+                    + " iterations · " + config.getDirectionMaxRedirects() + " redirects/turn");
+            System.out.println("  Direction act:   confidence >= "
+                    + config.getDirectionConfidenceThreshold()
+                    + " · cross-turn limit "
+                    + (config.getDirectionCrossTurnDriftLimit() == 0
+                            ? "disabled" : config.getDirectionCrossTurnDriftLimit()));
+        }
         if (!"none".equals(config.getSemanticMode())) {
             System.out.println("  Semantic mode:   " + config.getSemanticMode());
             System.out.println("  Threshold:       " + config.getSemanticThreshold());
@@ -357,6 +431,20 @@ public class EnforcerInitCommand implements Callable<Integer> {
         }
         if (config.getJudgeModel() != null) {
             System.out.println("  Judge model:     " + config.getJudgeModel());
+        }
+        if (config.isDirectionMonitoring()) {
+            System.out.println("  Direction:       enabled"
+                    + (config.isDirectionReportOnly() ? " (report-only)" : ""));
+            if (config.getDirectionGoal() != null) {
+                System.out.println("  Direction goal:  " + config.getDirectionGoal());
+            }
+            System.out.println("  Direction every: " + config.getDirectionCheckEvery()
+                    + " iterations · " + config.getDirectionMaxRedirects() + " redirects/turn");
+            System.out.println("  Direction act:   confidence >= "
+                    + config.getDirectionConfidenceThreshold()
+                    + " · cross-turn limit "
+                    + (config.getDirectionCrossTurnDriftLimit() == 0
+                            ? "disabled" : config.getDirectionCrossTurnDriftLimit()));
         }
         if (!"none".equals(config.getSemanticMode())) {
             System.out.println("  Semantic mode:   " + config.getSemanticMode());

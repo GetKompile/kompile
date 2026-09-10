@@ -557,7 +557,7 @@ public class CodeIndexerToolImpl {
         return graphBuilder.buildGraphFromMultipleDirectories(projectId, pathList);
     }
 
-    // ── Shortest path ──────────────────────────────────────��─────────
+    // ── Shortest path ────────────────────────────────────────────────────────
 
     @Tool(name = "code_graph_shortest_path", description = "Find the shortest path between two code " +
             "symbols (by fully-qualified name) through the knowledge graph. Returns the ordered " +

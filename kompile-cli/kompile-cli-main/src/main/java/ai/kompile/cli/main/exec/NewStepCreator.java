@@ -106,6 +106,10 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
             subSpec.helpCommand(rootCommandSpec.helpCommand());
             subSpec.mixinStandardHelpOptions(true);
             String schemaDescription = schema.getDescription();
+            if (schemaDescription == null || schemaDescription.isBlank()) {
+                schemaDescription = "Create a " + subcommandName + " pipeline step configuration.";
+            }
+            subSpec.usageMessage().description(schemaDescription);
             subSpec.parent(rootCommandSpec);
 
             for (ParameterSchema paramSchema : schema.getParameters()) {

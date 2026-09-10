@@ -20,25 +20,32 @@ import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.llm.pipeline.LlmGenerateController;
 import ai.kompile.app.llm.pipeline.LlmModelController;
+import ai.kompile.app.llm.pipeline.LoadRequest;
 import ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.factory.Environment;
 import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.http.ResponseEntity;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -74,6 +81,17 @@ public class ServingSubprocessMain {
 
     private static final Logger logger = LoggerFactory.getLogger(ServingSubprocessMain.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
+    private static final ObjectReader ND4J_CONFIG_READER = JsonUtils.newStandardMapper()
+            .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
+            .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .readerFor(Nd4jEnvironmentConfig.class);
+
+    /**
+     * In-JVM heap/GPU/off-heap watchdog. Started from args thresholds before any model
+     * allocation so even the load phase is covered; null when the kill threshold is 0.
+     */
+    private static volatile SubprocessMemoryWatchdog memoryWatchdog;
 
     public static void main(String[] args) {
         NativeLibraryResolver.bootstrapModelExecutionOrThrow();
@@ -90,7 +108,16 @@ public class ServingSubprocessMain {
         try {
             // Initialize ND4J backend
             logger.info("Initializing ND4J backend...");
-            initializeNd4j(servingArgs);
+            Nd4jEnvironmentConfig nd4jConfig = initializeNd4j(servingArgs);
+
+            // Heap/GPU/off-heap pressure protection must cover the model-load phase too,
+            // so start the watchdog immediately after backend init — before pre-load.
+            startMemoryWatchdog(servingArgs);
+            if (servingArgs.modelId() != null) {
+                if (memoryWatchdog != null) {
+                    memoryWatchdog.setModelId(servingArgs.modelId());
+                }
+            }
 
             // Set proactive soft limit on CudaMemoryPool
             int softLimitPercent = servingArgs.gpuSoftLimitPercent();
@@ -128,6 +155,7 @@ public class ServingSubprocessMain {
             CountDownLatch shutdownLatch = new CountDownLatch(1);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 logger.info("Shutting down LLM serving subprocess...");
+                closeWatchdog();
                 ServingSubprocessHttpServer server = httpServerRef.get();
                 if (server != null) {
                     server.close();
@@ -139,7 +167,7 @@ public class ServingSubprocessMain {
             // Finish optional initialization before accepting requests. This prevents
             // concurrent load/generate calls from racing startup model construction.
             if (servingArgs.modelId() != null && servingArgs.modelPath() != null) {
-                preloadModel(components.languageModel(), servingArgs);
+                preloadModel(components.languageModel(), servingArgs, nd4jConfig);
                 trimGpuMemoryPools("post-model-preload");
             }
 
@@ -147,8 +175,16 @@ public class ServingSubprocessMain {
                     host,
                     port,
                     components.objectMapper(),
-                    components.modelController(),
-                    components.generateController());
+                    servingApiWithWatchdog(components),
+                    // Keep the transport defaults identical to the controller-based overload.
+                    defaultPositive("kompile.serving.subprocess.max-request-bytes",
+                            ServingSubprocessHttpServer.DEFAULT_MAX_REQUEST_BYTES),
+                    defaultPositive("kompile.serving.subprocess.max-response-bytes",
+                            ServingSubprocessHttpServer.DEFAULT_MAX_RESPONSE_BYTES),
+                    defaultPositive("kompile.serving.subprocess.http-threads",
+                            ServingSubprocessHttpServer.DEFAULT_HTTP_THREADS),
+                    defaultPositive("kompile.serving.subprocess.http-queue-capacity",
+                            ServingSubprocessHttpServer.DEFAULT_HTTP_QUEUE_CAPACITY));
             httpServerRef.set(httpServer);
 
             logger.info("LLM serving subprocess started on port {}", port);
@@ -160,6 +196,147 @@ public class ServingSubprocessMain {
         } catch (Exception e) {
             logger.error("Serving subprocess failed to start", e);
             System.exit(1);
+        }
+    }
+
+    /**
+     * Start the in-JVM {@link SubprocessMemoryWatchdog} from the args thresholds.
+     * A kill threshold of 0 disables the watchdog entirely (documented opt-out);
+     * otherwise the child self-protects exactly like the ingest/graph children do.
+     */
+    private static void startMemoryWatchdog(ServingSubprocessArgs args) {
+        try {
+            if (args.memoryKillThresholdPercent() <= 0) {
+                logger.info("Memory watchdog disabled (memoryKillThresholdPercent=0)");
+                return;
+            }
+            memoryWatchdog = new SubprocessMemoryWatchdog(
+                    args.memoryThresholdPercent(),
+                    args.memoryCriticalPercent(),
+                    args.memoryKillThresholdPercent(),
+                    args.memoryCheckIntervalMs(),
+                    args.gpuMemoryThresholdPercent(),
+                    args.gpuMemoryCriticalPercent(),
+                    args.gpuMemoryKillThresholdPercent(),
+                    args.offHeapThresholdPercent(),
+                    args.offHeapCriticalPercent(),
+                    args.offHeapKillThresholdPercent());
+            memoryWatchdog.start();
+            logger.info("Serving memory watchdog active: heap stop={}%/crit={}%/kill={}%; "
+                            + "interval={}ms",
+                    args.memoryThresholdPercent(), args.memoryCriticalPercent(),
+                    args.memoryKillThresholdPercent(), args.memoryCheckIntervalMs());
+        } catch (Throwable t) {
+            // Watchdog failure must never prevent serving from starting.
+            memoryWatchdog = null;
+            logger.warn("Could not start serving memory watchdog (non-fatal): {}", t.getMessage());
+        }
+    }
+
+    /** Latest in-JVM watchdog snapshot for the status endpoint, or null when disabled. */
+    static Map<String, Object> watchdogStatus() {
+        SubprocessMemoryWatchdog watchdog = memoryWatchdog;
+        if (watchdog == null) {
+            return null;
+        }
+        Map<String, Object> status = new HashMap<>();
+        SubprocessMemoryWatchdog.MemorySnapshot snapshot = watchdog.getLastSnapshot();
+        if (snapshot != null) {
+            status.put("heapUsedMB", snapshot.usedMB());
+            status.put("heapMaxMB", snapshot.maxMB());
+            status.put("heapUsagePercent", round1(snapshot.usagePercent()));
+            status.put("gpuUsedMB", snapshot.gpuUsedMB());
+            status.put("gpuTotalMB", snapshot.gpuTotalMB());
+            status.put("gpuUsagePercent", round1(snapshot.gpuUsagePercent()));
+            status.put("javacppMB", snapshot.javacppMB());
+            status.put("directBufferMB", snapshot.directBufferMB());
+            status.put("offHeapMaxMB", snapshot.offHeapMaxMB());
+            status.put("offHeapUsagePercent", round1(snapshot.offHeapUsagePercent()));
+            status.put("timestampMs", snapshot.timestampMs());
+        }
+        status.put("running", snapshot != null);
+        status.put("shouldStop", watchdog.shouldStop());
+        status.put("shouldKill", watchdog.shouldKill());
+        status.put("criticalMemory", watchdog.isCriticalMemory());
+        status.put("rapidMemoryGrowth", watchdog.isRapidMemoryGrowth());
+        return status;
+    }
+
+    private static double round1(double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    /** Same package-private overload so the main class can decorate the API surface. */
+    private static long defaultPositive(String property, long fallback) {
+        try {
+            String value = System.getProperty(property);
+            long parsed = value == null || value.isBlank() ? 0L : Long.parseLong(value.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static int defaultPositive(String property, int fallback) {
+        try {
+            String value = System.getProperty(property);
+            int parsed = value == null || value.isBlank() ? 0 : Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * Wrap the serving API so {@code GET /api/llm/status} also reports the in-JVM
+     * watchdog state. Load/generate/chat/unload are passed through untouched.
+     */
+    private static ServingSubprocessHttpServer.Api servingApiWithWatchdog(ServingComponents components) {
+        return new ServingSubprocessHttpServer.Api() {
+            @Override
+            public synchronized ResponseEntity<Map<String, Object>> load(LoadRequest request) {
+                return components.modelController().load(request);
+            }
+
+            @Override
+            public ResponseEntity<Map<String, Object>> status() {
+                ResponseEntity<Map<String, Object>> response =
+                        components.modelController().status();
+                Map<String, Object> watchdog = watchdogStatus();
+                if (watchdog != null && response.getBody() != null) {
+                    response.getBody().put("memoryWatchdog", watchdog);
+                }
+                return response;
+            }
+
+            @Override
+            public ResponseEntity<Map<String, Object>> generate(
+                    Map<String, Object> request) {
+                return components.generateController().generate(request);
+            }
+
+            @Override
+            public ResponseEntity<Map<String, Object>> chat(
+                    Map<String, Object> request) {
+                return components.generateController().chat(request);
+            }
+
+            @Override
+            public synchronized ResponseEntity<Map<String, Object>> unload() {
+                return components.modelController().unload();
+            }
+        };
+    }
+
+    private static void closeWatchdog() {
+        SubprocessMemoryWatchdog watchdog = memoryWatchdog;
+        memoryWatchdog = null;
+        if (watchdog != null) {
+            try {
+                watchdog.close();
+            } catch (Exception ignored) {
+                // Shutdown is best-effort; the JVM is exiting anyway.
+            }
         }
     }
 
@@ -201,8 +378,9 @@ public class ServingSubprocessMain {
         return ServingSubprocessArgs.fromFile(argsPath);
     }
 
-    private static void preloadModel(SameDiffLanguageModelImpl llm,
-                                     ServingSubprocessArgs args) throws Exception {
+    static void preloadModel(SameDiffLanguageModelImpl llm,
+                             ServingSubprocessArgs args,
+                             Nd4jEnvironmentConfig config) throws Exception {
         Path modelPath = Paths.get(args.modelPath());
         Path tokenizerPath = args.tokenizerPath() != null
                 ? Paths.get(args.tokenizerPath())
@@ -223,8 +401,38 @@ public class ServingSubprocessMain {
             // autoregressive_decode plan, so select the existing lifecycle-managed runner.
             opts.put("legacyGeneration", !args.dspEnabled());
         }
-        if (args.optimizerEnabled() != null) {
-            opts.put("graphOptimizerEnabled", args.optimizerEnabled());
+        Boolean optimizerEnabled = effectiveOptimizerEnabled(args, config);
+        if (optimizerEnabled != null) {
+            opts.put("graphOptimizerEnabled", optimizerEnabled);
+        }
+        // Optional model/runtime knobs — present in the args JSON only when the caller
+        // set them; null/0 values fall through to model-owned defaults in loadModel.
+        if (args.chatTemplate() != null) {
+            opts.put("chatTemplate", args.chatTemplate());
+        }
+        if (args.kvCacheType() != null) {
+            opts.put("kvCacheType", args.kvCacheType());
+        }
+        if (args.maxKvCacheLength() != null) {
+            opts.put("maxKvCacheLength", args.maxKvCacheLength());
+        }
+        if (args.maxPrefillLength() != null) {
+            opts.put("maxPrefillLength", args.maxPrefillLength());
+        }
+        if (args.continuationEnabled() != null) {
+            opts.put("continuationEnabled", args.continuationEnabled());
+        }
+        if (args.continuationChunkTokens() != null) {
+            opts.put("continuationChunkTokens", args.continuationChunkTokens());
+        }
+        if (args.prefixCacheEnabled() != null) {
+            opts.put("prefixCacheEnabled", args.prefixCacheEnabled());
+        }
+        if (args.prefixCacheMaxBytes() != null) {
+            opts.put("prefixCacheMaxBytes", args.prefixCacheMaxBytes());
+        }
+        if (args.prefixCacheBlockSize() != null) {
+            opts.put("prefixCacheBlockSize", args.prefixCacheBlockSize());
         }
 
         logger.info("Pre-loading model: {} from {}", args.modelId(), modelPath);
@@ -254,20 +462,43 @@ public class ServingSubprocessMain {
         }
     }
 
-    private static void initializeNd4j(ServingSubprocessArgs servingArgs) throws Exception {
-        // Parse ND4J config from args (thread counts, memory limits, triton settings, etc.)
-        String nd4jConfigJson = servingArgs.nd4jConfigJson();
-        Nd4jEnvironmentConfig config;
-        if (nd4jConfigJson != null && !nd4jConfigJson.isBlank()) {
-            try {
-                config = OBJECT_MAPPER.readValue(nd4jConfigJson, Nd4jEnvironmentConfig.class);
-            } catch (Exception e) {
-                logger.warn("Failed to parse ND4J config, using defaults: {}", e.getMessage());
-                config = Nd4jEnvironmentConfig.defaults();
-            }
-        } else {
-            config = Nd4jEnvironmentConfig.defaults();
+    static Nd4jEnvironmentConfig readNd4jEnvironmentConfig(String json) throws IOException {
+        if (json == null) {
+            return Nd4jEnvironmentConfig.defaults();
         }
+        Nd4jEnvironmentConfig config = ND4J_CONFIG_READER.readValue(json);
+        if (config == null) {
+            throw new IOException("nd4jConfigJson must contain a JSON object");
+        }
+        if ((config.maxPrimaryMemory() != null && config.maxPrimaryMemory() < 0)
+                || (config.maxSpecialMemory() != null && config.maxSpecialMemory() < 0)
+                || (config.maxDeviceMemory() != null && config.maxDeviceMemory() < 0)) {
+            throw new IOException("ND4J memory limits must be nonnegative byte counts (0 = unlimited)");
+        }
+        return config;
+    }
+
+    private static Boolean effectiveOptimizerEnabled(ServingSubprocessArgs args,
+                                                     Nd4jEnvironmentConfig config) {
+        return args.optimizerEnabled() != null ? args.optimizerEnabled()
+                : args.nd4jConfigJson() != null ? config.optimizerEnabled() : null;
+    }
+
+    static void applyOptimizerProperties(ServingSubprocessArgs args, Nd4jEnvironmentConfig config) {
+        Boolean optimizerEnabled = effectiveOptimizerEnabled(args, config);
+        Boolean optimizerFp16 = args.optimizerFp16() != null ? args.optimizerFp16()
+                : args.nd4jConfigJson() != null ? config.optimizerFp16() : null;
+        if (optimizerEnabled != null) {
+            System.setProperty(ND4JSystemProperties.OPTIMIZER_ENABLED, optimizerEnabled.toString());
+        }
+        if (optimizerFp16 != null) {
+            System.setProperty(ND4JSystemProperties.OPTIMIZER_FP16, optimizerFp16.toString());
+        }
+    }
+
+    private static Nd4jEnvironmentConfig initializeNd4j(ServingSubprocessArgs servingArgs) throws Exception {
+        // Explicit malformed configuration is fatal; never replace requested limits with defaults.
+        Nd4jEnvironmentConfig config = readNd4jEnvironmentConfig(servingArgs.nd4jConfigJson());
 
         // Complete Nd4j/backend/native initialization before scanning and constructing
         // DifferentialFunction implementations. Op constructors access Nd4j; initializing
@@ -276,7 +507,7 @@ public class ServingSubprocessMain {
         logger.info("Loaded ND4J backend: {}", Nd4j.getBackend().getClass().getSimpleName());
 
         // Apply full ND4J environment config (threads, memory, debug flags, etc.)
-        applyNd4jEnvironmentConfig(config);
+        applyNd4jEnvironmentConfig(Nd4j.getEnvironment(), config);
 
         // Safe only after Nd4j and NativeOps have completed initialization.
         DifferentialFunctionClassHolder.initInstance();
@@ -295,36 +526,63 @@ public class ServingSubprocessMain {
         if (servingArgs.dspEnabled() != null && !servingArgs.dspEnabled()) {
             System.setProperty(ND4JSystemProperties.DSP_NO_FREEZE, "true");
         }
-        if (servingArgs.optimizerEnabled() != null) {
-            System.setProperty(ND4JSystemProperties.OPTIMIZER_ENABLED,
-                    String.valueOf(servingArgs.optimizerEnabled()));
-        }
-        if (servingArgs.optimizerFp16() != null) {
-            System.setProperty(ND4JSystemProperties.OPTIMIZER_FP16,
-                    String.valueOf(servingArgs.optimizerFp16()));
-        }
+        // Explicit args override JSON config; absent settings retain runtime defaults.
+        applyOptimizerProperties(servingArgs, config);
 
+        // Apply after backend presets, but before model loading. Explicit cap failures
+        // must propagate and abort startup.
+        applyDeviceMemoryLimits(Nd4j.getEnvironment(),
+                Nd4j.getAffinityManager().getNumberOfDevices(), servingArgs.deviceMemoryLimitsBytes());
         logger.info("ND4J initialized: backend={}", Nd4j.getBackend().getClass().getSimpleName());
+        return config;
     }
 
-    private static void applyNd4jEnvironmentConfig(Nd4jEnvironmentConfig config) {
-        if (config == null) return;
-        try {
-            if (config.enableBlas() != null) Nd4j.getEnvironment().setEnableBlas(config.enableBlas());
-            if (config.helpersAllowed() != null) Nd4j.getEnvironment().allowHelpers(config.helpersAllowed());
-            if (config.maxThreads() != null) Nd4j.getEnvironment().setMaxThreads(config.maxThreads());
-            if (config.maxMasterThreads() != null) Nd4j.getEnvironment().setMaxMasterThreads(config.maxMasterThreads());
-            if (config.debug() != null) Nd4j.getEnvironment().setDebug(config.debug());
-            if (config.verbose() != null) Nd4j.getEnvironment().setVerbose(config.verbose());
-            if (config.maxPrimaryMemory() != null && config.maxPrimaryMemory() > 0)
-                Nd4j.getEnvironment().setMaxPrimaryMemory(config.maxPrimaryMemory());
-            if (config.maxSpecialMemory() != null && config.maxSpecialMemory() > 0)
-                Nd4j.getEnvironment().setMaxSpecialMemory(config.maxSpecialMemory());
-            if (config.maxDeviceMemory() != null && config.maxDeviceMemory() > 0)
-                Nd4j.getEnvironment().setMaxDeviceMemory(config.maxDeviceMemory());
-        } catch (Exception e) {
-            logger.error("Error applying ND4J config: {}", e.getMessage(), e);
+    static void applyDeviceMemoryLimits(Environment environment, int deviceCount, List<Long> requested) {
+        if (requested == null) return;
+        if (requested.isEmpty() || requested.size() != deviceCount) {
+            throw new IllegalArgumentException("deviceMemoryLimitsBytes requires one limit for each of "
+                    + deviceCount + " visible logical devices");
         }
+        long[] effective = new long[deviceCount];
+        // Validate every device before changing any limit. Never relax an existing ceiling.
+        for (int device = 0; device < deviceCount; device++) {
+            Long limit = requested.get(device);
+            if (limit == null || limit <= 0) {
+                throw new IllegalArgumentException("deviceMemoryLimitsBytes[" + device + "] must be positive");
+            }
+            long existing = environment.getDeviceLimit(device);
+            effective[device] = existing > 0 ? Math.min(existing, limit) : limit;
+            long allocated = environment.getDeviceCounter(device);
+            if (allocated > effective[device]) {
+                throw new IllegalStateException("Device " + device + " already has " + allocated
+                        + " bytes allocated, exceeding requested ceiling " + effective[device]);
+            }
+        }
+        for (int device = 0; device < deviceCount; device++) {
+            environment.setDeviceLimit(device, effective[device]);
+            // Some backends expose no-op limit setters: fail startup rather than serving uncapped.
+            if (environment.getDeviceLimit(device) != effective[device]) {
+                throw new IllegalStateException("Backend did not enforce memory ceiling for device " + device);
+            }
+            logger.info("Serving logical device {} memory ceiling: {} bytes", device, effective[device]);
+        }
+    }
+
+    static void applyNd4jEnvironmentConfig(Environment environment, Nd4jEnvironmentConfig config) {
+        if (config == null) return;
+        // Configuration errors, especially rejected memory ceilings, must abort startup.
+        if (config.enableBlas() != null) environment.setEnableBlas(config.enableBlas());
+        if (config.helpersAllowed() != null) environment.allowHelpers(config.helpersAllowed());
+        if (config.maxThreads() != null) environment.setMaxThreads(config.maxThreads());
+        if (config.maxMasterThreads() != null) environment.setMaxMasterThreads(config.maxMasterThreads());
+        if (config.debug() != null) environment.setDebug(config.debug());
+        if (config.verbose() != null) environment.setVerbose(config.verbose());
+        if (config.maxPrimaryMemory() != null && config.maxPrimaryMemory() > 0)
+            environment.setMaxPrimaryMemory(config.maxPrimaryMemory());
+        if (config.maxSpecialMemory() != null && config.maxSpecialMemory() > 0)
+            environment.setMaxSpecialMemory(config.maxSpecialMemory());
+        if (config.maxDeviceMemory() != null && config.maxDeviceMemory() > 0)
+            environment.setMaxDeviceMemory(config.maxDeviceMemory());
     }
 
     private static void setPropertyIfAbsent(String key, String value) {

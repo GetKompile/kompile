@@ -246,7 +246,7 @@ it provides an escape hatch for operators who want to force-refresh the KB witho
 | 5,000 – 50,000 atoms | 1–30s | Per crawl (low freq) | Async cascade, current design |
 | > 50,000 atoms | 30s+ | Per crawl only | Add chunked MAP solve by connected component (design spec §9.4); also consider DELTA_ATOMS for agent asserts (spec §6.2 upgrade) |
 
-For the initial production deployment, the 5k–50k range covers most kompile use cases (the FP&A
+For the initial production deployment, the 5k–50k range covers most kompile use cases (the domain-planning
 demo has ~200k edges but most atoms in the PSL program are structural, not semantic predicate
 atoms). The full re-ground is acceptable.
 

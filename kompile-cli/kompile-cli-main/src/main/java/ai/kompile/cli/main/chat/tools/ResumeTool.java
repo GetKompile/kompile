@@ -23,7 +23,11 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.utils.HashUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.ChatUiSession;
+import ai.kompile.cli.main.chat.ResumeAllCommand;
+import ai.kompile.cli.main.chat.ResumeConfig;
 import ai.kompile.cli.main.chat.SessionIndex;
+import ai.kompile.cli.main.chat.SessionRegistry;
 import ai.kompile.cli.main.chat.format.ConversationExporter;
 import ai.kompile.cli.main.chat.format.ConversationFormatter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
@@ -42,6 +46,7 @@ import org.jline.terminal.TerminalBuilder;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.IOError;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -101,7 +106,7 @@ public class ResumeTool implements CliTool {
     private List<ConversationSummary> allConversations;
     private List<ConversationSummary> filteredConversations;
     private int currentTab = 0;
-    private int currentPage = 0;
+    private int pageStart = 0;
     private static final int PAGE_SIZE = 15;
     private static final String STANDARD_CHAT_AGENT = "kompile";
     private static final String STANDARD_CHAT_TAB_LABEL = "Kompile Chat";
@@ -115,6 +120,22 @@ public class ResumeTool implements CliTool {
     // Sort state
     private String sortField = "date"; // date, title, agent
     private boolean sortAscending = false; // default: most recent first for date
+
+    /**
+     * Disables every DECSET mouse-tracking mode (X10, button-motion, any-motion,
+     * SGR/urxvt encodings) plus focus reporting and bracketed paste.
+     *
+     * <p>Standard chat leaves the real terminal's mouse capture on so the wheel
+     * scrolls its managed transcript. The resume browser is a line-oriented
+     * pager with no mouse widget, so any wheel report it inherits arrives at a
+     * plain {@code self-insert} and is typed into the command prompt as literal
+     * characters (e.g. {@code <64;20;5M}). The browser must therefore restore
+     * native scrollback for the wheel itself, and re-assert after each agent
+     * subprocess, which may exit with the modes still on.</p>
+     */
+    private static final String DISABLE_MOUSE_TRACKING =
+            "\033[?9l\033[?1000l\033[?1001l\033[?1002l\033[?1003l\033[?1004l"
+                    + "\033[?1005l\033[?1006l\033[?1007l\033[?1015l\033[?1016l\033[?2004l";
 
     // Scope state: local-only (current directory) vs all projects
     private boolean localOnly = true;
@@ -135,7 +156,8 @@ public class ResumeTool implements CliTool {
      */
     public ResumeTool(boolean mcpMode) throws IOException {
         this.mcpMode = mcpMode;
-        if (mcpMode) {
+        if (mcpMode || ChatUiSession.current().isIsolated()) {
+            // Isolated chat keeps the host's terminal; data-only actions still work.
             // No terminal, no line reader — avoid all TTY/signal interference
             this.terminal = null;
             this.lineReader = null;
@@ -153,7 +175,7 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Constructor initializes the Resume Tool with a full system terminal for interactive use.
+     * Constructor initializes a system terminal for legacy interactive use only.
      */
     public ResumeTool() throws IOException {
         this(false);
@@ -204,7 +226,9 @@ public class ResumeTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action: 'browse' (interactive TUI), 'search', 'migrate', 'resume', 'view'");
+        action.put("description", "Action: 'browse' (interactive TUI), 'search', 'recent' (list N most recent " +
+                "tracked sessions), 'resume_all' (batch-restore recent sessions), 'migrate', 'resume', 'view', " +
+                "'clear_locks' (repair stuck session-registry locks after a bad/corrupt shutdown)");
 
         ObjectNode query = props.putObject("query");
         query.put("type", "string");
@@ -220,7 +244,8 @@ public class ResumeTool implements CliTool {
 
         ObjectNode sessionId = props.putObject("session_id");
         sessionId.put("type", "string");
-        sessionId.put("description", "Session ID for view/migrate/resume actions");
+        sessionId.put("description", "Session ID for view/migrate/resume actions; with 'clear_locks', " +
+                "forces only that session's stuck lock back to resumable (omit to repair all)");
 
         ObjectNode targetAgent = props.putObject("target_agent");
         targetAgent.put("type", "string");
@@ -233,6 +258,10 @@ public class ResumeTool implements CliTool {
         ObjectNode targetSessionId = props.putObject("target_session_id");
         targetSessionId.put("type", "string");
         targetSessionId.put("description", "UUID to use as the target session ID when resuming (instead of generating a new one)");
+
+        ObjectNode limit = props.putObject("limit");
+        limit.put("type", "integer");
+        limit.put("description", "For 'recent'/'resume_all': how many sessions (default: the configured limit, 10 unless changed via 'kompile resume-all --set-recent N')");
 
         schema.putArray("required").add("action");
         return schema;
@@ -261,6 +290,14 @@ public class ResumeTool implements CliTool {
                     return runInteractiveBrowser();
                 case "search":
                     return runSearch(params);
+                case "recent":
+                    return runRecent(params);
+                case "resume_all":
+                case "resume-all":
+                    return runResumeAll(params);
+                case "clear_locks":
+                case "unlock":
+                    return runClearLocks(params);
                 case "migrate":
                     return runMigrate(params);
                 case "resume":
@@ -286,9 +323,8 @@ public class ResumeTool implements CliTool {
     private String resolveSessionId(String input) {
         try {
             int displayNum = Integer.parseInt(input);
-            int start = currentPage * PAGE_SIZE;
-            int index = start + displayNum - 1; // 1-based to 0-based
-            if (index >= 0 && index < filteredConversations.size()) {
+            int index = renderedPageStart + displayNum - 1; // 1-based row on the logical page window
+            if (displayNum > 0 && index >= renderedPageStart && index < renderedPageEnd) {
                 return filteredConversations.get(index).sessionId();
             }
             // Index out of range — return null to signal invalid selection
@@ -431,6 +467,13 @@ public class ResumeTool implements CliTool {
      * In MCP mode, upgrades to a real system terminal for interactive use.
      */
     public ToolResult runInteractiveBrowser() {
+        // Check at invocation, not construction: registered tools can predate the owner binding.
+        // Stay outside the try/catch so rejection cannot enter terminal cleanup either.
+        if (ChatUiSession.current().isIsolated()) {
+            return ToolResult.error("Interactive resume browsing, migration, and launching are unavailable "
+                    + "in multi-session chat: the host owns the physical terminal. "
+                    + "Use search/recent/view or data-only resume/migrate actions instead.");
+        }
         try {
             // In MCP mode, we started with no terminal — create one for interactive use
             if (terminal == null || lineReader == null) {
@@ -440,6 +483,11 @@ public class ResumeTool implements CliTool {
 
             terminal.writer().print("\033[2J");
             terminal.writer().flush();
+            // Standard chat leaves the real terminal in mouse-tracking mode for its
+            // managed transcript wheel. This browser has no mouse binding, so reports
+            // would land in the prompt as literal characters — restore native
+            // scrollback for the wheel and keep JLine line-discipline clean.
+            disableTerminalMouseTracking(terminal);
             // Small delay to let terminal settle after creation
             try { Thread.sleep(100); } catch (InterruptedException e) {}
             loadAllConversations();
@@ -450,9 +498,10 @@ public class ResumeTool implements CliTool {
 
             while (true) {
                 renderMainView();
+                disableTerminalMouseTracking(terminal);
                 String input;
                 try {
-                    input = lineReader.readLine("Command (h for help, q to quit): ");
+                    input = lineReader.readLine("> ");
                 } catch (UserInterruptException e) {
                     // Ctrl+C pressed - treat as quit
                     input = "q";
@@ -526,6 +575,36 @@ public class ResumeTool implements CliTool {
         }
     }
 
+    private void runResumeAllCommand(String args) {
+        int exitCode = ResumeAllCommand.executeInline(args, (lines, question) -> {
+            lines.forEach(terminal.writer()::println);
+            terminal.writer().flush();
+            return lineReader.readLine(question);
+        });
+        terminal.writer().println();
+        terminal.writer().println(exitCode == 0
+                ? GREEN + "Resume-all command completed." + RESET
+                : RED + "Resume-all exited with code " + exitCode + "." + RESET);
+        terminal.writer().println(DIM + "Press Enter to return to the browser..." + RESET);
+        terminal.writer().flush();
+        lineReader.readLine();
+    }
+
+    /**
+     * Disable all real-terminal mouse tracking on {@code target} so the wheel
+     * scrolls the host scrollback instead of reporting to the application.
+     * Best-effort: the terminal may be shutting down or redirected.
+     */
+    static void disableTerminalMouseTracking(Terminal target) {
+        if (target == null) return;
+        try {
+            target.writer().print(DISABLE_MOUSE_TRACKING);
+            target.writer().flush();
+        } catch (RuntimeException | IOError ignored) {
+            // Native scrolling is best-effort; keyboard commands remain available.
+        }
+    }
+
     /**
      * Process a single command from the user.
      */
@@ -556,7 +635,7 @@ public class ResumeTool implements CliTool {
                 case "s":
                     if (!rest.isEmpty()) {
                         searchQuery = rest;
-                        currentPage = 0;
+                        resetPage();
                         refreshView();
                     }
                     break;
@@ -612,6 +691,10 @@ public class ResumeTool implements CliTool {
                         }
                     }
                     break;
+                case "resume-all":
+                case "restore-all":
+                    runResumeAllCommand(rest);
+                    break;
                 case "next":
                 case "n":
                     nextPage();
@@ -634,7 +717,7 @@ public class ResumeTool implements CliTool {
                 case "global":
                     // Load conversations from ALL projects, not just current directory
                     localOnly = false;
-                    currentPage = 0;
+                    resetPage();
                     loadAllConversations();
                     setFilterForCurrentTab();
                     refreshView();
@@ -644,7 +727,7 @@ public class ResumeTool implements CliTool {
                 case "local":
                     // Switch back to local-only mode
                     localOnly = true;
-                    currentPage = 0;
+                    resetPage();
                     loadAllConversations();
                     setFilterForCurrentTab();
                     refreshView();
@@ -1581,6 +1664,8 @@ public class ResumeTool implements CliTool {
      */
     private void refreshView() {
         applyFilters();
+        refreshPageGeometry();
+        syncPageWindow();
         loadTitlesForVisiblePage();
     }
 
@@ -1588,51 +1673,77 @@ public class ResumeTool implements CliTool {
      * Render the main view with tabs and conversation list.
      */
     private void renderMainView() {
-        terminal.writer().print("\033[2J\033[H"); // clear screen + cursor home
-        terminal.writer().println();
-
-        // Header
-        terminal.writer().println(BOLD + CYAN + "╔══════════════════════════════════════════════════════════╗" + RESET);
-        terminal.writer().println(BOLD + CYAN + "║" + WHITE + "           Kompile Conversation Resume Tool               " + CYAN + "║" + RESET);
-        terminal.writer().println(BOLD + CYAN + "╚══════════════════════════════════════════════════════════╝" + RESET);
-        terminal.writer().println();
-
-        // Tabs
+        refreshPageGeometry();
+        syncPageWindow();
+        loadTitlesForVisiblePage();
+        terminal.writer().print("\033[r\033[2J\033[H");
+        printViewportLine(BOLD + CYAN + "Kompile Conversation Resume" + RESET);
         renderTabs();
-        terminal.writer().println();
-
-        // Filters info
-        terminal.writer().println(DIM + "Filters: " + RESET);
-        terminal.writer().println(DIM + "  Scope: " + RESET + GREEN
-                + (localOnly ? "local" : "all projects")
-                + RESET + DIM + (localOnly ? " (use 'all' for global)" : " (use 'local' to filter)") + RESET);
-        if (!searchQuery.isEmpty()) {
-            terminal.writer().println(DIM + "  Search: " + RESET + GREEN + searchQuery + RESET);
-        }
-        if (!filterAgent.isEmpty()) {
-            terminal.writer().println(DIM + "  Agent: " + RESET + GREEN + filterAgent + RESET);
-        }
-        if (!filterSource.isEmpty()) {
-            terminal.writer().println(DIM + "  Source: " + RESET + GREEN + filterSource + RESET);
-        }
-
-        // Sort info
-        String sortDirection = sortAscending ? "asc" : "desc";
-        terminal.writer().println(DIM + "  Sort: " + RESET + GREEN + sortField + " " + sortDirection + RESET);
-        terminal.writer().println();
-
-        // Conversation list
+        printViewportLine("Scope: " + (localOnly ? "local" : "all projects")
+                + " | Sort: " + sortField + (sortAscending ? " asc" : " desc"));
+        printViewportLine("Search: " + terminalSafe(searchQuery)
+                + " | Agent: " + terminalSafe(filterAgent)
+                + " | Source: " + terminalSafe(filterSource));
         renderConversationList();
-        terminal.writer().println();
-
-        // Pagination
         renderPagination();
-        terminal.writer().println();
-
-        // Commands
-        terminal.writer().println(DIM + "Commands: <agent#> or tab <n> | search <query> | expand <row|id> | view <row|id> | resume <row|id> [uuid] | all | local | next | prev | clear | q" + RESET);
-        terminal.writer().println();
+        printViewportLine(DIM + "next / prev / page <n> | search <text> | tab <n>" + RESET);
+        printViewportLine(DIM + "resume / view / expand <row|id> | h help | q back" + RESET);
         terminal.writer().flush();
+    }
+
+    private int viewportHeight() {
+        return terminal != null && terminal.getHeight() > 0 ? terminal.getHeight() : 24;
+    }
+
+    private int visiblePageSize = PAGE_SIZE;
+    private int pageEndLimit = Integer.MAX_VALUE;
+    private int renderedPageStart = 0;
+    private int renderedPageEnd = 0;
+
+    private int pageSize() {
+        return visiblePageSize;
+    }
+
+    private int pageCount() {
+        return Math.max(1, (filteredConversations.size() + pageSize() - 1) / pageSize());
+    }
+
+    private void refreshPageGeometry() {
+        visiblePageSize = Math.max(1, Math.min(PAGE_SIZE, viewportHeight() - 14));
+        pageStart = filteredConversations.isEmpty()
+                ? 0
+                : Math.max(0, Math.min(pageStart, filteredConversations.size() - 1));
+        if (pageEndLimit <= pageStart) {
+            pageEndLimit = Integer.MAX_VALUE;
+        }
+    }
+
+    private int effectivePageEnd() {
+        int naturalEnd = Math.min(pageStart + pageSize(), filteredConversations.size());
+        return Math.min(pageEndLimit, naturalEnd);
+    }
+
+    private void syncPageWindow() {
+        int naturalEnd = Math.min(pageStart + pageSize(), filteredConversations.size());
+        if (pageEndLimit >= naturalEnd) {
+            pageEndLimit = Integer.MAX_VALUE;
+        }
+        renderedPageStart = pageStart;
+        renderedPageEnd = effectivePageEnd();
+    }
+
+    private void resetPage() {
+        pageStart = 0;
+        pageEndLimit = Integer.MAX_VALUE;
+        renderedPageStart = 0;
+        renderedPageEnd = 0;
+    }
+
+    private void printViewportLine(String text) {
+        int width = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
+        var line = org.jline.utils.AttributedString.fromAnsi(
+                text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' '));
+        terminal.writer().println(line.columnSubSequence(0, Math.max(1, width - 1)).toAnsi());
     }
 
     /**
@@ -1640,20 +1751,22 @@ public class ResumeTool implements CliTool {
      */
     private void renderTabs() {
         List<String> agents = agentTabs(allConversations);
+        StringBuilder tabs = new StringBuilder();
         int tabIndex = 0;
         for (String agent : agents) {
-            String displayLabel = agentTabLabel(agent);
+            String displayLabel = terminalSafe(agentTabLabel(agent));
             String tabLabel = displayLabel.length() > 14
                     ? displayLabel.substring(0, 14)
                     : displayLabel;
             if (tabIndex == currentTab) {
-                terminal.writer().print(BOLD + GREEN + " [" + (tabIndex + 1) + " " + tabLabel + "]" + RESET + " ");
+                tabs.append(BOLD).append(GREEN).append(" [").append(tabIndex + 1).append(" ")
+                        .append(tabLabel).append("]").append(RESET).append(" ");
             } else {
-                terminal.writer().print(DIM + (tabIndex + 1) + " " + tabLabel + DIM + "  " + RESET);
+                tabs.append(DIM).append(tabIndex + 1).append(" ").append(tabLabel).append("  ").append(RESET);
             }
             tabIndex++;
         }
-        terminal.writer().println();
+        printViewportLine(tabs.toString());
     }
 
     /**
@@ -1661,18 +1774,20 @@ public class ResumeTool implements CliTool {
      * Lazily loads titles for external conversations on the visible page only.
      */
     private void renderConversationList() {
-        int start = currentPage * PAGE_SIZE;
-        int end = Math.min(start + PAGE_SIZE, filteredConversations.size());
+        int start = renderedPageStart;
+        int end = renderedPageEnd;
 
         if (start >= filteredConversations.size()) {
-            terminal.writer().println(YELLOW + "  No conversations to display." + RESET);
+            printViewportLine(YELLOW + "  No conversations to display." + RESET);
             return;
         }
 
-        terminal.writer().println(BOLD + String.format(
+        printViewportLine(BOLD + String.format(
                 "  %-3s %-44s  %-36s  %-10s  %s",
                 "#", "Title", "Session ID / UUID", "Agent", "Date") + RESET);
-        terminal.writer().println(DIM + "  " + "─".repeat(114) + RESET);
+        printViewportLine(DIM + "  " + "─".repeat(114) + RESET);
+
+        int detailBudget = Math.max(0, viewportHeight() - 10 - (end - start));
 
         for (int i = start; i < end; i++) {
             ConversationSummary conversation = filteredConversations.get(i);
@@ -1685,7 +1800,7 @@ public class ResumeTool implements CliTool {
             String marker = expanded ? "▾" : "▸";
             String color = number % 2 == 0 ? WHITE : DIM;
 
-            terminal.writer().println(color + String.format(
+            printViewportLine(color + String.format(
                     "  %s%2d %-44s  %-36s  %-10s  %s",
                     marker,
                     number,
@@ -1693,10 +1808,10 @@ public class ResumeTool implements CliTool {
                     wizardSessionIdentifier(
                             conversation.sessionId(), nativeSessionIds.get(conversation.sessionId())),
                     truncateColumn(conversation.agent(), 10),
-                    conversation.lastModified() == null ? "" : conversation.lastModified()) + RESET);
+                    terminalSafe(conversation.lastModified())) + RESET);
 
-            if (expanded) {
-                renderExpandedConversation(conversation);
+            if (expanded && detailBudget > 0) {
+                detailBudget -= renderExpandedConversation(conversation, detailBudget);
             }
         }
     }
@@ -1718,8 +1833,8 @@ public class ResumeTool implements CliTool {
     private ConversationSummary resolveConversationSummary(String selection) {
         try {
             int displayNumber = Integer.parseInt(selection);
-            int index = currentPage * PAGE_SIZE + displayNumber - 1;
-            if (displayNumber > 0 && index >= 0 && index < filteredConversations.size()) {
+            int index = renderedPageStart + displayNumber - 1;
+            if (displayNumber > 0 && index >= renderedPageStart && index < renderedPageEnd) {
                 return filteredConversations.get(index);
             }
             return null;
@@ -1734,24 +1849,26 @@ public class ResumeTool implements CliTool {
                         filteredConversations, selection, IdentifierMatch.PREFIX);
     }
 
-    private void renderExpandedConversation(ConversationSummary conversation) {
+    private int renderExpandedConversation(ConversationSummary conversation, int budget) {
         String displayId = displaySessionIdentifier(conversation);
-        for (String line : expandedMetadataLines(
+        List<String> details = new ArrayList<>(expandedMetadataLines(
                 displayId,
                 conversation.sessionId(),
                 conversation.source(),
                 conversation.messageCount(),
-                conversation.workingDirectory())) {
-            terminal.writer().println(DIM + "       " + line + RESET);
-        }
+                conversation.workingDirectory()));
 
         List<String> preview = previewCache.computeIfAbsent(
                 conversationKey(conversation),
                 ignored -> loadConversationPreview(conversation));
-        for (String line : preview) {
-            terminal.writer().println(DIM + "       " + line + RESET);
+        details.addAll(preview);
+        int count = Math.min(details.size(), budget);
+        for (int i = 0; i < count; i++) {
+            String line = i == count - 1 && details.size() > budget
+                    ? "… use view <row> for the full conversation" : details.get(i);
+            printViewportLine(DIM + "       " + terminalSafe(line) + RESET);
         }
-        terminal.writer().println();
+        return count;
     }
 
     static List<String> expandedMetadataLines(
@@ -1826,30 +1943,44 @@ public class ResumeTool implements CliTool {
         if (sessionId == null) {
             return "";
         }
-        if (sessionId.length() <= width) {
-            return sessionId;
+        String safeSessionId = terminalSafe(sessionId);
+        if (safeSessionId.length() <= width) {
+            return safeSessionId;
         }
         if (width < 5) {
-            return sessionId.substring(0, width);
+            return safeSessionId.substring(0, width);
         }
         int prefixLength = (width - 1) / 2;
         int suffixLength = width - prefixLength - 1;
-        return sessionId.substring(0, prefixLength)
+        return safeSessionId.substring(0, prefixLength)
                 + "…"
-                + sessionId.substring(sessionId.length() - suffixLength);
+                + safeSessionId.substring(safeSessionId.length() - suffixLength);
     }
 
     private static String truncateColumn(String value, int width) {
-        if (value == null) {
-            return "";
-        }
-        if (value.length() <= width) {
-            return value;
+        String safeValue = terminalSafe(value);
+        if (safeValue.length() <= width) {
+            return safeValue;
         }
         if (width <= 3) {
-            return value.substring(0, width);
+            return safeValue.substring(0, width);
         }
-        return value.substring(0, width - 3) + "...";
+        return safeValue.substring(0, width - 3) + "...";
+    }
+
+    private static String terminalSafe(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        StringBuilder safe = new StringBuilder(value.length());
+        value.codePoints().forEach(codePoint -> {
+            if (codePoint == '\n' || codePoint == '\r' || codePoint == '\t') {
+                safe.append(' ');
+            } else if (!Character.isISOControl(codePoint)) {
+                safe.appendCodePoint(codePoint);
+            }
+        });
+        return safe.toString();
     }
 
     /**
@@ -1857,8 +1988,8 @@ public class ResumeTool implements CliTool {
      * Called after filtering to populate titles for display.
      */
     private void loadTitlesForVisiblePage() {
-        int start = currentPage * PAGE_SIZE;
-        int end = Math.min(start + PAGE_SIZE, filteredConversations.size());
+        int start = pageStart;
+        int end = effectivePageEnd();
 
         // Collect page items needing titles
         List<Integer> needTitles = new ArrayList<>();
@@ -1893,11 +2024,16 @@ public class ResumeTool implements CliTool {
      * Render pagination controls.
      */
     private void renderPagination() {
-        int totalPages = (int) Math.ceil((double) filteredConversations.size() / PAGE_SIZE);
-        int currentPageNum = currentPage + 1;
-
-        terminal.writer().println(DIM + String.format("  Page %d of %d (%d conversations)",
-                currentPageNum, totalPages, filteredConversations.size()) + RESET);
+        int totalPages = pageCount();
+        int total = filteredConversations.size();
+        if (total == 0 || (pageEndLimit == Integer.MAX_VALUE && renderedPageStart % pageSize() == 0)) {
+            int currentPageNum = total == 0 ? 1 : renderedPageStart / pageSize() + 1;
+            printViewportLine(DIM + String.format("  Page %d of %d (%d conversations)",
+                    currentPageNum, totalPages, total) + RESET);
+            return;
+        }
+        printViewportLine(DIM + String.format("  Showing %d-%d of %d conversations",
+                renderedPageStart + 1, renderedPageEnd, total) + RESET);
     }
 
     /**
@@ -1915,7 +2051,7 @@ public class ResumeTool implements CliTool {
             if (tabIndex >= 0 && tabIndex < agents.size()) {
                 filterAgent = agents.get(tabIndex);
                 currentTab = tabIndex;
-                currentPage = 0;
+                resetPage();
                 refreshView();
             } else {
                 terminal.writer().println(RED + "Invalid tab number: " + displayNum + " (1-" + agents.size() + ")" + RESET);
@@ -1936,7 +2072,7 @@ public class ResumeTool implements CliTool {
         } else {
             terminal.writer().println(RED + "Unknown filter type. Use: agent=<name> or source=<name>" + RESET);
         }
-        currentPage = 0;
+        resetPage();
         refreshView();
     }
 
@@ -1979,7 +2115,7 @@ public class ResumeTool implements CliTool {
                 return;
         }
 
-        currentPage = 0;
+        resetPage();
         refreshView();
     }
 
@@ -1992,7 +2128,7 @@ public class ResumeTool implements CliTool {
         currentTab = 0;
         sortField = "date";
         sortAscending = false;
-        currentPage = 0;
+        resetPage();
         setFilterForCurrentTab();
         refreshView();
     }
@@ -2002,8 +2138,9 @@ public class ResumeTool implements CliTool {
      */
     private void goToPage(String pageStr) {
         try {
+            refreshPageGeometry();
             int pageNum = Integer.parseInt(pageStr);
-            int totalPages = (int) Math.ceil((double) filteredConversations.size() / PAGE_SIZE);
+            int totalPages = pageCount();
             
             if (pageNum < 1) {
                 pageNum = 1;
@@ -2011,7 +2148,9 @@ public class ResumeTool implements CliTool {
                 pageNum = totalPages;
             }
             
-            currentPage = pageNum - 1; // Convert 1-based to 0-based
+            pageStart = (pageNum - 1) * pageSize();
+            pageEndLimit = Integer.MAX_VALUE;
+            syncPageWindow();
             loadTitlesForVisiblePage();
         } catch (NumberFormatException e) {
             terminal.writer().println(RED + "Invalid page number: " + pageStr + RESET);
@@ -2023,9 +2162,14 @@ public class ResumeTool implements CliTool {
      * Navigate to next page.
      */
     private void nextPage() {
-        int totalPages = (int) Math.ceil((double) filteredConversations.size() / PAGE_SIZE);
-        if (currentPage < totalPages - 1) {
-            currentPage++;
+        refreshPageGeometry();
+        int nextStart = renderedPageEnd > renderedPageStart
+                ? renderedPageEnd
+                : Math.min(pageStart + pageSize(), filteredConversations.size());
+        if (nextStart < filteredConversations.size()) {
+            pageStart = nextStart;
+            pageEndLimit = Integer.MAX_VALUE;
+            syncPageWindow();
             loadTitlesForVisiblePage();
         }
     }
@@ -2034,8 +2178,12 @@ public class ResumeTool implements CliTool {
      * Navigate to previous page.
      */
     private void prevPage() {
-        if (currentPage > 0) {
-            currentPage--;
+        refreshPageGeometry();
+        int currentStart = renderedPageStart > 0 ? renderedPageStart : pageStart;
+        if (currentStart > 0) {
+            pageStart = Math.max(0, currentStart - pageSize());
+            pageEndLimit = currentStart;
+            syncPageWindow();
             loadTitlesForVisiblePage();
         }
     }
@@ -2523,6 +2671,7 @@ public class ResumeTool implements CliTool {
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
+            disableTerminalMouseTracking(newTerminal);
             terminalClosed = false;
 
             newTerminal.writer().println();
@@ -2579,6 +2728,7 @@ public class ResumeTool implements CliTool {
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
+            disableTerminalMouseTracking(newTerminal);
             terminalClosed = false;
 
             newTerminal.writer().println();
@@ -2645,6 +2795,7 @@ public class ResumeTool implements CliTool {
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
+            disableTerminalMouseTracking(newTerminal);
             terminalClosed = false;
 
             newTerminal.writer().println();
@@ -2788,6 +2939,7 @@ public class ResumeTool implements CliTool {
             // Update our terminal and lineReader references for continued use
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
+            disableTerminalMouseTracking(newTerminal);
             terminalClosed = false;
 
             newTerminal.writer().println();
@@ -2840,6 +2992,7 @@ public class ResumeTool implements CliTool {
             LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
             this.terminal = newTerminal;
             this.lineReader = newLineReader;
+            disableTerminalMouseTracking(newTerminal);
             return true;
         } catch (IOException ioException) {
             return false;
@@ -3216,6 +3369,17 @@ public class ResumeTool implements CliTool {
                     "Otherwise, provide the full session UUID.");
         }
 
+        return resumeOne(sessionId, requestedAgent, targetSessionId, compact,
+                compactRecentTurns, compactMaxChars);
+    }
+
+    /**
+     * Produce the resume payload for exactly one session. Shared by the
+     * single-session 'resume' action and the batch 'resume_all' action so both
+     * return the same shape.
+     */
+    private ToolResult resumeOne(String sessionId, String requestedAgent, String targetSessionId,
+                                 boolean compact, int compactRecentTurns, int compactMaxChars) {
         try {
             LoadedConversation conversation = loadConversation(sessionId);
             ConversationSummary listedConversation =
@@ -3331,6 +3495,152 @@ public class ResumeTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("Resume error: " + e.getMessage());
         }
+    }
+
+    /**
+     * List the N most recent resumable sessions across all sources, newest first.
+     * Default N comes from {@code ~/.kompile/config/resume.json} (10 unless changed
+     * via {@code kompile resume-all --set-recent N}). Covers crashed sessions too —
+     * a crashed kompile chat still wrote its transcript, and its registry entry is
+     * flipped to exited via dead-PID refresh.
+     */
+    private ToolResult runRecent(JsonNode params) {
+        int limit = params.has("limit") && params.get("limit").asInt(0) > 0
+                ? params.get("limit").asInt()
+                : ResumeConfig.load().getRecentSessions();
+
+        refreshRecentSnapshot();
+
+        ObjectMapper om = JsonUtils.standardMapper();
+        ObjectNode result = om.createObjectNode();
+        result.put("limit", limit);
+        result.put("count", Math.min(limit, filteredConversations.size()));
+        result.put("hint", "Pass session_id to the 'resume' action to restore one session, " +
+                "or use 'resume_all' to restore every listed session in one call.");
+        var array = result.putArray("conversations");
+        for (int i = 0; i < filteredConversations.size() && i < limit; i++) {
+            ConversationSummary convo = filteredConversations.get(i);
+            ObjectNode convoNode = array.addObject();
+            convoNode.put("index", i + 1);
+            convoNode.put("session_id", convo.sessionId());
+            convoNode.put("title", convo.title());
+            convoNode.put("agent", convo.agent());
+            convoNode.put("source", convo.source());
+            boolean standardChat = isStandardKompileChatSession(
+                    convo.sessionId(), convo.source(), convo.agent(),
+                    nativeSessionIds.get(convo.sessionId()));
+            convoNode.put("session_type", standardChat
+                    ? "standard_chat"
+                    : ("kompile".equals(convo.source()) ? "managed_chat" : "provider_chat"));
+            if (standardChat) {
+                convoNode.put("resume_target", "kompile");
+                convoNode.put("resume_command",
+                        "kompile chat --resume " + convo.sessionId() + " --mode standard");
+            }
+            convoNode.put("last_modified", convo.lastModified());
+            if (convo.workingDirectory() != null && !convo.workingDirectory().isBlank()) {
+                convoNode.put("working_directory", convo.workingDirectory());
+            }
+            String nativeId = nativeSessionIds.get(convo.sessionId());
+            if (nativeId != null) {
+                convoNode.put("native_session_id", nativeId);
+            }
+        }
+
+        return ToolResult.success("Recent sessions", result.toString());
+    }
+
+    /**
+     * Batch-restore the N most recent sessions in one call. Each entry carries the
+     * same payload as the single-session 'resume' action (compacted by default so a
+     * large batch stays bounded) — one round trip instead of N sequential calls.
+     * A failing session reports an 'error' entry and never aborts the batch.
+     */
+    private ToolResult runResumeAll(JsonNode params) {
+        int limit = params.has("limit") && params.get("limit").asInt(0) > 0
+                ? params.get("limit").asInt()
+                : ResumeConfig.load().getRecentSessions();
+        String requestedAgent = params.has("target_agent") ? params.get("target_agent").asText() : "";
+        boolean compact = !params.has("compact") || params.get("compact").asBoolean(true);
+        int compactRecentTurns = params.has("compact_recent_turns") ? params.get("compact_recent_turns").asInt(2) : 2;
+        int compactMaxChars = params.has("compact_max_chars") ? params.get("compact_max_chars").asInt(4000) : 4000;
+
+        refreshRecentSnapshot();
+
+        ObjectMapper om = JsonUtils.standardMapper();
+        ObjectNode result = om.createObjectNode();
+        result.put("limit", limit);
+        result.put("compact", compact);
+        result.put("hint", "Each entry matches the single-session 'resume' payload; " +
+                "failed sessions report an 'error' field and never abort the batch.");
+
+        var array = result.putArray("sessions");
+        int restored = 0;
+        int failed = 0;
+        for (int i = 0; i < filteredConversations.size() && restored + failed < limit; i++) {
+            ConversationSummary convo = filteredConversations.get(i);
+            ToolResult one = resumeOne(convo.sessionId(), requestedAgent, null,
+                    compact, compactRecentTurns, compactMaxChars);
+            ObjectNode entry = array.addObject();
+            entry.put("session_id", convo.sessionId());
+            if (one.isError()) {
+                failed++;
+                entry.put("error", one.getOutput());
+                continue;
+            }
+            restored++;
+            try {
+                entry.set("payload", om.readTree(one.getOutput()));
+            } catch (Exception e) {
+                entry.put("error", "Could not parse resume payload: " + e.getMessage());
+            }
+        }
+
+        result.put("restored", restored);
+        result.put("failed", failed);
+        return ToolResult.success("Batch resume complete", result.toString());
+    }
+
+    /**
+     * Repair the session registry after a bad/corrupt shutdown. With
+     * {@code session_id}, force that one row back to resumable; without it,
+     * repair every stuck row — abandoned {@code resume-all} claims and
+     * dead-PID {@code running} rows. Genuinely live sessions are never touched.
+     */
+    private ToolResult runClearLocks(JsonNode params) {
+        String sessionId = params.has("session_id") && !params.get("session_id").asText().isBlank()
+                ? params.get("session_id").asText()
+                : null;
+        ObjectMapper om = JsonUtils.standardMapper();
+        ObjectNode result = om.createObjectNode();
+        try {
+            if (sessionId != null) {
+                boolean cleared = SessionRegistry.load().clearResumeLock(sessionId);
+                result.put("session_id", sessionId);
+                result.put("cleared", cleared);
+                if (!cleared) {
+                    result.put("hint", "No tracked session matches this ID; use action 'recent' to list IDs.");
+                    return ToolResult.error(result.toString());
+                }
+            } else {
+                result.put("repaired", SessionRegistry.load().clearAllResumeLocks());
+                result.put("hint", "Live sessions are never force-unlocked; use session_id to target one.");
+            }
+            return ToolResult.success("Lock repair complete", result.toString());
+        } catch (Exception e) {
+            return ToolResult.error("Could not clear transcript locks: " + e.getMessage());
+        }
+    }
+
+    private void refreshRecentSnapshot() {
+        localOnly = false;
+        loadAllConversations();
+        searchQuery = "";
+        filterAgent = "";
+        filterSource = "";
+        sortField = "date";
+        sortAscending = false;
+        applyFilters();
     }
 
     /**
@@ -3647,6 +3957,8 @@ public class ResumeTool implements CliTool {
         terminal.writer().println("  " + GREEN + "migrate <session-id>" + RESET + "          Migrate conversation to different format");
         terminal.writer().println("  " + GREEN + "resume <session-id>" + RESET + "           Resume conversation with designated agent");
         terminal.writer().println("  " + GREEN + "resume <session-id> <uuid>" + RESET + "    Resume with a specific target session UUID");
+        terminal.writer().println("  " + GREEN + "resume-all [options]" + RESET + "          Restore recent exited/crashed chats in new terminals");
+        terminal.writer().println("                                   Options: --dry-run, --recent N, --all, --yes, --list, --unlock-all");
         terminal.writer().println("  " + GREEN + "all" + RESET + "                           Load conversations from ALL projects");
         terminal.writer().println("  " + GREEN + "local" + RESET + "                         Show only current directory's conversations");
         terminal.writer().println("  " + GREEN + "next" + RESET + "                          Next page of conversations");

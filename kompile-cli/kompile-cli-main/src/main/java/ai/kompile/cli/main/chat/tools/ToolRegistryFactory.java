@@ -26,6 +26,7 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphAssertTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphClaimTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphExplainTool;
@@ -51,6 +52,10 @@ import ai.kompile.cli.main.chat.tools.grounding.GraphReasoningQueryTool;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.graph.GraphServiceRouting;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Factory for creating a fully-wired ToolRegistry with all built-in tools.
@@ -110,7 +115,33 @@ public class ToolRegistryFactory {
                                        ChatConfig chatConfig,
                                        RoleManager roleManager,
                                        String crawlBaseUrlOverride) {
+        return create(objectMapper, baseUrl, agentRegistry, permissionService, renderer,
+                processManager, chatConfig, roleManager, crawlBaseUrlOverride, null, null);
+    }
+
+    /**
+     * Create a fully wired registry for a live chat/exec session.
+     *
+     * <p>The caller owns {@code coordinationManager} and must shut it down with the
+     * surrounding session. Keeping ownership outside the registry prevents hidden
+     * heartbeat threads in tests and short-lived utility callers.</p>
+     */
+    public static ToolRegistry create(ObjectMapper objectMapper, String baseUrl,
+                                       AgentRegistry agentRegistry,
+                                       PermissionService permissionService,
+                                       TerminalRenderer renderer,
+                                       BackgroundProcessManager processManager,
+                                       ChatConfig chatConfig,
+                                       RoleManager roleManager,
+                                       String crawlBaseUrlOverride,
+                                       Path workingDirectory,
+                                       CoordinationStateManager coordinationManager) {
         ToolRegistry registry = new ToolRegistry(objectMapper);
+        HighMemoryToolCallGuard highMemoryGuard = coordinationManager == null
+                ? null : new HighMemoryToolCallGuard(coordinationManager);
+        Path resolvedWorkingDirectory = workingDirectory == null
+                ? Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                : workingDirectory.toAbsolutePath().normalize();
         GraphServiceRouting.Resolution graphResolution = GraphServiceRouting.resolve(null);
         String graphBaseUrl = resolveGraphBaseUrl(baseUrl, graphResolution);
         String crawlRoutingUrl = crawlBaseUrlOverride == null || crawlBaseUrlOverride.isBlank()
@@ -122,39 +153,57 @@ public class ToolRegistryFactory {
         // File I/O tools
         registry.register(new ReadTool());
         registry.register(new ReadBatchTool());
-        registry.register(new WriteTool());
-        registry.register(new EditTool());
-        registry.register(new EditBatchTool());
+        registry.register(new FileContextTool());
+        registry.register(new FileNoteTool());
+        registry.register(new WriteTool(coordinationManager));
+        registry.register(new EditTool(coordinationManager));
+        registry.register(new EditBatchTool(coordinationManager));
         registry.register(new PatchTool());
-        registry.register(new EditPatchTool());
+        registry.register(new EditPatchTool(coordinationManager));
 
         // Search tools
         registry.register(new GrepTool());
         registry.register(new GrepBatchTool());
         registry.register(new GlobTool());
         registry.register(new ListTool());
+        registry.register(new ExploreTool());
 
         // Language-server code intelligence
-        registry.register(new LspTool());
+        registerGuarded(registry, highMemoryGuard, new CodeSearchTool(baseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard, new CodeGraphTool(baseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard, new LocalCodeIndexTool());
+        registry.register(new LspTool(coordinationManager));
 
         // Execution tools
-        registry.register(new BashTool());
+        registerGuarded(registry, highMemoryGuard, new BashTool());
 
         // Network tools
         registry.register(new WebFetchTool());
         registry.register(new WebSearchTool());
         registry.register(new BrowserTool());
+        registry.register(new ChannelTool(baseUrl, objectMapper));
 
         // Workflow and TUI tools
         registry.register(new TodoWriteTool());
         registry.register(new TodoReadTool());
         registry.register(new SidePanelTool(new SidePanelManager()));
         registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        registry.register(new ConfigArchiveTool());
+        registry.register(new ProjectConfigTool());
+        registry.register(new EnforcerConfigTool());
+        registry.register(new JudgeControlTool());
+        registry.register(new TestMilestoneTool());
 
         // Process management tools
         if (processManager != null) {
-            registry.register(new ProcessManagementTool(processManager));
+            registerGuarded(registry, highMemoryGuard,
+                    new ProcessManagementTool(processManager, coordinationManager));
         }
+        if (coordinationManager != null) {
+            registry.register(new EditCoordinatorTool(coordinationManager));
+            registry.register(new SessionListTool(coordinationManager));
+        }
+        registry.register(new ServerModeTool());
 
         // Knowledge & memory tools
         registry.register(new TranscriptSearchTool());
@@ -162,6 +211,7 @@ public class ToolRegistryFactory {
         registry.register(new KnowledgeSearchCliTool(baseUrl, objectMapper));
         registry.register(new KnowledgeStatusCliTool(baseUrl, objectMapper));
         registry.register(new DiffIndexTool(baseUrl, objectMapper));
+        registry.register(new ToolCallCatalogTool());
         registry.register(new RagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphRagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphAggregateTool(baseUrl, objectMapper));
@@ -180,21 +230,35 @@ public class ToolRegistryFactory {
         registry.register(new GraphReasonTool(baseUrl, objectMapper));
         registry.register(new GraphImportTool(graphBaseUrl, objectMapper));
         registry.register(new GraphExportTool(graphBaseUrl, objectMapper));
-        registry.register(new CrawlSourceTool(crawlBaseUrl, objectMapper));
-        registry.register(new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard,
+                new CrawlSourceTool(crawlBaseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard,
+                new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
         registry.register(new CrawlDiscoveryTool(crawlBaseUrl, objectMapper));
-        registry.register(new ModelRuntimeTool(objectMapper));
+        registerGuarded(registry, highMemoryGuard, new ModelRuntimeTool(objectMapper));
         registry.register(new VlmModelDefinitionTool(objectMapper));
-        registry.register(new PipelineTool(objectMapper));
-        registry.register(new CrawlControlTool(crawlBaseUrl, objectMapper));
-        registry.register(new CrawlResultTool(crawlBaseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard, new PipelineTool(objectMapper));
+        registerGuarded(registry, highMemoryGuard,
+                new CrawlControlTool(crawlBaseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard,
+                new CrawlResultTool(crawlBaseUrl, objectMapper));
+        registry.register(new SubprocessWatchdogTool(objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
         registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
         registry.register(new GraphReasoningQueryTool(graphBaseUrl, objectMapper));
         registry.register(new GraphBayesTool(baseUrl, objectMapper));
-        registry.register(new GraphEmbeddingsTool(baseUrl, objectMapper));
+        registerGuarded(registry, highMemoryGuard,
+                new GraphEmbeddingsTool(baseUrl, objectMapper));
         registry.register(new GraphSimulateTool(baseUrl, objectMapper));
         registry.register(new MemoryTool());
+
+        // Provider-neutral lifecycle tools that do not own background workers.
+        registry.register(new SkillManagerTool(objectMapper, resolvedWorkingDirectory));
+        try {
+            registry.register(new ResumeTool(true));
+        } catch (IOException e) {
+            System.err.println("[Tools] Resume tool unavailable: " + e.getMessage());
+        }
 
         // Delegation tools (subagent spawning)
         // Use DirectSubagentRunner in local mode, ServerSubagentRunner for server mode
@@ -207,11 +271,11 @@ public class ToolRegistryFactory {
             subagentRunner = new ServerSubagentRunner(
                     baseUrl, registry, permissionService, objectMapper, renderer);
         }
-        registry.register(new TaskTool(agentRegistry, subagentRunner));
+        registry.register(new TaskTool(agentRegistry, subagentRunner, roleManager));
         registry.setSubagentRunner(subagentRunner);
 
         // Evaluation tool
-        registry.register(new EvalTool());
+        registerGuarded(registry, highMemoryGuard, new EvalTool());
 
         // Role management tool (exposed as MCP tool for subagent coordination)
         if (roleManager != null) {
@@ -219,6 +283,12 @@ public class ToolRegistryFactory {
         }
 
         return registry;
+    }
+
+    private static void registerGuarded(ToolRegistry registry,
+                                        HighMemoryToolCallGuard guard,
+                                        CliTool tool) {
+        registry.register(guard == null ? tool : guard.wrap(tool));
     }
 
     /**

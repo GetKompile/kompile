@@ -8,6 +8,8 @@ import ai.kompile.utils.AnsiConstants;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,8 +62,10 @@ class StatusBarTest {
     }
 
     @Test
-    void showsBackgroundHintOnlyWhileCurrentTaskCanTransition() {
+    void showsBackgroundHintOnlyForBlockingSubagentPhase() {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
+        AtomicBoolean blockingSubagentInvocation = new AtomicBoolean(false);
+        tasks.setBackgroundableCheck(blockingSubagentInvocation::get);
         BackgroundProcessManager processes = new BackgroundProcessManager("status-background-hint-test");
         try {
             StatusBar bar = new StatusBar(
@@ -69,13 +73,21 @@ class StatusBarTest {
             tasks.startTask("LLM response");
             ChatCompleter.setActivity("Thinking");
 
-            String running = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
-            assertTrue(running.contains("(use Ctrl+B to background this)"), running);
-            assertEquals(running.indexOf("use Ctrl+B"), running.lastIndexOf("use Ctrl+B"));
+            String thinking = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
+            assertFalse(thinking.contains("Ctrl+B"), thinking);
+            assertFalse(tasks.isCurrentTaskBackgroundable());
+            assertTrue(tasks.requestBackground() == null,
+                    "the manager must reject Ctrl+B during model thinking");
 
-            tasks.requestBackground();
+            blockingSubagentInvocation.set(true);
+            ChatCompleter.setActivity("Working: Delegate task");
+            String running = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
+            assertTrue(running.contains("(Ctrl+B backgrounds active subagent)"), running);
+            assertEquals(running.indexOf("Ctrl+B"), running.lastIndexOf("Ctrl+B"));
+
+            assertTrue(tasks.requestBackground() != null);
             String backgrounded = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
-            assertFalse(backgrounded.contains("use Ctrl+B"), backgrounded);
+            assertFalse(backgrounded.contains("Ctrl+B"), backgrounded);
 
             tasks.completeCurrentTask();
             assertFalse(tasks.isCurrentTaskBackgroundable());

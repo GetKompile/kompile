@@ -26,6 +26,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -114,7 +115,12 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
     @Value("${kompile.vectorstore.anserini.index-path:#{null}}")
     private String indexPath;
 
+    /** Only the crawl-manager persona may own generation lifecycle/recovery mutation. */
+    @Value("${kompile.graph.generations.authority:false}")
+    private boolean generationAuthority;
+
     private final AtomicReference<ManagedRun> run = new AtomicReference<>();
+    private final AtomicBoolean restarting = new AtomicBoolean(false);
 
     // ── ManagedSubprocessLauncher configuration ───────────────────────────────
 
@@ -181,6 +187,8 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
         if (indexPath != null && !indexPath.isBlank()) {
             args.add("-Dkompile.vectorstore.anserini.index-path=" + indexPath);
         }
+        args.add("-Dkompile.graph.generations.subprocess-authority=" + generationAuthority);
+        args.add("-Dkompile.graph.generations.enabled=" + generationAuthority);
         return args;
     }
 
@@ -254,6 +262,7 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
      */
     @PostConstruct
     public void start() {
+        if (isRunning()) return;
         if (subprocessConfig != null && !subprocessConfig.isTypeEnabled("graph-matrix", true)) {
             log.info("[graph-matrix] disabled via subprocess-ingest-config.json (subprocessTypes.graph-matrix.enabled=false) — not spawning");
             return;
@@ -268,5 +277,31 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
         } catch (Exception e) {
             log.error("[graph-matrix] failed to start persistent subprocess: {}", e.getMessage(), e);
         }
+    }
+
+    @Override
+    public void requestRestart(String reason) {
+        if (!restarting.compareAndSet(false, true)) return;
+        Thread thread = new Thread(() -> {
+            try {
+                log.warn("[graph-matrix] restart requested: {}", reason);
+                stopAll();
+                run.set(null);
+                for (int attempt = 1; attempt <= 3 && !isRunning(); attempt++) {
+                    try {
+                        Thread.sleep(attempt * 500L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    start();
+                }
+                if (!isRunning()) log.error("[graph-matrix] restart failed after 3 attempts");
+            } finally {
+                restarting.set(false);
+            }
+        }, "graph-matrix-respawn");
+        thread.setDaemon(true);
+        thread.start();
     }
 }

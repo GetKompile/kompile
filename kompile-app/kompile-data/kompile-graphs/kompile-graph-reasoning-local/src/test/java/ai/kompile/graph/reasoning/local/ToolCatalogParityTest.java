@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>Server reference: kompile-middleware/kompile-tools/kompile-tool-graph/
  *   ai.kompile.tool.graph.GraphReasoningQueryTool  — tool name "graph_reasoning_query"
- *   Required param: "operation" (from QueryInput record, @ToolParam)
+ *   Required params: none; operation defaults from queryText or to CAPABILITIES
  *
  * <p>The local catalog stores required params inside the JSON-Schema parameters map under
  * the "required" key (a {@code List<String>}), as set by
@@ -47,11 +47,10 @@ class ToolCatalogParityTest {
      * Key = tool name, Value = set of required parameter names as declared in the server tool.
      *
      * Source: GraphReasoningQueryTool.QueryInput @ToolParam fields with non-null semantics.
-     * "operation" is the only field that the server QueryInput treats as required
-     * (the service returns INVALID if missing).
+     * The server QueryInput marks operation optional and delegates defaulting to the service.
      */
     private static final Map<String, Set<String>> SERVER_REQUIRED_PARAMS = Map.of(
-            "graph_reasoning_query", Set.of("operation")
+            "graph_reasoning_query", Set.of()
     );
 
     @Test
@@ -104,14 +103,10 @@ class ToolCatalogParityTest {
                 }
             }
 
-            Set<String> missingInLocal = new HashSet<>(serverRequired);
-            missingInLocal.removeAll(localRequired);
-
-            if (!missingInLocal.isEmpty()) {
+            if (!serverRequired.equals(localRequired)) {
                 driftMessages.add("Tool '" + toolName + "' required params drift: " +
                         "server requires " + serverRequired +
-                        " but local has " + localRequired +
-                        " (missing in local: " + missingInLocal + ")");
+                        " but local has " + localRequired);
             }
         }
 

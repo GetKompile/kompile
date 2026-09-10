@@ -97,6 +97,8 @@ public class GraphEmbeddingsTool implements CliTool {
                 "Action: train|jobs|job_status|cancel|score|predict_tails|predict_heads|predict_relations|similar|algorithms");
         addLongProp(props, "fact_sheet_id",
                 "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base");
+        addStringProp(props, "knowledgeBase",
+                "Optional project-local knowledge-base id; omit locally to use the current folder's knowledge base");
         addStringProp(props, "algorithm",
                 "Embedding algorithm: TRANSE | ROTATE (default ROTATE)");
         addIntProp(props, "embedding_dim",
@@ -137,6 +139,10 @@ public class GraphEmbeddingsTool implements CliTool {
         String action = params.path("action").asText("").toLowerCase();
         if (action.isEmpty()) {
             return ToolResult.error("action is required");
+        }
+        String selectorError = LocalProjectGraphBackend.selectorConflict(params);
+        if (selectorError != null) {
+            return ToolResult.error(selectorError);
         }
         if (baseUrl == null || baseUrl.isEmpty()) {
             return localBackend.embeddings(params, context);

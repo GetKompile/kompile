@@ -96,21 +96,34 @@ class EnforcerInterruptLatencyTest {
     }
 
     @Test
-    void monitorFailsClosedOnJudgeErrorByDefault() {
+    void monitorFailsOpenOnJudgeErrorByDefault() {
         EnforcerRealtimeMonitor mon = monitor(new StubJudge(null, 0)); // judge throws
         SubprocessAgentRunner.MonitorDecision d = mon.onToolUse("bash", "{\"command\":\"echo hi\"}");
-        assertTrue(d.interrupt(), "default policy fails closed: a judge error blocks the tool call");
+        assertFalse(d.interrupt(), "a judge error must not block the tool call");
     }
 
     @Test
-    void monitorFailsOpenOnJudgeErrorWhenConfigured() {
+    void monitorCanStillFailClosedWhenExplicitlyConfigured() {
         EnforcerJudge judge = new EnforcerJudge(new StubJudge(null, 0), MAPPER);
         EnforcerPolicy policy = new EnforcerPolicy("BAN_TOOL: bash", 2, false);
         EnforcerRealtimeMonitor mon = new EnforcerRealtimeMonitor(judge, policy, "do the task");
-        mon.setFailOpenOnError(true);
+        mon.setFailOpenOnError(false);
 
         SubprocessAgentRunner.MonitorDecision d = mon.onToolUse("bash", "{\"command\":\"echo hi\"}");
-        assertFalse(d.interrupt(), "FAIL_OPEN policy lets the tool call continue when the judge errors");
+        assertTrue(d.interrupt(), "an explicit FAIL_CLOSED policy still blocks on judge errors");
+    }
+
+    @Test
+    void scoringMonitorFailsOpenOnJudgeError() {
+        EnforcerJudge judge = new EnforcerJudge(new StubJudge(null, 0), MAPPER);
+        EnforcerPolicy policy = new EnforcerPolicy("BAN_TOOL: bash", 2, false);
+        try (ScoringRealtimeMonitor mon = new ScoringRealtimeMonitor(judge, policy, "coder", 2)) {
+            SubprocessAgentRunner.MonitorDecision d = mon.onToolUse(
+                    "bash", "{\"command\":\"echo hi\"}");
+
+            assertFalse(d.interrupt(), "scoring must not turn judge errors into tool violations");
+            assertTrue(mon.getCurrentScore() >= 1.0);
+        }
     }
 
     @Test

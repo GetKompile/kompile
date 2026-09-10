@@ -101,6 +101,9 @@ public class AskGraphMebnTool implements CliTool {
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Optional project-local knowledge-base id; omit locally to use the current folder's knowledge base.");
 
         schema.putArray("required").add("nodeId");
         return schema;
@@ -119,6 +122,10 @@ public class AskGraphMebnTool implements CliTool {
         String nodeId = params.path("nodeId").asText("");
         if (nodeId.isBlank()) {
             return ToolResult.error("nodeId is required");
+        }
+        String selectorError = LocalProjectGraphBackend.selectorConflict(params);
+        if (selectorError != null) {
+            return ToolResult.error(selectorError);
         }
 
         if (!groundingClient.isAvailable()) {

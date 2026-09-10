@@ -34,7 +34,7 @@ public class LocalRelationExtractor {
     // --- Call-site patterns (mirrored from server CodeEntityExtractor) ---
 
     private static final Pattern CALL_BARE = Pattern.compile("\\b(\\w+)\\s*\\(");
-    private static final Pattern CALL_DOT = Pattern.compile("\\b(\\w+)\\.(\\w+)\\s*\\(");
+    private static final Pattern CALL_DOT = Pattern.compile("\\b(\\w+(?:\\.\\w+)*)\\.(\\w+)\\s*\\(");
     private static final Pattern CALL_SCOPE = Pattern.compile("\\b(\\w+)::(\\w+)\\s*\\(");
     private static final Pattern CALL_ARROW = Pattern.compile("\\b(\\w+)->\\s*(\\w+)\\s*\\(");
     private static final Pattern CALL_RUST_MACRO = Pattern.compile("\\b(\\w+)!\\s*[({\\[]");
@@ -92,15 +92,19 @@ public class LocalRelationExtractor {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-        // Build name→FQN map for same-file call resolution
+        // Only unique type names may qualify a call. Bare calls are resolved against
+        // the complete index, never whichever same-name entity happened to be last.
         Map<String, String> nameToFqn = new LinkedHashMap<>();
+        Set<String> ambiguousNames = new HashSet<>();
         for (Map<String, Object> e : entities) {
             String name = (String) e.get("name");
             String fqn = (String) e.get("fullyQualifiedName");
-            if (name != null && fqn != null) {
-                nameToFqn.put(name, fqn);
+            if (name != null && fqn != null
+                    && Set.of("CLASS", "INTERFACE", "ENUM", "RECORD").contains(e.get("entityType"))) {
+                if (nameToFqn.putIfAbsent(name, fqn) != null) ambiguousNames.add(name);
             }
         }
+        ambiguousNames.forEach(nameToFqn::remove);
 
         relations.addAll(extractContains(filePath, projectId, entities, fileFqns));
         relations.addAll(extractExtends(filePath, projectId, entities));
@@ -272,61 +276,63 @@ public class LocalRelationExtractor {
                 .sorted()
                 .collect(Collectors.toList());
 
+        String[] codeLines = maskCommentsAndStrings(String.join("\n", fileLines), language).split("\n", -1);
         for (int i = 0; i < callables.size(); i++) {
             Map<String, Object> callable = callables.get(i);
             String callerFqn = (String) callable.get("fullyQualifiedName");
             int startLine = ((Number) callable.get("startLine")).intValue();
 
-            // Heuristic: body runs from startLine to next boundary or file end
-            int bodyEnd;
-            if (i + 1 < callables.size()) {
-                bodyEnd = ((Number) callables.get(i + 1).get("startLine")).intValue() - 1;
-            } else {
-                bodyEnd = fileLines.length;
+            if (startLine < 1 || startLine > fileLines.length || callerFqn == null) continue;
+            int bodyStart = startLine - 1;
+            int bodyEnd = fileLines.length;
+            int declaredEnd = callable.get("endLine") instanceof Number n ? n.intValue() : 0;
+            // Non-JVM parsers currently use startLine as a declaration-only placeholder.
+            if (declaredEnd > startLine || (declaredEnd == startLine
+                    && Set.of("java", "kotlin", "scala", "groovy").contains(language))) {
+                bodyEnd = Math.min(bodyEnd, declaredEnd);
             }
-            // Clamp
-            int bodyStart = Math.min(startLine, fileLines.length); // 1-based
-            bodyEnd = Math.min(bodyEnd, fileLines.length);
+            for (int boundary : boundaryLines) {
+                if (boundary > startLine) {
+                    bodyEnd = Math.min(bodyEnd, boundary - 1);
+                    break;
+                }
+            }
+            if (bodyEnd <= bodyStart) continue;
+            String[] bodyLines = callableBody(callable, codeLines, bodyStart, bodyEnd, language);
 
             // Find parent class FQN for this/self resolution
             String parentClassFqn = findParentClassFqn(callerFqn, entities);
 
             Set<String> seen = new HashSet<>();
 
-            for (int lineIdx = bodyStart; lineIdx < bodyEnd; lineIdx++) {
-                if (lineIdx < 0 || lineIdx >= fileLines.length) continue;
-                String line = fileLines[lineIdx];
+            for (int lineIdx = bodyStart; lineIdx < bodyStart + bodyLines.length; lineIdx++) {
+                String line = bodyLines[lineIdx - bodyStart];
 
-                // Skip comments
-                String trimmed = line.trim();
-                if (trimmed.startsWith("//") || trimmed.startsWith("*") ||
-                    trimmed.startsWith("/*") || trimmed.startsWith("#")) continue;
-
-                // Track all method names seen via qualified patterns on this line,
-                // so bare (unqualified) matches for the same name are suppressed.
-                Set<String> lineQualifiedMethods = new HashSet<>();
+                // Suppress only the qualified occurrence, not a distinct bare call
+                // to the same name elsewhere on this line.
+                Set<Integer> qualifiedStarts = new HashSet<>();
 
                 // Qualified dot calls: qualifier.method(
                 Matcher mDot = CALL_DOT.matcher(line);
                 while (mDot.find()) {
                     String qualifier = mDot.group(1);
                     String method = mDot.group(2);
-                    if (CALL_KEYWORDS.contains(method)) continue;
+                    if (isCallKeyword(method, language)) continue;
 
                     String resolved;
-                    if (SELF_KEYWORDS.contains(qualifier) && parentClassFqn != null) {
+                    if (!"super".equals(qualifier) && SELF_KEYWORDS.contains(qualifier) && parentClassFqn != null) {
                         resolved = parentClassFqn + "." + method;
                     } else {
                         // Try to resolve qualifier via same-file entities
                         String qualFqn = nameToFqn.get(qualifier);
-                        resolved = qualFqn != null ? qualFqn + "." + method : method;
+                        resolved = (qualFqn != null ? qualFqn : qualifier) + "." + method;
                     }
 
                     if (seen.add("dot:" + qualifier + "." + method)) {
                         rels.add(makeRelation(projectId, callerFqn, method, resolved,
                                 "CALLS", filePath, lineIdx + 1));
                     }
-                    lineQualifiedMethods.add(method);
+                    qualifiedStarts.add(mDot.start(2));
                 }
 
                 // C++/Rust scope calls: Qualifier::method(
@@ -336,13 +342,13 @@ public class LocalRelationExtractor {
                     while (mScope.find()) {
                         String qualifier = mScope.group(1);
                         String method = mScope.group(2);
-                        if (CALL_KEYWORDS.contains(method)) continue;
+                        if (isCallKeyword(method, language)) continue;
                         if (seen.add("scope:" + qualifier + "::" + method)) {
-                            String resolved = nameToFqn.getOrDefault(method, method);
+                            String resolved = qualifier + "." + method;
                             rels.add(makeRelation(projectId, callerFqn, method, resolved,
                                     "CALLS", filePath, lineIdx + 1));
                         }
-                        lineQualifiedMethods.add(method);
+                        qualifiedStarts.add(mScope.start(2));
                     }
                 }
 
@@ -351,13 +357,13 @@ public class LocalRelationExtractor {
                     Matcher mArrow = CALL_ARROW.matcher(line);
                     while (mArrow.find()) {
                         String method = mArrow.group(2);
-                        if (CALL_KEYWORDS.contains(method)) continue;
+                        if (isCallKeyword(method, language)) continue;
                         if (seen.add("arrow:" + method)) {
-                            String resolved = nameToFqn.getOrDefault(method, method);
+                            String resolved = mArrow.group(1) + "." + method;
                             rels.add(makeRelation(projectId, callerFqn, method, resolved,
                                     "CALLS", filePath, lineIdx + 1));
                         }
-                        lineQualifiedMethods.add(method);
+                        qualifiedStarts.add(mArrow.start(2));
                     }
                 }
 
@@ -366,11 +372,11 @@ public class LocalRelationExtractor {
                     Matcher mMacro = CALL_RUST_MACRO.matcher(line);
                     while (mMacro.find()) {
                         String macroName = mMacro.group(1);
-                        if (!CALL_KEYWORDS.contains(macroName) && seen.add("macro:" + macroName)) {
+                        if (!isCallKeyword(macroName, language) && seen.add("macro:" + macroName)) {
                             rels.add(makeRelation(projectId, callerFqn, macroName, macroName,
                                     "CALLS", filePath, lineIdx + 1));
                         }
-                        lineQualifiedMethods.add(macroName);
+                        qualifiedStarts.add(mMacro.start(1));
                     }
                 }
 
@@ -379,28 +385,32 @@ public class LocalRelationExtractor {
                     Matcher mDec = CALL_PY_DECORATOR.matcher(line);
                     if (mDec.find()) {
                         String decName = mDec.group(1);
-                        if (!CALL_KEYWORDS.contains(decName) && seen.add("dec:" + decName)) {
-                            String resolved = nameToFqn.getOrDefault(decName, decName);
+                        if (!isCallKeyword(decName, language) && seen.add("dec:" + decName)) {
+                            String resolved = decName;
                             rels.add(makeRelation(projectId, callerFqn, decName, resolved,
                                     "CALLS", filePath, lineIdx + 1));
                         }
-                        lineQualifiedMethods.add(decName);
+                        qualifiedStarts.add(mDec.start(1));
                     }
                 }
 
                 // Bare (unqualified) calls: name(
-                // Skip if the method name was already recorded via a qualified pattern
-                // on this same line (e.g. embeddingModel.embed(...) should not also
+                // Skip an occurrence already recorded via a qualified pattern
+                // (e.g. embeddingModel.embed(...) should not also
                 // produce a bare "embed" relation).
                 Matcher mBare = CALL_BARE.matcher(line);
                 while (mBare.find()) {
                     String name = mBare.group(1);
-                    if (CALL_KEYWORDS.contains(name)) continue;
-                    if (name.length() < 2) continue;
+                    if (isCallKeyword(name, language)) continue;
                     if (name.matches("[A-Z][A-Z0-9_]+")) continue; // ALL_CAPS constants
-                    if (lineQualifiedMethods.contains(name)) continue; // already captured via qualified pattern
+                    if (qualifiedStarts.contains(mBare.start(1))) continue; // same occurrence
+                    int previous = mBare.start() - 1;
+                    while (previous >= 0 && Character.isWhitespace(line.charAt(previous))) previous--;
+                    if (previous >= 0 && (line.charAt(previous) == '.' || line.charAt(previous) == ':')) {
+                        continue; // Unparsed receiver (e.g. get().method()) must not become a bare lookup.
+                    }
                     if (seen.add("bare:" + name)) {
-                        String resolved = nameToFqn.getOrDefault(name, name);
+                        String resolved = name;
                         rels.add(makeRelation(projectId, callerFqn, name, resolved,
                                 "CALLS", filePath, lineIdx + 1));
                     }
@@ -408,6 +418,128 @@ public class LocalRelationExtractor {
             }
         }
         return rels;
+    }
+
+    private static final Set<String> PYTHON_CALL_KEYWORDS = Set.of(
+            "False", "None", "True", "and", "as", "assert", "async", "await", "break",
+            "class", "continue", "def", "del", "elif", "else", "except", "finally", "for",
+            "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not",
+            "or", "pass", "raise", "return", "try", "while", "with", "yield");
+
+    private static boolean isCallKeyword(String name, String language) {
+        // C/C++ modifiers and Go builtins (inline, close, etc.) are valid Python names.
+        return ("python".equals(language) ? PYTHON_CALL_KEYWORDS : CALL_KEYWORDS).contains(name);
+    }
+
+    /** Slice only a callable's body, preserving newlines for call-site attribution. */
+    private static String[] callableBody(Map<String, Object> callable, String[] lines,
+                                         int start, int end, String language) {
+        String text = String.join("\n", Arrays.copyOfRange(lines, start, end));
+        String name = (String) callable.get("name");
+        if (name == null || name.isBlank()) return new String[0];
+        Matcher declaration = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*(?:<[^<>]*>\\s*)?\\(").matcher(text);
+        if (!declaration.find()) return new String[0];
+        int cursor = declaration.end();
+        int parentheses = 1;
+        while (cursor < text.length() && parentheses > 0) {
+            char c = text.charAt(cursor++);
+            if (c == '(') parentheses++;
+            if (c == ')') parentheses--;
+        }
+        if (parentheses != 0) return new String[0];
+        boolean python = "python".equals(language);
+        boolean expressionBody = false;
+        while (cursor < text.length() && text.charAt(cursor) != (python ? ':' : '{')) {
+            if (text.charAt(cursor) == '=' && Set.of("kotlin", "scala").contains(language)) {
+                expressionBody = true;
+                break;
+            }
+            // A declaration without a body must not steal the following initializer.
+            if (text.charAt(cursor) == ';' || text.charAt(cursor) == '=') return new String[0];
+            cursor++;
+        }
+        if (cursor == text.length()) return new String[0];
+        int bodyStart = cursor + 1;
+        int bodyEnd = text.length();
+        if (python) {
+            int declarationIndent = indentation(lines[start]);
+            int offset = lines[start].length() + 1;
+            for (int line = start + 1; line < end; line++) {
+                if (offset > bodyStart && !lines[line].isBlank()
+                        && indentation(lines[line]) <= declarationIndent) {
+                    bodyEnd = offset;
+                    break;
+                }
+                offset += lines[line].length() + 1;
+            }
+        } else if (!expressionBody) {
+            int braces = 1;
+            for (int pos = bodyStart; pos < text.length(); pos++) {
+                char c = text.charAt(pos);
+                if (c == '{') braces++;
+                if (c == '}' && --braces == 0) {
+                    bodyEnd = pos;
+                    break;
+                }
+            }
+        }
+        char[] body = text.toCharArray();
+        for (int pos = 0; pos < body.length; pos++) {
+            if ((pos < bodyStart || pos >= bodyEnd) && body[pos] != '\n') body[pos] = ' ';
+        }
+        return new String(body).split("\n", -1);
+    }
+
+    private static int indentation(String line) {
+        int result = 0;
+        while (result < line.length() && Character.isWhitespace(line.charAt(result))) result++;
+        return result;
+    }
+
+    /** Lightweight lexical masking, not a language parser. Offsets/newlines stay unchanged. */
+    private static String maskCommentsAndStrings(String source, String language) {
+        char[] masked = source.toCharArray();
+        boolean hashComments = Set.of("python", "ruby", "bash").contains(language);
+        boolean blockComment = false;
+        String quote = null;
+        for (int i = 0; i < source.length();) {
+            int from = i;
+            char c = source.charAt(i);
+            if (blockComment) {
+                if (source.startsWith("*/", i)) {
+                    blockComment = false;
+                    i += 2;
+                } else i++;
+            } else if (quote != null) {
+                if (c == '\\') i = Math.min(i + 2, source.length());
+                else if (source.startsWith(quote, i)) {
+                    i += quote.length();
+                    quote = null;
+                } else i++;
+            } else if ((!hashComments && source.startsWith("//", i)) || (hashComments && c == '#')) {
+                int newline = source.indexOf('\n', i);
+                i = newline < 0 ? source.length() : newline;
+            } else if (!hashComments && source.startsWith("/*", i)) {
+                blockComment = true;
+                i += 2;
+            } else if ("rust".equals(language) && c == '\'' && i + 1 < source.length()
+                    && (Character.isLetter(source.charAt(i + 1)) || source.charAt(i + 1) == '_')
+                    && (i + 2 >= source.length() || source.charAt(i + 2) != '\'')) {
+                i++; // Rust lifetime/label, not the opening of a character literal.
+                continue;
+            } else if (c == '\'' || c == '"' || c == '`') {
+                String triple = String.valueOf(c).repeat(3);
+                quote = source.startsWith(triple, i) ? triple : String.valueOf(c);
+                i += quote.length();
+            } else {
+                i++;
+                continue;
+            }
+            for (int pos = from; pos < i; pos++) {
+                if (masked[pos] != '\n') masked[pos] = ' ';
+            }
+        }
+        return new String(masked);
     }
 
     // -----------------------------------------------------------------------
@@ -583,7 +715,9 @@ public class LocalRelationExtractor {
         rel.put("projectId", projectId);
         rel.put("sourceFqn", sourceFqn);
         rel.put("targetName", targetName != null ? targetName : "");
-        rel.put("targetFqn", targetFqn);
+        // Syntactic hints are not resolved destinations; retain qualification separately.
+        rel.put("targetFqn", "CALLS".equals(relationType) ? null : targetFqn);
+        if ("CALLS".equals(relationType)) rel.put("targetHint", targetFqn);
         rel.put("relationType", relationType);
         rel.put("filePath", filePath);
         rel.put("line", line > 0 ? line : null);

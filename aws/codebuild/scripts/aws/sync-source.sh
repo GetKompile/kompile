@@ -12,7 +12,7 @@ generated="$(dirname "$config")/generated-codebuild.env"
 # shellcheck disable=SC1090
 source "$config"
 : "${AWS_REGION:?}" "${ARTIFACT_BUCKET:?}"
-excludes="${SOURCE_EXCLUDES:-kompile-fpna- dist/ .codebuild/}"
+excludes="${SOURCE_EXCLUDES:-dist/ .codebuild/}"
 zipfile="$(mktemp --suffix=.zip)"
 trap 'rm -f "$zipfile"' EXIT
 pattern="$(printf '%s\n' $excludes | paste -sd'|')"

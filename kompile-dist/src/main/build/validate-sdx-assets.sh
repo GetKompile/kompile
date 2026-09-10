@@ -35,7 +35,8 @@ if [ -z "${BACKEND_ARTIFACT}" ]; then
     case "${VARIANT}" in
         full|cpu-intel|cpu-arm|android|compat) BACKEND_ARTIFACT=nd4j-native ;;
         cuda) BACKEND_ARTIFACT="nd4j-cuda-${CUDA_VERSION}" ;;
-        zluda|amd-zluda) BACKEND_ARTIFACT=nd4j-zluda ;;
+        zluda) BACKEND_ARTIFACT=nd4j-zluda ;;
+        amd-zluda) BACKEND_ARTIFACT=nd4j-zluda-12.9 ;;
         vulkan|vulkan-compile) BACKEND_ARTIFACT=nd4j-vulkan ;;
         hexagon) BACKEND_ARTIFACT=nd4j-hexagon ;;
         tpu) BACKEND_ARTIFACT=nd4j-tpu ;;
@@ -51,7 +52,8 @@ if [ -z "${EXPECTED_CLASSIFIER}" ]; then
         cpu-intel) EXPECTED_CLASSIFIER="${PLATFORM}-avx2" ;;
         compat) EXPECTED_CLASSIFIER="${PLATFORM}-compat" ;;
         vulkan-compile) EXPECTED_CLASSIFIER="${PLATFORM}-compile" ;;
-        zluda|amd-zluda) EXPECTED_CLASSIFIER="${PLATFORM}-zluda" ;;
+        zluda) EXPECTED_CLASSIFIER="${PLATFORM}-zluda" ;;
+        amd-zluda) EXPECTED_CLASSIFIER="${PLATFORM}-zluda-rocm-7.2.4" ;;
         *) EXPECTED_CLASSIFIER="${PLATFORM}" ;;
     esac
 fi
@@ -87,6 +89,27 @@ case "${BACKEND_ARTIFACT}" in
             exit 2
         fi
         ;;
+    nd4j-zluda-12.9)
+        case "${EXPECTED_CLASSIFIER}" in
+            linux-x86_64-zluda-rocm-10.0.0)
+                if [ "${PLATFORM}" != "linux-x86_64" ]; then
+                    echo "ERROR: ROCm 10 ZLUDA SDK is Linux x86_64-only (got ${PLATFORM})" >&2
+                    exit 2
+                fi
+                ;;
+            linux-x86_64-zluda-rocm-7.2.4|windows-x86_64-zluda-rocm-7.2.4)
+                if [ "${EXPECTED_CLASSIFIER}" != "${PLATFORM}-zluda-rocm-7.2.4" ]; then
+                    echo "ERROR: ROCm 7.2.4 classifier ${EXPECTED_CLASSIFIER} does not match ${PLATFORM}" >&2
+                    exit 2
+                fi
+                ;;
+            *)
+                echo "ERROR: unsupported version-qualified ZLUDA classifier: ${EXPECTED_CLASSIFIER}" >&2
+                exit 2
+                ;;
+        esac
+        REQUIRED_ARTIFACTS=(nd4j-zluda-12.9 nd4j-zluda-12.9-platform nd4j-cuda-12.9-preset nd4j-cuda-backend-common nd4j-presets-common)
+        ;;
     nd4j-vulkan|nd4j-hexagon|nd4j-tpu)
         REQUIRED_ARTIFACTS=("${BACKEND_ARTIFACT}" "${BACKEND_ARTIFACT}-preset")
         ;;
@@ -103,7 +126,7 @@ fi
 
 RUNTIME_REQUIRED=false
 case "${BACKEND_ARTIFACT}:${EXPECTED_CLASSIFIER}" in
-    nd4j-native:*-compat|nd4j-vulkan:*|nd4j-hexagon:*|nd4j-tpu:*|nd4j-zluda:*|nd4j-cuda-12.9:*-zluda) ;;
+    nd4j-native:*-compat|nd4j-vulkan:*|nd4j-hexagon:*|nd4j-tpu:*|nd4j-zluda:*|nd4j-zluda-12.9:*|nd4j-cuda-12.9:*-zluda) ;;
     nd4j-native:*|nd4j-cuda-12.6:*|nd4j-cuda-12.9:*) RUNTIME_REQUIRED=true ;;
 esac
 RUNTIME_MATCH="$(find "${SDK_ROOT}" -type f \( -name '*.zip' -o -name '*.aar' \) -print -quit 2>/dev/null || true)"

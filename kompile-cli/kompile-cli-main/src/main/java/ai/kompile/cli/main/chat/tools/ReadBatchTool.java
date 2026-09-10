@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.codeindex.FileContextService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Read MULTIPLE files in ONE tool call, with the same per-file semantics as
@@ -44,6 +46,17 @@ public class ReadBatchTool implements CliTool {
     private static final int MAX_LINE_LENGTH = 2000;
     private static final long MAX_FILE_SIZE = 50 * 1024; // 50KB — beyond this, stop after the window
     private static final int MAX_FILES = 100;
+    private static final int MAX_CONTEXT_FILES = 5;
+    private static final int MAX_BATCH_CONTEXT_CHARS = 24_000;
+    private final FileContextService fileContextService;
+
+    public ReadBatchTool() {
+        this(new FileContextService());
+    }
+
+    public ReadBatchTool(FileContextService fileContextService) {
+        this.fileContextService = Objects.requireNonNull(fileContextService, "fileContextService");
+    }
 
     @Override
     public String id() { return "read_batch"; }
@@ -55,6 +68,8 @@ public class ReadBatchTool implements CliTool {
                 + "read-before-edit rule). files accepts plain path strings or "
                 + "{file_path, offset, limit} objects for windowed reads. Per-file output matches "
                 + "read (line-numbered, 2000-line/2000-char caps, binary files summarized). "
+                + "Set include_context=true globally or per object entry to append durable notes plus "
+                + "bounded code/KGraph context (maximum 5 contextual files per call). "
                 + "A missing file is reported in its section without failing the rest.";
     }
 
@@ -62,7 +77,7 @@ public class ReadBatchTool implements CliTool {
     public String compactHint() {
         return "Read MANY files in ONE call (line-numbered per file; counts toward read-before-edit). "
                 + "files=[\"a.java\", {file_path:\"b.java\",offset:100,limit:50}, …]; missing files "
-                + "report per-section, others still return.";
+                + "report per-section. include_context=true appends bounded notes + code/KGraph context.";
     }
 
     @Override
@@ -84,7 +99,12 @@ public class ReadBatchTool implements CliTool {
         objProps.putObject("file_path").put("type", "string");
         objProps.putObject("offset").put("type", "integer");
         objProps.putObject("limit").put("type", "integer");
+        objProps.putObject("include_context").put("type", "boolean");
         objectForm.putArray("required").add("file_path");
+
+        ObjectNode includeContext = props.putObject("include_context");
+        includeContext.put("type", "boolean");
+        includeContext.put("description", "Default context setting for entries (default false; per-entry value overrides it)");
 
         schema.putArray("required").add("files");
         return schema;
@@ -110,18 +130,24 @@ public class ReadBatchTool implements CliTool {
         }
 
         List<Request> requests = new ArrayList<>();
+        boolean defaultIncludeContext = params.path("include_context").asBoolean(false);
+        int contextRequests = 0;
         int index = 0;
         for (JsonNode entry : filesNode) {
             index++;
             String filePath;
             int offset = 1;
             int limit = MAX_LINES;
+            boolean includeContext = defaultIncludeContext;
             if (entry.isTextual()) {
                 filePath = entry.asText("");
             } else if (entry.isObject()) {
                 filePath = entry.path("file_path").asText("");
                 offset = entry.path("offset").asInt(1);
                 limit = entry.path("limit").asInt(MAX_LINES);
+                if (entry.has("include_context")) {
+                    includeContext = entry.path("include_context").asBoolean(false);
+                }
             } else {
                 return ToolResult.error("files[" + (index - 1) + "]: expected a path string or "
                         + "{file_path, offset?, limit?} object");
@@ -132,12 +158,18 @@ public class ReadBatchTool implements CliTool {
             if (offset < 1) offset = 1;
             if (limit < 1) limit = MAX_LINES;
             limit = Math.min(limit, MAX_LINES);
-            requests.add(new Request(context.resolvePath(filePath), offset, limit));
+            if (includeContext && ++contextRequests > MAX_CONTEXT_FILES) {
+                return ToolResult.error("read_batch context requested for more than "
+                        + MAX_CONTEXT_FILES + " files — split the call or disable include_context");
+            }
+            requests.add(new Request(context.resolvePath(filePath), offset, limit, includeContext));
         }
 
         StringBuilder out = new StringBuilder();
         int filesRead = 0;
         int filesFailed = 0;
+        int remainingContextChars = MAX_BATCH_CONTEXT_CHARS;
+        List<Map<String, Object>> contexts = new ArrayList<>();
         for (Request request : requests) {
             String display = display(context, request.path);
             Section section = readFile(context, request);
@@ -149,15 +181,30 @@ public class ReadBatchTool implements CliTool {
                 out.append("== ").append(display).append(" (").append(section.note).append(")\n");
                 out.append(section.body);
                 if (!section.body.endsWith("\n")) out.append('\n');
+                if (section.context != null) {
+                    Map<String, Object> contextMetadata = new LinkedHashMap<>();
+                    contextMetadata.put("filePath", display);
+                    contextMetadata.put("context", section.context.summaryMetadata());
+                    contexts.add(contextMetadata);
+                    if (remainingContextChars >= 512) {
+                        String rendered = fileContextService.render(section.context,
+                                Math.min(FileContextService.DEFAULT_RENDER_CHARS, remainingContextChars));
+                        out.append('\n').append(rendered);
+                        remainingContextChars -= rendered.length();
+                    } else {
+                        out.append("\n--- File context omitted: batch context budget exhausted ---\n");
+                    }
+                }
                 out.append('\n');
             }
         }
 
         String summary = filesRead + "/" + requests.size() + " files read"
                 + (filesFailed > 0 ? ", " + filesFailed + " failed" : "");
-        Map<String, Object> metadata = Map.of(
-                "filesRead", filesRead,
-                "filesFailed", filesFailed);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("filesRead", filesRead);
+        metadata.put("filesFailed", filesFailed);
+        if (!contexts.isEmpty()) metadata.put("fileContexts", List.copyOf(contexts));
         String output = summary + "\n\n" + out.toString().stripTrailing();
         if (filesRead == 0 && filesFailed > 0) {
             return ToolResult.error(output);
@@ -204,6 +251,9 @@ public class ReadBatchTool implements CliTool {
 
             context.recordFileRead(path);
 
+            FileContextService.ContextSnapshot fileContext = request.includeContext
+                    ? fileContextService.lookup(path, context.getWorkingDirectory()) : null;
+
             String note;
             if (shown == 0) {
                 note = "file has " + totalLines + " lines, offset " + request.offset + " is past end";
@@ -213,7 +263,7 @@ public class ReadBatchTool implements CliTool {
             } else {
                 note = totalLines + " lines";
             }
-            return Section.ok(note, body.toString());
+            return Section.ok(note, body.toString(), fileContext);
         } catch (IOException e) {
             return Section.error("read failed: " + e.getMessage());
         }
@@ -234,10 +284,13 @@ public class ReadBatchTool implements CliTool {
         return line.substring(0, MAX_LINE_LENGTH) + "... (truncated)";
     }
 
-    private record Request(Path path, int offset, int limit) {}
+    private record Request(Path path, int offset, int limit, boolean includeContext) {}
 
-    private record Section(String error, String note, String body) {
-        static Section ok(String note, String body) { return new Section(null, note, body); }
-        static Section error(String error) { return new Section(error, null, null); }
+    private record Section(String error, String note, String body,
+                           FileContextService.ContextSnapshot context) {
+        static Section ok(String note, String body, FileContextService.ContextSnapshot context) {
+            return new Section(null, note, body, context);
+        }
+        static Section error(String error) { return new Section(error, null, null, null); }
     }
 }

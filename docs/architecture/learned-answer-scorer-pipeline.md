@@ -20,7 +20,7 @@ Why logistic regression first: needs few labels, cannot overfit 12 features, wei
 
 ## Label sources
 
-1. **Golden QA set** (primary, per corpus — FP&A first). A list of `(query, correctAnswerName,
+1. **Golden QA set** (primary, per corpus — domain-planning first). A list of `(query, correctAnswerName,
    factSheetId)`. This is the SAME artifact the RAGAS eval (grounded-RAG rec 5) needs — building it
    once unlocks both measurement and training.
 2. **Logged accept/reject** (secondary, continuous). When a user/agent accepts or corrects a

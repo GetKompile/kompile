@@ -49,6 +49,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -77,8 +78,17 @@ public class McpSocketSession implements Runnable {
     private final ConcurrentHashMap<String, ToolDef> tools = new ConcurrentHashMap<>();
     private final AtomicBoolean toolsReady = new AtomicBoolean(false);
     private volatile Path workDir;
+    private volatile String requestedProfile = "full";
+    private volatile Set<String> allowedToolIds;
     private volatile CoordinationStateManager coordinator;
+    private volatile HighMemoryToolCallGuard highMemoryToolCallGuard;
     private volatile EnforcerToolCallGuard enforcerGuard;
+    private ai.kompile.cli.main.chat.enforcer.JudgeControl mcpJudgeControl;
+
+    private synchronized ai.kompile.cli.main.chat.enforcer.JudgeControl mcpJudgeControl() {
+        if (mcpJudgeControl == null) mcpJudgeControl = ai.kompile.cli.main.chat.enforcer.JudgeControl.load(sessionId);
+        return mcpJudgeControl;
+    }
     private volatile CliToolGatewayInterceptor gatewayInterceptor;
     private volatile McpToolAuditLogger auditLogger;
 
@@ -110,6 +120,8 @@ public class McpSocketSession implements Runnable {
             JsonNode header = sessionOm.readTree(headerLine);
             String workDirStr = header.has("workDir") ? header.get("workDir").asText() : null;
             this.workDir = workDirStr != null ? Paths.get(workDirStr) : pool.defaultWorkDir();
+            this.requestedProfile = header.path("profile").asText("full");
+            this.allowedToolIds = parseAllowedToolIds(header.get("allowedTools"));
             this.gatewayInterceptor = CliToolGatewayInterceptor.fromConfig(sessionOm);
             this.auditLogger = new McpToolAuditLogger(
                     sessionId, "kompile-daemon", "mcp-daemon", workDir, sessionOm);
@@ -121,13 +133,15 @@ public class McpSocketSession implements Runnable {
                 System.err.println("[daemon] Enforcer MCP guard active (" + enforcerGuard.describe() + ")");
             }
 
-            System.err.println("[daemon] MCP session " + sessionId + " started (workDir=" + workDir + ")");
+            System.err.println("[daemon] MCP session " + sessionId + " started (workDir="
+                    + workDir + ", profile=" + requestedProfile + ")");
 
             // Build tools in background so the event loop can handle
             // initialize/ping immediately — prevents Claude Code timeout.
             Thread initThread = new Thread(() -> {
                 try {
                     Map<String, ToolDef> builtTools = buildToolMap(sessionOm, workDir);
+                    retainAllowedTools(builtTools, allowedToolIds);
                     tools.putAll(builtTools);
                     toolsReady.set(true);
                     System.err.println("[daemon] MCP session " + sessionId + " tools ready (" + tools.size() + " tools)");
@@ -335,14 +349,8 @@ public class McpSocketSession implements Runnable {
 
                             if (progressToken != null) sendProgress(om, progressToken, 1, 1);
 
-                            ObjectNode callResult = om.createObjectNode();
-                            var content = callResult.putArray("content");
-                            var textObj = content.addObject();
-                            textObj.put("type", "text");
-                            String title = tr.getTitle() != null ? tr.getTitle() + "\n" : "";
-                            textObj.put("text", title + (tr.getOutput() != null ? tr.getOutput() : ""));
-                            callResult.put("isError", tr.isError());
-                            result.set("result", callResult);
+                            result.set("result",
+                                    McpToolResultSerializer.toMcpCallResult(om, tr));
                         }
                     }
                 }
@@ -491,6 +499,9 @@ public class McpSocketSession implements Runnable {
 
         String coordSessionId = "daemon-mcp-" + sessionId;
         coordinator = new CoordinationStateManager(wd, coordSessionId, om);
+        highMemoryToolCallGuard = new HighMemoryToolCallGuard(coordinator);
+        coordinator.registerAgent("MCP daemon client session", null, "mcp-daemon", 0,
+                ProcessHandle.current().pid(), sessionId, null);
 
         // Skip tools that the host agent already provides natively.
         // Registering duplicates (e.g. mcp__kompile__bash) causes the LLM to pick
@@ -498,16 +509,21 @@ public class McpSocketSession implements Runnable {
 
         // Patch is kompile-specific (multi-hunk unified diff), always register
         register(map, new PatchTool(), om, wd);
+        register(map, new ReadBatchTool(), om, wd);
 
         // Knowledge & memory (kompile-specific, always register)
         register(map, new TranscriptSearchTool(), om, wd);
         register(map, new ConversationImportTool(), om, wd);
         register(map, new MemoryTool(), om, wd);
+        register(map, new FileContextTool(), om, wd);
+        register(map, new FileNoteTool(), om, wd);
+        register(map, new ChannelTool(null, om), om, wd);
 
         // Config tools
         register(map, new ConfigArchiveTool(), om, wd);
         register(map, new ProjectConfigTool(), om, wd);
         register(map, new EnforcerConfigTool(), om, wd);
+        register(map, new JudgeControlTool(), om, wd);
 
         // Test milestone
         register(map, new TestMilestoneTool(), om, wd);
@@ -537,15 +553,16 @@ public class McpSocketSession implements Runnable {
         // Process management
         var processManager = new BackgroundProcessManager(coordSessionId, wd);
         var procTool = new ProcessManagementTool(processManager, coordinator);
-        map.put(procTool.id(), new ToolDef(procTool.id(), procTool.description(), procTool.parameterSchema(),
-                procTool.mcpAnnotations(),
-                args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
+        register(map, procTool, om, wd);
 
         // Edit coordination
         register(map, new EditCoordinatorTool(coordinator), om, wd);
+        register(map, new SessionListTool(coordinator), om, wd);
 
         // Delegation tools — use shared registries from the pool
         var subagentRunner = new DirectSubagentRunnerStdio(wd, pool.roleManager());
+        subagentRunner.setBaseEnvironment(Map.of(
+                "KOMPILE_PARENT_SESSION_ID", coordinator.getSessionId()));
         var enforcerTool = new StdioEnforcerTool(subagentRunner, om, wd, processManager);
         map.put(enforcerTool.id(), new ToolDef(enforcerTool.id(), enforcerTool.description(), enforcerTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
@@ -597,28 +614,44 @@ public class McpSocketSession implements Runnable {
         return map;
     }
 
+    static Set<String> parseAllowedToolIds(JsonNode node) {
+        if (node == null || !node.isArray()) return null;
+        Set<String> result = new LinkedHashSet<>();
+        node.forEach(value -> {
+            if (value.isTextual() && !value.asText().isBlank()) {
+                result.add(value.asText().trim());
+            }
+        });
+        return java.util.Collections.unmodifiableSet(result);
+    }
+
+    static void retainAllowedTools(Map<String, ?> tools, Set<String> allowedToolIds) {
+        if (allowedToolIds != null) tools.keySet().retainAll(allowedToolIds);
+    }
+
     private void register(Map<String, ToolDef> map, CliTool cliTool, ObjectMapper om, Path wd) {
-        map.put(cliTool.id(), new ToolDef(
-                cliTool.id(), cliTool.description(), cliTool.parameterSchema(),
-                cliTool.mcpAnnotations(),
+        HighMemoryToolCallGuard guard = highMemoryToolCallGuard;
+        CliTool executable = guard == null ? cliTool : guard.wrap(cliTool);
+        map.put(executable.id(), new ToolDef(
+                executable.id(), executable.description(), executable.parameterSchema(),
+                executable.mcpAnnotations(),
                 args -> {
-                    try { return cliTool.execute(om.valueToTree(args), ctx(wd)); }
+                    try { return executable.execute(om.valueToTree(args), ctx(wd)); }
                     catch (Exception e) { return ToolResult.error(e.getMessage()); }
                 }
         ));
     }
 
     private ToolContext ctx(Path wd) {
-        return new ToolContext(sessionId, null, new AllowAllPermissionService(), wd, null);
+        ToolContext context = new ToolContext(sessionId, null, new AllowAllPermissionService(), wd, null);
+        context.bindJudgeControl(mcpJudgeControl(), true);
+        return context;
     }
 
     private EnforcerToolCallDecision evaluateEnforcerToolCall(
             String toolName, Map<String, Object> argMap) {
-        var guard = enforcerGuard;
-        if (guard == null || !guard.isActive()) {
-            return null;
-        }
-        return guard.evaluate(toolName, argMap);
+        return EnforcerToolCallGuard.evaluateSession(enforcerGuard, toolName, argMap,
+                mcpJudgeControl(), pool.objectMapper());
     }
 
     private CliToolGatewayInterceptor.InterceptResult evaluateGatewayToolCall(

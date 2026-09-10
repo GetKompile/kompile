@@ -6,6 +6,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import { personaBaseUrl } from './e2e-endpoints';
 
+const browserExecutable = process.env['KOMPILE_PLAYWRIGHT_EXECUTABLE'];
+
 /**
  * Browser e2e across the three persona apps.
  *
@@ -39,6 +41,9 @@ export default defineConfig({
     video: 'retain-on-failure',
     actionTimeout: 10_000,
     navigationTimeout: 15_000,
+    ...(browserExecutable
+      ? { launchOptions: { executablePath: browserExecutable } }
+      : {}),
   },
   projects: [
     {

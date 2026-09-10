@@ -17,8 +17,11 @@
 package ai.kompile.core.llm;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,14 +32,205 @@ import static org.junit.jupiter.api.Assertions.*;
  * Verifies the DYNAMIC model catalog reads real models.dev metadata from disk and that
  * {@link ModelContextWindows} consults it ahead of its static fallback table.
  */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class CliModelCatalogTest {
 
     private static final String PROP = "kompile.cli.modelCatalogPaths";
 
+    @TempDir Path tempDir;
+    private String previousCatalogPaths;
+
+    @BeforeEach
+    void isolateCatalog() {
+        previousCatalogPaths = System.getProperty(PROP);
+        System.setProperty(PROP, tempDir.resolve("absent.json").toString());
+        CliModelCatalog.invalidateCacheForTest();
+    }
+
     @AfterEach
     void cleanup() {
-        System.clearProperty(PROP);
+        if (previousCatalogPaths == null) System.clearProperty(PROP);
+        else System.setProperty(PROP, previousCatalogPaths);
         CliModelCatalog.invalidateCacheForTest();
+    }
+
+    private void useCatalog(String json) throws Exception {
+        Path file = tempDir.resolve("models.json");
+        Files.writeString(file, json);
+        System.setProperty(PROP, file.toString());
+        CliModelCatalog.invalidateCacheForTest();
+    }
+
+    private void useAdversarialCatalog(boolean includeOpenAi) throws Exception {
+        String openai = includeOpenAi ? """
+                , "openai": {"models": {
+                  "gpt-6-astra": {"limit": {"context": 1050000, "output": 128000}},
+                  "catalog-only-model": {"limit": {"context": 64000, "output": 4000}}
+                }}
+                """ : "";
+        useCatalog("""
+                {
+                  "llmgateway": {"models": {
+                    "gpt-6-astra": {"limit": {"context": 1050000, "output": 1050000}},
+                    "catalog-only-model": {"limit": {"context": 900000, "output": 900000}}
+                  }},
+                  "nano-gpt": {"models": {
+                    "openai/gpt-6-astra": {"limit": {"context": 900000, "output": 900000}}
+                  }}
+                  %s
+                }
+                """.formatted(openai));
+    }
+
+    @Test
+    void qualifiedMissNeverFallsBackToBareOrSlashContainingAlias() throws Exception {
+        useAdversarialCatalog(false);
+
+        assertEquals("llmgateway", CliModelCatalog.lookup("gpt-6-astra").orElseThrow().providerId(),
+                "unqualified callers retain their legacy first-catalog match");
+        assertTrue(CliModelCatalog.lookup("openai", "gpt-6-astra").isEmpty());
+        assertTrue(CliModelCatalog.lookup("openai/gpt-6-astra").isEmpty());
+        assertTrue(CliModelCatalog.lookup("openai-codex/gpt-6-astra").isEmpty());
+        assertTrue(CliModelCatalog.lookup("unknown/gpt-6-astra").isEmpty());
+        assertTrue(CliModelCatalog.lookup(null, "gpt-6-astra").isEmpty());
+        assertTrue(CliModelCatalog.lookup("openai", " ").isEmpty());
+        assertEquals("nano-gpt", CliModelCatalog.lookup("nano-gpt", "openai/gpt-6-astra")
+                .orElseThrow().providerId());
+    }
+
+    @Test
+    void scopedKeysDisambiguateQualifiedIdsFromLiteralSlashes() throws Exception {
+        useAdversarialCatalog(true);
+
+        CliModelCatalog.ModelSpec openai = CliModelCatalog.lookup(" OpenAI ", " GPT-6-ASTRA ").orElseThrow();
+        assertEquals("openai", openai.providerId());
+        assertEquals("gpt-6-astra", openai.id());
+        assertEquals(128_000, openai.maxOutputTokens());
+        assertEquals(openai, CliModelCatalog.lookup("openai/gpt-6-astra").orElseThrow());
+
+        CliModelCatalog.ModelSpec nano = CliModelCatalog.lookup("nano-gpt", "openai/gpt-6-astra").orElseThrow();
+        assertEquals("nano-gpt", nano.providerId());
+        assertEquals("openai/gpt-6-astra", nano.id());
+        assertEquals(900_000, nano.maxOutputTokens());
+        assertEquals(nano, CliModelCatalog.lookup("nano-gpt/openai/gpt-6-astra").orElseThrow());
+        assertTrue(CliModelCatalog.lookup("openai", "nano-gpt/openai/gpt-6-astra").isEmpty());
+    }
+
+    @Test
+    void providerAwareFallbackDoesNotReenterUnqualifiedCatalog() throws Exception {
+        useAdversarialCatalog(false);
+
+        for (String provider : new String[]{"openai", "openai-codex", "codex"}) {
+            assertEquals(1_050_000, ModelContextWindows.getContextWindow(provider, "gpt-6-astra"));
+            assertEquals(128_000, ModelContextWindows.getMaxOutputTokens(provider, "gpt-6-astra"));
+            assertTrue(ModelContextWindows.isKnown(provider, "gpt-6-astra"));
+            assertFalse(ModelContextWindows.isKnown(provider, "catalog-only-model"));
+            assertEquals(ModelContextWindows.DEFAULT_CONTEXT_WINDOW,
+                    ModelContextWindows.getContextWindow(provider, "catalog-only-model"));
+            assertEquals(ModelContextWindows.DEFAULT_MAX_OUTPUT_TOKENS,
+                    ModelContextWindows.getMaxOutputTokens(provider, "catalog-only-model"));
+        }
+        assertEquals(128_000, ModelContextWindows.getMaxOutputTokens("openai-codex", "gpt-5.6-sol"),
+                "static longest-prefix/versioned fallback is still available");
+        assertEquals(1_050_000, ModelContextWindows.getMaxOutputTokens("gpt-6-astra"),
+                "bare-id dynamic lookup is preserved for legacy callers");
+    }
+
+    @Test
+    void separateProviderAndModelKeysCannotCollideAtASlashBoundary() throws Exception {
+        useCatalog("""
+                {
+                  "proxy": {"models": {
+                    "vendor/model": {"limit": {"context": 64000, "output": 4000}}
+                  }},
+                  "proxy/vendor": {"models": {
+                    "model": {"limit": {"context": 32000, "output": 2000}}
+                  }}
+                }
+                """);
+
+        assertEquals(4_000, CliModelCatalog.lookup("proxy", "vendor/model").orElseThrow().maxOutputTokens());
+        assertEquals(2_000, CliModelCatalog.lookup("proxy/vendor", "model").orElseThrow().maxOutputTokens());
+    }
+
+    @Test
+    void claudeAndGeminiAliasesUseOnlyTheirKnownUpstreams() throws Exception {
+        useCatalog("""
+                {
+                  "gateway": {"models": {
+                    "provider-only-model": {"limit": {"context": 900000, "output": 900000}}
+                  }},
+                  "anthropic": {"models": {
+                    "provider-only-model": {"limit": {"context": 200000, "output": 8000}}
+                  }},
+                  "google": {"models": {
+                    "provider-only-model": {"limit": {"context": 1000000, "output": 64000}}
+                  }}
+                }
+                """);
+
+        assertEquals(200_000, ModelContextWindows.getContextWindow(" Claude ", "provider-only-model"));
+        assertEquals(8_000, ModelContextWindows.getMaxOutputTokens("claude", "provider-only-model"));
+        assertEquals(1_000_000, ModelContextWindows.getContextWindow("GEMINI", "provider-only-model"));
+        assertEquals(64_000, ModelContextWindows.getMaxOutputTokens("gemini", "provider-only-model"));
+        assertFalse(ModelContextWindows.isKnown("custom-google", "provider-only-model"));
+        assertFalse(ModelContextWindows.isKnown("openai-codex", null));
+        assertEquals(ModelContextWindows.DEFAULT_CONTEXT_WINDOW,
+                ModelContextWindows.getContextWindow("openai-codex", " "));
+        assertEquals(ModelContextWindows.DEFAULT_MAX_OUTPUT_TOKENS,
+                ModelContextWindows.getMaxOutputTokens("openai-codex", null));
+    }
+
+    @Test
+    void nativeAliasesConsultOnlyActualProviderMetadata() throws Exception {
+        useAdversarialCatalog(true);
+
+        for (String provider : new String[]{"openai", "openai-codex", "codex"}) {
+            assertEquals(128_000, ModelContextWindows.getMaxOutputTokens(provider, "gpt-6-astra"));
+            assertTrue(ModelContextWindows.isKnown(provider, "catalog-only-model"));
+            assertEquals(64_000, ModelContextWindows.getContextWindow(provider, "catalog-only-model"));
+            assertEquals(4_000, ModelContextWindows.getMaxOutputTokens(provider, "catalog-only-model"));
+        }
+        assertFalse(ModelContextWindows.isKnown("custom-openai", "catalog-only-model"));
+        assertEquals(ModelContextWindows.DEFAULT_MAX_OUTPUT_TOKENS,
+                ModelContextWindows.getMaxOutputTokens("custom-openai", "catalog-only-model"));
+    }
+
+    @Test
+    void freeAliasReconciliationCannotBorrowAnotherProvidersGeometry() throws Exception {
+        useCatalog("""
+                {
+                  "llmgateway": {"models": {
+                    "base": {"limit": {"context": 900000, "output": 900000}},
+                    "base-free": {"limit": {"context": 900000, "output": 900000}},
+                    "route/base": {"limit": {"context": 800000, "output": 800000}},
+                    "route/base-free": {"limit": {"context": 800000, "output": 800000}}
+                  }},
+                  "route": {"models": {
+                    "base": {"limit": {"context": 200000, "output": 40000}},
+                    "base-free": {"limit": {"context": 40000, "output": 8000}}
+                  }},
+                  "without-base": {"models": {
+                    "base-free": {"limit": {"context": 32000, "output": 4000}}
+                  }}
+                }
+                """);
+
+        CliModelCatalog.ModelSpec alias = CliModelCatalog.lookup("route", "base-free").orElseThrow();
+        assertEquals("route", alias.providerId());
+        assertEquals(200_000, alias.contextWindow());
+        assertEquals(40_000, alias.maxOutputTokens());
+        assertEquals(4_000, CliModelCatalog.lookup("without-base", "base-free").orElseThrow().maxOutputTokens());
+        assertEquals("llmgateway", CliModelCatalog.lookup("base-free").orElseThrow().providerId());
+        assertEquals(900_000, CliModelCatalog.lookup("base-free").orElseThrow().maxOutputTokens());
+    }
+
+    @Test
+    void cacheInvalidationClearsScopedEntries() throws Exception {
+        useAdversarialCatalog(true);
+        assertTrue(CliModelCatalog.lookup("openai", "gpt-6-astra").isPresent());
+        useAdversarialCatalog(false);
+        assertTrue(CliModelCatalog.lookup("openai", "gpt-6-astra").isEmpty());
     }
 
     private Path writeCatalog(Path dir) throws Exception {

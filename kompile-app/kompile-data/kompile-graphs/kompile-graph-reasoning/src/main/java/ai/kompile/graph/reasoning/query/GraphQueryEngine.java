@@ -45,6 +45,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.CancellationException;
 
 /**
  * A compact, deterministic query facade over the graph reasoning library.
@@ -780,14 +781,21 @@ public final class GraphQueryEngine {
                     "Use a name, type, label, tag, or metadata phrase.");
         }
         int limit = bounded(query.topK(), 10, 100);
-        List<EntityView> matches = rankResolutionCandidates(
-                graph, query.queryText(), limit, structuralScores(graph));
+        List<EntityView> matches = rankResolutionCandidates(graph, query.queryText(), limit);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("scoreBasis", "lexical + stored entity prior");
+        data.put("storedPrior", "clamp01(weight * confidence)");
+        data.put("inferenceInvoked", false);
         return new Result(Status.OK, Intent.SEARCH,
-                "Found " + matches.size() + " matching entity(s) for '" + query.queryText() + "'.",
+                "Found " + matches.size() + " matching entity(s) for '" + query.queryText()
+                        + "' using retrieval-only scoring (no graph inference).",
                 matches, List.of(), List.of(), List.of(),
                 matches.isEmpty()
-                        ? List.of("Try fewer or broader terms, then use the returned id with DESCRIBE.")
-                        : List.of("Use a returned id with DESCRIBE, NEIGHBORS, or PATH."));
+                        ? List.of("Try fewer or broader terms, then use the returned id with DESCRIBE.",
+                        "SEARCH scores use lexical matching plus stored entity weight*confidence; no PSL/Bayesian inference is invoked.")
+                        : List.of("Use a returned id with DESCRIBE, NEIGHBORS, or PATH.",
+                        "SEARCH scores use lexical matching plus stored entity weight*confidence; no PSL/Bayesian inference is invoked."),
+                data, List.of(), null);
     }
 
     private Result describe(ReasoningGraph graph, Query query) {
@@ -912,7 +920,10 @@ public final class GraphQueryEngine {
 
         String relationType = normalizePredicate(query.relationTypes().get(0));
         String atom = claimAtom(relationType, query.entityId(), query.targetId());
-        VerificationStores stores = graphFacts(graph);
+        // Claim verification needs facts whose subject is the claimed source only. Restricting the
+        // adapter to outgoing adjacency avoids scanning/materializing a million-edge graph and lets
+        // storage-backed ReasoningGraph implementations answer VERIFY/WHY with one indexed lookup.
+        VerificationStores stores = graphFacts(graph.outgoing(query.entityId()));
         VerifyResult verdict = new DefaultKbVerifier(
                 stores.inferred(), stores.observed()).verify(atom);
 
@@ -1139,25 +1150,18 @@ public final class GraphQueryEngine {
             case PATH, VERIFY, WHY, WHY_NOT -> true;
             default -> false;
         };
-        boolean sourceNeedsRanking = resolveSource && !blank(original.entityId())
-                && entityById(graph, original.entityId()) == null;
-        boolean targetNeedsRanking = resolveTarget && !blank(original.targetId())
-                && entityById(graph, original.targetId()) == null;
-        Map<String, Double> structural = sourceNeedsRanking || targetNeedsRanking
-                ? structuralScores(graph) : Map.of();
-
         String entityId = original.entityId();
         String targetId = original.targetId();
         List<ResolutionView> resolutions = new ArrayList<>();
         if (resolveSource && !blank(entityId)) {
-            ResolutionView resolution = resolveEntity(graph, "entityId", entityId, structural);
+            ResolutionView resolution = resolveEntity(graph, "entityId", entityId);
             resolutions.add(resolution);
             if (!blank(resolution.resolvedId())) {
                 entityId = resolution.resolvedId();
             }
         }
         if (resolveTarget && !blank(targetId)) {
-            ResolutionView resolution = resolveEntity(graph, "targetId", targetId, structural);
+            ResolutionView resolution = resolveEntity(graph, "targetId", targetId);
             resolutions.add(resolution);
             if (!blank(resolution.resolvedId())) {
                 targetId = resolution.resolvedId();
@@ -1173,14 +1177,13 @@ public final class GraphQueryEngine {
     }
 
     private ResolutionView resolveEntity(
-            ReasoningGraph graph, String role, String input, Map<String, Double> structural) {
+            ReasoningGraph graph, String role, String input) {
         GraphEntity direct = entityById(graph, input);
         List<EntityView> candidates;
         if (direct != null) {
-            Double structuralScore = structural.containsKey(direct.id()) ? structural.get(direct.id()) : null;
-            candidates = List.of(entityView(direct, 1.0, structuralScore, null));
+            candidates = List.of(entityView(direct, 1.0, null, null));
         } else {
-            candidates = rankResolutionCandidates(graph, input, 5, structural);
+            candidates = rankResolutionCandidates(graph, input, 5);
         }
         EntityView top = candidates.isEmpty() ? null : candidates.get(0);
         boolean ambiguous = direct == null && candidates.size() > 1
@@ -1196,63 +1199,55 @@ public final class GraphQueryEngine {
         if (blank(input)) {
             return null;
         }
-        GraphEntity exact = graph.entity(input.trim()).orElse(null);
+        String normalizedInput = input.trim();
+        GraphEntity exact = graph.entity(normalizedInput).orElse(null);
         if (exact != null) {
             return exact;
         }
-        return graph.entities().stream()
-                .filter(entity -> entity.id().equalsIgnoreCase(input.trim()))
-                .findFirst().orElse(null);
-    }
-
-    private static Map<String, Double> structuralScores(ReasoningGraph graph) {
-        if (graph.entityCount() == 0) {
-            return Map.of();
-        }
-        try {
-            Map<String, Double> scores = new HashMap<>();
-            for (HybridReasoner.ScoredEntity score : new HybridReasoner().rank(graph)) {
-                scores.put(score.entityId(), clamp01(score.structuralScore()));
+        for (GraphEntity entity : graph.entities()) {
+            checkInterrupted();
+            if (entity.id().equalsIgnoreCase(normalizedInput)) {
+                return entity;
             }
-            return scores;
-        } catch (RuntimeException ignored) {
-            return Map.of();
         }
+        return null;
     }
 
     private static List<EntityView> rankResolutionCandidates(
             ReasoningGraph graph,
             String queryText,
-            int limit,
-            Map<String, Double> structuralScores) {
+            int limit) {
         if (blank(queryText)) {
             return List.of();
         }
         List<EntityMatch> matches = new ArrayList<>();
         double maxLexical = 0.0;
         for (GraphEntity entity : graph.entities()) {
+            checkInterrupted();
             double lexical = lexicalScore(entity, queryText);
             if (lexical <= 0.0) {
                 continue;
             }
             int exactRank = entity.id().equalsIgnoreCase(queryText.trim()) ? 2
                     : entity.label().equalsIgnoreCase(queryText.trim()) ? 1 : 0;
-            double structural = structuralScores.getOrDefault(entity.id(), 0.0);
-            matches.add(new EntityMatch(entity, lexical, structural, exactRank, 0.0));
+            double storedPrior = storedEntityPrior(entity);
+            matches.add(new EntityMatch(entity, lexical, storedPrior, exactRank, 0.0));
             maxLexical = Math.max(maxLexical, lexical);
         }
         List<EntityMatch> scored = new ArrayList<>(matches.size());
         for (EntityMatch match : matches) {
+            checkInterrupted();
             double lexical = maxLexical == 0.0 ? 0.0 : match.lexical() / maxLexical;
-            double score = clamp01(0.85 * lexical + 0.15 * match.structural());
+            double score = clamp01(0.85 * lexical + 0.15 * match.storedPrior());
             if (match.exactRank() == 2) {
                 score = 1.0;
             } else if (match.exactRank() == 1) {
-                score = clamp01(0.98 + 0.02 * match.structural());
+                score = clamp01(0.98 + 0.02 * match.storedPrior());
             }
-            scored.add(new EntityMatch(match.entity(), match.lexical(), match.structural(),
+            scored.add(new EntityMatch(match.entity(), match.lexical(), match.storedPrior(),
                     match.exactRank(), score));
         }
+        checkInterrupted();
         scored.sort((left, right) -> {
             int exact = Integer.compare(right.exactRank(), left.exactRank());
             if (exact != 0) return exact;
@@ -1262,8 +1257,9 @@ public final class GraphQueryEngine {
             if (lexical != 0) return lexical;
             return left.entity().id().compareTo(right.entity().id());
         });
+        checkInterrupted();
         return scored.stream().limit(limit)
-                .map(match -> entityView(match.entity(), match.score(), match.structural(), null))
+                .map(match -> entityView(match.entity(), match.score(), null, null))
                 .toList();
     }
 
@@ -1281,6 +1277,8 @@ public final class GraphQueryEngine {
             meta.put("resolvedId", String.valueOf(resolution.resolvedId()));
             meta.put("candidateIds", resolution.candidates().stream()
                     .map(EntityView::id).collect(java.util.stream.Collectors.joining(",")));
+            meta.put("scoreBasis", "lexical + stored entity prior; exact id/name priority");
+            meta.put("inferenceInvoked", "false");
             premises.add(new ReasoningTrace.Step(
                     ReasoningTrace.StepKind.QUERY,
                     resolution.resolvedId() == null
@@ -1377,11 +1375,18 @@ public final class GraphQueryEngine {
         Opinion opinion = graph instanceof UnifiedGraph unified
                 ? unified.entityOpinion(entity.id()) : null;
         double confidence = entity.score() > 0.0 ? entity.score() : entity.confidence();
+        String source = inferred ? "hybrid_rank"
+                : intent == Intent.SEARCH ? "lexical_entity_search" : "graph_lookup";
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("type", entity.type());
+        if (intent == Intent.SEARCH) {
+            metadata.put("scoreBasis", "lexical + stored entity prior");
+            metadata.put("inferenceInvoked", "false");
+        }
         return new ReasoningTrace.Step(
                 inferred ? ReasoningTrace.StepKind.INFERENCE : ReasoningTrace.StepKind.QUERY,
                 "entity " + entity.id() + " (" + entity.label() + ")",
-                inferred ? "hybrid_rank" : "graph_lookup", clamp01(confidence), entity.id(),
-                List.of(), opinion, Map.of("type", entity.type()));
+                source, clamp01(confidence), entity.id(), List.of(), opinion, metadata);
     }
 
     private static double resultConfidence(Result result) {
@@ -1476,9 +1481,11 @@ public final class GraphQueryEngine {
     private static List<GraphRelation> filteredRelations(
             ReasoningGraph graph, String entityId, Direction direction, List<String> relationTypes) {
         List<GraphRelation> candidates = switch (direction) {
-            case OUTGOING -> graph.outgoing(entityId);
-            case INCOMING -> graph.incoming(entityId);
-            case BOTH -> graph.relationsOf(entityId);
+            case OUTGOING -> directionalRelations(
+                    graph.outgoing(entityId), graph.incoming(entityId));
+            case INCOMING -> directionalRelations(
+                    graph.incoming(entityId), graph.outgoing(entityId));
+            case BOTH -> distinctRelations(graph.relationsOf(entityId));
         };
         Set<String> types = new HashSet<>();
         for (String type : relationTypes) {
@@ -1493,6 +1500,22 @@ public final class GraphQueryEngine {
                 .toList();
     }
 
+    private static List<GraphRelation> directionalRelations(
+            List<GraphRelation> primary, List<GraphRelation> reverse) {
+        LinkedHashMap<String, GraphRelation> relations = new LinkedHashMap<>();
+        for (GraphRelation relation : primary) relations.putIfAbsent(relation.id(), relation);
+        for (GraphRelation relation : reverse) {
+            if (!relation.directed()) relations.putIfAbsent(relation.id(), relation);
+        }
+        return new ArrayList<>(relations.values());
+    }
+
+    private static List<GraphRelation> distinctRelations(List<GraphRelation> candidates) {
+        LinkedHashMap<String, GraphRelation> relations = new LinkedHashMap<>();
+        for (GraphRelation relation : candidates) relations.putIfAbsent(relation.id(), relation);
+        return new ArrayList<>(relations.values());
+    }
+
     private static String other(String entityId, GraphRelation relation) {
         if (relation.sourceId().equals(entityId)) {
             return relation.targetId();
@@ -1503,10 +1526,10 @@ public final class GraphQueryEngine {
         return null;
     }
 
-    private static VerificationStores graphFacts(ReasoningGraph graph) {
+    private static VerificationStores graphFacts(Iterable<GraphRelation> relations) {
         FactStore facts = new FactStore();
         InMemoryInferredFactStore inferred = new InMemoryInferredFactStore();
-        for (GraphRelation relation : graph.relations()) {
+        for (GraphRelation relation : relations) {
             String type = normalizePredicate(relation.type());
             boolean negated = type.startsWith("NOT_") && type.length() > 4;
             String predicate = negated ? type.substring(4) : type;
@@ -1647,6 +1670,16 @@ public final class GraphQueryEngine {
                 List.of("Inspect resolutions.candidates or use SEARCH to choose an unambiguous entity id."));
     }
 
+    private static double storedEntityPrior(GraphEntity entity) {
+        return clamp01(entity.weight() * entity.confidence());
+    }
+
+    private static void checkInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("Graph entity retrieval interrupted");
+        }
+    }
+
     private static int bounded(Integer value, int defaultValue, int maximum) {
         if (value == null || value <= 0) {
             return defaultValue;
@@ -1664,7 +1697,7 @@ public final class GraphQueryEngine {
     private record EntityMatch(
             GraphEntity entity,
             double lexical,
-            double structural,
+            double storedPrior,
             int exactRank,
             double score) {
     }

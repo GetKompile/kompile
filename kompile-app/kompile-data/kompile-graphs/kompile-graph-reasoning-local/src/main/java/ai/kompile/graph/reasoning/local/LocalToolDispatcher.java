@@ -32,13 +32,12 @@ import java.util.Objects;
  * JSON string result. All errors are returned as JSON — this method never throws.</p>
  *
  * <h3>Tool registration</h3>
- * <p>Handlers are registered at construction time by the four handler groups:</p>
+ * <p>Handlers are registered at construction time by the four implemented handler groups:</p>
  * <ul>
- *   <li>{@link CoreHandlers} — {@code graph_load}, {@code graph_save},
- *       {@code graph_reasoning_query}, {@code tools_catalog} — <b>fully implemented</b></li>
- *   <li>{@link GroundingHandlers} — KB fact assertions/retractions/verification — stub</li>
- *   <li>{@link InferenceHandlers} — PSL/Bayesian/MEBN inference — stub</li>
- *   <li>{@link AnalyticsHandlers} — graph algorithms, embeddings, communities — stub</li>
+ *   <li>{@link CoreHandlers} — load/save, unified query, and catalog discovery</li>
+ *   <li>{@link GroundingHandlers} — KB assertion, retraction, query, verify, and explain</li>
+ *   <li>{@link InferenceHandlers} — Bayesian/MEBN, claim assessment, and answer synthesis</li>
+ *   <li>{@link AnalyticsHandlers} — centrality and bundled-embedding inference</li>
  * </ul>
  *
  * <h3>Error contract</h3>
@@ -60,9 +59,7 @@ public final class LocalToolDispatcher {
     }
 
     /**
-     * Build the default dispatcher with all handler groups registered.
-     * {@link CoreHandlers} is fully implemented; the other three groups register nothing
-     * until their parallel agents fill in the implementations.
+     * Build the default dispatcher with all local handler groups registered.
      *
      * @return a ready-to-use dispatcher
      */

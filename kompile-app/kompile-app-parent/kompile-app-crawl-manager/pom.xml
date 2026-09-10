@@ -108,6 +108,34 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-loader-onedrive</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-slack</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-discord</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-email-imap</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-email-inbox</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-gdocs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-gmail</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-google-workspace</artifactId>
+        </dependency>
         <!-- Table-aware chunker for structured data -->
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -145,6 +173,46 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-source-onedrive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-confluence</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-jira</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-reddit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-notion</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-slack</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-discord</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-email</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-gdocs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-gmail</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-google-workspace</artifactId>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -204,6 +272,15 @@
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>${nd4j.backend}</artifactId>
             <version>${nd4j.version}</version>
+            <exclusions>
+                <!-- The explicit platform dependency below selects the requested CPU/accelerator
+                     lane. Do not also inherit nd4j-native's unsuffixed platform twin: it can add a
+                     second multi-gigabyte native archive to the Boot exec JAR. -->
+                <exclusion>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>${nd4j.native.backend}</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <!-- Platform-classified twin: carries the compute library (libnd4jcpu.so /
              libnd4jcuda.so). Without it the exec jar ships the JavaCPP JNI wrappers but no
@@ -213,6 +290,15 @@
             <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
             <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
+            <exclusions>
+                <!-- A classified ND4J backend POM inherits the unsuffixed platform twin. The
+                     selected classifier already carries the platform payload; retaining both can
+                     exceed Spring Boot's executable-JAR offset limit. -->
+                <exclusion>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>${nd4j.native.backend}</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>

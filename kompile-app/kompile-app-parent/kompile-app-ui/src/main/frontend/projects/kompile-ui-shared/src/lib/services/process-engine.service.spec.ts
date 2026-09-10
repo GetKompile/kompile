@@ -1089,7 +1089,7 @@ describe('ProcessEngineService', () => {
     });
   });
 
-  // ── Cross-Document Flows ───────────────────��──────────────────────────────
+  // ── Cross-Document Flows ──────────────────────────────────────────────────
 
   describe('analyzeCrossDocumentFlows()', () => {
     it('should POST to /process/discovery/cross-document-flows', (done) => {

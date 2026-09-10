@@ -259,8 +259,7 @@ jobs:
             -Dnd4j.version="${ND4J_VERSION}" \
             -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
             -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
-            -Dtest=CodexAppServerModelDiscoveryTest,ModelDiscoveryHttpTest \
-            -DexcludedGroups=live \
+            -Dtest=ModelDiscoveryHttpTest,SetupWizardRuntimeTest \
             -Dsurefire.failIfNoSpecifiedTests=false \
             test
 
@@ -462,6 +461,11 @@ jobs:
           fi
           echo "version=${V}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout artifact verifiers
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Download full-dist artifact
         uses: actions/download-artifact@v4
         with:
@@ -494,7 +498,11 @@ jobs:
 
           # Attest the internal payload and the JVM execution form.
           (cd "$HOME/.kompile" && sha256sum -c manifest.sha256)
-          python3 - "$HOME/.kompile/.dist-info.json" <<'PY'
+          python3 kompile-dist/src/main/build/verify-persona-artifacts.py \
+            --dist-root "$HOME/.kompile" \
+            --variant full \
+            --platform linux-x86_64
+          python3 - "$HOME/.kompile/.dist-info.json" <<'PY
           import json
           from pathlib import Path
           import sys

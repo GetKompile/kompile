@@ -19,6 +19,7 @@ package ai.kompile.cli.main.codeindex;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
@@ -28,9 +29,10 @@ import java.util.*;
  * SQLite-backed search index for a single project's code entities.
  * Uses FTS5 for fast full-text search and WAL mode for concurrent read safety.
  *
- * <p>This is a rebuildable cache — the per-file JSON shards in
- * {@link IndexFileStore} are the durable source of truth. If the DB
- * is corrupt or missing, call {@link #rebuildFromShards} to recreate it.</p>
+ * <p>This is a rebuildable cache of source files. JSON shards in
+ * {@link IndexFileStore} can restore entities, but not relations; complete
+ * recovery requires source reindexing. Never replace a corrupt database while
+ * other clients may still have it or its WAL open.</p>
  */
 public class IndexDatabase implements AutoCloseable {
 
@@ -62,10 +64,19 @@ public class IndexDatabase implements AutoCloseable {
      * still running PRE-migration binaries recreate against migrated DBs
      * (their unconditional CREATE INDEX succeeds for surviving columns —
      * observed as idx_rel_type reappearing at 12MB).</p>
+     *
+     * <p>v6: {@code index_metadata} stores the committed structural generation
+     * inside the same SQLite transaction as entity/relation updates. KGraph readers
+     * compare that snapshot token to the projected archive before merging edges.</p>
      */
-    private static final int SCHEMA_VERSION = 5;
+    // v7 preserves the original lookup hint when a resolved target is invalidated.
+    private static final int SCHEMA_VERSION = 7;
+    private static final int MIN_READ_ONLY_SCHEMA_VERSION = 5;
 
     private final Connection conn;
+    // Hints touched by this writer, including removed declarations absent from changedFiles.
+    // Retain through rollback/retry: extra rechecks are safe, losing invalidations is not.
+    private final Set<String> connectivityHints = new LinkedHashSet<>();
 
     private IndexDatabase(Connection conn) {
         this.conn = conn;
@@ -77,37 +88,81 @@ public class IndexDatabase implements AutoCloseable {
     public static IndexDatabase open(Path indexDir) throws SQLException {
         String url = "jdbc:sqlite:" + indexDir.resolve("index.db").toAbsolutePath();
         Connection conn = DriverManager.getConnection(url);
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute("PRAGMA journal_mode=WAL");
-            stmt.execute("PRAGMA synchronous=NORMAL");
-            stmt.execute("PRAGMA cache_size=-8000"); // 8MB cache
-            stmt.execute("PRAGMA busy_timeout=5000"); // wait instead of SQLITE_BUSY across processes
-            stmt.execute("PRAGMA temp_store=MEMORY");
-            // Index DBs run to multiple GB; mmap shares pages via the OS page
-            // cache ACROSS the open-per-operation connections in this package,
-            // where the 8MB private page cache starts cold on every open.
-            stmt.execute("PRAGMA mmap_size=1073741824"); // 1GB
-        }
-        IndexDatabase db = new IndexDatabase(conn);
-        if (db.schemaVersion() != SCHEMA_VERSION) {
-            // One transaction so a crash mid-migration can't leave a half-moved
-            // relations table; SQLite's write lock also serializes concurrent
-            // migrators (the loser re-checks the version and no-ops).
-            db.beginTransaction();
-            try {
-                if (db.schemaVersion() != SCHEMA_VERSION) {
-                    db.ensureSchema();
-                    db.setSchemaVersion(SCHEMA_VERSION);
-                }
-                db.commit();
-            } catch (SQLException e) {
-                db.rollback();
-                try { conn.close(); } catch (SQLException ignored) {}
-                throw e;
+        try {
+            try (Statement stmt = conn.createStatement()) {
+                // Configure contention handling before any PRAGMA that may take a lock.
+                stmt.execute("PRAGMA busy_timeout=5000");
+                stmt.execute("PRAGMA journal_mode=WAL");
+                stmt.execute("PRAGMA synchronous=NORMAL");
+                stmt.execute("PRAGMA cache_size=-8000"); // 8MB cache
+                stmt.execute("PRAGMA temp_store=MEMORY");
+                // Share pages through the OS cache across open-per-operation connections.
+                stmt.execute("PRAGMA mmap_size=1073741824"); // 1GB
             }
-            db.vacuumIfWorthwhile();
+            IndexDatabase db = new IndexDatabase(conn);
+            if (db.schemaVersion() != SCHEMA_VERSION) {
+                // Acquire the writer BEFORE rechecking the schema: deferred read-to-write
+                // upgrades otherwise race with migrations in other processes.
+                try (Statement migration = conn.createStatement()) {
+                    migration.execute("BEGIN IMMEDIATE");
+                    try {
+                        int version = db.schemaVersion();
+                        if (version > SCHEMA_VERSION) {
+                            throw new SQLException("Code index schema " + version
+                                    + " is newer than supported " + SCHEMA_VERSION);
+                        }
+                        if (version != SCHEMA_VERSION) {
+                            db.ensureSchema();
+                            db.setSchemaVersion(SCHEMA_VERSION);
+                        }
+                        migration.execute("COMMIT");
+                    } catch (SQLException | RuntimeException failure) {
+                        try { migration.execute("ROLLBACK"); }
+                        catch (SQLException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                        throw failure;
+                    }
+                }
+                db.vacuumIfWorthwhile();
+            }
+            return db;
+        } catch (SQLException | RuntimeException failure) {
+            try { conn.close(); }
+            catch (SQLException closeFailure) { failure.addSuppressed(closeFailure); }
+            throw failure;
         }
-        return db;
+    }
+
+    /**
+     * Open an existing current-schema index without creating, migrating, vacuuming, or otherwise
+     * modifying it. Read-only MCP tools must use this entry point so their annotation remains true.
+     */
+    public static IndexDatabase openReadOnly(Path indexDir) throws SQLException {
+        Path database = indexDir.resolve("index.db").toAbsolutePath().normalize();
+        if (!Files.isRegularFile(database, LinkOption.NOFOLLOW_LINKS)) {
+            throw new SQLException("Code index database is unavailable: " + database);
+        }
+        Connection conn = DriverManager.getConnection(
+                "jdbc:sqlite:file:" + database + "?mode=ro");
+        try {
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("PRAGMA busy_timeout=5000");
+                stmt.execute("PRAGMA query_only=ON");
+            }
+            IndexDatabase db = new IndexDatabase(conn);
+            int version = db.schemaVersion();
+            if (version < MIN_READ_ONLY_SCHEMA_VERSION || version > SCHEMA_VERSION) {
+                throw new SQLException("Code index schema version " + version
+                        + " is not readable by this build (supported "
+                        + MIN_READ_ONLY_SCHEMA_VERSION + "-" + SCHEMA_VERSION + ")"
+                        + "; run local_code_index action=index before requesting file context");
+            }
+            return db;
+        } catch (SQLException | RuntimeException failure) {
+            try { conn.close(); } catch (SQLException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
     }
 
     /**
@@ -163,6 +218,12 @@ public class IndexDatabase implements AutoCloseable {
                     file_size INTEGER NOT NULL,
                     sha256 TEXT NOT NULL,
                     indexed_at TEXT NOT NULL
+                )""");
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 )""");
 
             // Interning table for file paths, shared by entities_meta.path_id
@@ -250,6 +311,14 @@ public class IndexDatabase implements AutoCloseable {
             // project_id is gone — the DB is per-project.
             migrateRelationsToInternedPaths(stmt);
             migrateRelationsToInternedFqns(stmt);
+            if (!columnExists(stmt, "relations", "target_hint_id")) {
+                stmt.execute("ALTER TABLE relations ADD COLUMN target_hint_id INTEGER");
+                // Legacy rows did not retain how they were resolved. Preserve qualification
+                // conservatively; reindexing source restores the original lookup hints.
+                stmt.execute("UPDATE relations SET target_hint_id = COALESCE("
+                        + "NULLIF(target_id, (SELECT id FROM fqns WHERE fqn = '')), target_name_id)");
+            }
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target_hint ON relations(target_hint_id)");
 
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id)");
@@ -548,6 +617,7 @@ public class IndexDatabase implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     public void beginTransaction() throws SQLException {
+        if (!conn.getAutoCommit()) throw new SQLException("Index transaction already active");
         conn.setAutoCommit(false);
     }
 
@@ -560,7 +630,43 @@ public class IndexDatabase implements AutoCloseable {
         try {
             conn.rollback();
             conn.setAutoCommit(true);
-        } catch (SQLException ignored) {}
+        } catch (SQLException failure) {
+            // Never reuse an ambiguously rolled-back connection.
+            try { conn.close(); } catch (SQLException closeFailure) { failure.addSuppressed(closeFailure); }
+            CodeIndexDiagnostics.alert("[code-index] rollback failed; connection closed: " + failure);
+        } finally {
+            pathIdCache.clear();
+            fqnIdCache.clear();
+        }
+    }
+
+    /** Store the structural generation in the caller's current indexing transaction. */
+    public void setIndexGeneration(String generation) throws SQLException {
+        if (generation == null || generation.isBlank()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "DELETE FROM index_metadata WHERE key = 'generation'")) {
+                ps.executeUpdate();
+            }
+            return;
+        }
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO index_metadata(key, value) VALUES ('generation', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""")) {
+            ps.setString(1, generation);
+            ps.executeUpdate();
+        }
+    }
+
+    /** Return the generation represented by this connection's current SQLite snapshot. */
+    public String getIndexGeneration() throws SQLException {
+        try (Statement stmt = conn.createStatement()) {
+            if (!tableExists(stmt, "index_metadata")) return null;
+        }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT value FROM index_metadata WHERE key = 'generation'");
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getString(1) : null;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -592,8 +698,8 @@ public class IndexDatabase implements AutoCloseable {
 
     /**
      * Bulk variant of {@link #deleteFile}: removes many files' entities,
-     * relations and status rows with IN-chunked statements (4 statements per
-     * ~500 files instead of 4 per file).
+     * relations and status rows with IN-chunked statements. Incoming resolved
+     * links are invalidated before declarations disappear; their lookup hints survive.
      */
     public void deleteFiles(Collection<String> relPaths) throws SQLException {
         if (relPaths == null || relPaths.isEmpty()) return;
@@ -608,7 +714,29 @@ public class IndexDatabase implements AutoCloseable {
             // (values must byte-match what insertEntities wrote: sig/doc were
             // stored as '' when null, hence the COALESCEs).
             String pathIdsIn = "(SELECT id FROM paths WHERE path IN (" + placeholders + "))";
+            List<String> removedFqns = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT fqn FROM entities_meta WHERE path_id IN " + pathIdsIn)) {
+                for (int i = 0; i < batch.size(); i++) ps.setString(i + 1, batch.get(i));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) removedFqns.add(rs.getString(1));
+                }
+            }
+            // Also reconsider currently ambiguous lookups when one candidate is removed.
+            invalidateTargetHints(removedFqns);
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT DISTINCT hint.fqn FROM relations r JOIN fqns hint ON hint.id = r.target_hint_id "
+                            + "WHERE r.target_id IN (SELECT f.id FROM fqns f JOIN entities_meta e ON e.fqn = f.fqn "
+                            + "WHERE e.path_id IN " + pathIdsIn + ")")) {
+                for (int i = 0; i < batch.size(); i++) ps.setString(i + 1, batch.get(i));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) connectivityHints.add(rs.getString(1));
+                }
+            }
             String[] statements = {
+                    "UPDATE relations SET target_id = NULL WHERE target_id IN " +
+                            "(SELECT f.id FROM fqns f JOIN entities_meta e ON e.fqn = f.fqn " +
+                            "WHERE e.path_id IN " + pathIdsIn + ")",
                     "INSERT INTO entities_fts(entities_fts, rowid, name, fqn, signature, doc_comment) " +
                             "SELECT 'delete', id, name, fqn, COALESCE(signature,''), COALESCE(doc_comment,'') " +
                             "FROM entities_meta WHERE path_id IN " + pathIdsIn,
@@ -700,6 +828,41 @@ public class IndexDatabase implements AutoCloseable {
             metaPs.executeBatch();
             ftsPs.executeBatch();
         }
+        // A newly added declaration can make an older unique lookup ambiguous.
+        // Invalidate by original hint, not by the previously chosen destination.
+        List<String> fqns = new ArrayList<>();
+        for (Map<String, Object> entity : entities) {
+            if (isResolutionEntity(str(entity, "entityType"))) fqns.add(str(entity, "fullyQualifiedName"));
+        }
+        invalidateTargetHints(fqns);
+    }
+
+    private void invalidateTargetHints(Collection<String> fqns) throws SQLException {
+        Set<String> hints = new LinkedHashSet<>();
+        for (String fqn : fqns) {
+            if (fqn == null || fqn.isBlank()) continue;
+            hints.add(fqn);
+            for (int dot = fqn.indexOf('.'); dot >= 0; dot = fqn.indexOf('.', dot + 1)) {
+                hints.add(fqn.substring(dot + 1));
+            }
+        }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE relations SET target_id = NULL WHERE target_hint_id = " + FQN_ID)) {
+            for (String hint : hints) {
+                ps.setString(1, hint);
+                ps.addBatch();
+            }
+            int[] counts = ps.executeBatch();
+            int index = 0;
+            for (String hint : hints) {
+                int count = counts[index++];
+                if (count > 0 || count == Statement.SUCCESS_NO_INFO) connectivityHints.add(hint);
+            }
+        }
+    }
+
+    private static boolean isResolutionEntity(String type) {
+        return type != null && !Set.of("IMPORT", "PACKAGE", "FILE").contains(type);
     }
 
     /**
@@ -739,8 +902,8 @@ public class IndexDatabase implements AutoCloseable {
         if (relations == null || relations.isEmpty()) return;
         try (PreparedStatement ps = conn.prepareStatement("""
                 INSERT INTO relations
-                (source_id, target_name_id, target_id, relation_type, file_id, line)
-                VALUES (?, ?, ?, ?, ?, ?)""")) {
+                (source_id, target_name_id, target_id, relation_type, file_id, line, target_hint_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""")) {
             for (Map<String, Object> r : relations) {
                 String sourceFqn = str(r, "sourceFqn");
                 String targetName = str(r, "targetName");
@@ -756,6 +919,10 @@ public class IndexDatabase implements AutoCloseable {
                 String relPath = str(r, "filePath");
                 ps.setLong(5, pathId(relPath != null ? relPath : filePath));
                 ps.setObject(6, r.get("line"));
+                String hint = str(r, "targetHint");
+                ps.setLong(7, fqnId(hint != null && !hint.isEmpty() ? hint
+                        : targetFqn != null && !targetFqn.isEmpty() ? targetFqn
+                        : targetName != null ? targetName : ""));
                 ps.addBatch();
             }
             ps.executeBatch();
@@ -775,7 +942,14 @@ public class IndexDatabase implements AutoCloseable {
         List<Map<String, Object>> results = searchFts(query, entityType, maxResults);
         if (!results.isEmpty()) return results;
 
-        // Fallback to LIKE for queries that FTS5 can't tokenize well
+        // Natural-language terms are conjunctive in the primary FTS query. If no row contains
+        // every term, retry with a bounded token-OR query rather than full-scanning four text
+        // columns with one leading-wildcard phrase. Keep LIKE only for one-token/symbol syntax
+        // that FTS5 genuinely cannot tokenize (for example punctuation-heavy FQNs).
+        if (hasMultipleSearchTokens(query)) {
+            results = searchFtsAnyToken(query, entityType, maxResults);
+            return results;
+        }
         return searchLike(query, entityType, maxResults);
     }
 
@@ -786,6 +960,27 @@ public class IndexDatabase implements AutoCloseable {
         String ftsQuery = "name:" + escaped + " OR fqn:" + escaped +
                 " OR signature:" + escaped + " OR doc_comment:" + escaped;
 
+        return executeFtsQuery(ftsQuery, query, entityType, maxResults);
+    }
+
+    private List<Map<String, Object>> searchFtsAnyToken(String query, String entityType,
+                                                         int maxResults) throws SQLException {
+        List<String> terms = searchTokens(query);
+        if (terms.size() < 2) return List.of();
+        String ftsQuery = terms.stream()
+                .flatMap(term -> java.util.stream.Stream.of(
+                        "name:" + quoteFts5(term),
+                        "fqn:" + quoteFts5(term),
+                        "signature:" + quoteFts5(term),
+                        "doc_comment:" + quoteFts5(term)))
+                .collect(java.util.stream.Collectors.joining(" OR "));
+        return executeFtsQuery(ftsQuery, query, entityType, maxResults);
+    }
+
+    private List<Map<String, Object>> executeFtsQuery(String ftsQuery, String query,
+                                                       String entityType, int maxResults)
+            throws SQLException {
+
         String sql;
         if (entityType != null && !entityType.isEmpty()) {
             sql = """
@@ -793,14 +988,22 @@ public class IndexDatabase implements AutoCloseable {
                 JOIN entities_fts f ON f.rowid = m.id
                 JOIN paths ep ON ep.id = m.path_id
                 WHERE entities_fts MATCH ? AND m.entity_type = ?
-                ORDER BY rank LIMIT ?""";
+                ORDER BY CASE
+                    WHEN LOWER(m.name) = LOWER(?) THEN 0
+                    WHEN LOWER(m.fqn) = LOWER(?) THEN 1
+                    ELSE 2
+                END, rank, m.id LIMIT ?""";
         } else {
             sql = """
                 SELECT m.*, ep.path AS rel_path FROM entities_meta m
                 JOIN entities_fts f ON f.rowid = m.id
                 JOIN paths ep ON ep.id = m.path_id
                 WHERE entities_fts MATCH ?
-                ORDER BY rank LIMIT ?""";
+                ORDER BY CASE
+                    WHEN LOWER(m.name) = LOWER(?) THEN 0
+                    WHEN LOWER(m.fqn) = LOWER(?) THEN 1
+                    ELSE 2
+                END, rank, m.id LIMIT ?""";
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
@@ -808,16 +1011,26 @@ public class IndexDatabase implements AutoCloseable {
             ps.setString(1, ftsQuery);
             if (entityType != null && !entityType.isEmpty()) {
                 ps.setString(2, entityType.toUpperCase());
-                ps.setInt(3, maxResults);
+                ps.setString(3, query);
+                ps.setString(4, query);
+                ps.setInt(5, maxResults);
             } else {
-                ps.setInt(2, maxResults);
+                ps.setString(2, query);
+                ps.setString(3, query);
+                ps.setInt(4, maxResults);
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) results.add(rowToEntity(rs));
             }
         } catch (SQLException e) {
-            // FTS5 query syntax error — fall through to LIKE
-            return List.of();
+            String message = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+            if ((e.getErrorCode() & 0xff) == 1
+                    && (message.contains("fts5: syntax error")
+                    || message.contains("unterminated string")
+                    || message.contains("no such column"))) {
+                return List.of(); // Invalid MATCH expression only; never hide storage failures.
+            }
+            throw e;
         }
         return results;
     }
@@ -831,12 +1044,20 @@ public class IndexDatabase implements AutoCloseable {
                 WHERE (LOWER(m.name) LIKE ? OR LOWER(m.fqn) LIKE ?
                        OR LOWER(m.signature) LIKE ? OR LOWER(m.doc_comment) LIKE ?)
                   AND m.entity_type = ?
-                LIMIT ?""";
+                ORDER BY CASE
+                    WHEN LOWER(m.name) = LOWER(?) THEN 0
+                    WHEN LOWER(m.fqn) = LOWER(?) THEN 1
+                    ELSE 2
+                END, m.id LIMIT ?""";
         } else {
             sql = ENTITIES_SELECT + """
                 WHERE LOWER(m.name) LIKE ? OR LOWER(m.fqn) LIKE ?
                        OR LOWER(m.signature) LIKE ? OR LOWER(m.doc_comment) LIKE ?
-                LIMIT ?""";
+                ORDER BY CASE
+                    WHEN LOWER(m.name) = LOWER(?) THEN 0
+                    WHEN LOWER(m.fqn) = LOWER(?) THEN 1
+                    ELSE 2
+                END, m.id LIMIT ?""";
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
@@ -847,9 +1068,13 @@ public class IndexDatabase implements AutoCloseable {
             ps.setString(4, pattern);
             if (entityType != null && !entityType.isEmpty()) {
                 ps.setString(5, entityType.toUpperCase());
-                ps.setInt(6, maxResults);
+                ps.setString(6, query);
+                ps.setString(7, query);
+                ps.setInt(8, maxResults);
             } else {
-                ps.setInt(5, maxResults);
+                ps.setString(5, query);
+                ps.setString(6, query);
+                ps.setInt(7, maxResults);
             }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) results.add(rowToEntity(rs));
@@ -965,17 +1190,27 @@ public class IndexDatabase implements AutoCloseable {
         return result;
     }
 
-    /**
-     * Get all entities and relations for a file.
-     */
+    /** Get all entities plus the historical maximum of 1,000 relations per direction. */
     public Map<String, Object> getFileGraph(String relPath) throws SQLException {
+        return getFileGraph(relPath, 1000);
+    }
+
+    /**
+     * Get entities and a bounded set of incoming/outgoing relations per direction for a file.
+     * This is used by ambient file context, where an unbounded graph response would
+     * make an ordinary source read unexpectedly expensive.
+     */
+    public Map<String, Object> getFileGraph(String relPath, int maxRelationsPerDirection)
+            throws SQLException {
+        int relationLimit = Math.max(1, Math.min(1000, maxRelationsPerDirection));
         List<Map<String, Object>> entities = getEntitiesForFile(relPath);
 
         // All outgoing relations from this file
         List<Map<String, Object>> outgoing;
         try (PreparedStatement ps = conn.prepareStatement(
-                RELATIONS_SELECT + "WHERE p.path = ? LIMIT 1000")) {
+                RELATIONS_SELECT + "WHERE p.path = ? LIMIT ?")) {
             ps.setString(1, relPath);
+            ps.setInt(2, relationLimit);
             outgoing = collectRelations(ps);
         }
 
@@ -985,7 +1220,7 @@ public class IndexDatabase implements AutoCloseable {
             String fqn = (String) e.get("fullyQualifiedName");
             if (fqn != null) fileFqns.add(fqn);
         }
-        List<Map<String, Object>> incoming = getIncomingRelationsForFqns(fileFqns);
+        List<Map<String, Object>> incoming = getIncomingRelationsForFqns(fileFqns, relationLimit);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("filePath", relPath);
@@ -998,6 +1233,103 @@ public class IndexDatabase implements AutoCloseable {
                 "edgeCount", outgoing.size() + incoming.size()
         ));
         return result;
+    }
+
+    /**
+     * Return a bounded file context while returning the exact total entity count separately.
+     * The relation limit applies to outgoing and incoming rows combined.
+     */
+    public Map<String, Object> getFileGraph(
+            String relPath, int maxEntities, int maxRelations) throws SQLException {
+        int entityLimit = Math.max(1, Math.min(500, maxEntities));
+        int relationLimit = Math.max(1, Math.min(1000, maxRelations));
+        int totalEntities = getEntityCountForFile(relPath);
+        List<Map<String, Object>> entities = getEntitiesForFile(relPath, entityLimit);
+
+        List<Map<String, Object>> outgoing;
+        try (PreparedStatement ps = conn.prepareStatement(
+                RELATIONS_SELECT + "WHERE p.path = ? LIMIT ?")) {
+            ps.setString(1, relPath);
+            ps.setInt(2, relationLimit);
+            outgoing = collectRelations(ps);
+        }
+
+        Set<String> fileFqns = new LinkedHashSet<>();
+        for (Map<String, Object> entity : entities) {
+            String fqn = (String) entity.get("fullyQualifiedName");
+            if (fqn != null) fileFqns.add(fqn);
+        }
+        int remaining = relationLimit - outgoing.size();
+        List<Map<String, Object>> incoming = remaining > 0
+                ? getIncomingRelationsForFqns(fileFqns, remaining) : List.of();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("filePath", relPath);
+        result.put("entities", entities);
+        result.put("entityCount", totalEntities);
+        result.put("entitiesTruncated", totalEntities > entities.size());
+        result.put("outgoingRelations", outgoing);
+        result.put("incomingRelations", incoming);
+        result.put("metadata", Map.of(
+                "nodeCount", fileFqns.size(),
+                "edgeCount", outgoing.size() + incoming.size()));
+        return result;
+    }
+
+    /**
+     * Visit the complete structural graph under one SQLite read transaction without retaining the
+     * result rows. This is the projection/export path for large codebases; callers receive one
+     * short-lived row map at a time while SQLite and its mmap page cache remain authoritative.
+     */
+    public void visitGraphSnapshot(
+            java.util.function.Consumer<Map<String, Object>> entityConsumer,
+            java.util.function.Consumer<Map<String, Object>> relationConsumer) throws SQLException {
+        Objects.requireNonNull(entityConsumer, "entityConsumer");
+        Objects.requireNonNull(relationConsumer, "relationConsumer");
+        boolean autoCommit = conn.getAutoCommit();
+        boolean ownsTransaction = autoCommit;
+        Savepoint savepoint = null;
+        if (ownsTransaction) conn.setAutoCommit(false);
+        else savepoint = conn.setSavepoint("visit_graph_snapshot");
+        try {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    ENTITIES_SELECT + "ORDER BY m.id");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) entityConsumer.accept(rowToEntity(rs));
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    RELATIONS_SELECT + "ORDER BY r.id");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) relationConsumer.accept(rowToRelation(rs));
+            }
+            if (ownsTransaction) conn.commit();
+            else conn.releaseSavepoint(savepoint);
+        } catch (SQLException failure) {
+            rollbackVisitorTransaction(ownsTransaction, savepoint, failure);
+            throw failure;
+        } catch (RuntimeException failure) {
+            rollbackVisitorTransaction(ownsTransaction, savepoint, failure);
+            throw failure;
+        } finally {
+            if (ownsTransaction) conn.setAutoCommit(true);
+        }
+    }
+
+    private void rollbackVisitorTransaction(
+            boolean ownsTransaction, Savepoint savepoint, Throwable failure) {
+        try {
+            if (ownsTransaction) conn.rollback();
+            else conn.rollback(savepoint);
+        } catch (SQLException rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
+        if (!ownsTransaction && savepoint != null) {
+            try {
+                conn.releaseSavepoint(savepoint);
+            } catch (SQLException releaseFailure) {
+                failure.addSuppressed(releaseFailure);
+            }
+        }
     }
 
     /**
@@ -1057,7 +1389,7 @@ public class IndexDatabase implements AutoCloseable {
      * relations plus older unresolved relations anywhere that point at names
      * (re)defined in those files), resolves each name a single time — indexed
      * probes when few, one streamed scan when many — and applies the mapping
-     * with batched UPDATEs on the target_name index. Suffix matches are
+     * with batched UPDATEs on the target_hint index. Suffix matches are
      * case-sensitive (the legacy LIKE was ASCII-case-insensitive, which only
      * ever added false links between differently-cased identifiers).</p>
      *
@@ -1072,18 +1404,24 @@ public class IndexDatabase implements AutoCloseable {
         Map<String, String> resolution = targets.size() <= CONNECTIVITY_PROBE_THRESHOLD
                 ? resolveTargetsByProbe(targets)
                 : resolveTargetsByScan(targets);
-        if (resolution.isEmpty()) return 0;
 
         int updated = 0;
         try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE relations SET target_id = ? WHERE target_name_id = " + FQN_ID
+                "UPDATE relations SET target_id = ? WHERE target_hint_id = " + FQN_ID
                         + " AND " + UNRESOLVED_PRED + " AND target_id IS NOT ?")) {
-            for (Map.Entry<String, String> e : resolution.entrySet()) {
-                // Newly resolved fqns may not be in the vocabulary yet.
-                long resolvedId = fqnId(e.getValue());
-                ps.setLong(1, resolvedId);
-                ps.setString(2, e.getKey());
-                ps.setLong(3, resolvedId);
+            for (String target : targets) {
+                // Failed/ambiguous lookups must clear legacy bare/empty target markers,
+                // not leave them looking like resolved destinations to graph readers.
+                String fqn = resolution.get(target);
+                if (fqn == null) {
+                    ps.setNull(1, Types.INTEGER);
+                    ps.setNull(3, Types.INTEGER);
+                } else {
+                    long resolvedId = fqnId(fqn);
+                    ps.setLong(1, resolvedId);
+                    ps.setLong(3, resolvedId);
+                }
+                ps.setString(2, target);
                 ps.addBatch();
             }
             for (int c : ps.executeBatch()) {
@@ -1104,15 +1442,19 @@ public class IndexDatabase implements AutoCloseable {
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(
                          "SELECT DISTINCT tn.fqn FROM relations r "
-                                 + "JOIN fqns tn ON tn.id = r.target_name_id WHERE " + UNRESOLVED_PRED)) {
+                                 + "JOIN fqns tn ON tn.id = r.target_hint_id WHERE " + UNRESOLVED_PRED)) {
                 while (rs.next()) {
                     String t = rs.getString(1);
-                    if (t != null && !t.isEmpty()) targets.add(t);
+                    if (t != null) targets.add(t);
                 }
             }
             return targets;
         }
 
+        // The same writer performs invalidation and this post-update pass. Do not
+        // rescan every unresolved external call on each incremental edit. A full
+        // pass (including pending-update recovery in LocalCodeIndexer) sees all rows.
+        targets.addAll(connectivityHints);
         List<String> paths = List.copyOf(changedFiles);
         // Same shape as UNRESOLVED_PRED but r.-qualified for the joined queries.
         String unresolvedR = "(r.target_id IS NULL OR r.target_id = r.target_name_id"
@@ -1123,16 +1465,16 @@ public class IndexDatabase implements AutoCloseable {
             String placeholders = String.join(",", Collections.nCopies(batch.size(), "?"));
             String[] queries = {
                     "SELECT DISTINCT tn.fqn FROM relations r "
-                            + "JOIN fqns tn ON tn.id = r.target_name_id WHERE r.file_id IN "
+                            + "JOIN fqns tn ON tn.id = r.target_hint_id WHERE r.file_id IN "
                             + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
                             + unresolvedR,
                     "SELECT DISTINCT tn.fqn FROM relations r "
-                            + "JOIN fqns tn ON tn.id = r.target_name_id "
+                            + "JOIN fqns tn ON tn.id = r.target_hint_id "
                             + "JOIN entities_meta e ON e.name = tn.fqn WHERE e.path_id IN "
                             + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
                             + unresolvedR,
                     "SELECT DISTINCT tn.fqn FROM relations r "
-                            + "JOIN fqns tn ON tn.id = r.target_name_id "
+                            + "JOIN fqns tn ON tn.id = r.target_hint_id "
                             + "JOIN entities_meta e ON e.fqn = tn.fqn WHERE e.path_id IN "
                             + "(SELECT id FROM paths WHERE path IN (" + placeholders + ")) AND "
                             + unresolvedR
@@ -1145,7 +1487,7 @@ public class IndexDatabase implements AutoCloseable {
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
                             String t = rs.getString(1);
-                            if (t != null && !t.isEmpty()) targets.add(t);
+                            if (t != null) targets.add(t);
                         }
                     }
                 }
@@ -1155,53 +1497,39 @@ public class IndexDatabase implements AutoCloseable {
     }
 
     /**
-     * Resolve a small set of names with indexed lookups: exact FQN, then
-     * simple-name match verified as a suffix, then an FTS-narrowed suffix
-     * probe (catches IMPORT/PACKAGE entities whose name is the full FQN and
-     * dotted target names, which the name-equality probe can't see).
+     * Resolve a small set of hints with an indexed exact-FQN probe, then an
+     * FTS-narrowed, case-sensitive suffix probe. Each tier must have exactly
+     * one declaration; imports and file/package records are not definitions.
      */
     private Map<String, String> resolveTargetsByProbe(Set<String> targets) throws SQLException {
         Map<String, String> resolved = new LinkedHashMap<>();
+        String declarations = "entity_type NOT IN ('IMPORT','PACKAGE','FILE')";
         try (PreparedStatement exactPs = conn.prepareStatement(
-                     "SELECT fqn FROM entities_meta WHERE fqn = ? LIMIT 1");
-             PreparedStatement namePs = conn.prepareStatement(
-                     "SELECT fqn FROM entities_meta WHERE name = ? AND fqn LIKE '%.' || ? LIMIT 1");
+                     "SELECT fqn FROM entities_meta WHERE fqn = ? AND " + declarations + " LIMIT 2");
              PreparedStatement ftsPs = conn.prepareStatement(
                      "SELECT e.fqn FROM entities_fts f JOIN entities_meta e ON e.id = f.rowid "
-                             + "WHERE entities_fts MATCH ? LIMIT 50")) {
+                             + "WHERE entities_fts MATCH ? AND " + declarations
+                             + " AND substr(e.fqn, -length(?)) = ? COLLATE BINARY LIMIT 2")) {
             for (String target : targets) {
+                if (target.isBlank()) continue;
                 exactPs.setString(1, target);
                 try (ResultSet rs = exactPs.executeQuery()) {
                     if (rs.next()) {
-                        resolved.put(target, target);
-                        continue;
+                        if (!rs.next()) resolved.put(target, target);
+                        continue; // Duplicate declarations are ambiguous even at the same FQN.
                     }
                 }
-
-                namePs.setString(1, target);
-                namePs.setString(2, target);
-                try (ResultSet rs = namePs.executeQuery()) {
-                    if (rs.next()) {
-                        resolved.put(target, rs.getString(1));
-                        continue;
-                    }
-                }
-
                 String segment = lastSegment(target);
                 if (segment.isEmpty()) continue;
-                try {
-                    ftsPs.setString(1, "fqn:\"" + segment.replace("\"", "\"\"") + "\"");
-                    try (ResultSet rs = ftsPs.executeQuery()) {
-                        while (rs.next()) {
-                            String fqn = rs.getString(1);
-                            if (fqn != null && fqn.endsWith("." + target)) {
-                                resolved.put(target, fqn);
-                                break;
-                            }
-                        }
+                ftsPs.setString(1, "fqn:\"" + segment.replace("\"", "\"\"") + "\"");
+                ftsPs.setString(2, "." + target);
+                ftsPs.setString(3, "." + target);
+                // Filter suffixes BEFORE LIMIT: a capped candidate window cannot prove uniqueness.
+                try (ResultSet rs = ftsPs.executeQuery()) {
+                    if (rs.next()) {
+                        String candidate = rs.getString(1);
+                        if (!rs.next()) resolved.put(target, candidate);
                     }
-                } catch (SQLException ignored) {
-                    // Un-tokenizable target — no FTS candidates, leave unresolved
                 }
             }
         }
@@ -1214,9 +1542,13 @@ public class IndexDatabase implements AutoCloseable {
      */
     private Map<String, String> resolveTargetsByScan(Set<String> targets) throws SQLException {
         Map<String, String> resolved = new LinkedHashMap<>();
+        Map<String, String> exact = new HashMap<>();
+        Set<String> ambiguous = new HashSet<>();
+        Set<String> ambiguousExact = new HashSet<>();
         Set<String> undotted = new HashSet<>();
         Map<String, List<String>> dottedBySegment = new HashMap<>();
         for (String t : targets) {
+            if (t.isBlank()) continue;
             if (t.indexOf('.') < 0) {
                 undotted.add(t);
             } else {
@@ -1225,30 +1557,37 @@ public class IndexDatabase implements AutoCloseable {
         }
 
         try (Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT fqn FROM entities_meta")) {
+             ResultSet rs = stmt.executeQuery("SELECT fqn FROM entities_meta "
+                     + "WHERE entity_type NOT IN ('IMPORT','PACKAGE','FILE')")) {
             while (rs.next()) {
                 String fqn = rs.getString(1);
-                if (fqn == null || fqn.isEmpty()) continue;
+                if (fqn == null || fqn.isBlank()) continue;
 
-                // Exact FQN match is authoritative — overwrite any suffix pick
-                if (targets.contains(fqn)) resolved.put(fqn, fqn);
+                if (targets.contains(fqn) && exact.putIfAbsent(fqn, fqn) != null) {
+                    ambiguousExact.add(fqn);
+                }
 
                 String segment = lastSegment(fqn);
                 if (segment.length() == fqn.length()) continue; // no package prefix → no suffix match
 
-                if (undotted.contains(segment)) resolved.putIfAbsent(segment, fqn);
+                if (undotted.contains(segment) && resolved.putIfAbsent(segment, fqn) != null) {
+                    ambiguous.add(segment);
+                }
 
                 List<String> dotted = dottedBySegment.get(segment);
                 if (dotted != null) {
                     for (String t : dotted) {
                         if (fqn.length() > t.length() && fqn.endsWith(t)
                                 && fqn.charAt(fqn.length() - t.length() - 1) == '.') {
-                            resolved.putIfAbsent(t, fqn);
+                            if (resolved.putIfAbsent(t, fqn) != null) ambiguous.add(t);
                         }
                     }
                 }
             }
         }
+        ambiguous.forEach(resolved::remove);
+        resolved.putAll(exact); // An exact unique declaration outranks suffix candidates.
+        ambiguousExact.forEach(resolved::remove);
         return resolved;
     }
 
@@ -1329,13 +1668,59 @@ public class IndexDatabase implements AutoCloseable {
     List<Map<String, Object>> getEntitiesForFile(String relPath) throws SQLException {
         List<Map<String, Object>> entities = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
-                ENTITIES_SELECT + "WHERE ep.path = ?")) {
+                ENTITIES_SELECT + """
+                        WHERE ep.path = ?
+                        ORDER BY CASE
+                            WHEN m.entity_type IN ('CLASS','INTERFACE','ENUM','RECORD','ANNOTATION') THEN 0
+                            WHEN m.entity_type IN ('METHOD','CONSTRUCTOR','FUNCTION') THEN 1
+                            WHEN m.entity_type IN ('FIELD','CONSTANT') THEN 2
+                            WHEN m.entity_type = 'PACKAGE' THEN 3
+                            WHEN m.entity_type = 'IMPORT' THEN 4
+                            ELSE 5
+                        END, m.start_line, m.id""")) {
             ps.setString(1, relPath);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) entities.add(rowToEntity(rs));
             }
         }
         return entities;
+    }
+
+    private List<Map<String, Object>> getEntitiesForFile(String relPath, int limit)
+            throws SQLException {
+        List<Map<String, Object>> entities = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                ENTITIES_SELECT + """
+                        WHERE ep.path = ?
+                        ORDER BY CASE
+                            WHEN m.entity_type IN ('CLASS','INTERFACE','ENUM','RECORD','ANNOTATION') THEN 0
+                            WHEN m.entity_type IN ('METHOD','CONSTRUCTOR','FUNCTION') THEN 1
+                            WHEN m.entity_type IN ('FIELD','CONSTANT') THEN 2
+                            WHEN m.entity_type = 'PACKAGE' THEN 3
+                            WHEN m.entity_type = 'IMPORT' THEN 4
+                            ELSE 5
+                        END, m.start_line, m.id
+                        LIMIT ?""")) {
+            ps.setString(1, relPath);
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) entities.add(rowToEntity(rs));
+            }
+        }
+        return entities;
+    }
+
+    private int getEntityCountForFile(String relPath) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT COUNT(*)
+                FROM entities_meta m
+                JOIN paths ep ON ep.id = m.path_id
+                WHERE ep.path = ?""")) {
+            ps.setString(1, relPath);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
     }
 
     private List<Map<String, Object>> fetchEntitiesByFqns(List<String> fqns) throws SQLException {
@@ -1362,22 +1747,64 @@ public class IndexDatabase implements AutoCloseable {
     }
 
     private List<Map<String, Object>> getIncomingRelationsForFqns(Set<String> fqns) throws SQLException {
+        return getIncomingRelationsForFqns(fqns, 1000);
+    }
+
+    private List<Map<String, Object>> getIncomingRelationsForFqns(
+            Set<String> fqns, int maxRelations) throws SQLException {
         if (fqns.isEmpty()) return List.of();
         List<Map<String, Object>> results = new ArrayList<>();
+        List<String> fqnList = new ArrayList<>(fqns);
+        int relationLimit = Math.max(1, Math.min(1000, maxRelations));
+
+        int batchSize = 500;
+        for (int start = 0; start < fqnList.size() && results.size() < relationLimit; start += batchSize) {
+            List<String> batch = fqnList.subList(start, Math.min(start + batchSize, fqnList.size()));
+            String placeholders = String.join(",", batch.stream().map(f -> "?").toArray(String[]::new));
+            String sql = RELATIONS_SELECT + "WHERE r.target_id IN "
+                    + "(SELECT id FROM fqns WHERE fqn IN (" + placeholders + ")) LIMIT ?";
+
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (int i = 0; i < batch.size(); i++) {
+                    ps.setString(i + 1, batch.get(i));
+                }
+                ps.setInt(batch.size() + 1, relationLimit - results.size());
+                results.addAll(collectRelations(ps));
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Return the distinct source files with relations targeting any supplied FQN.
+     * This is the batched reverse-edge primitive used by multi-source impact
+     * analysis; unlike per-symbol relation loading, it does not materialize every
+     * relation row or repeat the same traversal for each changed file.
+     */
+    Set<String> getIncomingRelationFilesForFqns(Set<String> fqns) throws SQLException {
+        if (fqns.isEmpty()) return Set.of();
+        Set<String> results = new LinkedHashSet<>();
         List<String> fqnList = new ArrayList<>(fqns);
 
         int batchSize = 500;
         for (int start = 0; start < fqnList.size(); start += batchSize) {
             List<String> batch = fqnList.subList(start, Math.min(start + batchSize, fqnList.size()));
             String placeholders = String.join(",", batch.stream().map(f -> "?").toArray(String[]::new));
-            String sql = RELATIONS_SELECT + "WHERE r.target_id IN "
-                    + "(SELECT id FROM fqns WHERE fqn IN (" + placeholders + ")) LIMIT 1000";
+            String sql = "SELECT DISTINCT p.path FROM relations r "
+                    + "JOIN paths p ON p.id = r.file_id "
+                    + "WHERE r.target_id IN (SELECT id FROM fqns WHERE fqn IN ("
+                    + placeholders + "))";
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (int i = 0; i < batch.size(); i++) {
                     ps.setString(i + 1, batch.get(i));
                 }
-                results.addAll(collectRelations(ps));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String path = rs.getString(1);
+                        if (path != null && !path.isBlank()) results.add(path);
+                    }
+                }
             }
         }
         return results;
@@ -1386,19 +1813,21 @@ public class IndexDatabase implements AutoCloseable {
     private List<Map<String, Object>> collectRelations(PreparedStatement ps) throws SQLException {
         List<Map<String, Object>> rels = new ArrayList<>();
         try (ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                Map<String, Object> rel = new LinkedHashMap<>();
-                rel.put("relationType", rs.getString("relation_type"));
-                rel.put("sourceFqn", rs.getString("source_fqn"));
-                rel.put("targetName", rs.getString("target_name"));
-                rel.put("targetFqn", rs.getString("target_fqn"));
-                rel.put("filePath", rs.getString("file_path"));
-                int line = rs.getInt("line");
-                if (!rs.wasNull()) rel.put("line", line);
-                rels.add(rel);
-            }
+            while (rs.next()) rels.add(rowToRelation(rs));
         }
         return rels;
+    }
+
+    private Map<String, Object> rowToRelation(ResultSet rs) throws SQLException {
+        Map<String, Object> rel = new LinkedHashMap<>();
+        rel.put("relationType", rs.getString("relation_type"));
+        rel.put("sourceFqn", rs.getString("source_fqn"));
+        rel.put("targetName", rs.getString("target_name"));
+        rel.put("targetFqn", rs.getString("target_fqn"));
+        rel.put("filePath", rs.getString("file_path"));
+        int line = rs.getInt("line");
+        if (!rs.wasNull()) rel.put("line", line);
+        return rel;
     }
 
     // -----------------------------------------------------------------------
@@ -1708,22 +2137,29 @@ public class IndexDatabase implements AutoCloseable {
     // Rebuild
     // -----------------------------------------------------------------------
 
-    /**
-     * Rebuild the entire database from per-file JSON shards.
-     * Used after DB corruption or forced rebuild.
-     */
-    public void rebuildFromShards(IndexFileStore store) throws SQLException, IOException {
+    /** Clear all derived state inside the caller's transaction, never in autocommit. */
+    public void clearIndex() throws SQLException {
+        if (conn.getAutoCommit()) throw new SQLException("Clearing an index requires a transaction");
         try (Statement stmt = conn.createStatement()) {
-            // External-content FTS forbids plain DELETE — 'delete-all' is the
-            // supported wipe for content= tables.
             stmt.execute("INSERT INTO entities_fts(entities_fts) VALUES('delete-all')");
             stmt.execute("DELETE FROM entities_meta");
+            stmt.execute("DELETE FROM relations");
             stmt.execute("DELETE FROM file_status");
+            stmt.execute("DELETE FROM index_metadata");
         }
+    }
 
+    /**
+     * Restore entities atomically from shards. Shards do not contain relations;
+     * generation is invalidated and source reindexing is required for graph completeness.
+     * Unreadable shards abort recovery rather than silently committing partial data.
+     */
+    public void rebuildFromShards(IndexFileStore store) throws SQLException, IOException {
+        List<IndexFileStore.FileShard> shards = store.readAllShardsStrict();
         beginTransaction();
         try {
-            for (IndexFileStore.FileShard shard : store.readAllShards()) {
+            clearIndex();
+            for (IndexFileStore.FileShard shard : shards) {
                 String relPath = shard.relativePath();
                 IndexFileStore.FileFingerprint fp = shard.fingerprint();
                 upsertFile(relPath, IndexFileStore.shardName(relPath), fp);
@@ -1734,6 +2170,52 @@ public class IndexDatabase implements AutoCloseable {
             rollback();
             throw e;
         }
+    }
+
+    /** SQLite primary result codes (also recognizes extended CORRUPT_VTAB). */
+    public static boolean isCorruption(SQLException failure) {
+        int primary = failure.getErrorCode() & 0xff;
+        return primary == 11 || primary == 26; // SQLITE_CORRUPT / SQLITE_NOTADB
+    }
+
+    /**
+     * Check storage and external-content FTS consistency, repairing only FTS.
+     * Never replaces/unlinks a live WAL database. BUSY, IOERR and FULL are not corruption.
+     * Returns true only after a repaired index passes validation and commits.
+     */
+    public boolean checkAndRepair() throws SQLException {
+        beginTransaction();
+        try (Statement stmt = conn.createStatement()) {
+            // Reserve the writer before taking a read snapshot, avoiding BUSY_SNAPSHOT upgrades.
+            stmt.executeUpdate("UPDATE index_metadata SET value=value WHERE key='generation'");
+            try (ResultSet rs = stmt.executeQuery("PRAGMA quick_check(1)")) {
+                String verdict = rs.next() ? rs.getString(1) : "no result";
+                if (!"ok".equalsIgnoreCase(verdict)) {
+                    throw new SQLException("SQLite storage integrity check failed: " + verdict
+                            + "; offline recovery required", "", 11);
+                }
+            }
+            boolean repaired = false;
+            try {
+                checkFts(stmt);
+            } catch (SQLException failure) {
+                if (!isCorruption(failure)) throw failure;
+                // This uses the intact content table, preserving rowids, edges and generation.
+                stmt.execute("INSERT INTO entities_fts(entities_fts) VALUES('rebuild')");
+                checkFts(stmt);
+                repaired = true;
+            }
+            commit();
+            return repaired;
+        } catch (SQLException | RuntimeException failure) {
+            rollback();
+            throw failure;
+        }
+    }
+
+    private static void checkFts(Statement stmt) throws SQLException {
+        // rank=1 compares postings against entities_meta. COUNT(*) cannot do this.
+        stmt.execute("INSERT INTO entities_fts(entities_fts, rank) VALUES('integrity-check', 1)");
     }
 
     // -----------------------------------------------------------------------
@@ -1834,16 +2316,26 @@ public class IndexDatabase implements AutoCloseable {
      * Wraps each token in double quotes to prevent syntax errors.
      */
     private static String escapeFts5(String query) {
-        // Split on whitespace and quote each token
-        String[] tokens = query.trim().split("\\s+");
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < tokens.length; i++) {
-            if (i > 0) sb.append(" ");
-            // Replace internal quotes
-            String token = tokens[i].replace("\"", "\"\"");
-            sb.append("\"").append(token).append("\"");
-        }
-        return sb.toString();
+        return searchTokens(query).stream()
+                .map(IndexDatabase::quoteFts5)
+                .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    private static boolean hasMultipleSearchTokens(String query) {
+        return searchTokens(query).size() > 1;
+    }
+
+    private static List<String> searchTokens(String query) {
+        if (query == null || query.isBlank()) return List.of();
+        return java.util.Arrays.stream(query.trim().split("\\s+"))
+                .filter(token -> !token.isBlank())
+                .distinct()
+                .limit(16)
+                .toList();
+    }
+
+    private static String quoteFts5(String token) {
+        return "\"" + token.replace("\"", "\"\"") + "\"";
     }
 
     /**

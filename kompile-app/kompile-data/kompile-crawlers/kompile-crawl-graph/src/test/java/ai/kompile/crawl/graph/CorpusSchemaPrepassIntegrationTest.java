@@ -8,11 +8,13 @@ import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.knowledgegraph.service.ConceptExtractor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -25,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -37,6 +40,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CorpusSchemaPrepassIntegrationTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
     void productionPrepassCombinesSeedsExtractorsAndModelBeforeExtraction() {
@@ -57,7 +62,7 @@ class CorpusSchemaPrepassIntegrationTest {
         when(job.getJobId()).thenReturn("prepass-integration");
         stubTypePasses(
                 orchestrator.llmDispatcher, job,
-                nodeResponse(List.of("MODEL_INFERRED_TOPIC")),
+                nodeResponse(List.of("FORECAST")),
                 relationshipResponse(List.of()));
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .extractionMode(ExtractionMode.DECOMPOSED)
@@ -94,7 +99,7 @@ class CorpusSchemaPrepassIntegrationTest {
                 "EXTRACTOR_MESSAGE",
                 "DETERMINISTIC_ACTOR",
                 "APPROVAL_ROLE",
-                "MODEL_INFERRED_TOPIC")));
+                "FORECAST")));
         assertTrue(schema.getAllRelationshipTypes().contains("EMITTED_BY"));
         assertTrue(schema.getPatterns().contains(
                 "(EXTRACTOR_MESSAGE)-[:EMITTED_BY]->(DETERMINISTIC_ACTOR)"));
@@ -128,7 +133,40 @@ class CorpusSchemaPrepassIntegrationTest {
         assertTrue(request.getAllValues().get(2).messages().get(1).content().contains(
                 "monthly forecast"));
         assertTrue(request.getAllValues().get(1).messages().get(1).content().contains(
-                "MODEL_INFERRED_TOPIC"));
+                "FORECAST"));
+    }
+
+    @Test
+    void nativeValidatedJsonContentFeedsSchemaProposalsWithoutSyntheticToolCalls() {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+        orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
+        orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
+        when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("prepass-native-json");
+        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class))).thenAnswer(invocation -> {
+            StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+            String tool = request.tools().get(0).name();
+            String json = CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)
+                    ? "{\"nodeTypes\":[{\"label\":\"FORECAST\",\"parentType\":\"CONCEPT\"}]}"
+                    : "{\"relationshipTypes\":[]}";
+            return new StructuredChatLanguageModel.Response(json, json, List.of(), List.of());
+        });
+
+        GraphSchema schema = orchestrator.deriveCorpusSchema(
+                job,
+                new CrawlCorpusSnapshot("native-json",
+                        List.of(new CrawlCorpusPassage("chunk", 0,
+                                "The monthly forecast was reviewed.", "hash", Map.of(), true))),
+                GraphExtractionConfig.builder().schemaMode(SchemaEnforcementMode.LENIENT).build(),
+                Graph.builder().build());
+
+        assertTrue(schema.getAllNodeLabels().contains("FORECAST"));
+        verify(orchestrator.llmDispatcher, atLeast(2)).promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
     }
 
     @Test
@@ -141,7 +179,7 @@ class CorpusSchemaPrepassIntegrationTest {
         when(job.getJobId()).thenReturn("prepass-type-only");
         stubTypePasses(
                 orchestrator.llmDispatcher, job,
-                nodeResponse(List.of("PERSON", "ORGANIZATION")),
+                nodeResponse(List.of()),
                 relationshipResponse(List.of("WORKS_FOR")));
 
         CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
@@ -163,9 +201,10 @@ class CorpusSchemaPrepassIntegrationTest {
                         .build(),
                 Graph.builder().build());
 
-        assertEquals(java.util.Set.of("PERSON", "ORGANIZATION"), schema.getAllNodeLabels());
+        assertTrue(schema.getAllNodeLabels().containsAll(
+                SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
         assertEquals(java.util.Set.of("WORKS_FOR"), schema.getAllRelationshipTypes());
-        assertTrue(schema.getPatterns() == null || schema.getPatterns().isEmpty());
+        assertTrue(schema.getPatterns() != null && !schema.getPatterns().isEmpty());
         assertFalse(schema.getAllNodeLabels().stream().anyMatch(List.of(
                 "ACTUAL", "AU_001", "ONE_SHOT", "FASTER", "ON")::contains));
         assertFalse(schema.getAllRelationshipTypes().stream().anyMatch(List.of(
@@ -178,13 +217,15 @@ class CorpusSchemaPrepassIntegrationTest {
                 any(CrawlLlmDispatcher.LlmCallScope.class));
         assertEquals(List.of(
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
-                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
-                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME),
                 request.getAllValues().stream()
                         .map(value -> value.tools().get(0).name()).toList());
-        assertTrue(request.getAllValues().stream().allMatch(value ->
-                value.messages().get(0).content().contains(
+        assertTrue(request.getAllValues().stream()
+                .filter(value -> !CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(
+                        value.tools().get(0).name()))
+                .allMatch(value -> value.messages().get(0).content().contains(
                         "Do not extract entities or relations")));
     }
 
@@ -289,7 +330,8 @@ class CorpusSchemaPrepassIntegrationTest {
                 Graph.builder().build());
 
         assertNotNull(schema);
-        assertTrue(schema.getAllNodeLabels().isEmpty());
+        assertTrue(schema.getAllNodeLabels().containsAll(
+                SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
         assertTrue(schema.getAllRelationshipTypes().isEmpty());
         ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
@@ -303,16 +345,72 @@ class CorpusSchemaPrepassIntegrationTest {
                 "corpus schema pre-pass truncated the tail of a long passage");
     }
 
+    @Test
+    void duplicateChunkIdsRetainAllTextWithPermutationStableKeys() {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+        CrawlCorpusPassage first = new CrawlCorpusPassage(
+                "duplicate", 0, "first distinct passage", "ignored-a", Map.of(), true);
+        CrawlCorpusPassage second = new CrawlCorpusPassage(
+                "duplicate", 0, "second distinct passage", "ignored-b", Map.of(), true);
+
+        Map<String, String> forward = orchestrator.collisionSafePassageTexts(List.of(first, second));
+        Map<String, String> reverse = orchestrator.collisionSafePassageTexts(List.of(second, first));
+
+        assertEquals(2, forward.size());
+        assertEquals(forward, reverse);
+        assertTrue(forward.containsKey("duplicate"));
+        assertTrue(forward.keySet().stream().anyMatch(key -> key.startsWith("duplicate#")));
+        assertTrue(forward.values().containsAll(List.of(
+                "first distinct passage", "second distinct passage")));
+    }
+
+    @Test
+    void schemaPrepassLeavesCallerConfigurationSchemaUntouched() {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+        GraphSchema callerSchema = new GraphSchema(
+                List.of(new NodeType("CALLER_TYPE", "caller seed", null, null)),
+                List.of(), List.of("(CALLER_TYPE)-[:REFERENCES]->(CALLER_TYPE)"));
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .schemaMode(SchemaEnforcementMode.LENIENT)
+                .standardizedSchema(callerSchema)
+                .build();
+        CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
+                "snapshot-config-unchanged",
+                List.of(new CrawlCorpusPassage(
+                        "chunk-config", 0, "Caller seed remains input.",
+                        "hash-config", Map.of(), true)));
+
+        orchestrator.deriveCorpusSchema(
+                mock(UnifiedCrawlJob.class), corpus, config, Graph.builder().build());
+
+        assertSame(callerSchema, config.getStandardizedSchema());
+        assertEquals("CALLER_TYPE", config.getStandardizedSchema().getNodeTypes().get(0).getLabel());
+        assertEquals(List.of("(CALLER_TYPE)-[:REFERENCES]->(CALLER_TYPE)"),
+                config.getStandardizedSchema().getPatterns());
+    }
+
     private static StructuredChatLanguageModel.Response nodeResponse(List<String> labels) {
+        List<Map<String, Object>> definitions = labels.stream()
+                .filter(label -> !SchemaHierarchyVocabulary.isBaseEntityType(label))
+                .map(label -> Map.<String, Object>of(
+                        "label", label,
+                        "parentType", "CONCEPT"))
+                .toList();
         return typeResponse(
                 CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
-                Map.of("nodeTypes", labels));
+                Map.of("nodeTypes", definitions));
     }
 
     private static StructuredChatLanguageModel.Response relationshipResponse(List<String> labels) {
+        List<Map<String, Object>> definitions = labels.stream()
+                .map(label -> Map.<String, Object>of(
+                        "type", label,
+                        "connectionFamily", "WORKS_FOR".equals(label)
+                                ? "AFFILIATION" : "REFERENCE"))
+                .toList();
         return typeResponse(
                 CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
-                Map.of("relationshipTypes", labels));
+                Map.of("relationshipTypes", definitions));
     }
 
     private static StructuredChatLanguageModel.Response typeResponse(
@@ -342,8 +440,40 @@ class CorpusSchemaPrepassIntegrationTest {
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipResponse;
                     }
+                    if (CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(tool)) {
+                        return endpointSignatureResponse(request);
+                    }
                     throw new AssertionError("Unexpected schema type tool: " + tool);
                 });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static StructuredChatLanguageModel.Response endpointSignatureResponse(
+            StructuredChatLanguageModel.Request request) {
+        String prompt = request.messages().get(request.messages().size() - 1).content();
+        int start = prompt.lastIndexOf("BINDING_OPTION_IDS_JSON=");
+        try {
+            Map<String, Object> root = MAPPER.readValue(
+                    prompt.substring(start + "BINDING_OPTION_IDS_JSON=".length()).trim(), Map.class);
+            List<?> relationships = (List<?>) root.get("relationshipIds");
+            List<?> endpoints = (List<?>) root.get("endpointIds");
+            List<?> evidence = (List<?>) root.get("evidenceIds");
+            if (relationships == null || relationships.isEmpty()
+                    || endpoints == null || endpoints.isEmpty()
+                    || evidence == null || evidence.isEmpty()) {
+                return typeResponse(CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME,
+                        Map.of("s", "0"));
+            }
+            int endpointTarget = endpoints.size() > 1 ? 2 : 1;
+            String packed = java.util.stream.IntStream.rangeClosed(
+                            1, Math.min(4, relationships.size()))
+                    .mapToObj(index -> index + "|1|" + endpointTarget + "|1")
+                    .collect(java.util.stream.Collectors.joining(";"));
+            return typeResponse(CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME,
+                    Map.of("s", packed));
+        } catch (java.io.IOException failure) {
+            throw new AssertionError("Unable to parse endpoint signature options", failure);
+        }
     }
 
     private static Entity entity(String id, String type) {

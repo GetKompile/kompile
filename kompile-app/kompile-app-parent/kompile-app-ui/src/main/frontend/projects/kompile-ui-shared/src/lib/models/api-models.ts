@@ -201,6 +201,34 @@ export interface SlackResponse extends CrawlStartedResponseFields {
   details?: string;
 }
 
+export interface AddJiraRequest {
+  factSheetId: number;
+  baseUrl: string;
+  email?: string;
+  apiToken?: string;
+  projectKey?: string;
+  jql?: string;
+  maxIssues?: number;
+  includeComments?: boolean;
+  includeAttachments?: boolean;
+  chunkerName?: string;
+}
+
+export interface AddRedditRequest {
+  factSheetId: number;
+  subreddit: string;
+  sortType?: 'hot' | 'new' | 'top' | 'rising' | 'controversial';
+  timePeriod?: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all';
+  postLimit?: number;
+  includeComments?: boolean;
+  commentDepth?: number;
+  commentLimit?: number;
+  minScore?: number;
+  includeNsfw?: boolean;
+  searchQuery?: string;
+  chunkerName?: string;
+}
+
 export interface FileUploadResponse extends CrawlStartedResponseFields {
   message: string;
   fileName?: string;
@@ -1277,7 +1305,7 @@ export interface AddSourceDialogResult {
   files?: File[]; // Support for multiple file upload
   url?: string;
   path?: string; // Server-side path
-  sourceType?: 'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence';
+  sourceType?: 'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence' | 'jira' | 'reddit';
   fileName?: string;
   selectedLoader?: string;
   rebuildIndex?: boolean; // Added flag for optional rebuild
@@ -1333,6 +1361,26 @@ export interface AddSourceDialogResult {
   confluenceIncludeChildren?: boolean; // Whether to include child pages
   confluenceIncludeAttachments?: boolean; // Whether to include page attachments
   confluenceMaxDepth?: number; // Maximum depth for child page traversal
+  // Jira issue configuration
+  jiraBaseUrl?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
+  jiraProjectKey?: string;
+  jiraJql?: string;
+  jiraMaxIssues?: number;
+  jiraIncludeComments?: boolean;
+  jiraIncludeAttachments?: boolean;
+  // Reddit post/comment configuration
+  redditSubreddit?: string;
+  redditSortType?: 'hot' | 'new' | 'top' | 'rising' | 'controversial';
+  redditTimePeriod?: 'hour' | 'day' | 'week' | 'month' | 'year' | 'all';
+  redditPostLimit?: number;
+  redditIncludeComments?: boolean;
+  redditCommentDepth?: number;
+  redditCommentLimit?: number;
+  redditMinScore?: number;
+  redditIncludeNsfw?: boolean;
+  redditSearchQuery?: string;
   // Composite PDF loader option
   /**
    * When true, multiple PDF loaders will be tested and the one extracting
@@ -2676,8 +2724,11 @@ export interface AgentProvider {
   /** Description of the agent */
   description: string;
 
-  /** Agent type: CLI (subprocess) or API (OpenAI-compatible endpoint) */
-  agentType?: 'CLI' | 'API';
+  /** Runtime selector type. HARNESS means a kompile-cli-main persona or role. */
+  agentType?: 'CLI' | 'API' | 'HARNESS';
+
+  /** Whether the active harness/provider can accept image attachments. */
+  supportsVision?: boolean;
 
   /** API endpoint URL (API agents only) */
   endpointUrl?: string;
@@ -3267,11 +3318,20 @@ export interface LocalAgentChatRequest {
   /** Message to send */
   message: string;
 
+  /** Stable browser conversation key, hashed by the server before CLI persistence. */
+  sessionId?: string;
+
   /** Agent to use */
   agentName?: string;
 
   /** Skip permissions */
   skipPermissions?: boolean;
+
+  /** Enable the CLI harness memory layer. */
+  enableMemory?: boolean;
+
+  /** Supplemental system instructions for this harness turn. */
+  systemPromptOverride?: string;
 
   /** Working directory */
   workingDirectory?: string;
@@ -3317,7 +3377,7 @@ export interface LocalAgentChatRequest {
   /** Folder ID for context injection (file paths injected into prompt) */
   folderId?: string;
 
-  /** Timeout in seconds (0 = no timeout, default 300 = 5 minutes) */
+  /** Timeout in seconds (0 selects the harness's five-minute safety default) */
   timeoutSeconds?: number;
 
   /** File attachments for the chat request */

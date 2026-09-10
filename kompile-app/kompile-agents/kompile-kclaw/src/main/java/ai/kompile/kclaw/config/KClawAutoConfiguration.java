@@ -16,6 +16,7 @@
 package ai.kompile.kclaw.config;
 
 import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.agent.KClawExecutionScopeResolver;
 import ai.kompile.kclaw.agent.ToolkitRegistry;
 import ai.kompile.kclaw.task.AgentTaskService;
 import ai.kompile.kclaw.task.AgentTaskStore;
@@ -44,6 +45,7 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 
 import java.io.IOException;
@@ -60,8 +62,9 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
 
     @Bean
     @ConditionalOnMissingBean
-    public KClawConfig kClawConfig() {
-        this.config = KClawConfig.defaults();
+    public KClawConfig kClawConfig(
+            @Value("${kompile.data.dir:${user.home}/.kompile}") String dataDir) {
+        this.config = KClawConfig.defaults(dataDir);
         return config;
     }
 
@@ -153,8 +156,15 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
             SessionService sessionService,
             AgentRegistry agentRegistry,
             ToolkitRegistry toolkitRegistry,
-            ai.kompile.react.service.ReActAgentService reActAgentService) {
-        return new KClawAgentService(reActAgentService, agentRegistry, sessionService, toolkitRegistry);
+            ai.kompile.react.service.ReActAgentService reActAgentService,
+            org.springframework.beans.factory.ObjectProvider<KClawExecutionScopeResolver>
+                    executionScopeResolverProvider) {
+        return new KClawAgentService(
+                reActAgentService,
+                agentRegistry,
+                sessionService,
+                toolkitRegistry,
+                executionScopeResolverProvider.getIfAvailable());
     }
 
     @Bean
@@ -173,7 +183,10 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
                                              org.springframework.core.env.Environment env) {
         String binary = env.getProperty("kompile.cli.binary-path");
         long timeoutMs = env.getProperty("kompile.cli.task-timeout-ms", Long.class, 600_000L);
-        return new KompileCliRunner(objectMapper, binary, timeoutMs);
+        String projectRoot = env.getProperty(
+                "kompile.project.root", System.getProperty("user.dir", "."));
+        return new KompileCliRunner(
+                objectMapper, binary, timeoutMs, new java.io.File(projectRoot));
     }
 
     /**
@@ -200,32 +213,11 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
 
     @Bean("kclawChannelManager")
     @ConditionalOnMissingBean(ChannelManager.class)
-    public ChannelManager channelManager(
-            org.springframework.beans.factory.ObjectProvider<KClawAgentService> agentServiceProvider,
-            org.springframework.context.ApplicationEventPublisher eventPublisher) {
-        ChannelManager manager = new ChannelManager();
-        KClawAgentService agentService = agentServiceProvider.getIfAvailable();
-        if (agentService == null) {
-            // The UI always exposes channel configuration. Keep its REST contract present and
-            // report an empty channel set until the optional ReAct engine is available.
-            log.info("KClaw channel API available without ReAct engine; no channel adapters registered");
-            return manager;
-        }
-
-        // Wire each adapter with the event publisher so inbound messages drive graph-update
-        // pipelines (GraphUpdateChannelBridge listens in the same context), then register it.
-        java.util.List<ai.kompile.gateway.core.gateway.channel.BaseChannelAdapter> adapters = java.util.List.of(
-                new TelegramChannelAdapter(agentService),
-                new DiscordChannelAdapter(agentService),
-                new SlackChannelAdapter(agentService),
-                new WhatsAppChannelAdapter(agentService),
-                new EmailChannelAdapter(agentService));
-        adapters.forEach(adapter -> {
-            adapter.setEventPublisher(eventPublisher);
-            manager.registerAdapter(adapter);
-        });
-
-        return manager;
+    public ChannelManager channelManager() {
+        // Runtimes are created per persisted connection by ChannelIntegrationService. Registering
+        // one singleton adapter per provider prevents multiple workspaces/accounts and loses all
+        // configuration on restart.
+        return new ChannelManager();
     }
 
     @Bean
@@ -293,14 +285,13 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
             log.debug("KClaw WebSocket handler not available, skipping registration");
             return;
         }
-        KClawConfig cfg = kClawConfig();
+        KClawConfig cfg = config != null ? config : KClawConfig.defaults();
         if (cfg.getGateway().isWebsocketEnabled()) {
             String path = cfg.getGateway().getWebsocketPath();
             if (path == null || path.isEmpty()) {
                 path = "/ws/kclaw";
             }
-            registry.addHandler(webSocketHandler, path)
-                    .setAllowedOrigins("*");
+            registry.addHandler(webSocketHandler, path);
             log.info("WebSocket endpoint registered at {}", path);
         }
     }

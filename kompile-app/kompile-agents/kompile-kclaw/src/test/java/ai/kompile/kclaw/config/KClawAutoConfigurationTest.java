@@ -16,18 +16,23 @@
 package ai.kompile.kclaw.config;
 
 import ai.kompile.gateway.core.gateway.channel.ChannelManager;
+import ai.kompile.gateway.core.service.AgentRegistry;
+import ai.kompile.gateway.core.service.SessionService;
 import ai.kompile.kclaw.agent.KClawAgentService;
+import ai.kompile.kclaw.agent.KClawExecutionScopeResolver;
+import ai.kompile.kclaw.agent.ToolkitRegistry;
 import ai.kompile.kclaw.gateway.ChannelController;
-import ai.kompile.kclaw.gateway.OAuthController;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import ai.kompile.kclaw.gateway.integration.ChannelProviderCatalog;
+import ai.kompile.kclaw.gateway.whatsapp.WhatsAppWebhookInbox;
+import ai.kompile.react.service.ReActAgentService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -38,13 +43,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class KClawAutoConfigurationTest {
 
     @Test
-    @SuppressWarnings("unchecked")
-    void channelManager_keepsRestContractAvailableWithoutReactAgent() {
-        ObjectProvider<KClawAgentService> agents = mock(ObjectProvider.class);
-        when(agents.getIfAvailable()).thenReturn(null);
-
-        ChannelManager manager = new KClawAutoConfiguration().channelManager(
-                agents, mock(ApplicationEventPublisher.class));
+    void channelManager_startsEmptyUntilPersistentConnectionsAreRestored() {
+        ChannelManager manager = new KClawAutoConfiguration().channelManager();
 
         assertTrue(manager.getStatus().isEmpty());
     }
@@ -52,33 +52,40 @@ class KClawAutoConfigurationTest {
     @Test
     void emptyChannelManager_returnsEmptyStatusInsteadOfMissingEndpoints() throws Exception {
         ChannelManager manager = new ChannelManager();
+        @SuppressWarnings("unchecked")
+        ObjectProvider<WhatsAppWebhookInbox> inbox = mock(ObjectProvider.class);
         var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
-                new ChannelController(manager),
-                new OAuthController(manager, new ObjectMapper()))
+                new ChannelController(manager, inbox))
                 .build();
 
         mvc.perform(get("/api/kclaw/channels"))
                 .andExpect(status().isOk())
                 .andExpect(content().json("[]"));
-        mvc.perform(get("/api/kclaw/oauth/slack/status"))
-                .andExpect(status().isOk());
-        mvc.perform(get("/api/kclaw/oauth/discord/status"))
-                .andExpect(status().isOk());
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void channelManager_registersAllAdaptersWhenReactAgentIsAvailable() {
-        ObjectProvider<KClawAgentService> agents = mock(ObjectProvider.class);
-        when(agents.getIfAvailable()).thenReturn(mock(KClawAgentService.class));
-
-        ChannelManager manager = new KClawAutoConfiguration().channelManager(
-                agents, mock(ApplicationEventPublisher.class));
-
+    void providerCatalog_exposesAllBuiltInChannelSchemas() {
+        ChannelProviderCatalog catalog = new ChannelProviderCatalog();
         assertEquals(
                 Set.of("telegram", "discord", "slack", "whatsapp", "email"),
-                manager.getStatus().stream()
-                        .map(ChannelManager.ChannelStatus::channelName)
+                catalog.providers().stream()
+                        .map(provider -> provider.id())
                         .collect(Collectors.toSet()));
+    }
+
+    @Test
+    void agentServiceKeepsLegacyWiringWhenNoExecutionScopeResolverExists() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<KClawExecutionScopeResolver> resolverProvider = mock(ObjectProvider.class);
+        when(resolverProvider.getIfAvailable()).thenReturn(null);
+
+        KClawAgentService service = new KClawAutoConfiguration().kClawAgentService(
+                mock(SessionService.class),
+                mock(AgentRegistry.class),
+                mock(ToolkitRegistry.class),
+                mock(ReActAgentService.class),
+                resolverProvider);
+
+        assertNotNull(service);
     }
 }

@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -90,8 +90,9 @@ class AzurePlanTest(unittest.TestCase):
             "windows-x86_64-cuda-12.9",
             "windows-x86_64-cuda-12.9-cudnn",
             "windows-x86_64-cuda-12.9-compile",
-            "linux-x86_64-cuda-12.9-zluda",
-            "windows-x86_64-cuda-12.9-zluda",
+            "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4",
+            "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4",
+            "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
             "linux-x86_64-vulkan",
             "linux-x86_64-vulkan-compile",
             "linux-x86_64-hexagon",
@@ -115,7 +116,12 @@ class AzurePlanTest(unittest.TestCase):
             "windows-x86_64-cuda-12.6-compile": (
                 "cuda|12.6|cuda-12.6-compile"
             ),
-            "linux-x86_64-cuda-12.9-zluda": "cuda|12.9|zluda",
+            "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4": (
+                "cuda|12.9|zluda-rocm-7.2.4"
+            ),
+            "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0": (
+                "cuda|12.9|zluda-rocm-10.0.0"
+            ),
         }
         common = REPOSITORY / "build-scripts/build-common.sh"
         pom = (REPOSITORY / "pom.xml").read_text(encoding="utf-8")
@@ -979,6 +985,47 @@ class FullPlatformBuildTest(unittest.TestCase):
             hydrate.assert_called_once()
             dl4j.assert_not_called()
             java.assert_called_once()
+
+    def test_repository_mode_maven_only_rocm_10_hydrates_and_uses_amd_variant(self):
+        config = self.config(True)
+        config["shard"]["id"] = "linux-x86_64-zluda-rocm-10.0.0"
+        config["shard"]["build"].update({
+            "backend": "cuda",
+            "cudaVersion": "12.9",
+            "dl4jLane": "linux-x86_64-zluda-rocm-10.0.0",
+            "requireSdk": False,
+            "variants": [{
+                "name": "cuda-12.9",
+                "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
+                "kompileVariant": "amd-zluda",
+                "requireSdk": False,
+            }],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}), \
+                    patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download, \
+                    patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars") as hydrate, \
+                    patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j, \
+                    patch.object(BUILD_MODULE, "run_dl4j_java_reactor"), \
+                    patch.object(BUILD_MODULE, "run") as run, \
+                    patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"), \
+                    patch.object(BUILD_MODULE, "stage_dl4j_release_artifacts"):
+                BUILD_MODULE.build_full_platform(
+                    config, source, root / "m2", root / "maven", root / "assets",
+                )
+            download.assert_not_called()
+            hydrate.assert_called_once_with(
+                config, source, root / "m2", ANY,
+                "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
+            )
+            dl4j.assert_not_called()
+            command = run.call_args.args[0]
+            self.assertEqual(
+                "amd-zluda", command[command.index("--variant") + 1],
+            )
 
     def test_cli_light_lane_builds_and_stages_maven_assemblies_without_dl4j(self):
         plan = MODULE.load_plan(ROOT / "release-plan.json")

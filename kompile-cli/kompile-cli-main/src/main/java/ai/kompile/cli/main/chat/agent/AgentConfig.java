@@ -102,6 +102,16 @@ public class AgentConfig {
         return new Builder(name);
     }
 
+    /** Copy a profile for request-scoped overrides without mutating the registry. */
+    public Builder toBuilder() {
+        return builder(name).displayName(displayName).description(description)
+                .systemPrompt(systemPrompt).enabledTools(enabledTools)
+                .permissionOverrides(permissionOverrides).isSubagent(isSubagent)
+                .canSpawnSubagents(canSpawnSubagents).modelHint(modelHint)
+                .allowedModels(allowedModels).modelOverride(modelOverride)
+                .thinkingOverride(thinkingOverride).isCustom(isCustom).roleName(roleName);
+    }
+
     public static class Builder {
         private final String name;
         private String displayName;

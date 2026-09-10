@@ -45,10 +45,11 @@ class DeterministicCorpusSchemaInferencerTest {
         GraphSchema configured = new GraphSchema(
                 List.of(
                         new NodeType("PERSON", "Authoritative person.", null),
-                        new NodeType("APPROVAL_ROLE", "Authoritative approval role.", null)),
+                        new NodeType("APPROVAL_ROLE", "Authoritative approval role.", null,
+                                "CONCEPT")),
                 List.of(new RelationshipType(
                         "HAS_ROLE", "Authoritative role assignment.", null,
-                        List.of("holds role"))),
+                        List.of("holds role"), "AFFILIATION")),
                 List.of("(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)"));
 
         GraphSchema inferred =
@@ -63,6 +64,10 @@ class DeterministicCorpusSchemaInferencerTest {
                         .map(RelationshipType::getType).toList());
         assertTrue(inferred.getRelationshipTypes().get(0).getAliases()
                 .containsAll(List.of("has role", "holds role")));
+        assertEquals("CONCEPT",
+                inferred.getNodeTypeMap().get("APPROVAL_ROLE").getParentType());
+        assertEquals("AFFILIATION",
+                inferred.getRelationshipTypes().get(0).getConnectionFamily());
         assertEquals(List.of("(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)"),
                 inferred.getPatterns());
 

@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.graph.reasoning.explain.ReasoningTrace;
+import ai.kompile.graph.reasoning.explain.ReasoningTraceJsonCodec;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -53,6 +54,9 @@ public class CompactGraphContextService {
     static final String CONTRACT = "kompile.compact-graph.v1";
     static final String TRACE_DTO_ARTIFACT = "reasoning/traces.json";
     static final String PROCESS_SUGGESTIONS_ARTIFACT = "process/suggestions.json";
+    static final String PROCESS_TRACE_JSON_PREFIX = "process/reasoning-traces/v1/";
+    static final String PROCESS_TRACE_JSON_SUFFIX = ".json";
+    private static final int MAX_TRACE_ARTIFACTS_SCANNED = 256;
 
     private static final int MAX_NODES = 32;
     private static final int MAX_RELATIONS = 96;
@@ -246,19 +250,21 @@ public class CompactGraphContextService {
         Map<String, ProcessTraceScope> processScopes = processTraceScopes(graph, selectedIds);
         List<TraceCandidate> traceCandidates = new ArrayList<>();
         for (String name : graph.artifacts().keySet().stream()
-                .filter(value -> value.startsWith("trace:"))
-                .sorted().toList()) {
+                .filter(CompactGraphContextService::isProcessTraceJson)
+                .sorted().limit(MAX_TRACE_ARTIFACTS_SCANNED).toList()) {
             try {
-                Object model = graph.model(name);
-                if (model instanceof ReasoningTrace trace) {
-                    ProcessTraceScope scope = processScopes.getOrDefault(name, ProcessTraceScope.EMPTY);
-                    int relevance = scope.relevance()
-                            + traceRelevance(trace, referenceTerms);
-                    traceCandidates.add(new TraceCandidate(name, trace, relevance,
-                            scope.sourceNodeIds(), scope.sourceRelationIds()));
-                }
+                String suggestionId = traceSuggestionId(name);
+                byte[] bytes = graph.artifact(name);
+                if (bytes == null || bytes.length > ReasoningTraceJsonCodec.MAX_BYTES) continue;
+                ReasoningTrace trace = ReasoningTraceJsonCodec.decode(
+                        graph.artifactText(name), suggestionId);
+                ProcessTraceScope scope = processScopes.getOrDefault(name, ProcessTraceScope.EMPTY);
+                int relevance = scope.relevance()
+                        + traceRelevance(trace, referenceTerms);
+                traceCandidates.add(new TraceCandidate(name, trace, relevance,
+                        scope.sourceNodeIds(), scope.sourceRelationIds()));
             } catch (RuntimeException ignored) {
-                // A trace-prefixed artifact with incompatible bytes is omitted, never exposed raw.
+                // Malformed or future-version JSON traces are preserved but never exposed raw.
             }
         }
         boolean hasScopedTrace = traceCandidates.stream().anyMatch(candidate -> candidate.relevance() > 0);
@@ -320,7 +326,8 @@ public class CompactGraphContextService {
                 if (artifactName == null) {
                     String suggestionId = firstString(suggestion, "id");
                     if (suggestionId != null) {
-                        artifactName = "trace:process:" + suggestionId;
+                        artifactName = PROCESS_TRACE_JSON_PREFIX + suggestionId
+                                + PROCESS_TRACE_JSON_SUFFIX;
                     }
                 }
                 if (artifactName == null) {
@@ -339,6 +346,16 @@ public class CompactGraphContextService {
         } catch (Exception ignored) {
             return Map.of();
         }
+    }
+
+    private static boolean isProcessTraceJson(String name) {
+        return name.startsWith(PROCESS_TRACE_JSON_PREFIX)
+                && name.endsWith(PROCESS_TRACE_JSON_SUFFIX);
+    }
+
+    private static String traceSuggestionId(String name) {
+        return name.substring(PROCESS_TRACE_JSON_PREFIX.length(),
+                name.length() - PROCESS_TRACE_JSON_SUFFIX.length());
     }
 
     private static Set<String> selectedReferenceTerms(UnifiedGraph graph, Set<String> selectedIds) {
@@ -406,7 +423,8 @@ public class CompactGraphContextService {
         List<Map<String, Object>> steps = new ArrayList<>();
         Map<ReasoningTrace.Step, String> ids = new java.util.IdentityHashMap<>();
         assignStepIds(traceId, trace.conclusion(), ids, new int[]{0}, traceSteps);
-        appendSteps(trace.conclusion(), ids, steps, traceSteps);
+        appendSteps(trace.conclusion(), ids, steps, traceSteps,
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
         remainingSteps[0] -= traceBudget - traceSteps[0];
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -441,8 +459,9 @@ public class CompactGraphContextService {
             ReasoningTrace.Step step,
             Map<ReasoningTrace.Step, String> ids,
             List<Map<String, Object>> steps,
-            int[] remainingSteps) {
-        if (step == null || !ids.containsKey(step) || remainingSteps[0] <= 0) {
+            int[] remainingSteps,
+            Set<ReasoningTrace.Step> emitted) {
+        if (step == null || !ids.containsKey(step) || remainingSteps[0] <= 0 || !emitted.add(step)) {
             return;
         }
         Map<String, Object> compact = new LinkedHashMap<>();
@@ -464,11 +483,12 @@ public class CompactGraphContextService {
             compact.put("premiseIds", premiseIds);
         }
         if (step.opinion() != null) {
-            compact.put("opinion", Map.of(
-                    "belief", finite(step.opinion().belief()),
-                    "disbelief", finite(step.opinion().disbelief()),
-                    "uncertainty", finite(step.opinion().uncertainty()),
-                    "baseRate", finite(step.opinion().baseRate())));
+            Map<String, Object> opinion = new LinkedHashMap<>();
+            opinion.put("belief", finite(step.opinion().belief()));
+            opinion.put("disbelief", finite(step.opinion().disbelief()));
+            opinion.put("uncertainty", finite(step.opinion().uncertainty()));
+            opinion.put("baseRate", finite(step.opinion().baseRate()));
+            compact.put("opinion", opinion);
         }
         Map<String, Object> meta = safeAttributes(new LinkedHashMap<>(step.meta()));
         if (!meta.isEmpty()) {
@@ -477,7 +497,7 @@ public class CompactGraphContextService {
         steps.add(compact);
         remainingSteps[0]--;
         for (ReasoningTrace.Step premise : step.premises()) {
-            appendSteps(premise, ids, steps, remainingSteps);
+            appendSteps(premise, ids, steps, remainingSteps, emitted);
         }
     }
 

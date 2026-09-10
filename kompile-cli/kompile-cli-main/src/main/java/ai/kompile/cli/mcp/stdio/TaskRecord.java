@@ -88,6 +88,11 @@ public class TaskRecord {
     @Builder.Default
     private long pid = -1;
 
+    /** Supervising CLI process for detached logical work that must not expose/kill its shared child. */
+    @JsonProperty("ownerPid")
+    @Builder.Default
+    private long ownerPid = -1;
+
     @JsonProperty("exitCode")
     @Builder.Default
     private int exitCode = -1;
@@ -126,6 +131,7 @@ public class TaskRecord {
         this.lastActivity = this.createdAt;
         this.status = Status.PENDING;
         this.pid = -1;
+        this.ownerPid = -1;
         this.exitCode = -1;
         this.childTaskIds = new ArrayList<>();
     }

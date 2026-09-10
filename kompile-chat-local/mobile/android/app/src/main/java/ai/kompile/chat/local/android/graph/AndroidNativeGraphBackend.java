@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -18,37 +17,24 @@ import java.util.concurrent.Future;
  * Thread-affine Android graph backend over the JavaCPP {@code kgr_*} transport.
  *
  * <p>A Graal isolate thread handle belongs to exactly one OS thread. Every native
- * graph call, including open and teardown, therefore runs on one dedicated
- * executor thread. Callers may safely invoke this facade from arbitrary
+ * graph call, including session open and close, therefore runs on one dedicated
+ * process-lifetime executor thread. Callers may safely invoke this facade from arbitrary
  * coroutine/ART threads without sharing the isolate handle across them.</p>
  */
 public final class AndroidNativeGraphBackend implements GraphToolBackend {
 
     private static final int ABI_VERSION = 1;
+    private static final GraphRuntimeOwner RUNTIME = new GraphRuntimeOwner();
 
     private final Object lifecycle = new Object();
-    private final ExecutorService executor;
-    private Pointer isolateThread;
     private long sessionId;
     private String catalogJson;
     private boolean closed;
 
     private AndroidNativeGraphBackend(String kgraphPath) throws IOException {
-        executor = Executors.newSingleThreadExecutor(task -> {
-            Thread thread = new Thread(task, "kompile-graph-aot");
-            thread.setDaemon(true);
-            return thread;
-        });
-
-        try {
-            NativeState state = awaitInitialization(executor.submit(() -> initialize(kgraphPath)));
-            isolateThread = state.thread();
-            sessionId = state.sessionId();
-            catalogJson = state.catalogJson();
-        } catch (IOException failure) {
-            executor.shutdownNow();
-            throw failure;
-        }
+        NativeSession state = RUNTIME.open(kgraphPath);
+        sessionId = state.sessionId();
+        catalogJson = state.catalogJson();
     }
 
     /** Open an existing {@code .kgraph} with the native AOT runtime. */
@@ -76,7 +62,7 @@ public final class AndroidNativeGraphBackend implements GraphToolBackend {
         String normalizedArgs = argsJson == null || argsJson.isBlank() ? "{}" : argsJson;
         synchronized (lifecycle) {
             requireOpen();
-            return await(executor.submit(() -> dispatch(toolName, normalizedArgs)));
+            return RUNTIME.dispatch(sessionId, toolName, normalizedArgs);
         }
     }
 
@@ -85,23 +71,7 @@ public final class AndroidNativeGraphBackend implements GraphToolBackend {
         Objects.requireNonNull(path, "path");
         synchronized (lifecycle) {
             requireOpen();
-            try {
-                await(executor.submit(() -> {
-                    try (BytePointer destination = utf8(path.toAbsolutePath().normalize().toString())) {
-                        int status = KompileGraphNative.kgr_save(
-                                isolateThread, sessionId, destination);
-                        if (status != 0) {
-                            throw new IOException("Native graph save failed with status " + status);
-                        }
-                    }
-                    return null;
-                }));
-            } catch (IllegalStateException failure) {
-                if (failure.getCause() instanceof IOException ioFailure) {
-                    throw ioFailure;
-                }
-                throw failure;
-            }
+            RUNTIME.save(sessionId, path.toAbsolutePath().normalize().toString());
         }
     }
 
@@ -112,88 +82,12 @@ public final class AndroidNativeGraphBackend implements GraphToolBackend {
                 return;
             }
             closed = true;
-            RuntimeException closeFailure = null;
-            try {
-                await(executor.submit(() -> {
-                    if (sessionId != 0) {
-                        KompileGraphNative.kgr_close(isolateThread, sessionId);
-                        sessionId = 0;
-                    }
-                    if (isolateThread != null && !isolateThread.isNull()) {
-                        int status = KompileGraphNative.kgr_tear_down_isolate(isolateThread);
-                        isolateThread.setNull();
-                        if (status != 0) {
-                            throw new IllegalStateException(
-                                    "Native graph isolate teardown failed with status " + status);
-                        }
-                    }
-                    return null;
-                }));
-            } catch (RuntimeException failure) {
-                closeFailure = failure;
-            } finally {
-                catalogJson = null;
-                executor.shutdownNow();
+            long closingSession = sessionId;
+            sessionId = 0;
+            catalogJson = null;
+            if (closingSession != 0) {
+                RUNTIME.close(closingSession);
             }
-            if (closeFailure != null) {
-                throw closeFailure;
-            }
-        }
-    }
-
-    private NativeState initialize(String kgraphPath) throws IOException {
-        Pointer thread = null;
-        long openedSession = 0;
-        try {
-            thread = KompileGraphNative.kgr_create_isolate();
-            if (thread == null || thread.isNull()) {
-                throw new IOException("Native graph isolate creation failed");
-            }
-
-            int abi = KompileGraphNative.kgr_abi_version(thread);
-            if (abi != ABI_VERSION) {
-                throw new IOException(
-                        "Native graph ABI mismatch: expected " + ABI_VERSION + ", got " + abi);
-            }
-
-            try (BytePointer path = utf8(kgraphPath)) {
-                openedSession = KompileGraphNative.kgr_open(thread, path);
-            }
-            if (openedSession == 0) {
-                throw new IOException("Native graph session could not open: " + kgraphPath);
-            }
-
-            String catalog = copyAndFree(thread, KompileGraphNative.kgr_tools(thread));
-            return new NativeState(thread, openedSession, catalog);
-        } catch (Throwable failure) {
-            if (openedSession != 0 && thread != null && !thread.isNull()) {
-                try {
-                    KompileGraphNative.kgr_close(thread, openedSession);
-                } catch (Throwable ignored) {
-                    failure.addSuppressed(ignored);
-                }
-            }
-            if (thread != null && !thread.isNull()) {
-                try {
-                    KompileGraphNative.kgr_tear_down_isolate(thread);
-                    thread.setNull();
-                } catch (Throwable ignored) {
-                    failure.addSuppressed(ignored);
-                }
-            }
-            if (failure instanceof IOException ioFailure) {
-                throw ioFailure;
-            }
-            throw new IOException("Native graph runtime initialization failed", failure);
-        }
-    }
-
-    private String dispatch(String toolName, String argsJson) {
-        try (BytePointer tool = utf8(toolName);
-             BytePointer args = utf8(argsJson)) {
-            BytePointer result = KompileGraphNative.kgr_dispatch(
-                    isolateThread, sessionId, tool, args);
-            return copyAndFree(isolateThread, result);
         }
     }
 
@@ -214,44 +108,185 @@ public final class AndroidNativeGraphBackend implements GraphToolBackend {
     }
 
     private void requireOpen() {
-        if (closed || isolateThread == null || isolateThread.isNull() || sessionId == 0) {
+        if (closed || sessionId == 0) {
             throw new IllegalStateException("Native graph backend is closed");
         }
     }
 
-    private static NativeState awaitInitialization(Future<NativeState> future) throws IOException {
-        try {
-            return future.get();
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Native graph initialization interrupted", interrupted);
-        } catch (ExecutionException failed) {
-            Throwable cause = failed.getCause();
-            if (cause instanceof IOException ioFailure) {
-                throw ioFailure;
+    /**
+     * Owns the one Graal isolate permitted by the Android native image.
+     *
+     * <p>The Android image is built with isolate spawning disabled. Graph sessions may be opened
+     * and closed repeatedly, but tearing down this isolate during model churn makes a later graph
+     * open attempt bootstrap a forbidden second isolate. Keep the owner thread and isolate alive
+     * for the process lifetime; Android process death reclaims them.</p>
+     */
+    private static final class GraphRuntimeOwner {
+        private final ExecutorService executor = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "kompile-graph-aot");
+            thread.setDaemon(true);
+            return thread;
+        });
+        private Pointer isolateThread;
+        private IOException isolateInitializationFailure;
+
+        NativeSession open(String kgraphPath) throws IOException {
+            return awaitInitialization(executor.submit(() -> openOnOwnerThread(kgraphPath)));
+        }
+
+        String dispatch(long session, String toolName, String argsJson) {
+            return await(executor.submit(() -> {
+                Pointer thread = requireIsolateThread();
+                try (BytePointer tool = utf8(toolName);
+                     BytePointer args = utf8(argsJson)) {
+                    BytePointer result = KompileGraphNative.kgr_dispatch(
+                            thread, session, tool, args);
+                    return copyAndFree(thread, result);
+                }
+            }));
+        }
+
+        void save(long session, String destinationPath) throws IOException {
+            awaitInitialization(executor.submit(() -> {
+                Pointer thread = requireIsolateThread();
+                try (BytePointer destination = utf8(destinationPath)) {
+                    int status = KompileGraphNative.kgr_save(thread, session, destination);
+                    if (status != 0) {
+                        throw new IOException("Native graph save failed with status " + status);
+                    }
+                }
+                return null;
+            }));
+        }
+
+        void close(long session) {
+            await(executor.submit(() -> {
+                KompileGraphNative.kgr_close(requireIsolateThread(), session);
+                return null;
+            }));
+        }
+
+        private NativeSession openOnOwnerThread(String kgraphPath) throws IOException {
+            Pointer thread = initializeIsolateThread();
+            long openedSession = 0;
+            try {
+                try (BytePointer path = utf8(kgraphPath)) {
+                    openedSession = KompileGraphNative.kgr_open(thread, path);
+                }
+                if (openedSession == 0) {
+                    BytePointer nativeError = KompileGraphNative.kgr_last_error(thread);
+                    String detail = nativeError == null || nativeError.isNull()
+                            ? "No native graph error was returned"
+                            : copyAndFree(thread, nativeError);
+                    throw new IOException("Native graph session could not open: " + detail);
+                }
+                String catalog = copyAndFree(thread, KompileGraphNative.kgr_tools(thread));
+                return new NativeSession(openedSession, catalog);
+            } catch (Throwable failure) {
+                if (openedSession != 0) {
+                    try {
+                        KompileGraphNative.kgr_close(thread, openedSession);
+                    } catch (Throwable closeFailure) {
+                        failure.addSuppressed(closeFailure);
+                    }
+                }
+                if (failure instanceof IOException ioFailure) {
+                    throw ioFailure;
+                }
+                throw new IOException("Native graph session initialization failed", failure);
             }
-            throw new IOException("Native graph initialization failed", cause);
+        }
+
+        private Pointer initializeIsolateThread() throws IOException {
+            if (isolateInitializationFailure != null) {
+                throw new IOException(
+                        "Native graph isolate initialization previously failed",
+                        isolateInitializationFailure);
+            }
+            if (isolateThread != null && !isolateThread.isNull()) {
+                return isolateThread;
+            }
+            Pointer created = KompileGraphNative.kgr_create_isolate();
+            if (created == null || created.isNull()) {
+                isolateInitializationFailure =
+                        new IOException("Native graph isolate creation failed");
+                throw isolateInitializationFailure;
+            }
+            // Retain the first handle before any validation call. The Android image forbids
+            // spawning another isolate even when validation of this one fails.
+            isolateThread = created;
+            try {
+                int abi = KompileGraphNative.kgr_abi_version(created);
+                if (abi != ABI_VERSION) {
+                    throw new IOException(
+                            "Native graph ABI mismatch: expected " + ABI_VERSION + ", got " + abi);
+                }
+            } catch (Throwable failure) {
+                isolateInitializationFailure = failure instanceof IOException ioFailure
+                        ? ioFailure
+                        : new IOException("Native graph ABI validation failed", failure);
+                throw isolateInitializationFailure;
+            }
+            return isolateThread;
+        }
+
+        private Pointer requireIsolateThread() {
+            if (isolateThread == null || isolateThread.isNull()) {
+                throw new IllegalStateException("Native graph isolate is not initialized");
+            }
+            return isolateThread;
+        }
+    }
+
+    private static <T> T awaitInitialization(Future<T> future) throws IOException {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    return future.get();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                } catch (ExecutionException failed) {
+                    Throwable cause = failed.getCause();
+                    if (cause instanceof IOException ioFailure) {
+                        throw ioFailure;
+                    }
+                    throw new IOException("Native graph initialization failed", cause);
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
     private static <T> T await(Future<T> future) {
+        boolean interrupted = false;
         try {
-            return future.get();
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Native graph call interrupted", interrupted);
-        } catch (ExecutionException failed) {
-            Throwable cause = failed.getCause();
-            if (cause instanceof RuntimeException runtimeFailure) {
-                throw runtimeFailure;
+            while (true) {
+                try {
+                    return future.get();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                } catch (ExecutionException failed) {
+                    Throwable cause = failed.getCause();
+                    if (cause instanceof RuntimeException runtimeFailure) {
+                        throw runtimeFailure;
+                    }
+                    if (cause instanceof Error error) {
+                        throw error;
+                    }
+                    throw new IllegalStateException("Native graph call failed", cause);
+                }
             }
-            if (cause instanceof Error error) {
-                throw error;
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
             }
-            throw new IllegalStateException("Native graph call failed", cause);
         }
     }
 
-    private record NativeState(Pointer thread, long sessionId, String catalogJson) {
+    private record NativeSession(long sessionId, String catalogJson) {
     }
 }

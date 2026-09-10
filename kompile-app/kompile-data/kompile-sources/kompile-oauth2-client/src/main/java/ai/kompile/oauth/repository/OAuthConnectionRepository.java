@@ -18,11 +18,14 @@ package ai.kompile.oauth.repository;
 
 import ai.kompile.oauth.domain.ConnectionStatus;
 import ai.kompile.oauth.domain.OAuthConnection;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -38,6 +41,10 @@ public interface OAuthConnectionRepository extends JpaRepository<OAuthConnection
      * Find all connections with a specific status.
      */
     List<OAuthConnection> findByStatus(ConnectionStatus status);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM OAuthConnection c WHERE c.providerId = :providerId")
+    Optional<OAuthConnection> findByProviderIdForUpdate(@Param("providerId") String providerId);
 
     /**
      * Find all connected (active) connections.
@@ -59,6 +66,7 @@ public interface OAuthConnectionRepository extends JpaRepository<OAuthConnection
      * Update the last used timestamp for a connection.
      */
     @Modifying
+    @Transactional
     @Query("UPDATE OAuthConnection c SET c.lastUsedAt = :lastUsedAt WHERE c.providerId = :providerId")
     void updateLastUsedAt(@Param("providerId") String providerId, @Param("lastUsedAt") Instant lastUsedAt);
 

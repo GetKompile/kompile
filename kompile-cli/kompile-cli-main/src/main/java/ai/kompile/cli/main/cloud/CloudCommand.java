@@ -48,6 +48,7 @@ import java.util.concurrent.Callable;
                 CloudCommand.AppsCommand.class,
                 CloudCommand.JobsCommand.class,
                 CloudCommand.LocalCommand.class,
+                CloudSettingsCommand.class,
                 CloneCommand.class
         })
 public class CloudCommand implements Callable<Integer> {

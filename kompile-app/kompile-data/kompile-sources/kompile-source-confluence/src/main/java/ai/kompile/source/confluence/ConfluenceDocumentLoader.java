@@ -19,6 +19,8 @@ package ai.kompile.source.confluence;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.oauth.service.OAuthConnectionService;
+import ai.kompile.oauth.service.providers.AtlassianCloudResourceResolver;
 import ai.kompile.utils.MapUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -69,6 +71,15 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
             .connectTimeout(Duration.ofSeconds(30))
             .build();
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
+    private final OAuthConnectionService oauthService;
+
+    public ConfluenceDocumentLoader() {
+        this(null);
+    }
+
+    public ConfluenceDocumentLoader(OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -161,15 +172,16 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
         String spaceKey = stringValue(metadata, "spaceKey")
                 .or(() -> stringValue(metadata, "space"))
                 .orElseThrow(() -> new IllegalArgumentException("Confluence API loading requires metadata.spaceKey."));
-        String authHeader = resolveAuthHeader(metadata);
+        ApiAccess access = resolveApiAccess(baseUrl, metadata);
         int maxDocuments = MapUtils.getInt(metadata, "maxDocuments", DEFAULT_MAX_DOCUMENTS);
 
         report(progressCallback, 5, spaceKey, "Discovering Confluence pages");
         List<Document> documents = new ArrayList<>();
-        String nextUrl = apiUrl(baseUrl, spaceKey, Math.min(100, Math.max(1, maxDocuments)));
+        String nextUrl = apiUrl(access.apiBaseUrl(), spaceKey,
+                Math.min(100, Math.max(1, maxDocuments)));
 
         while (nextUrl != null && documents.size() < maxDocuments) {
-            JsonNode response = getJson(nextUrl, authHeader);
+            JsonNode response = getJson(nextUrl, access.authorization());
             JsonNode results = response.path("results");
             if (results.isArray()) {
                 for (JsonNode page : results) {
@@ -182,7 +194,7 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
                             "Loaded Confluence page " + documents.size() + "/" + maxDocuments);
                 }
             }
-            nextUrl = nextPageUrl(baseUrl, response).orElse(null);
+            nextUrl = nextPageUrl(access.apiBaseUrl(), response).orElse(null);
         }
         return documents;
     }
@@ -237,12 +249,31 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
         return objectMapper.readTree(response.body());
     }
 
-    private String resolveAuthHeader(Map<String, Object> metadata) {
+    private ApiAccess resolveApiAccess(String baseUrl, Map<String, Object> metadata) {
         Optional<String> bearer = stringValue(metadata, "accessToken")
                 .or(() -> stringValue(metadata, "oauthToken"))
                 .or(() -> stringValue(metadata, "token"));
         if (bearer.isPresent()) {
-            return "Bearer " + bearer.get();
+            String cloudId = stringValue(metadata, "cloudId").orElse(null);
+            String apiBase = cloudId == null ? baseUrl
+                    : AtlassianCloudResourceResolver.confluenceApiBase(cloudId);
+            return new ApiAccess(apiBase, "Bearer " + bearer.get());
+        }
+        if (oauthService != null) {
+            String connectedToken = oauthService.getValidAccessToken("atlassian");
+            if (connectedToken != null && !connectedToken.isBlank()) {
+                String cloudId = stringValue(metadata, "cloudId").orElseGet(() ->
+                        AtlassianCloudResourceResolver.resolveCloudId(
+                                objectMapper, oauthService.getProviderData("atlassian"), baseUrl));
+                if (cloudId == null || cloudId.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Atlassian OAuth is connected, but no accessible Confluence cloud matches "
+                                    + baseUrl + "; pass metadata.cloudId explicitly");
+                }
+                return new ApiAccess(
+                        AtlassianCloudResourceResolver.confluenceApiBase(cloudId),
+                        "Bearer " + connectedToken);
+            }
         }
 
         String email = stringValue(metadata, "email")
@@ -252,7 +283,10 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
                 .or(() -> stringValue(metadata, "password"))
                 .orElseThrow(() -> new IllegalArgumentException("Confluence API token auth requires metadata.apiToken."));
         String encoded = Base64.getEncoder().encodeToString((email + ":" + apiToken).getBytes(StandardCharsets.UTF_8));
-        return "Basic " + encoded;
+        return new ApiAccess(baseUrl, "Basic " + encoded);
+    }
+
+    private record ApiAccess(String apiBaseUrl, String authorization) {
     }
 
     private String apiUrl(String baseUrl, String spaceKey, int limit) {
@@ -273,6 +307,9 @@ public class ConfluenceDocumentLoader implements DocumentLoader {
         String normalized = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         if (!next.startsWith("/")) {
             next = "/" + next;
+        }
+        if (normalized.endsWith("/wiki") && next.startsWith("/wiki/")) {
+            normalized = normalized.substring(0, normalized.length() - "/wiki".length());
         }
         return Optional.of(normalized + next);
     }

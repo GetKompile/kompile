@@ -64,8 +64,11 @@ public final class CliModelCatalog {
     private static final long REFRESH_INTERVAL_MS = 10_000L;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    // bare-model-id (lowercased) -> spec, and "provider/id" -> spec. Rebuilt on catalog mtime change.
+    // Legacy bare-id/flat aliases, retained for unqualified callers.
     private static volatile Map<String, ModelSpec> byId = Map.of();
+    // Keep provider provenance separate: a model id may itself contain slashes.
+    private record ScopedModelId(String providerId, String modelId) {}
+    private static volatile Map<ScopedModelId, ModelSpec> byScopedId = Map.of();
     // providerId -> ordered list of its model ids (for dynamic chain enumeration).
     private static volatile Map<String, List<String>> byProvider = Map.of();
     private static volatile long lastLoadedFingerprint = Long.MIN_VALUE;
@@ -75,21 +78,34 @@ public final class CliModelCatalog {
 
     // ── Public lookup API ──────────────────────────────────────────────────────
 
-    /** Resolved spec for a model id (accepts {@code "opencode/deepseek-v4-flash"} or the bare id). */
+    /**
+     * Resolved spec for a bare id or {@code "provider/model"}. Bare ids retain the legacy
+     * first-catalog match; qualified ids never fall back to another provider. For model ids
+     * that themselves contain slashes, use {@link #lookup(String, String)} to supply the scope.
+     */
     public static Optional<ModelSpec> lookup(String modelId) {
         if (modelId == null || modelId.isBlank()) return Optional.empty();
-        ensureFresh();
-        Map<String, ModelSpec> map = byId;
         String norm = modelId.toLowerCase(Locale.ROOT).trim();
-        ModelSpec s = map.get(norm);
-        if (s != null) return Optional.of(s);
-        // Strip a provider prefix ("opencode/deepseek-v4-flash" -> "deepseek-v4-flash").
         int slash = norm.indexOf('/');
         if (slash >= 0) {
-            s = map.get(norm.substring(slash + 1));
-            if (s != null) return Optional.of(s);
+            return lookup(norm.substring(0, slash), norm.substring(slash + 1));
         }
-        return Optional.empty();
+        ensureFresh();
+        return Optional.ofNullable(byId.get(norm));
+    }
+
+    /**
+     * Exact provider/model lookup. Both identifiers are case-insensitive; the model id is
+     * otherwise literal, including slashes. Only entries parsed under this provider qualify,
+     * never flat aliases or a different provider's bare model id.
+     */
+    public static Optional<ModelSpec> lookup(String providerId, String modelId) {
+        if (providerId == null || providerId.isBlank() || modelId == null || modelId.isBlank()) {
+            return Optional.empty();
+        }
+        ensureFresh();
+        return Optional.ofNullable(byScopedId.get(new ScopedModelId(
+                providerId.toLowerCase(Locale.ROOT).trim(), modelId.toLowerCase(Locale.ROOT).trim())));
     }
 
     /** Context window (tokens) for a model, or empty if the model is not in any catalog. */
@@ -131,6 +147,7 @@ public final class CliModelCatalog {
             lastLoadedFingerprint = Long.MIN_VALUE;
             lastCheckMs = 0L;
             byId = Map.of();
+            byScopedId = Map.of();
             byProvider = Map.of();
         }
     }
@@ -202,18 +219,20 @@ public final class CliModelCatalog {
 
     private static void reload() {
         Map<String, ModelSpec> ids = new ConcurrentHashMap<>();
+        Map<ScopedModelId, ModelSpec> scopedIds = new LinkedHashMap<>();
         Map<String, List<String>> providers = new LinkedHashMap<>();
         for (Path p : catalogPaths()) {
             try {
                 if (!Files.exists(p)) continue;
                 JsonNode root = MAPPER.readTree(p.toFile());
-                parseModelsDev(root, ids, providers);
+                parseModelsDev(root, ids, scopedIds, providers);
             } catch (Exception ignored) {
                 // A malformed catalog must never break model resolution — fall through to the next
                 // file (and ultimately ModelContextWindows' static fallback).
             }
         }
         byId = ids;
+        byScopedId = scopedIds;
         byProvider = providers;
     }
 
@@ -223,12 +242,13 @@ public final class CliModelCatalog {
      */
     private static void parseModelsDev(JsonNode root,
                                        Map<String, ModelSpec> ids,
+                                       Map<ScopedModelId, ModelSpec> scopedIds,
                                        Map<String, List<String>> providers) {
         if (root == null || !root.isObject()) return;
         var fields = root.fields();
         while (fields.hasNext()) {
             var pe = fields.next();
-            String providerId = pe.getKey();
+            String providerId = pe.getKey().trim();
             JsonNode provNode = pe.getValue();
             JsonNode models = provNode.path("models");
             if (!models.isObject()) continue;
@@ -237,7 +257,7 @@ public final class CliModelCatalog {
             var me = models.fields();
             while (me.hasNext()) {
                 var entry = me.next();
-                String modelId = entry.getKey();
+                String modelId = entry.getKey().trim();
                 JsonNode m = entry.getValue();
                 JsonNode limit = m.path("limit");
                 int ctx = limit.path("context").asInt(0);
@@ -255,9 +275,10 @@ public final class CliModelCatalog {
                 String bare = modelId.toLowerCase(Locale.ROOT);
                 ids.putIfAbsent(bare, spec);
                 ids.putIfAbsent(providerId.toLowerCase(Locale.ROOT) + "/" + bare, spec);
+                scopedIds.putIfAbsent(new ScopedModelId(providerId.toLowerCase(Locale.ROOT), bare), spec);
                 provModels.add(modelId);
             }
-            reconcileFreeAliases(providerId, ids, provModels);
+            reconcileFreeAliases(providerId, ids, scopedIds, provModels);
         }
     }
 
@@ -269,6 +290,7 @@ public final class CliModelCatalog {
      */
     private static void reconcileFreeAliases(String providerId,
                                              Map<String, ModelSpec> ids,
+                                             Map<ScopedModelId, ModelSpec> scopedIds,
                                              List<String> providerModels) {
         String providerKey = providerId.toLowerCase(Locale.ROOT);
         for (String modelId : new ArrayList<>(providerModels)) {
@@ -276,10 +298,9 @@ public final class CliModelCatalog {
             String aliasKey = modelId.toLowerCase(Locale.ROOT);
             if (!aliasKey.endsWith("-free")) continue;
             String baseKey = aliasKey.substring(0, aliasKey.length() - "-free".length());
-            ModelSpec alias = ids.get(providerKey + "/" + aliasKey);
-            if (alias == null) alias = ids.get(aliasKey);
-            ModelSpec base = ids.get(providerKey + "/" + baseKey);
-            if (base == null) base = ids.get(baseKey);
+            ScopedModelId scopedAlias = new ScopedModelId(providerKey, aliasKey);
+            ModelSpec alias = scopedIds.get(scopedAlias);
+            ModelSpec base = scopedIds.get(new ScopedModelId(providerKey, baseKey));
             if (alias == null || base == null) continue;
             int context = Math.max(alias.contextWindow(), base.contextWindow());
             int output = Math.max(alias.maxOutputTokens(), base.maxOutputTokens());
@@ -289,8 +310,10 @@ public final class CliModelCatalog {
                     alias.supportsVision() || base.supportsVision(),
                     alias.supportsTools() || base.supportsTools(),
                     alias.free(), alias.status());
-            ids.put(aliasKey, reconciled);
-            ids.put(providerKey + "/" + aliasKey, reconciled);
+            scopedIds.put(scopedAlias, reconciled);
+            // Do not overwrite an earlier bare/flat alias owned by another provider.
+            ids.replace(aliasKey, alias, reconciled);
+            ids.replace(providerKey + "/" + aliasKey, alias, reconciled);
         }
     }
 

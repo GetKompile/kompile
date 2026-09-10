@@ -12,7 +12,6 @@ package ai.kompile.graph.reasoning.psl;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -66,9 +65,6 @@ public class PslProgram implements Serializable {
 
     /** WP17f — set by {@link #ground()} when the {@link #MAX_GROUND_RULES} cap truncated grounding. */
     private boolean groundingTruncated;
-
-    /** Rebuilt by {@link #ground()}; lets {@code instantiate} stamp {@link GroundRule#templateIndex()}. */
-    private transient Map<PslRule, Integer> templateIndexLookup;
 
     // Step 3 — predicate-level open/closed declarations
     /** Predicate name → arity for declared closed (CWA) predicates. */
@@ -269,12 +265,45 @@ public class PslProgram implements Serializable {
 
     /** Declare a target atom whose soft truth is to be inferred. */
     public PslProgram target(PslAtom groundAtom) {
-        register(groundAtom);
+        String key = register(groundAtom);
+        // A target declaration is also the explicit observed → target transition.  Keeping
+        // the atom registered while clearing its evidence lets incremental callers change
+        // the role of an existing atom without having to remove and re-add it.
+        if (observed.remove(key)) {
+            values.put(key, 0.0);
+            predicateIndexDirty = true;
+        }
         return this;
     }
 
     public PslProgram target(String predicate, String... args) {
         return target(PslAtom.ground(predicate, args));
+    }
+
+    /**
+     * Remove a ground atom and its truth assignment from this program.
+     *
+     * <p>The removal is structural: subsequent grounding cannot see the atom, and a later
+     * grounding pass will only re-register it if the caller explicitly adds it again (or a
+     * closed-world declaration synthesizes it).  This method is intentionally idempotent.</p>
+     *
+     * @param atomKey canonical key such as {@code State(alice)}
+     * @return {@code true} when an atom was removed, otherwise {@code false}
+     */
+    public boolean removeAtom(String atomKey) {
+        if (atomKey == null || atomsByKey.remove(atomKey) == null) return false;
+        values.remove(atomKey);
+        observed.remove(atomKey);
+        predicateIndexDirty = true;
+        return true;
+    }
+
+    /** Remove a ground atom by value. */
+    public boolean removeAtom(PslAtom groundAtom) {
+        if (groundAtom == null || !groundAtom.isGround()) {
+            throw new IllegalArgumentException("Atom must be ground: " + groundAtom);
+        }
+        return removeAtom(groundAtom.key());
     }
 
     /**
@@ -310,7 +339,7 @@ public class PslProgram implements Serializable {
             values.put(key, 0.0);
             predicateIndexDirty = true; // E-8: new atom added
         }
-        observed.add(key); // CWA: treat as observed-false
+        if (observed.add(key)) predicateIndexDirty = true; // CWA: treat as observed-false
         return key;
     }
 
@@ -364,21 +393,30 @@ public class PslProgram implements Serializable {
      * on the fly and registered as temporary observed atoms.</p>
      */
     public List<GroundRule> ground() {
+        Set<Integer> allTemplates = new LinkedHashSet<>();
+        for (int i = 0; i < rules.size(); i++) allTemplates.add(i);
+        return groundRulesForTemplates(allTemplates);
+    }
+
+    /**
+     * Ground only the supplied template indexes against the current program state.
+     *
+     * <p>This package-private entry point is used by {@link IncrementalGrounder} to batch
+     * affected templates.  The predicate index is prepared once, so a batch does not
+     * repeatedly copy the whole program into mini-programs.</p>
+     */
+    List<GroundRule> groundRulesForTemplates(Set<Integer> templateIndexes) {
         Map<String, List<PslAtom>> byPredicate = buildPredicateIndex();
         List<GroundRule> out = new ArrayList<>();
-        // Identity lookup so instantiate() can stamp each grounding with its template-rule
-        // index — signature matching downstream cannot disambiguate equal-weight rules.
-        templateIndexLookup = new IdentityHashMap<>();
         for (int i = 0; i < rules.size(); i++) {
-            templateIndexLookup.put(rules.get(i), i);
-        }
-        for (PslRule rule : rules) {
+            if (!templateIndexes.contains(i)) continue;
+            PslRule rule = rules.get(i);
             // E-8: optimise join order for body atoms (most-selective first), then head atoms
             List<PslAtom> optimizedBody = optimizeJoinOrder(rule.body(), byPredicate);
             List<PslAtom> allAtoms = new ArrayList<>(optimizedBody.size() + rule.head().size());
             allAtoms.addAll(optimizedBody);
             allAtoms.addAll(rule.head());
-            groundInto(rule, allAtoms, byPredicate, 0, new LinkedHashMap<>(), out);
+            groundInto(rule, i, allAtoms, byPredicate, 0, new LinkedHashMap<>(), out);
             if (out.size() >= MAX_GROUND_RULES) break;
         }
         // WP17f — a hit on the grounding cap silently truncates inference; make it loud + observable.
@@ -467,12 +505,13 @@ public class PslProgram implements Serializable {
 
     // ─── Logical-rule grounding ───────────────────────────────────────────────
 
-    private void groundInto(PslRule rule, List<PslAtom> atoms, Map<String, List<PslAtom>> byPredicate,
-                            int index, Map<String, String> binding, List<GroundRule> out) {
+    private void groundInto(PslRule rule, int templateIndex, List<PslAtom> atoms,
+                            Map<String, List<PslAtom>> byPredicate, int index,
+                            Map<String, String> binding, List<GroundRule> out) {
         if (out.size() >= MAX_GROUND_RULES) return;
         if (index == atoms.size()) {
             if (satisfiesDistinct(rule, binding)) {
-                out.add(instantiate(rule, binding));
+                out.add(instantiate(rule, binding, templateIndex));
             }
             return;
         }
@@ -481,7 +520,7 @@ public class PslProgram implements Serializable {
 
         // Step 4 — external function predicate
         if (functions.containsKey(pred)) {
-            groundWithFunction(rule, atoms, byPredicate, index, binding, out, template);
+            groundWithFunction(rule, templateIndex, atoms, byPredicate, index, binding, out, template);
             return;
         }
 
@@ -502,7 +541,7 @@ public class PslProgram implements Serializable {
                 }
                 Map<String, String> extended = unify(template, candidate, binding);
                 if (extended != null) {
-                    groundInto(rule, atoms, byPredicate, index + 1, extended, out);
+                    groundInto(rule, templateIndex, atoms, byPredicate, index + 1, extended, out);
                 }
             }
             return;
@@ -512,7 +551,7 @@ public class PslProgram implements Serializable {
         for (PslAtom candidate : candidates) {
             Map<String, String> extended = unify(template, candidate, binding);
             if (extended != null) {
-                groundInto(rule, atoms, byPredicate, index + 1, extended, out);
+                groundInto(rule, templateIndex, atoms, byPredicate, index + 1, extended, out);
             }
         }
     }
@@ -558,7 +597,7 @@ public class PslProgram implements Serializable {
     }
 
     /** Handle an external-function body literal: evaluate fn, register temp atom, continue. */
-    private void groundWithFunction(PslRule rule, List<PslAtom> atoms,
+    private void groundWithFunction(PslRule rule, int templateIndex, List<PslAtom> atoms,
                                     Map<String, List<PslAtom>> byPredicate,
                                     int index, Map<String, String> binding,
                                     List<GroundRule> out, PslAtom template) {
@@ -584,7 +623,7 @@ public class PslProgram implements Serializable {
                 observed.add(key);
                 byPredicate.computeIfAbsent(template.predicate(), k -> new ArrayList<>()).add(candidate);
             }
-            groundInto(rule, atoms, byPredicate, index + 1, extended, out);
+            groundInto(rule, templateIndex, atoms, byPredicate, index + 1, extended, out);
         }
     }
 
@@ -871,7 +910,7 @@ public class PslProgram implements Serializable {
         return true;
     }
 
-    private GroundRule instantiate(PslRule rule, Map<String, String> binding) {
+    private GroundRule instantiate(PslRule rule, Map<String, String> binding, int templateIndex) {
         List<GroundRule.Lit> body = new ArrayList<>(rule.body().size());
         List<GroundRule.Lit> head = new ArrayList<>(rule.head().size());
         for (PslAtom atom : rule.body()) {
@@ -880,8 +919,6 @@ public class PslProgram implements Serializable {
         for (PslAtom atom : rule.head()) {
             head.add(new GroundRule.Lit(atom.ground(binding).key(), atom.negated()));
         }
-        int templateIndex = templateIndexLookup == null ? -1
-                : templateIndexLookup.getOrDefault(rule, -1);
         return new GroundRule(rule.weight(), rule.hard(), rule.squared(), body, head,
                 renderGround(rule, binding), templateIndex);
     }

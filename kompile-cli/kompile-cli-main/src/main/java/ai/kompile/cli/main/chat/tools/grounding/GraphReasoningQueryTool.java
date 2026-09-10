@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -55,6 +56,11 @@ import java.util.Map;
  */
 public class GraphReasoningQueryTool implements CliTool {
 
+    private static final List<String> SUPPORTED_OPERATIONS = List.of(
+            "CAPABILITIES", "OVERVIEW", "SCHEMA", "SEARCH", "RELATIONS",
+            "DESCRIBE", "NEIGHBORS", "PATH", "TIMELINE", "FACTS", "SIMILAR",
+            "VERIFY", "WHY", "WHY_NOT", "RANK", "ASSETS", "ARTIFACT");
+
     private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
     private final LocalProjectGraphBackend localBackend;
@@ -84,14 +90,15 @@ public class GraphReasoningQueryTool implements CliTool {
                 "see the full list. Entity names and ids are resolved automatically. Results include " +
                 "ranked answers, matching entities/relations, and a reasoning trace showing how the " +
                 "answer was derived. Runs against the project-local graph over stdio by default; a " +
-                "configured graph URL is an optional remote override.";
+                "configured graph URL is an optional remote override. Optional chatModel.provider/modelId " +
+                "interprets engine evidence using native chat (not capability/schema/asset inspection).";
     }
 
     @Override
     public String compactHint() {
-        return "One tool to ask the graph anything: operation=capabilities|overview|schema|search|" +
-                "describe|neighbors|path|timeline|facts|similar|verify|why|why_not|rank (or just " +
-                "question=...). Start with operation=capabilities to see what the graph can answer. " +
+        return "One tool to ask the graph anything: operation="
+                + String.join("|", SUPPORTED_OPERATIONS) + " (or just " +
+                "question=...). Start with operation=CAPABILITIES to see what the graph can answer. " +
                 "Local stdio defaults to and initializes the current folder; factSheetId is an optional remote/legacy override.";
     }
 
@@ -100,14 +107,17 @@ public class GraphReasoningQueryTool implements CliTool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        GraphChatSupport.addSchema(props);
 
-        props.putObject("operation")
+        ObjectNode operation = props.putObject("operation");
+        operation
                 .put("type", "string")
                 .put("description", "The query intent. Use CAPABILITIES to list all options and their required fields.");
+        SUPPORTED_OPERATIONS.forEach(operation.putArray("enum")::add);
 
         props.putObject("question")
                 .put("type", "string")
-                .put("description", "Natural-language question or search text (alias for queryText; convenient shorthand).");
+                .put("description", "Natural-language question or search text. When operation is omitted, this executes SEARCH.");
 
         props.putObject("factSheetId")
                 .put("type", "integer")
@@ -162,7 +172,10 @@ public class GraphReasoningQueryTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Query knowledge graph");
+        return GraphChatSupport.execute(id(), params, context, objectMapper, p -> executeGraph(p, context));
+    }
 
+    private ToolResult executeGraph(JsonNode params, ToolContext context) {
         if (!groundingClient.isAvailable()) {
             try {
                 return formatResult(localBackend.reasoningQuery(params, context));
@@ -257,11 +270,13 @@ public class GraphReasoningQueryTool implements CliTool {
             sb.append("\nEntities (").append(entities.size()).append("):\n");
             entities.forEach(e -> {
                 String label = e.path("label").asText(e.path("id").asText("?"));
+                String id    = e.path("id").asText("");
                 String type  = e.path("type").asText("");
                 double score = e.path("score").asDouble(0.0);
                 sb.append("  - ").append(label);
                 if (!type.isEmpty()) sb.append(" [").append(type).append("]");
                 if (score > 0.0)     sb.append("  score=").append(String.format("%.2f", score));
+                if (!id.isEmpty())   sb.append("  id=").append(id);
                 sb.append("\n");
             });
         }

@@ -1225,7 +1225,7 @@ sentences.
 **33g. Warm chunks**: prepend a context header per chunk — document title + top-K prior-chunk
 entities (`"Known entities so far: …"`) so pronouns/partial names resolve in-prompt; enable
 `retainResultGraph`-style in-flight dedup by (type, title-fold) during a document's extraction.
-Config: `kbExtractionContractV2Enabled` (default false until validated on FP&A), per-item flags.
+Config: `kbExtractionContractV2Enabled` (default false until validated on domain-planning), per-item flags.
 Tests: contract round-trip; negation fixture yields polarity=negative + low confidence; properties
 land namespaced; quote lands and renders in an explain trace.
 

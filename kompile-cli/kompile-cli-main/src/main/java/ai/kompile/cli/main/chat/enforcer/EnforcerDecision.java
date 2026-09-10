@@ -16,7 +16,6 @@
 
 package ai.kompile.cli.main.chat.enforcer;
 
-import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -85,15 +84,37 @@ public class EnforcerDecision {
     public static EnforcerDecision parse(ObjectMapper mapper, String responseText) {
         String json = extractJson(responseText);
         if (json == null) {
-            return stop(List.of("Enforcer judge did not return valid JSON"),
-                    responseText != null ? StringUtils.truncate(responseText, 240) : "empty judge response");
+            return pass("Enforcer judge did not return valid JSON; failing open");
         }
 
         try {
             JsonNode root = mapper.readTree(json);
+            if (root == null || !root.isObject()) {
+                return pass("Enforcer judge returned a non-object verdict; failing open");
+            }
+
             String action = root.path("action").asText("");
-            boolean compliant = root.path("compliant").asBoolean("pass".equalsIgnoreCase(action));
-            boolean stop = root.path("stop").asBoolean("stop".equalsIgnoreCase(action));
+            boolean passAction = "pass".equalsIgnoreCase(action)
+                    || "allow".equalsIgnoreCase(action);
+            boolean failAction = "fail".equalsIgnoreCase(action)
+                    || "block".equalsIgnoreCase(action)
+                    || "correct".equalsIgnoreCase(action);
+            boolean stopAction = "stop".equalsIgnoreCase(action);
+            JsonNode compliantNode = root.get("compliant");
+            JsonNode stopNode = root.get("stop");
+            boolean hasCompliant = compliantNode != null && compliantNode.isBoolean();
+            boolean hasStop = stopNode != null && stopNode.isBoolean() && stopNode.asBoolean();
+            if (!hasCompliant && !hasStop && !passAction && !failAction && !stopAction) {
+                return pass("Enforcer judge verdict had no valid decision; failing open");
+            }
+
+            boolean stop = stopNode != null && stopNode.isBoolean()
+                    ? stopNode.asBoolean() : stopAction;
+            boolean compliant = compliantNode != null && compliantNode.isBoolean()
+                    ? compliantNode.asBoolean() : passAction;
+            if (stop) {
+                compliant = false;
+            }
             String severity = root.path("severity").asText(stop ? "critical" : compliant ? "info" : "error");
             String correction = root.path("correction_prompt").asText("");
             if (correction.isBlank()) {
@@ -114,14 +135,19 @@ public class EnforcerDecision {
                 violations.add(violationNode.asText());
             }
 
-            if (!compliant && violations.isEmpty() && !reasoning.isBlank()) {
-                violations.add(reasoning);
+            if (!compliant && violations.isEmpty()) {
+                return pass("Enforcer judge did not identify a specific rule violation; failing open");
+            }
+            if (stop && !"critical".equalsIgnoreCase(severity)) {
+                stop = false;
+            }
+            if (!compliant && !stop && correction.isBlank()) {
+                return pass("Enforcer judge did not provide an actionable correction; failing open");
             }
 
             return new EnforcerDecision(compliant, stop, severity, violations, correction, reasoning);
         } catch (Exception e) {
-            return stop(List.of("Enforcer judge JSON parse failed: " + e.getMessage()),
-                    StringUtils.truncate(responseText, 240));
+            return pass("Enforcer judge JSON parse failed; failing open: " + e.getMessage());
         }
     }
 

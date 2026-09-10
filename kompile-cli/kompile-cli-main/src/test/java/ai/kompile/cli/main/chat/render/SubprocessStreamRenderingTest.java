@@ -184,7 +184,9 @@ class SubprocessStreamRenderingTest {
         List<String> lines = capturedLines();
         assertFalse(lines.isEmpty(), "Should emit code block lines");
         String combined = String.join("\n", lines);
-        assertTrue(combined.contains("int x = 1"), "Code block should contain code");
+        // Code content may carry inline syntax styling — compare visible text
+        assertTrue(AsciiRenderer.stripAnsi(combined).contains("int x = 1"),
+                "Code block should contain code");
     }
 
     @Test

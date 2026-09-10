@@ -78,7 +78,8 @@ public final class CrawlControlTool implements CliTool {
         props.putObject("stepId").put("type", "string")
                 .put("description", "Step id for run_step/archive_step.");
         props.putObject("body").put("type", "object")
-                .put("description", "UnifiedCrawlRequest JSON for start, or endpoint body.");
+                .put("description", "UnifiedCrawlRequest JSON for start, or for preflight to preview that exact request without persistence/inference. "
+                        + "Native CHAT_MODEL routes and request-scoped processors execute in the MCP host, not the managed server.");
         props.putObject("page").put("type", "integer");
         props.putObject("size").put("type", "integer");
         props.putObject("factSheetId").put("type", "integer")
@@ -99,7 +100,7 @@ public final class CrawlControlTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Control a unified crawl");
-        String operation = params.path("operation").asText("").toLowerCase(Locale.ROOT);
+        String operation = params.path("operation").asText("").trim().toLowerCase(Locale.ROOT);
         if (operation.isBlank()) return ToolResult.error("operation is required");
         String jobId = params.path("jobId").asText("");
         // A project-local job remains project-local even when a managed crawl URL is configured.
@@ -107,7 +108,10 @@ public final class CrawlControlTool implements CliTool {
         if (LocalCrawlJobRegistry.isJobId(jobId)) {
             return localBackend.control(params, context);
         }
-        if (!client.isAvailable()) {
+        JsonNode crawlBody = params.path("body").isObject() ? params.path("body") : params.path("request");
+        if (("preflight".equals(operation) && crawlBody.isObject())
+                || ("start".equals(operation) && CrawlDocumentsTool.requiresLocalExecution(crawlBody))
+                || !client.isAvailable()) {
             return localBackend.control(params, context);
         }
         String stepId = params.path("stepId").asText("");
@@ -182,7 +186,9 @@ public final class CrawlControlTool implements CliTool {
             }
             return result(operation, response);
         } catch (ResourceAccessException e) {
-            return localBackend.control(params, context);
+            // A timed-out start may already have been accepted. Never replay it on a different graph/backend.
+            return ToolResult.error("Configured crawl manager could not complete " + operation
+                    + ". No local fallback was started; inspect the manager's jobs before retrying.");
         } catch (Exception e) {
             return ToolResult.error("crawl_control " + operation + " failed: " + e.getMessage());
         }

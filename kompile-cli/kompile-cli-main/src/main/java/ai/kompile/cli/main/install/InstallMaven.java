@@ -25,7 +25,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "maven",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "maven", description = "Install the managed Maven runtime.", mixinStandardHelpOptions = false)
 public class InstallMaven implements Callable<Integer> {
 
     public final static String MAVEN_URL = "https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz";

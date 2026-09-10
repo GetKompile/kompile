@@ -192,7 +192,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
         }
 
         // Convert to core Graph model
-        return convertToGraph(allEntities, allRelationships);
+        return convertToGraph(allEntities, allRelationships, graphId);
     }
 
     /**
@@ -264,7 +264,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
             log.error("Failed to save graph", e);
         }
 
-        return new GraphConstructionResult(graphId, convertToGraph(allEntities, allRelationships));
+        return new GraphConstructionResult(graphId, convertToGraph(allEntities, allRelationships, graphId));
     }
 
     /**
@@ -857,7 +857,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
             }
         }
 
-        return convertToGraph(allEntities, allRelationships);
+        return convertToGraph(allEntities, allRelationships, graphId);
     }
 
     @Override
@@ -881,7 +881,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
         if (!skipMatrixGraph && graphId != null) {
             persistExtractedGraph(graphId, entities, relationships, skipEmbedding);
         }
-        return convertToGraph(entities, relationships);
+        return convertToGraph(entities, relationships, graphId);
     }
 
     private void persistExtractedGraph(String graphId,
@@ -1418,8 +1418,11 @@ public class MatrixGraphConstructor implements GraphConstructor {
                 || lower.contains("you have exhausted your capacity");
     }
 
-    private Graph convertToGraph(List<ExtractedGraphDTO.ExtractedEntity> entities, List<ExtractedGraphDTO.ExtractedRelationship> relationships) {
+    private Graph convertToGraph(List<ExtractedGraphDTO.ExtractedEntity> entities,
+                                 List<ExtractedGraphDTO.ExtractedRelationship> relationships,
+                                 String graphId) {
         Graph graph = new Graph();
+        graph.setId(graphId);
 
         graph.setEntities(entities.stream().map(e -> {
             Entity entity = new Entity();

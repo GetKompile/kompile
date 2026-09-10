@@ -107,6 +107,7 @@ public class AsciiRenderer {
     private final TerminalRenderer term;
     private final BorderChars defaultBorder;
     private final int terminalWidth;
+    private final SyntaxHighlighter highlighter;
 
     public AsciiRenderer(TerminalRenderer terminalRenderer) {
         this(terminalRenderer, 100);
@@ -116,6 +117,7 @@ public class AsciiRenderer {
         this.term = terminalRenderer;
         this.defaultBorder = term.isAnsiEnabled() ? ROUNDED : ASCII;
         this.terminalWidth = Math.max(40, terminalWidth);
+        this.highlighter = new SyntaxHighlighter(term);
     }
 
     /**
@@ -602,14 +604,23 @@ public class AsciiRenderer {
                 .append(term.dim("╮"))
                 .append("\n");
 
-        // Code lines with gutter
+        // Code lines with gutter. Widths are computed from raw text; syntax
+        // highlighting is applied afterwards so ANSI escapes never skew the
+        // padding or get sliced mid-sequence by truncation.
+        boolean canHighlight = language != null && !language.isEmpty()
+                && SyntaxHighlighter.familyOf(language) != SyntaxHighlighter.Family.NONE;
         for (int i = 0; i < lines.length; i++) {
             String lineNum = String.format("%" + gutterWidth + "d", i + 1);
             String codeLine = lines[i];
             if (codeLine.length() > contentWidth) {
-                codeLine = codeLine.substring(0, contentWidth - 1) + "…";
+                codeLine = codeLine.substring(0, contentWidth - 1) + "\u2026";
             }
+            // Pad from the RAW length: the highlighter preserves every input
+            // character and only wraps spans in escape sequences.
             int pad = contentWidth - codeLine.length();
+            if (canHighlight) {
+                codeLine = highlighter.highlight(codeLine, language);
+            }
 
             sb.append(term.dim("│"))
                     .append(term.dim(lineNum))
@@ -720,6 +731,13 @@ public class AsciiRenderer {
         int endLine = startLine + lines.length - 1;
         int gutterWidth = String.valueOf(endLine).length();
 
+        // Per-language coloring from the filename; explicit highlightLines
+        // still win so callers' emphasis is preserved. The highlighter
+        // resolves both dotted names and special ones (Dockerfile, Makefile).
+        boolean canHighlight = filename != null
+                && SyntaxHighlighter.familyForFilename(filename) != SyntaxHighlighter.Family.NONE;
+        String lang = filename;
+
         StringBuilder sb = new StringBuilder();
 
         // File header
@@ -733,13 +751,19 @@ public class AsciiRenderer {
             String gutter = String.format("%" + gutterWidth + "d", lineNum);
             boolean highlight = highlightLines != null && highlightLines.contains(lineNum);
 
+            String body;
             if (highlight) {
-                sb.append(term.yellow(gutter)).append(term.dim(" │ "))
-                        .append(term.yellow(lines[i])).append("\n");
+                body = term.yellow(lines[i]);
+            } else if (canHighlight) {
+                body = highlighter.highlight(lines[i], lang);
             } else {
-                sb.append(term.dim(gutter)).append(term.dim(" │ "))
-                        .append(lines[i]).append("\n");
+                body = lines[i];
             }
+
+            sb.append(highlight ? term.yellow(gutter) : term.dim(gutter))
+                    .append(term.dim(" │ "))
+                    .append(body)
+                    .append("\n");
         }
 
         return sb.toString().stripTrailing();

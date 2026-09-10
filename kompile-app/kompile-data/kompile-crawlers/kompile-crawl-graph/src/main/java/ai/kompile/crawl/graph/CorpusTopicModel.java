@@ -6,9 +6,11 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.language.LanguageMetadata;
 import ai.kompile.core.language.LanguageSupport;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
+import ai.kompile.crawl.graph.partition.GraphProvenanceChunks;
 import ai.kompile.crawler.CrawlLanguageDetector;
 import ai.kompile.graph.algorithms.LouvainCommunityDetection;
 import ai.kompile.graph.algorithms.adjacency.AdjacencyView;
@@ -21,8 +23,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.text.BreakIterator;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,6 +35,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Automatic BERTopic-style corpus analysis over Kompile-managed embeddings and graph algorithms.
@@ -44,11 +50,18 @@ class CorpusTopicModel {
     private static final Logger log = LoggerFactory.getLogger(CorpusTopicModel.class);
     private static final int K_NEIGHBORS = 8;
     private static final int SIMILARITY_BLOCK_ROWS = 256;
+    private static final int MAX_TOPIC_PASSAGES = 4_096;
     private static final int MIN_TOPIC_SIZE = 2;
     private static final int MAX_REPRESENTATIVES = 3;
     private static final int MAX_TERMS_PER_LANGUAGE = 12;
     private static final double MIN_SIMILARITY = 0.35;
     private static final double EPSILON = 1e-12;
+    private static final Set<String> ISO_LANGUAGES = Set.of(Locale.getISOLanguages());
+    private static final Pattern SOURCE_LANGUAGE_SUFFIX = Pattern.compile(
+            "(?:^|[-_.])([a-z]{2})(?=(?:\\.[^.]+)?$)", Pattern.CASE_INSENSITIVE);
+
+    private EmbeddingModel runtimeEmbeddingModel;
+    private Function<String, String> runtimeLanguageDetector;
 
     @Autowired(required = false)
     private VectorIndexingHelper vectorIndexingHelper;
@@ -56,15 +69,60 @@ class CorpusTopicModel {
     @Autowired(required = false)
     private ObjectProvider<CrawlLanguageDetector> languageDetectors;
 
+    CorpusTopicModel() {
+    }
+
+    /** Headless/runtime constructor used by the folder-local MCP execution path. */
+    CorpusTopicModel(EmbeddingModel runtimeEmbeddingModel,
+                     Function<String, String> runtimeLanguageDetector) {
+        this.runtimeEmbeddingModel = runtimeEmbeddingModel;
+        this.runtimeLanguageDetector = runtimeLanguageDetector;
+    }
+
+    /**
+     * Headless extraction owns a short-lived embedding lease. Consume that lease only for topic
+     * analysis, then release it before corpus-schema LLM binding starts so the embedding process
+     * cannot overlap the serving model. Spring-managed embedding beans are unaffected because
+     * {@code runtimeEmbeddingModel} is null on that path.
+     */
+    CorpusTopicEvidence analyzeAndReleaseRuntimeModel(
+            List<CrawlCorpusPassage> passages, UnifiedCrawlJob job) {
+        try {
+            CorpusTopicEvidence evidence = analyze(passages, job);
+            releaseRuntimeEmbeddingModel();
+            return evidence;
+        } catch (RuntimeException | Error failure) {
+            try {
+                releaseRuntimeEmbeddingModel();
+            } catch (RuntimeException releaseFailure) {
+                failure.addSuppressed(releaseFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private void releaseRuntimeEmbeddingModel() {
+        EmbeddingModel model = runtimeEmbeddingModel;
+        if (model == null) return;
+        runtimeEmbeddingModel = null;
+        try {
+            model.close();
+        } catch (Exception closeFailure) {
+            throw new IllegalStateException(
+                    "Failed to release the headless corpus-topic embedding runtime", closeFailure);
+        }
+    }
+
     CorpusTopicEvidence analyze(List<CrawlCorpusPassage> passages, UnifiedCrawlJob job) {
         if (passages == null || passages.size() < MIN_TOPIC_SIZE) {
             return CorpusTopicEvidence.empty();
         }
-        if (vectorIndexingHelper == null) {
+        if (runtimeEmbeddingModel == null && vectorIndexingHelper == null) {
             throw new IllegalStateException("Corpus topic analysis requires the managed embedding lane");
         }
 
-        EmbeddingModel model = vectorIndexingHelper.embeddingModel(REQUIRED_MODEL_ID);
+        EmbeddingModel model = runtimeEmbeddingModel != null
+                ? runtimeEmbeddingModel : vectorIndexingHelper.embeddingModel(REQUIRED_MODEL_ID);
         if (model == null) {
             log.warn("Corpus topic evidence unavailable: managed model '{}' is not registered as an embedding bean",
                     REQUIRED_MODEL_ID);
@@ -72,9 +130,14 @@ class CorpusTopicModel {
         }
         String modelId = model.getModelIdentifier();
         try {
-            if (!vectorIndexingHelper.isEmbeddingModelReady(model)) {
+            boolean ready = runtimeEmbeddingModel != null
+                    ? model.isInitialized() || model.initializeIfNeeded()
+                    : vectorIndexingHelper.isEmbeddingModelReady(model);
+            if (!ready) {
                 log.warn("Corpus topic evidence unavailable: managed model '{}' is not ready: {}",
-                        REQUIRED_MODEL_ID, vectorIndexingHelper.embeddingModelNotReadyReason(model));
+                        REQUIRED_MODEL_ID, runtimeEmbeddingModel != null
+                                ? model.getInitializationError()
+                                : vectorIndexingHelper.embeddingModelNotReadyReason(model));
                 return CorpusTopicEvidence.empty();
             }
         } catch (RuntimeException startupFailure) {
@@ -83,20 +146,212 @@ class CorpusTopicModel {
             return CorpusTopicEvidence.empty();
         }
 
-        vectorIndexingHelper.setActiveCrawlJobId(job == null ? null : job.getJobId());
-        try {
-            List<String> texts = passages.stream().map(CrawlCorpusPassage::content).toList();
-            float[][] embeddings = embedInBatches(model, texts);
-            List<String> languages = passages.stream().map(this::language).toList();
-            return analyzeEmbeddings(passages, embeddings, languages, modelId);
-        } finally {
-            vectorIndexingHelper.setActiveCrawlJobId(null);
+        // Crawl-level attribution is owned by UnifiedCrawlGraphServiceImpl for the whole job.
+        // Do not clear it inside this nested phase or later subprocess events lose their owner.
+        List<DocumentProfile> documents = documentProfiles(passages);
+        if (documents.size() < MIN_TOPIC_SIZE) {
+            return CorpusTopicEvidence.empty();
         }
+        List<DocumentProfile> topicDocuments = boundedDocuments(documents, MAX_TOPIC_PASSAGES);
+        List<CrawlCorpusPassage> embeddingPassages = balancedEmbeddingPassages(
+                topicDocuments, MAX_TOPIC_PASSAGES);
+        if (embeddingPassages.size() < passages.size()) {
+            log.warn("Corpus topic analysis embedded {} of {} passages across {} of {} documents",
+                    embeddingPassages.size(), passages.size(), topicDocuments.size(), documents.size());
+        }
+
+        float[][] passageEmbeddings = embedInBatches(
+                model, embeddingPassages.stream().map(CrawlCorpusPassage::content).toList());
+        Map<String, float[]> embeddingByChunk = new LinkedHashMap<>();
+        for (int i = 0; i < embeddingPassages.size(); i++) {
+            embeddingByChunk.put(embeddingPassages.get(i).chunkId(), passageEmbeddings[i]);
+        }
+
+        float[][] documentEmbeddings = new float[topicDocuments.size()][];
+        Map<String, String> representativeChunks = new LinkedHashMap<>();
+        List<CrawlCorpusPassage> documentPassages = new ArrayList<>(topicDocuments.size());
+        List<String> documentLanguages = new ArrayList<>(topicDocuments.size());
+        for (int i = 0; i < topicDocuments.size(); i++) {
+            DocumentProfile profile = topicDocuments.get(i);
+            documentEmbeddings[i] = meanEmbedding(profile.passages(), embeddingByChunk);
+            representativeChunks.put(profile.documentId(), representativeChunk(
+                    profile.passages(), embeddingByChunk, documentEmbeddings[i]));
+            String language = dominantLanguage(profile.passages());
+            documentLanguages.add(language);
+            documentPassages.add(new CrawlCorpusPassage(
+                    profile.documentId(), i, profile.completeText(),
+                    "document-profile:" + profile.documentId(),
+                    Map.of("language", language), true));
+        }
+
+        CorpusTopicEvidence documentEvidence = analyzeEmbeddings(
+                documentPassages, documentEmbeddings, documentLanguages, modelId);
+        return expandDocumentEvidence(documentEvidence, topicDocuments, representativeChunks);
+    }
+
+    private List<DocumentProfile> documentProfiles(List<CrawlCorpusPassage> passages) {
+        Map<String, List<CrawlCorpusPassage>> grouped = new LinkedHashMap<>();
+        for (CrawlCorpusPassage passage : passages) {
+            if (passage == null) continue;
+            grouped.computeIfAbsent(documentId(passage), ignored -> new ArrayList<>()).add(passage);
+        }
+        return grouped.entrySet().stream().map(entry -> {
+            List<CrawlCorpusPassage> ordered = entry.getValue().stream()
+                    .sorted(Comparator.comparingInt(CrawlCorpusPassage::chunkIndex)
+                            .thenComparing(value -> value.chunkId() == null ? "" : value.chunkId()))
+                    .toList();
+            return new DocumentProfile(entry.getKey(), ordered);
+        }).toList();
+    }
+
+    private static String documentId(CrawlCorpusPassage passage) {
+        String id = GraphProvenanceChunks.documentId(passage.metadata());
+        if (id != null && !id.isBlank()) return id;
+        for (String key : List.of(
+                GraphConstants.META_SOURCE_PATH, "source_url", "source", "path")) {
+            Object value = passage.metadata().get(key);
+            if (value != null && !value.toString().isBlank()) return value.toString().trim();
+        }
+        return "chunk:" + passage.chunkId();
+    }
+
+    private static List<DocumentProfile> boundedDocuments(
+            List<DocumentProfile> documents, int maximum) {
+        if (documents.size() <= maximum) return List.copyOf(documents);
+        List<DocumentProfile> selected = new ArrayList<>(maximum);
+        long lastIndex = documents.size() - 1L;
+        for (int slot = 0; slot < maximum; slot++) {
+            selected.add(documents.get(Math.toIntExact(
+                    slot * lastIndex / (maximum - 1L))));
+        }
+        return List.copyOf(selected);
+    }
+
+    /** Round-robin sampling gives every selected source document one embedding vote first. */
+    private static List<CrawlCorpusPassage> balancedEmbeddingPassages(
+            List<DocumentProfile> documents, int maximum) {
+        List<CrawlCorpusPassage> selected = new ArrayList<>(Math.min(maximum,
+                documents.stream().mapToInt(profile -> profile.passages().size()).sum()));
+        for (int round = 0; selected.size() < maximum; round++) {
+            boolean added = false;
+            for (DocumentProfile profile : documents) {
+                if (round < profile.passages().size()) {
+                    selected.add(profile.passages().get(round));
+                    added = true;
+                    if (selected.size() == maximum) break;
+                }
+            }
+            if (!added) break;
+        }
+        return List.copyOf(selected);
+    }
+
+    private static float[] meanEmbedding(
+            List<CrawlCorpusPassage> passages, Map<String, float[]> embeddings) {
+        float[] mean = null;
+        int count = 0;
+        for (CrawlCorpusPassage passage : passages) {
+            float[] vector = embeddings.get(passage.chunkId());
+            if (vector == null) continue;
+            if (mean == null) mean = new float[vector.length];
+            for (int i = 0; i < vector.length; i++) mean[i] += vector[i];
+            count++;
+        }
+        if (mean == null || count == 0) {
+            throw new IllegalStateException("Document profile has no managed embedding vectors");
+        }
+        double norm = 0.0;
+        for (int i = 0; i < mean.length; i++) {
+            mean[i] /= count;
+            norm += (double) mean[i] * mean[i];
+        }
+        norm = Math.sqrt(norm);
+        if (norm <= EPSILON) throw new IllegalStateException("Document embedding centroid is empty");
+        for (int i = 0; i < mean.length; i++) mean[i] /= (float) norm;
+        return mean;
+    }
+
+    private static String representativeChunk(
+            List<CrawlCorpusPassage> passages,
+            Map<String, float[]> embeddings,
+            float[] documentEmbedding) {
+        String selected = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (CrawlCorpusPassage passage : passages) {
+            float[] vector = embeddings.get(passage.chunkId());
+            if (vector == null) continue;
+            double dot = 0.0;
+            double norm = 0.0;
+            for (int i = 0; i < vector.length; i++) {
+                dot += (double) vector[i] * documentEmbedding[i];
+                norm += (double) vector[i] * vector[i];
+            }
+            double score = norm <= EPSILON ? Double.NEGATIVE_INFINITY : dot / Math.sqrt(norm);
+            if (score > bestScore || (score == bestScore
+                    && (selected == null || passage.chunkId().compareTo(selected) < 0))) {
+                selected = passage.chunkId();
+                bestScore = score;
+            }
+        }
+        if (selected == null) throw new IllegalStateException("Document has no representative chunk");
+        return selected;
+    }
+
+    private String dominantLanguage(List<CrawlCorpusPassage> passages) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (CrawlCorpusPassage passage : passages) counts.merge(language(passage), 1, Integer::sum);
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .map(Map.Entry::getKey).findFirst()
+                .orElse(LanguageSupport.UNDETERMINED_LANGUAGE);
+    }
+
+    private static CorpusTopicEvidence expandDocumentEvidence(
+            CorpusTopicEvidence evidence,
+            List<DocumentProfile> documents,
+            Map<String, String> representativeChunks) {
+        Map<String, DocumentProfile> byId = documents.stream().collect(Collectors.toMap(
+                DocumentProfile::documentId, Function.identity(),
+                (left, ignored) -> left, LinkedHashMap::new));
+        List<CorpusTopicEvidence.Topic> topics = evidence.topics().stream().map(topic -> {
+            List<String> documentIds = topic.memberChunkIds();
+            List<String> chunkIds = documentIds.stream().map(byId::get)
+                    .filter(java.util.Objects::nonNull)
+                    .flatMap(profile -> profile.passages().stream())
+                    .map(CrawlCorpusPassage::chunkId).toList();
+            List<String> representatives = topic.representativeChunkIds().stream()
+                    .map(representativeChunks::get).filter(java.util.Objects::nonNull).toList();
+            return new CorpusTopicEvidence.Topic(
+                    topic.topicId(), documentIds, chunkIds, representatives,
+                    topic.languageDistribution(), topic.termsByLanguage());
+        }).toList();
+        return new CorpusTopicEvidence(
+                evidence.embeddingModelId(), evidence.embeddingDimension(), evidence.modularity(),
+                evidence.outlierCount(), topics, evidence.bindings());
+    }
+
+    static List<CrawlCorpusPassage> boundedPassages(
+            List<CrawlCorpusPassage> passages, int maximum) {
+        if (passages == null || passages.size() <= maximum) {
+            return passages == null ? List.of() : List.copyOf(passages);
+        }
+        if (maximum < 2) {
+            throw new IllegalArgumentException("maximum must be at least 2");
+        }
+        List<CrawlCorpusPassage> selected = new ArrayList<>(maximum);
+        long lastIndex = passages.size() - 1L;
+        for (int slot = 0; slot < maximum; slot++) {
+            int index = Math.toIntExact(slot * lastIndex / (maximum - 1L));
+            selected.add(passages.get(index));
+        }
+        return List.copyOf(selected);
     }
 
     private static float[][] embedInBatches(EmbeddingModel model, List<String> texts) {
         int optimal = Math.max(1, model.getOptimalBatchSize());
-        int maximum = Math.max(optimal, model.getMaxBatchSize());
+        int reportedMaximum = model.getMaxBatchSize();
+        int maximum = reportedMaximum > 0 ? reportedMaximum : optimal;
         int batchSize = Math.min(optimal, maximum);
         float[][] result = new float[texts.size()][];
         for (int start = 0; start < texts.size(); start += batchSize) {
@@ -123,11 +378,37 @@ class CorpusTopicModel {
         if (language != null && !LanguageSupport.UNDETERMINED_LANGUAGE.equals(language)) {
             return language;
         }
+        language = sourceLanguage(passage);
+        if (language != null) {
+            return language;
+        }
+        if (runtimeLanguageDetector != null) {
+            language = runtimeLanguageDetector.apply(passage.content());
+        }
         CrawlLanguageDetector detector = languageDetectors == null ? null : languageDetectors.getIfAvailable();
-        if (detector != null) {
+        if ((language == null || LanguageSupport.UNDETERMINED_LANGUAGE.equals(language))
+                && detector != null) {
             language = detector.detectLanguage(passage.content());
         }
         return language == null ? LanguageSupport.UNDETERMINED_LANGUAGE : language;
+    }
+
+    private static String sourceLanguage(CrawlCorpusPassage passage) {
+        List<String> candidates = new ArrayList<>();
+        Object source = passage.metadata().get(GraphConstants.META_SOURCE_PATH);
+        if (source != null) candidates.add(String.valueOf(source));
+        Object sourcePath = passage.metadata().get("source_path");
+        if (sourcePath != null) candidates.add(String.valueOf(sourcePath));
+        candidates.add(passage.chunkId());
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isBlank()) continue;
+            Matcher matcher = SOURCE_LANGUAGE_SUFFIX.matcher(candidate);
+            while (matcher.find()) {
+                String code = matcher.group(1).toLowerCase(Locale.ROOT);
+                if (ISO_LANGUAGES.contains(code)) return code;
+            }
+        }
+        return null;
     }
 
     static CorpusTopicEvidence analyzeEmbeddings(
@@ -204,7 +485,12 @@ class CorpusTopicModel {
     private static AdjacencyView buildKnnGraph(
             List<CrawlCorpusPassage> passages, INDArray normalized) {
         int rows = Math.toIntExact(normalized.size(0));
-        int k = Math.min(K_NEIGHBORS, Math.max(1, rows - 1));
+        // Never turn a small corpus into a complete graph merely because the global k cap
+        // exceeds its size. Multilingual sentence embeddings commonly have a positive shared
+        // baseline, so a complete six-document graph collapses otherwise distinct domains into
+        // one zero-modularity community. Keep at most half of the possible neighbours; this
+        // preserves local semantic structure while retaining the configured k=8 cap at scale.
+        int k = Math.min(K_NEIGHBORS, Math.max(1, (rows - 1) / 2));
         AdjacencyView.Builder graph = AdjacencyView.builder();
         passages.forEach(passage -> graph.addNode(passage.chunkId()));
 
@@ -415,4 +701,10 @@ class CorpusTopicModel {
     private record Neighbor(String chunkId, double score) {}
     private record Representative(int passageIndex, String language, double score) {}
     private record TermScore(String term, double score) {}
+    private record DocumentProfile(String documentId, List<CrawlCorpusPassage> passages) {
+        String completeText() {
+            return passages.stream().map(CrawlCorpusPassage::content)
+                    .filter(java.util.Objects::nonNull).collect(Collectors.joining("\n\n"));
+        }
+    }
 }

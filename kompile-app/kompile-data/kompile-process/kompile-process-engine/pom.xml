@@ -30,7 +30,7 @@
     <name>Kompile Process Engine</name>
     <description>
         Generalized core for building ontologies and executable processes with human-in-the-loop.
-        Powers domain-specific workflow demos such as Prossimo FP&amp;A.
+        Powers domain-specific workflow demonstrations.
     </description>
 
     <dependencies>

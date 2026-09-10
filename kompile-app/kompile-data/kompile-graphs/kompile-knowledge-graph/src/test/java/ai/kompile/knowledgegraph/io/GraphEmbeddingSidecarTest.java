@@ -14,6 +14,7 @@ import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.embedding.util.INDArrayConverter;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -127,7 +128,7 @@ class GraphEmbeddingSidecarTest {
     }
 
     @Test
-    void importInto_missingNode_skipsGracefully() {
+    void importInto_missingNodeFailsForCompensation() {
         INDArray vec = mock(INDArray.class);
         GraphNode source = GraphNode.builder()
                 .nodeId("n1").externalId("gone").nodeType(NodeLevel.ENTITY)
@@ -142,11 +143,9 @@ class GraphEmbeddingSidecarTest {
 
         when(graphService.getNodeByExternalIdInFactSheet(eq("gone"), any(), eq(5L)))
                 .thenReturn(Optional.empty());
+        when(converter.convertToEntityAttribute(any(byte[].class))).thenReturn(vec);
 
-        int applied = sidecar.importInto(5L, data);
-        // The seam-based sidecar counts the entry but the storeNodeKgEmbedding is a no-op
-        // because getNodeByExternalIdInFactSheet returned empty → ifPresent does nothing.
-        // applied counts the node slot read from the stream = 1, but no seam call happens.
+        assertThrows(IllegalStateException.class, () -> sidecar.importInto(5L, data));
         verify(graphService, never()).storeNodeKgEmbedding(any(), any(), any(), any(), any());
     }
 
@@ -191,6 +190,25 @@ class GraphEmbeddingSidecarTest {
     }
 
     @Test
+    void partialLiveStoreApplyFailsInsteadOfReportingSuccess() {
+        KnowledgeGraphService gs = mock(KnowledgeGraphService.class);
+        GraphEmbeddingSidecar sc = new GraphEmbeddingSidecar(new INDArrayConverter(), gs);
+        when(gs.findNodesWithKgEmbedding(1L)).thenReturn(List.of());
+        when(gs.getEdgeTypeKgEmbeddings(1L)).thenReturn(Map.of());
+        INDArray vec = Nd4j.create(new float[]{0.1f, 0.2f}, new long[]{2});
+        when(gs.exportNodeEmbeddings(1L)).thenReturn(Map.of("node-1", vec));
+        GraphNode original = GraphNode.builder()
+                .nodeId("node-1").externalId("ext-1").nodeType(NodeLevel.ENTITY).build();
+        when(gs.getNodesInFactSheet(1L)).thenReturn(List.of(original));
+        byte[] bytes = sc.export(1L);
+        when(gs.getNodeByExternalIdInFactSheet("ext-1", NodeLevel.ENTITY, 1L))
+                .thenReturn(Optional.of(original));
+        when(gs.applyNodeEmbeddings(any())).thenReturn(0);
+
+        assertThrows(IllegalStateException.class, () -> sc.importInto(1L, bytes));
+    }
+
+    @Test
     void export_liveStoreEmpty_andNoKge_returnsNull() {
         KnowledgeGraphService gs = mock(KnowledgeGraphService.class);
         GraphEmbeddingSidecar sc = new GraphEmbeddingSidecar(converter, gs);
@@ -214,6 +232,24 @@ class GraphEmbeddingSidecarTest {
 
         // Sidecar must read a legacy file without error.
         assertEquals(0, sidecar.importInto(1L, bos.toByteArray()));
+    }
+
+    @Test
+    void preflightRejectsCorruptFramingBeforeAnyStoreWrite() throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bos)) {
+            out.writeInt(0x4B474532);
+            out.writeInt(0);
+            out.writeInt(0);
+            out.writeInt(0);
+            out.writeByte(99);
+        }
+        UnifiedGraph graph = new UnifiedGraph().putArtifact(
+                GraphEmbeddingSidecar.ARTIFACT_NAME, bos.toByteArray());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> sidecar.validateArtifacts(1L, graph));
+        verifyNoInteractions(graphService);
     }
 
     @Test

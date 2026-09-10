@@ -41,7 +41,7 @@
  *
  * --- Memory ownership --------------------------------------------------------
  *
- *   Every char* returned by kgr_tools() or kgr_dispatch() is a NUL-terminated
+ *   Every char* returned by kgr_last_error(), kgr_tools(), or kgr_dispatch() is a NUL-terminated
  *   UTF-8 string allocated in unmanaged (C-heap) memory by the library.  YOU
  *   MUST release it by calling kgr_free(thread, ptr) after copying its contents.
  *   Passing it to free(3) directly, or failing to call kgr_free, are both bugs.
@@ -56,6 +56,7 @@
  *
  *     - Functions that return int: 0 = success, non-zero = failure.
  *     - kgr_open: 0 = failure; > 0 = valid session handle.
+ *       Call kgr_last_error() after failure for the complete native diagnostic.
  *     - kgr_tools / kgr_dispatch: the returned JSON may contain:
  *           {"status":"ERROR","message":"..."}
  *       when the operation failed.  A non-NULL return is guaranteed (the
@@ -121,6 +122,7 @@
  *           fun kgr_tear_down_isolate(thread: Pointer): Int
  *           fun kgr_abi_version(thread: Pointer): Int
  *           fun kgr_open(thread: Pointer, kgraphPath: String): Long
+ *           fun kgr_last_error(thread: Pointer): Pointer
  *           fun kgr_tools(thread: Pointer): Pointer
  *           fun kgr_dispatch(thread: Pointer, sessionId: Long,
  *                            toolName: String, argsJson: String): Pointer
@@ -271,6 +273,15 @@ int kgr_abi_version(kgr_thread_t *thread);
 kgr_session_t kgr_open(kgr_thread_t *thread, const char *kgraph_path);
 
 /**
+ * Return the diagnostic from the most recent failed operation on this isolate thread.
+ * The returned UTF-8 string must be freed with kgr_free().
+ *
+ * @param thread a valid attached thread handle.
+ * @return heap-allocated diagnostic string; free with kgr_free.
+ */
+const char *kgr_last_error(kgr_thread_t *thread);
+
+/**
  * Save the session's graph to a .kgraph file.
  *
  * Any mutations made via kgr_dispatch (ask_graph_assert / ask_graph_retract)
@@ -338,7 +349,7 @@ const char *kgr_dispatch(kgr_thread_t  *thread,
                           const char    *args_json);
 
 /**
- * Free a string previously returned by kgr_tools() or kgr_dispatch().
+ * Free a string previously returned by kgr_last_error(), kgr_tools(), or kgr_dispatch().
  *
  * Calling kgr_free with a NULL pointer is a no-op.
  * Do NOT call free(3) on these pointers - they are allocated in the library's

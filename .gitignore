@@ -94,9 +94,10 @@ convert_pytorch*.py
 /anserini/
 /fact-sheets/
 
-# Per-project OAuth encryption keys, generated at project init. Ten of these are already tracked
-# from earlier generated projects; this rule stops any new one from being added.
+# Per-project encryption and admin bearer credentials are generated at runtime and must never be
+# committed. Historical generated projects may still contain older OAuth keys.
 oauth-encryption.key
+channel-admin.token
 
 # Local reproduction harness: a CMakeLists hardcoding an absolute libnd4j path plus its build trees.
 /cuda-cleanup-concurrency-contract/

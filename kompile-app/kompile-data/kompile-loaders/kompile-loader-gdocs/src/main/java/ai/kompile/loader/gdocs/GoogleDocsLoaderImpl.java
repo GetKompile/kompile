@@ -20,10 +20,12 @@ import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.utils.MapUtils;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.oauth.service.OAuthConnectionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -48,6 +50,16 @@ import java.util.function.Consumer;
 public class GoogleDocsLoaderImpl implements DocumentLoader {
 
     private final GoogleDocsParser docsParser = new GoogleDocsParser();
+    private final OAuthConnectionService oauthService;
+
+    public GoogleDocsLoaderImpl() {
+        this(null);
+    }
+
+    @Autowired
+    public GoogleDocsLoaderImpl(@Autowired(required = false) OAuthConnectionService oauthService) {
+        this.oauthService = oauthService;
+    }
 
     @Override
     public String getName() {
@@ -67,16 +79,16 @@ public class GoogleDocsLoaderImpl implements DocumentLoader {
     @Override
     public List<Document> load(DocumentSourceDescriptor descriptor,
                                Consumer<LoaderProgress> progressCallback) throws Exception {
-        Map<String, Object> meta = descriptor.getMetadata();
-        if (meta == null) {
-            throw new IllegalArgumentException(
-                    "Google Docs loader requires metadata with at least 'accessToken'");
-        }
+        Map<String, Object> meta = descriptor.getMetadata() == null
+                ? Map.of() : descriptor.getMetadata();
 
         String accessToken = (String) meta.get("accessToken");
         if (accessToken == null || accessToken.isBlank()) {
+            accessToken = oauthService == null ? null : oauthService.getValidAccessToken("google");
+        }
+        if (accessToken == null || accessToken.isBlank()) {
             throw new IllegalArgumentException(
-                    "Google Docs loader requires 'accessToken' in metadata");
+                    "Google Docs requires a connected Google OAuth account or metadata.accessToken");
         }
 
         boolean useDocsApi = MapUtils.getBoolean(meta, "useDocsApi", true);

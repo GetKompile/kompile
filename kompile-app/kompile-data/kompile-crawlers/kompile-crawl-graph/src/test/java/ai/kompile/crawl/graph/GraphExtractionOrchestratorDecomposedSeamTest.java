@@ -24,6 +24,7 @@ import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
+import ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
@@ -232,11 +233,17 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 List.of(
                         new NodeType("PERSON", "A person", null),
                         new NodeType("ROLE", "A complete role title",
-                                List.of(new PropertyType("function", "String")))),
-                List.of(new RelationshipType(
-                        "HAS_ROLE", "Person has role",
-                        List.of(new PropertyType("primary", "Boolean")),
-                        List.of("serves_as"))),
+                                List.of(new PropertyType("function", "String"))),
+                        new NodeType("DEPARTMENT", "An organizational department", null,
+                                "ORGANIZATION")),
+                List.of(
+                        new RelationshipType(
+                                "HAS_ROLE", "Person has role",
+                                List.of(new PropertyType("primary", "Boolean")),
+                                List.of("serves_as")),
+                        new RelationshipType(
+                                "LOCATED_IN", "Department location", null,
+                                List.of(), "SPATIAL")),
                 List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .standardizedSchema(standardized)
@@ -248,10 +255,15 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
         GraphSchema effective = successfulHarness().orchestrator().buildGraphSchema(config);
 
         assertNotNull(effective);
-        assertEquals(List.of("ROLE"), effective.getNodeTypes().stream()
-                .map(NodeType::getLabel).toList());
-        assertEquals("A complete role title", effective.getNodeTypes().get(0).getDescription());
-        assertEquals("function", effective.getNodeTypes().get(0).getProperties().get(0).getName());
+        assertTrue(effective.getAllNodeLabels().containsAll(
+                ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
+        assertTrue(effective.getAllNodeLabels().contains("DEPARTMENT"),
+                "legacy focus lists must not discard frozen standardized definitions");
+        assertTrue(effective.getAllRelationshipTypes().contains("LOCATED_IN"));
+        NodeType role = effective.getNodeTypeMap().get("ROLE");
+        assertNotNull(role);
+        assertEquals("A complete role title", role.getDescription());
+        assertEquals("function", role.getProperties().get(0).getName());
         assertEquals(List.of("serves_as"),
                 effective.getRelationshipTypes().get(0).getAliases());
         assertEquals("primary",
@@ -271,6 +283,30 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
     }
 
     @Test
+    void strictPatternOnlySchemaMaterializesItsDeclaredTypes() {
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .schemaMode(SchemaEnforcementMode.STRICT)
+                .entityTypes(List.of("PROJECT"))
+                .relationshipTypes(List.of("MANAGES"))
+                .validationPolicy(GraphExtractionValidationPolicy.builder()
+                        .relationPatterns(List.of(
+                                "(PERSON)-[:WORKS_AT]->(COMPANY)"))
+                        .build())
+                .build();
+
+        GraphSchema effective = successfulHarness().orchestrator().buildGraphSchema(config);
+
+        assertTrue(effective.getAllNodeLabels().containsAll(
+                List.of("PERSON", "COMPANY", "PROJECT")));
+        assertTrue(effective.getAllRelationshipTypes().containsAll(
+                List.of("WORKS_AT", "MANAGES")));
+        assertEquals("ORGANIZATION",
+                effective.getNodeTypeMap().get("COMPANY").getParentType());
+        assertEquals("AFFILIATION",
+                effective.getRelationshipTypeMap().get("WORKS_AT").getConnectionFamily());
+    }
+
+    @Test
     void singlePassAndDecomposedExtractionShareTheCorpusSchemaPrepass() {
         GraphExtractionConfig singlePass = GraphExtractionConfig.builder()
                 .extractionMode(ExtractionMode.SINGLE_PASS)
@@ -278,6 +314,24 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 .build();
 
         assertTrue(successfulHarness().orchestrator().shouldDeriveCorpusSchema(singlePass));
+    }
+
+    @Test
+    void onlyUnconfiguredLegacySinglePassUsesOpenValidationSchema() {
+        GraphExtractionOrchestrator orchestrator = successfulHarness().orchestrator();
+        GraphExtractionConfig singlePass = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.SINGLE_PASS)
+                .schemaMode(SchemaEnforcementMode.LENIENT)
+                .build();
+        GraphExtractionConfig decomposed = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .schemaMode(SchemaEnforcementMode.LENIENT)
+                .build();
+
+        assertNull(orchestrator.buildGraphSchema(singlePass),
+                "legacy one-shot validation remains open when no vocabulary can be induced");
+        assertNotNull(orchestrator.buildGraphSchema(decomposed),
+                "decomposed extraction must retain the baseline schema even without structured chat");
     }
 
     @Test
@@ -294,6 +348,27 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 GraphExtractionOrchestrator.effectiveSchemaMode(lenient, established));
         assertEquals(SchemaEnforcementMode.LENIENT,
                 GraphExtractionOrchestrator.effectiveSchemaMode(lenient, null));
+    }
+
+    @Test
+    void jobFreezesCorpusSchemaOnceAndReturnsDefensiveSnapshots() {
+        UnifiedCrawlJob job = job();
+        GraphSchema first = new GraphSchema(
+                List.of(new NodeType("FIRST_TYPE", "first", null, "CONCEPT")),
+                List.of(), null);
+        GraphSchema retrySubset = new GraphSchema(
+                List.of(new NodeType("RETRY_ONLY_TYPE", "retry", null, "CONCEPT")),
+                List.of(), null);
+
+        job.setFrozenGraphSchema(first);
+        job.setFrozenGraphSchema(retrySubset);
+        GraphSchema snapshot = job.getFrozenGraphSchema();
+        snapshot.getNodeTypeMap().get("FIRST_TYPE").setDescription("mutated copy");
+
+        assertTrue(job.getFrozenGraphSchema().getAllNodeLabels().contains("FIRST_TYPE"));
+        assertFalse(job.getFrozenGraphSchema().getAllNodeLabels().contains("RETRY_ONLY_TYPE"));
+        assertEquals("first", job.getFrozenGraphSchema()
+                .getNodeTypeMap().get("FIRST_TYPE").getDescription());
     }
 
     @Test
@@ -324,13 +399,13 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
     void ordinaryStructuredRequestCarriesSourceDerivedBoundsWithoutLiteralFacts() {
         String source = "Jordan Lee is a person. Helios Dynamics is a company. "
                 + "Jordan Lee founded Helios Dynamics.";
-        GraphSchema corpusSchema = new GraphSchema(
+        GraphSchema corpusSchema = SchemaHierarchyVocabulary.withBaseline(new GraphSchema(
                 List.of(
                         new NodeType("PERSON", "A person.", null),
                         new NodeType("COMPANY", "A company.", null)),
                 List.of(new RelationshipType(
                         "FOUNDED", "A person founded a company.", null, null)),
-                List.of("(PERSON)-[:FOUNDED]->(COMPANY)"));
+                List.of("(PERSON)-[:FOUNDED]->(COMPANY)")));
         GraphExtractionConfig bounded = GraphExtractionConfig.builder()
                 .extractionMode(ExtractionMode.DECOMPOSED)
                 .decomposedPromptTier(GraphExtractionConfig.DecomposedPromptTier.COMPACT)
@@ -391,8 +466,8 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
         assertFalse(((Map<String, Object>) relationProperties.get("target")).containsKey("const"));
         assertFalse(((Map<String, Object>) relationProperties.get("type")).containsKey("const"));
         assertEquals(15, ((Map<String, Object>) entityProperties.get("name")).get("maxLength"));
-        assertEquals(List.of("PERSON", "COMPANY"),
-                ((Map<String, Object>) entityProperties.get("type")).get("enum"));
+        assertFalse(((Map<String, Object>) entityProperties.get("type")).containsKey("enum"),
+                "the merged baseline exceeds the compact inline enum budget; full labels remain in graphSchema context");
     }
 
     @Test
@@ -596,10 +671,10 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 .operationalAdmissionEntityTypes(List.of("WORKBOOK"))
                 .operationalAdmissionRules(List.of(
                         new GraphExtractionConfig.OperationalAdmissionRule(
-                                "fpna.status.not-usable", "DENY", 100,
+                                "canonical.status.not-usable", "DENY", 100,
                                 "The workbook must not enter the crawl graph."),
                         new GraphExtractionConfig.OperationalAdmissionRule(
-                                "fpna.status.authoritative", "ALLOW", 10,
+                                "canonical.status.authoritative", "ALLOW", 10,
                                 "The workbook is authoritative.")))
                 .build();
         List<AdmissionComparison> comparisons = new CopyOnWriteArrayList<>();
@@ -808,13 +883,25 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 0.88,
                 "graph-7",
                 null);
+        UnifiedCrawlJob partitionJob = job();
+        partitionJob.setFrozenGraphSchema(new GraphSchema(
+                List.of(
+                        new NodeType("ORGANIZATION", "An organization", null),
+                        new NodeType("PARTITION_ONLY_TYPE", "Generated by prepass", null,
+                                "CONCEPT")),
+                List.of(new RelationshipType(
+                        "ACQUIRED", "An acquisition", null, List.of(), "TRANSFER")),
+                List.of("(ORGANIZATION)-[:ACQUIRED]->(ORGANIZATION)")));
 
         Graph extracted = harness.orchestrator().extractChunkGraph(
-                chunk(), decomposedConfig(), job(), graph(), task);
+                chunk(), decomposedConfig(), partitionJob, graph(), task);
 
         assertNotNull(extracted);
         assertTrue(extracted.getEntities().isEmpty());
         assertEquals(1, extracted.getRelationships().size());
+        assertTrue(harness.prompts().stream().anyMatch(
+                prompt -> prompt.contains("PARTITION_ONLY_TYPE")),
+                "entity partitions must reuse the job-scoped frozen prepass schema");
         verifyNoInteractions(oneShotConstructor);
         assertTrue(harness.scopes().stream().allMatch(scope ->
                 "ENTITY_PARTITIONS".equals(scope.phase())
@@ -847,7 +934,7 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
 
     @Test
     void productionConceptPrepassPreservesShortSchemaDiscriminators() {
-        String source = "The inventory identifies M. Chen as VP, FP&A and J. Park as Sr. Analyst.";
+        String source = "The inventory identifies M. Chen as VP, Planning and J. Park as Sr. Analyst.";
         GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.conceptExtractor = new ConceptExtractorImpl();
         ExtractionTaskContext task = new ExtractionTaskContext(
@@ -866,10 +953,10 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 () -> "production pre-pass split the initialized identity J. Park: " + terms);
         assertTrue(terms.stream().anyMatch(term -> "VP".equalsIgnoreCase(term)),
                 () -> "production pre-pass dropped the short ontology discriminator VP: " + terms);
-        assertTrue(terms.stream().anyMatch(term -> "FP&A".equalsIgnoreCase(term)),
-                () -> "production pre-pass dropped the punctuated ontology discriminator FP&A: " + terms);
-        assertTrue(terms.stream().anyMatch(term -> "VP, FP&A".equalsIgnoreCase(term)),
-                () -> "production pre-pass dropped the source compound VP, FP&A: " + terms);
+        assertTrue(terms.stream().anyMatch(term -> "Planning".equalsIgnoreCase(term)),
+                () -> "production pre-pass dropped the punctuated ontology discriminator Planning: " + terms);
+        assertTrue(terms.stream().anyMatch(term -> "VP, Planning".equalsIgnoreCase(term)),
+                () -> "production pre-pass dropped the source compound VP, Planning: " + terms);
         assertTrue(prepared.conceptHints().stream().allMatch(hint ->
                         !"APPROVAL_ROLE".equals(hint.category())),
                 "the deterministic pre-pass must remain domain-neutral; schema semantics resolve types");

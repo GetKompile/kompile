@@ -102,7 +102,7 @@ class SourceEventSegmenterTest {
 
     @Test
     void ordinaryCommasAndThousandsSeparatorsDoNotCreateFalseEvents() {
-        String source = "Sarah Chen, VP FP&A, approved 4,200 units in July.";
+        String source = "Sarah Chen, VP Planning, approved 4,200 units in July.";
 
         assertEquals(List.of(source), SourceEventSegmenter.segment(source, 512).stream()
                 .map(SourceEventSegmenter.SourceEvent::text).toList());

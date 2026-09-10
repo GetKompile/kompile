@@ -347,12 +347,12 @@
 
     <div class="settings-content">
 
-      <!-- Agent Selection -->
+      <!-- Harness persona selection -->
       <div class="settings-section">
         <div class="section-header">
-          <h4>Agent Selection</h4>
+          <h4>Harness Persona</h4>
           <button class="refresh-btn" (click)="refreshAgents()" [disabled]="agentsLoading"
-            title="Re-check CLI availability">
+            title="Reload Kompile CLI harness capabilities">
             <span *ngIf="!agentsLoading">🔄</span>
             <span *ngIf="agentsLoading" class="loading-spinner-small">⟳</span>
           </button>
@@ -361,10 +361,9 @@
         <div class="agent-selector">
           <select class="select-input" [value]="selectedAgent?.name || ''"
             (change)="selectAgent(agents[$any($event.target).selectedIndex - 1])" [disabled]="agentsLoading">
-            <option value="" disabled>{{ agentsLoading ? 'Detecting agents...' : 'Select an agent...' }}</option>
+            <option value="" disabled>{{ agentsLoading ? 'Loading harness...' : 'Select a persona...' }}</option>
             <option *ngFor="let agent of agents" [value]="agent.name" [disabled]="!agent.available">
               {{ getAgentIcon(agent.name) }} {{ agent.displayName }}
-              {{ agent.agentType === 'API' ? '(API)' : '' }}
               {{ agent.available ? '✓' : '✗' }}
               {{ agent.isDefault ? '(default)' : '' }}
             </option>
@@ -372,8 +371,8 @@
         </div>
 
         <div class="agent-counts">
-          <span *ngIf="agentsLoading">Detecting agents...</span>
-          <span *ngIf="!agentsLoading">{{ getAvailableAgentCount() }} of {{ agents.length }} agents detected</span>
+          <span *ngIf="agentsLoading">Loading harness...</span>
+          <span *ngIf="!agentsLoading">{{ getAvailableAgentCount() }} of {{ agents.length }} personas ready</span>
         </div>
 
         <!-- Selected Agent Details -->
@@ -390,82 +389,8 @@
             </div>
           </div>
 
-          <!-- Edit/Delete for API agents -->
-          <div class="api-agent-actions" *ngIf="isApiAgent(selectedAgent)">
-            <button class="text-btn" (click)="editApiAgent(selectedAgent)">Edit</button>
-            <button class="text-btn danger" (click)="deleteApiAgent(selectedAgent)">Remove</button>
-          </div>
         </div>
-
-        <!-- Add API Endpoint Button -->
-        <button class="add-api-btn" (click)="toggleApiAgentConfig()">
-          {{ showApiAgentConfig ? '✕ Cancel' : '+ Add API Endpoint' }}
-        </button>
-
-        <!-- API Endpoint Configuration Form -->
-        <div class="api-agent-config" *ngIf="showApiAgentConfig">
-          <h5>{{ editingApiAgentName ? 'Edit' : 'New' }} API Endpoint</h5>
-
-          <div class="setting-row">
-            <label>Name</label>
-            <input type="text" class="text-input" [(ngModel)]="apiAgentName"
-              [ngModelOptions]="{standalone: true}" placeholder="e.g., my-ollama"
-              [disabled]="!!editingApiAgentName">
-          </div>
-
-          <div class="setting-row">
-            <label>Display Name</label>
-            <input type="text" class="text-input" [(ngModel)]="apiAgentDisplayName"
-              [ngModelOptions]="{standalone: true}" placeholder="e.g., Local Ollama">
-          </div>
-
-          <div class="setting-row">
-            <label>Endpoint URL</label>
-            <input type="text" class="text-input" [(ngModel)]="apiAgentEndpointUrl"
-              [ngModelOptions]="{standalone: true}" placeholder="e.g., http://localhost:11434/v1">
-          </div>
-
-          <div class="setting-row">
-            <label>API Key (optional)</label>
-            <input type="password" class="text-input" [(ngModel)]="apiAgentApiKey"
-              [ngModelOptions]="{standalone: true}" placeholder="sk-...">
-          </div>
-
-          <div class="setting-row">
-            <label>Model Name</label>
-            <input type="text" class="text-input" [(ngModel)]="apiAgentModelName"
-              [ngModelOptions]="{standalone: true}" placeholder="e.g., gpt-4o, llama3">
-          </div>
-
-          <div class="setting-row">
-            <label>Temperature</label>
-            <div class="slider-container">
-              <input type="range" [(ngModel)]="apiAgentTemperature" [ngModelOptions]="{standalone: true}"
-                min="0" max="2" step="0.1" class="slider">
-              <span class="slider-value">{{ apiAgentTemperature.toFixed(1) }}</span>
-            </div>
-          </div>
-
-          <div class="setting-row">
-            <label>Max Tokens</label>
-            <input type="number" class="number-input" [(ngModel)]="apiAgentMaxTokens"
-              [ngModelOptions]="{standalone: true}" min="1" max="128000">
-          </div>
-
-          <div class="api-agent-form-actions">
-            <button class="text-btn" (click)="testApiEndpoint()" [disabled]="apiAgentTestLoading || !apiAgentEndpointUrl">
-              {{ apiAgentTestLoading ? '⟳ Testing...' : '🔌 Test Connection' }}
-            </button>
-            <button class="text-btn primary" (click)="saveApiAgent()"
-              [disabled]="apiAgentSaving || !apiAgentName || !apiAgentEndpointUrl || !apiAgentModelName">
-              {{ apiAgentSaving ? '⟳ Saving...' : '💾 Save' }}
-            </button>
-          </div>
-
-          <div class="api-agent-test-result" *ngIf="apiAgentTestResult">
-            {{ apiAgentTestResult }}
-          </div>
-        </div>
+        <p class="setting-hint">Personas and roles come from kompile-cli-main. Configure its provider and model with <code>kompile chat --setup</code>.</p>
       </div>
 
       <!-- Active Models -->
@@ -535,10 +460,10 @@
           </div>
         </div>
 
-        <!-- Chat Agent Card -->
+        <!-- CLI harness persona card -->
         <div class="model-card" *ngIf="selectedAgent">
           <div class="model-card-header">
-            <span class="model-type-badge agent">Chat Agent</span>
+            <span class="model-type-badge agent">CLI Harness</span>
             <span class="model-status-dot ready"></span>
           </div>
           <div class="model-card-body">
@@ -557,60 +482,11 @@
         </div>
       </div>
 
-      <!-- Kompile Local Model -->
-      <div class="settings-section">
-        <h4>Model Staging Connection</h4>
-        <p class="setting-hint">Chat depends on this independently deployable service for local model discovery and inference.</p>
-
-        <div class="setting-row" *ngIf="kompileLocalStatus">
-          <label>Status</label>
-          <span [style.color]="kompileLocalStatus.connected ? '#4caf50' : '#999'">
-            {{ kompileLocalStatus.message }}
-          </span>
-        </div>
-
-        <div class="setting-row">
-          <label>Staging URL</label>
-          <input type="text" class="text-input" [(ngModel)]="kompileLocalStagingUrl"
-            [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8090">
-          <p class="setting-hint">Connect saves this dependency in the shared managed service-endpoints.json file for future Chat sessions and CLI startup.</p>
-        </div>
-
-        <div class="setting-row" *ngIf="kompileLocalStatus?.modelId">
-          <label>Model</label>
-          <span>{{ kompileLocalStatus.modelId }}</span>
-        </div>
-
-        <div class="api-agent-form-actions">
-          <button class="text-btn" (click)="refreshKompileLocalStatus()" [disabled]="kompileLocalLoading">
-            {{ kompileLocalLoading ? 'Checking...' : 'Refresh' }}
-          </button>
-          <button class="text-btn primary" *ngIf="!kompileLocalStatus?.connected"
-            (click)="connectKompileLocal()" [disabled]="kompileLocalLoading || !kompileLocalStagingUrl">
-            Connect
-          </button>
-          <button class="text-btn danger" *ngIf="kompileLocalStatus?.connected"
-            (click)="disconnectKompileLocal()" [disabled]="kompileLocalLoading">
-            Disconnect
-          </button>
-        </div>
-      </div>
-
-      <!-- Agent Configuration -->
+      <!-- Harness turn configuration -->
       <div class="settings-section" *ngIf="selectedAgent">
-        <h4>Agent Options</h4>
+        <h4>Harness Turn</h4>
 
-        <!-- Skip permissions (CLI agents only) -->
-        <div *ngIf="!isApiAgent(selectedAgent)">
-          <div class="setting-row toggle-row">
-            <label>Skip Permission Prompts</label>
-            <label class="toggle-switch">
-              <input type="checkbox" [(ngModel)]="skipPermissions" [ngModelOptions]="{standalone: true}" (change)="onSkipPermissionsChange()">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <p class="setting-hint">Uses {{ selectedAgent.skipPermissionsFlag }} flag</p>
-        </div>
+        <p class="setting-hint">Harness execution is local-only unless the caller supplies the HTTPS integration-admin control headers.</p>
 
         <div class="setting-row">
           <label>Response Timeout</label>
@@ -620,7 +496,7 @@
             </option>
           </select>
         </div>
-        <p class="setting-hint">{{ timeoutSeconds === 0 ? 'Agent can run indefinitely' : 'Agent will stop after ' +
+        <p class="setting-hint">{{ timeoutSeconds === 0 ? 'Harness uses the default 5-minute safety limit' : 'Harness will stop after ' +
           (timeoutSeconds / 60) + ' minute(s)' }}</p>
       </div>
 
@@ -674,6 +550,28 @@
         </p>
       </div>
 
+      <!-- CLI harness document lookup -->
+      <div class="settings-section">
+        <h4>Document Lookup (RAG)</h4>
+
+        <div class="setting-row toggle-row">
+          <label>Enable Document Lookup</label>
+          <label class="toggle-switch">
+            <input type="checkbox" [(ngModel)]="ragEnabled" [ngModelOptions]="{standalone: true}">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <p class="setting-hint">The CLI harness chooses and runs the project knowledge tools. The browser only supplies the turn-level lookup intent and result limit.</p>
+
+        <div class="setting-row" *ngIf="ragEnabled">
+          <label>Maximum Results</label>
+          <input type="number" [(ngModel)]="ragMaxResults" [ngModelOptions]="{standalone: true}"
+            min="1" max="50" class="number-input">
+        </div>
+      </div>
+
+      <!-- Legacy in-browser retrieval tuning is intentionally not rendered. -->
+      <ng-container *ngIf="false">
       <!-- RAG (Document Lookup) Settings -->
       <div class="settings-section">
         <h4>Document Lookup (RAG)</h4>
@@ -901,6 +799,8 @@
         </div>
       </div>
 
+      </ng-container>
+
       <!-- Graph RAG (Knowledge Graph) Settings -->
       <div class="settings-section">
         <h4>Knowledge Graph (Graph RAG)</h4>
@@ -918,18 +818,14 @@
           <div class="setting-row">
             <label>Search Type</label>
             <select [(ngModel)]="graphRagSearchType" [ngModelOptions]="{standalone: true}" class="select-input">
-              <option value="LOCAL">Local (Entity-focused)</option>
-              <option value="HYBRID">Hybrid (Personalized PageRank)</option>
-              <option value="GLOBAL">Global (Communities)</option>
-              <option value="CAUSAL">Causal (Why / root-cause)</option>
-              <option value="PROBABILISTIC">Probabilistic (MEBN / Bayesian)</option>
+              <option value="LOCAL">Local (ranked entity lookup)</option>
+              <option value="HYBRID">Hybrid (ranked lookup + one hop)</option>
+              <option value="GLOBAL">Global (two-hop structure)</option>
             </select>
           </div>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'LOCAL'">Searches entities related to your query, expands one hop</p>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'HYBRID'">Embedding-seeded Personalized PageRank: multi-hop, blends vector similarity, graph structure, KG embeddings and connecting paths</p>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'GLOBAL'">Community detection + LLM community reports for whole-graph sensemaking</p>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'CAUSAL'">Causal attribution: traces causal chains and root causes ("why did X happen?")</p>
-          <p class="setting-hint" *ngIf="graphRagSearchType === 'PROBABILISTIC'">Builds a situation-specific MEBN/Bayesian network and ranks the most likely related factors</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'LOCAL'">Rank matching entities and facts.</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'HYBRID'">Rank matches and expand their immediate relationships.</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'GLOBAL'">Expand structural context up to two hops.</p>
 
           <div class="setting-row">
             <label>Max Graph Results</label>
@@ -978,15 +874,14 @@
           <span class="settings-icon">⚙</span>
         </button>
 
-        <!-- Agent selector -->
+        <!-- Harness persona selector -->
         <div class="inline-agent-selector">
-          <label class="selector-label">Agent:</label>
+          <label class="selector-label">Persona:</label>
           <select class="agent-select" data-testid="agent-select" [value]="selectedAgent?.name || ''"
             (change)="selectAgent(agents[$any($event.target).selectedIndex - 1])" [disabled]="isStreaming">
-            <option value="" disabled>Select agent...</option>
+            <option value="" disabled>Select persona...</option>
             <option *ngFor="let agent of agents" [value]="agent.name" [disabled]="!agent.available">
               {{ getAgentIcon(agent.name) }} {{ agent.displayName }}
-              {{ agent.agentType === 'API' ? '(API)' : '' }}
               {{ agent.available ? '' : '✗' }}
             </option>
           </select>
@@ -1074,11 +969,11 @@
         <h3>💬 Chat</h3>
 
         <p *ngIf="selectedAgent">
-          You're connected to <strong>{{ selectedAgent.displayName }}</strong>.
+          The <strong>{{ selectedAgent.displayName }}</strong> persona is running through the Kompile CLI harness.
           Type a message below to start chatting.
         </p>
         <p *ngIf="!selectedAgent">
-          Select an agent from the settings to get started.
+          Select a harness persona from the settings to get started.
         </p>
 
         <div class="quick-tips">
@@ -1099,8 +994,8 @@
         <div class="no-agents-warning" *ngIf="getAvailableAgentCount() === 0" data-testid="no-agents-warning">
           <span class="warning-icon">⚠</span>
           <div>
-            <strong>No agents available</strong>
-            <p>Install a CLI agent (Claude Code, Codex, Gemini) or add an OpenAI-compatible API endpoint in settings.</p>
+            <strong>Kompile CLI harness unavailable</strong>
+            <p>Install the Kompile CLI and configure standard chat with <code>kompile chat --setup</code>.</p>
           </div>
         </div>
       </div>
@@ -1236,6 +1131,15 @@
             <!-- User messages: render markdown too -->
             <div *ngIf="message.role === 'user'" class="md-rendered"
               [innerHTML]="getRenderedMarkdown(message)"></div>
+            <div *ngIf="message.role === 'user' && message.attachments?.length"
+              class="message-attachments" data-testid="message-attachments">
+              <div *ngFor="let attachment of message.attachments" class="message-attachment">
+                <img *ngIf="attachment.isImage && attachment.previewUrl"
+                  [src]="attachment.previewUrl" [alt]="attachment.filename || attachment.name || 'Attached image'">
+                <span *ngIf="!attachment.isImage" class="attachment-file-icon">📄</span>
+                <span class="attachment-name">{{ attachment.filename || attachment.name || 'Attachment' }}</span>
+              </div>
+            </div>
 
             <!-- System/other messages: plain text fallback -->
             <pre *ngIf="message.role !== 'assistant' && message.role !== 'user'">{{ message.content }}</pre>
@@ -1467,7 +1371,9 @@
     </div>
 
     <!-- Input Area -->
-    <div class="input-area" data-testid="input-area">
+    <div class="input-area" data-testid="input-area" [class.drag-over]="isDragOver"
+      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)"
+      (drop)="onDrop($event)" (paste)="onPaste($event)">
       <!-- Streaming indicator with stop button -->
       <div class="streaming-bar" *ngIf="isStreaming" data-testid="streaming-bar">
         <div class="streaming-indicator-bar">
@@ -1480,7 +1386,26 @@
         </button>
       </div>
 
+      <div class="pending-attachments" *ngIf="pendingAttachments.length > 0"
+        data-testid="pending-attachments">
+        <div class="pending-attachment" *ngFor="let attachment of pendingAttachments; let i = index">
+          <img *ngIf="attachment.isImage && attachment.previewUrl"
+            [src]="attachment.previewUrl" [alt]="attachment.filename || attachment.name || 'Attached image'">
+          <span *ngIf="!attachment.isImage" class="attachment-file-icon">📄</span>
+          <span class="attachment-name">{{ attachment.filename || attachment.name || 'Attachment' }}</span>
+          <button type="button" class="remove-attachment-btn" (click)="removeAttachment(i)"
+            [disabled]="isStreaming" aria-label="Remove attachment">×</button>
+        </div>
+      </div>
+
       <div class="input-container">
+        <input #fileInput type="file" class="attachment-input"
+          accept="image/*,.pdf,.txt,.md,.markdown,.json,.jsonl,.csv,.tsv,.xml,.yaml,.yml,.log,.properties,.ini,.java,.kt,.py,.ts,.tsx,.js,.jsx,.html,.css,.scss,.sql,.sh,.c,.cc,.cpp,.cu,.cuh,.h,.hpp,.rs,.go,.toml,.gradle"
+          multiple (change)="onFileSelected($event)" data-testid="attachment-input">
+        <button type="button" class="attach-btn" (click)="onAttachClick()"
+          [disabled]="isLoading || isStreaming || !selectedAgent"
+          title="Attach images, PDFs, or text files (8 files, 20 MiB total)"
+          aria-label="Attach files" data-testid="attach-btn">📎</button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
           placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : 'Type your message...' }}"
           (keydown)="handleKeydown($event)" rows="2" [disabled]="isLoading || isStreaming || !selectedAgent"

@@ -17,12 +17,14 @@
 package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.JudgeDefaults;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -48,6 +50,7 @@ public class ServerJudgeBackend implements JudgeBackend {
 
     private final ServerType serverType;
     private final String model;
+    private final String thinking;
     private final int port;
     private final ObjectMapper objectMapper;
 
@@ -65,8 +68,16 @@ public class ServerJudgeBackend implements JudgeBackend {
      */
     public ServerJudgeBackend(ServerType serverType, String model, int port,
                                ObjectMapper objectMapper) {
+        this(serverType, model, port, objectMapper, null);
+    }
+
+    public ServerJudgeBackend(ServerType serverType, String model, int port,
+                               ObjectMapper objectMapper, Path workingDirectory) {
         this.serverType = serverType;
-        this.model = model != null ? model : defaultModelFor(serverType);
+        var selected = JudgeDefaults.resolve(serverType == ServerType.OLLAMA ? "ollama" : "kompile",
+                workingDirectory, model, defaultModelFor(serverType));
+        this.model = selected.model();
+        this.thinking = selected.thinking();
         this.port = port > 0 ? port : defaultPortFor(serverType);
         this.objectMapper = objectMapper;
     }
@@ -156,6 +167,7 @@ public class ServerJudgeBackend implements JudgeBackend {
             String provider = serverType == ServerType.OLLAMA ? "ollama" : "kompile";
 
             ChatConfig judgeConfig = new ChatConfig(provider, null, model, baseUrl);
+            judgeConfig.setThinking(thinking);
             DirectLlmClient client = new DirectLlmClient(judgeConfig, objectMapper);
             this.delegate = new RemoteJudgeBackend(client, null, provider);
 

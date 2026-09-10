@@ -16,6 +16,8 @@
 
 package ai.kompile.core.graphrag.model.schema;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
@@ -29,16 +31,30 @@ public class RelationshipType {
     /** Audited source-language predicates and synonyms; routing context, never claim evidence. */
     private List<String> aliases;
 
+    /**
+     * Domain-neutral semantic family for this specific directed predicate. The family classifies the
+     * predicate but is never emitted as the graph edge type.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonAlias({"relationshipFamily", "baseFamily", "connection_family"})
+    private String connectionFamily;
+
     /** Preserves the established schema API for projects that do not declare aliases. */
     public RelationshipType(String type, String description, List<PropertyType> properties) {
-        this(type, description, properties, List.of());
+        this(type, description, properties, List.of(), null);
     }
 
     public RelationshipType(String type, String description, List<PropertyType> properties,
                             List<String> aliases) {
+        this(type, description, properties, aliases, null);
+    }
+
+    public RelationshipType(String type, String description, List<PropertyType> properties,
+                            List<String> aliases, String connectionFamily) {
         this.type = type;
         this.description = description;
         this.properties = properties;
         this.aliases = aliases == null ? List.of() : List.copyOf(aliases);
+        this.connectionFamily = connectionFamily;
     }
 }

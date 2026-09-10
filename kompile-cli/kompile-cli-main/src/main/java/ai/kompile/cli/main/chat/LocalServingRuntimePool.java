@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ProviderPromptCacheCapabilities;
 import ai.kompile.cli.main.coordination.ReusableResourcePool;
 
 import java.net.URI;
@@ -37,6 +38,7 @@ public final class LocalServingRuntimePool {
 
     private static final long DEFAULT_IDLE_MILLIS = 120_000L;
     private static final int DEFAULT_MAX_RUNTIMES = 1;
+    static final long STANDARD_CHAT_PREFIX_CACHE_MAX_BYTES = 128L * 1024L * 1024L;
 
     @FunctionalInterface
     interface RuntimeStarter {
@@ -64,14 +66,46 @@ public final class LocalServingRuntimePool {
             RuntimeKey key) {
     }
 
+    /**
+     * Reconnectable launch configuration, not a resident-process lease. Long-lived chat/crawl
+     * sessions retain this binding and acquire a lease only while exchanging a model request.
+     */
+    public static final class Binding {
+        private final RuntimeRequest request;
+
+        private Binding(RuntimeRequest request) {
+            this.request = request;
+        }
+
+        public Lease acquire() throws KompileLocalServingBootstrap.BootstrapException {
+            // Recheck artifact/configuration identity in case it changed while the model slept.
+            return LocalServingRuntimePool.acquire(request(
+                    request.modelId(), request.modelPath(), request.tokenizerPath(),
+                    request.runtimeOptions(), request.timeoutSeconds()));
+        }
+
+        /** Preserve explicit artifacts for the same model; resolve overrides independently. */
+        public Binding forChatConfig(ChatConfig config) {
+            return request.modelId().equals(normalizeModelId(config.getModel()))
+                    ? this : new Binding(chatRequest(config, request.timeoutSeconds()));
+        }
+    }
+
     /** A request-scoped reference to a shared serving subprocess. */
     public static final class Lease implements AutoCloseable {
         private final ReusableResourcePool.Lease<KompileLocalServingBootstrap.StartupResult>
                 delegate;
+        private final Binding binding;
 
         private Lease(
-                ReusableResourcePool.Lease<KompileLocalServingBootstrap.StartupResult> delegate) {
+                ReusableResourcePool.Lease<KompileLocalServingBootstrap.StartupResult> delegate,
+                RuntimeRequest request) {
             this.delegate = delegate;
+            this.binding = new Binding(request);
+        }
+
+        public Binding binding() {
+            return binding;
         }
 
         public String modelId() {
@@ -117,6 +151,7 @@ public final class LocalServingRuntimePool {
 
         public void applyTo(ChatConfig config) {
             runtime().applyTo(config);
+            config.setLocalServingBinding(binding);
         }
 
         @Override
@@ -132,7 +167,8 @@ public final class LocalServingRuntimePool {
     private static final RuntimeStarter DEFAULT_STARTER = request -> {
         ChatConfig config = new ChatConfig("kompile-local", null, request.modelId(), null);
         if (request.modelPath() == null) {
-            return KompileLocalServingBootstrap.ensureReady(config, request.timeoutSeconds());
+            return KompileLocalServingBootstrap.ensureReady(
+                    config, request.timeoutSeconds(), request.runtimeOptions());
         }
         return KompileLocalServingBootstrap.ensureReady(
                 config,
@@ -158,7 +194,7 @@ public final class LocalServingRuntimePool {
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(
-                POOL::clear, "local-model-runtime-pool-shutdown"));
+                POOL::close, "local-model-runtime-pool-shutdown"));
     }
 
     private LocalServingRuntimePool() {
@@ -166,9 +202,20 @@ public final class LocalServingRuntimePool {
 
     public static Lease acquire(ChatConfig config, int timeoutSeconds)
             throws KompileLocalServingBootstrap.BootstrapException {
+        return acquire(chatRequest(config, timeoutSeconds));
+    }
+
+    private static RuntimeRequest chatRequest(ChatConfig config, int timeoutSeconds) {
         Objects.requireNonNull(config, "config");
         String requestedModel = normalizeModelId(config.getModel());
-        return acquire(request(requestedModel, null, null, Map.of(), timeoutSeconds));
+        boolean prefixCacheEnabled = config.promptCacheRetention()
+                != ProviderPromptCacheCapabilities.Retention.NONE;
+        Map<String, Object> cacheOptions = prefixCacheEnabled
+                ? Map.of(
+                        "prefixCacheEnabled", true,
+                        "prefixCacheMaxBytes", STANDARD_CHAT_PREFIX_CACHE_MAX_BYTES)
+                : Map.of("prefixCacheEnabled", false);
+        return request(requestedModel, null, null, cacheOptions, timeoutSeconds);
     }
 
     public static Lease acquire(
@@ -189,7 +236,7 @@ public final class LocalServingRuntimePool {
             return new Lease(POOL.acquire(
                     request.key(),
                     () -> starter.start(request),
-                    waitMillis));
+                    waitMillis), request);
         } catch (KompileLocalServingBootstrap.BootstrapException failure) {
             throw failure;
         } catch (InterruptedException failure) {

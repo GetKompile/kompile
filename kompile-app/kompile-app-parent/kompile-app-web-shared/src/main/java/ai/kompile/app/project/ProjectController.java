@@ -53,9 +53,12 @@ import java.util.Map;
 @RequestMapping("/api/projects")
 public class ProjectController {
     private final ProjectBackendService projectService;
+    private final ProjectOpenCoordinator openCoordinator;
 
-    public ProjectController(ProjectBackendService projectService) {
+    public ProjectController(ProjectBackendService projectService,
+                             ProjectOpenCoordinator openCoordinator) {
         this.projectService = projectService;
+        this.openCoordinator = openCoordinator;
     }
 
     @GetMapping("/current")
@@ -70,7 +73,7 @@ public class ProjectController {
 
     @PostMapping("/current/open")
     public ProjectResponse open() {
-        return projectService.open();
+        return openCoordinator.open();
     }
 
     @PostMapping("/current/components")

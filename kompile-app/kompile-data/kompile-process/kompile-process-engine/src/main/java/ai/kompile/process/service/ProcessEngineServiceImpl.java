@@ -57,10 +57,15 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.lang.reflect.Array;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -72,6 +77,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -195,6 +201,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
 
     public ProcessEngineServiceImpl() {
         this.objectMapper = new ObjectMapper()
+                .findAndRegisterModules()
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
 
@@ -235,6 +242,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     @Override
     public OntologySchema createOntology(OntologySchema schema) {
         String id = schema.getId() != null ? schema.getId() : UUID.randomUUID().toString();
+        validateOntologyId(id);
         Instant now = Instant.now();
         OntologySchema created = OntologySchema.builder()
                 .id(id)
@@ -260,16 +268,111 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
 
     @Override
     public OntologySchema getOntology(String id, int version) {
+        validateOntologyId(id);
         String key = versionedKey(id, version);
         OntologySchema schema = ontologies.get(key);
         if (schema == null) {
-            throw new IllegalArgumentException("Ontology not found: id=" + id + " version=" + version);
+            Path file = ontologyDir != null ? ontologyPath(id, version) : null;
+            if (file != null && Files.isRegularFile(file)) {
+                try {
+                    schema = objectMapper.readValue(file.toFile(), OntologySchema.class);
+                    ontologies.put(key, schema);
+                    ontologyVersions.merge(id, version, Math::max);
+                } catch (IOException e) {
+                    throw new IllegalStateException("Could not load ontology " + key, e);
+                }
+            }
+            if (schema == null) {
+                throw new IllegalArgumentException("Ontology not found: id=" + id + " version=" + version);
+            }
         }
         return schema;
     }
 
     @Override
+    public synchronized OntologySchema restoreOntologySchema(OntologySchema schema) {
+        if (schema == null || schema.getId() == null || schema.getId().isBlank()
+                || schema.getVersion() < 1) {
+            throw new IllegalArgumentException("Ontology snapshot requires a nonblank ID and version >= 1");
+        }
+        validateOntologyId(schema.getId());
+        String key = versionedKey(schema.getId(), schema.getVersion());
+        Path lockPath = ontologyDir.resolve("." + key + ".lock");
+        try (FileChannel channel = FileChannel.open(lockPath,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            return restoreOntologySchemaLocked(schema, key);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not lock ontology snapshot " + key, e);
+        }
+    }
+
+    private OntologySchema restoreOntologySchemaLocked(OntologySchema schema, String key) {
+        Path file = ontologyPath(schema.getId(), schema.getVersion());
+        if (Files.isRegularFile(file)) {
+            OntologySchema durable = readOntologySnapshot(file);
+            if (!objectMapper.valueToTree(durable).equals(objectMapper.valueToTree(schema))) {
+                throw new IllegalStateException("Conflicting ontology snapshot: " + key);
+            }
+            ontologies.put(key, durable);
+            ontologyVersions.merge(schema.getId(), schema.getVersion(), Math::max);
+            return durable;
+        }
+        OntologySchema existing = ontologies.get(key);
+        if (existing != null) {
+            if (objectMapper.valueToTree(existing).equals(objectMapper.valueToTree(schema))) return existing;
+            throw new IllegalStateException("Conflicting ontology snapshot: " + key);
+        }
+        Path temporary = null;
+        try {
+            temporary = Files.createTempFile(ontologyDir, key + "-", ".tmp");
+            objectMapper.writeValue(temporary.toFile(), schema);
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, file);
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not persist ontology snapshot " + key, e);
+        } finally {
+            if (temporary != null) {
+                try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+            }
+        }
+        ontologies.put(key, schema);
+        ontologyVersions.merge(schema.getId(), schema.getVersion(), Math::max);
+        return schema;
+    }
+
+    @Override
+    public synchronized void removeOntologySchemaSnapshot(String id, int version) {
+        validateOntologyId(id);
+        if (version < 1) throw new IllegalArgumentException("Ontology version must be >= 1");
+        String key = versionedKey(id, version);
+        Path lockPath = ontologyDir.resolve("." + key + ".lock");
+        try (FileChannel channel = FileChannel.open(lockPath,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            Files.deleteIfExists(ontologyPath(id, version));
+            ontologies.remove(key);
+            int latest = ontologies.values().stream()
+                    .filter(schema -> id.equals(schema.getId()))
+                    .mapToInt(OntologySchema::getVersion).max().orElse(0);
+            if (latest == 0) ontologyVersions.remove(id);
+            else ontologyVersions.put(id, latest);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not remove ontology snapshot " + key, e);
+        }
+    }
+
+    @Override
+    public boolean supportsOntologySnapshotRemoval() {
+        return true;
+    }
+
+    @Override
     public OntologySchema updateOntology(String id, OntologySchema schema) {
+        validateOntologyId(id);
         int currentVersion = ontologyVersions.getOrDefault(id, 0);
         if (currentVersion == 0) {
             throw new IllegalArgumentException("No ontology exists with id=" + id);
@@ -281,7 +384,9 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .name(schema.getName() != null ? schema.getName() : ontologies.get(versionedKey(id, currentVersion)).getName())
                 .version(newVersion)
                 .templateId(schema.getTemplateId())
-                .createdAt(ontologies.get(versionedKey(id, 1)).getCreatedAt())
+                .createdAt(Optional.ofNullable(ontologies.get(versionedKey(id, 1)))
+                        .map(OntologySchema::getCreatedAt)
+                        .orElseGet(() -> ontologies.get(versionedKey(id, currentVersion)).getCreatedAt()))
                 .updatedAt(now)
                 .updatedBy(schema.getUpdatedBy())
                 .entityTypes(schema.getEntityTypes())
@@ -359,12 +464,13 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     @Override
     public ProcessDefinition createProcess(ProcessDefinition definition) {
         String id = definition.getId() != null ? definition.getId() : UUID.randomUUID().toString();
+        validateProcessDefinitionId(id);
         ProcessDefinition created = cloneDefinitionWithIdVersionStatus(definition, id, 1, ProcessStatus.DRAFT);
 
         String key = versionedKey(id, 1);
+        persistDefinition(created);
         definitions.put(key, created);
         definitionVersions.put(id, 1);
-        persistDefinition(created);
         log.debug("Created process definition id={} version=1", id);
         return created;
     }
@@ -389,33 +495,84 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
         ProcessDefinition revised = cloneDefinitionWithIdVersionStatus(
                 definition, id, nextVersion, ProcessStatus.DRAFT);
 
+        persistDefinition(revised);
         definitions.put(versionedKey(id, nextVersion), revised);
         definitionVersions.put(id, nextVersion);
-        persistDefinition(revised);
         log.info("Revised process definition id={} version={} (previous versions stay immutable)",
                 id, nextVersion);
         return revised;
     }
 
     @Override
-    public ProcessDefinition restoreProcessDefinition(ProcessDefinition definition) {
+    public synchronized ProcessDefinition restoreProcessDefinition(ProcessDefinition definition) {
         if (definition == null) {
             throw new IllegalArgumentException("Process definition snapshot must not be null");
         }
         if (definition.getId() == null || definition.getId().isBlank()) {
             return createProcess(definition);
         }
-        int version = Math.max(1, definition.getVersion());
+        validateProcessDefinitionId(definition.getId());
+        if (definition.getVersion() < 1) {
+            throw new IllegalArgumentException("Process definition snapshot requires version >= 1");
+        }
+        int version = definition.getVersion();
         ProcessStatus status = definition.getStatus() != null ? definition.getStatus() : ProcessStatus.DRAFT;
         ProcessDefinition restored = cloneDefinitionWithIdVersionStatus(
                 definition, definition.getId(), version, status);
 
-        definitions.put(versionedKey(restored.getId(), restored.getVersion()), restored);
-        definitionVersions.merge(restored.getId(), restored.getVersion(), Math::max);
+        String key = versionedKey(restored.getId(), restored.getVersion());
+        ProcessDefinition existing = definitions.get(key);
+        if (existing != null) {
+            if (!existing.equals(restored)) {
+                throw new IllegalStateException("Conflicting process definition snapshot: " + key);
+            }
+            return existing;
+        }
+        Path file = definitionPath(restored);
+        if (Files.isRegularFile(file)) {
+            try {
+                ProcessDefinition durable = objectMapper.readValue(file.toFile(), ProcessDefinition.class);
+                if (!durable.equals(restored)) {
+                    throw new IllegalStateException("Conflicting durable process definition snapshot: " + key);
+                }
+                definitions.put(key, durable);
+                definitionVersions.merge(durable.getId(), durable.getVersion(), Math::max);
+                return durable;
+            } catch (IOException e) {
+                throw new IllegalStateException("Could not read durable process definition snapshot " + key, e);
+            }
+        }
         persistDefinition(restored);
+        definitions.put(key, restored);
+        definitionVersions.merge(restored.getId(), restored.getVersion(), Math::max);
         log.info("Restored process definition id={} version={} status={}",
                 restored.getId(), restored.getVersion(), restored.getStatus());
         return restored;
+    }
+
+    @Override
+    public synchronized void removeProcessDefinitionSnapshot(String id, int version) {
+        validateProcessDefinitionId(id);
+        if (version < 1) throw new IllegalArgumentException("Process definition version must be >= 1");
+        String key = versionedKey(id, version);
+        Path file = definitionPath(ProcessDefinition.builder().id(id).version(version).build());
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not delete process definition snapshot " + key, e);
+        }
+        definitions.remove(key);
+        int latest = definitions.values().stream()
+                .filter(definition -> id.equals(definition.getId()))
+                .mapToInt(ProcessDefinition::getVersion)
+                .max().orElse(0);
+        if (latest == 0) definitionVersions.remove(id);
+        else definitionVersions.put(id, latest);
+    }
+
+    @Override
+    public boolean supportsProcessDefinitionSnapshotRemoval() {
+        return true;
     }
 
     @Override
@@ -454,9 +611,9 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
                 .build();
 
         String key = versionedKey(id, newVersion);
+        persistDefinition(approved);
         definitions.put(key, approved);
         definitionVersions.put(id, newVersion);
-        persistDefinition(approved);
         log.debug("Approved process definition id={} newVersion={} approvedBy={}", id, newVersion, approvedBy);
         return approved;
     }
@@ -2980,13 +3137,51 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     // ---------------------------------------------------------------------------
 
     private void persistOntology(OntologySchema schema) {
-        Path file = ontologyDir.resolve(versionedKey(schema.getId(), schema.getVersion()) + ".json");
+        Path file = ontologyPath(schema.getId(), schema.getVersion());
         writeJson(file, schema);
     }
 
+    private Path ontologyPath(String id, int version) {
+        validateOntologyId(id);
+        Path file = ontologyDir.resolve(versionedKey(id, version) + ".json").normalize();
+        if (!file.startsWith(ontologyDir.normalize())) {
+            throw new IllegalArgumentException("Ontology path escapes storage directory");
+        }
+        return file;
+    }
+
+    private OntologySchema readOntologySnapshot(Path file) {
+        try {
+            return objectMapper.readValue(file.toFile(), OntologySchema.class);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not read ontology snapshot " + file, e);
+        }
+    }
+
+    private static void validateOntologyId(String id) {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,199}") || id.contains("..")) {
+            throw new IllegalArgumentException("Invalid ontology ID");
+        }
+    }
+
     private void persistDefinition(ProcessDefinition def) {
-        Path file = definitionDir.resolve(versionedKey(def.getId(), def.getVersion()) + ".json");
-        writeJson(file, def);
+        writeJson(definitionPath(def), def);
+    }
+
+    private Path definitionPath(ProcessDefinition def) {
+        validateProcessDefinitionId(def.getId());
+        Path root = definitionDir.toAbsolutePath().normalize();
+        Path file = root.resolve(versionedKey(def.getId(), def.getVersion()) + ".json").normalize();
+        if (!file.startsWith(root)) {
+            throw new IllegalArgumentException("Process definition path escapes storage directory");
+        }
+        return file;
+    }
+
+    private static void validateProcessDefinitionId(String id) {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,199}") || id.contains("..")) {
+            throw new IllegalArgumentException("Invalid process definition ID");
+        }
     }
 
     private void persistRun(WorkflowRun run) {
@@ -3015,10 +3210,22 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     }
 
     private void writeJson(Path path, Object value) {
+        Path temp = null;
         try {
-            objectMapper.writeValue(path.toFile(), value);
+            Files.createDirectories(path.toAbsolutePath().normalize().getParent());
+            temp = path.resolveSibling(path.getFileName() + ".tmp");
+            objectMapper.writeValue(temp.toFile(), value);
+            try {
+                Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
-            log.error("Failed to persist to {}: {}", path, e.getMessage(), e);
+            throw new IllegalStateException("Failed to persist to " + path, e);
+        } finally {
+            if (temp != null) {
+                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
         }
     }
 

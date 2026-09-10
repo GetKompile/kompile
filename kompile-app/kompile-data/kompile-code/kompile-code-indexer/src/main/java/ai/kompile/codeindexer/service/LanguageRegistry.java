@@ -33,6 +33,13 @@ public class LanguageRegistry {
 
     /** Extension → language ID (immutable defaults) */
     private static final Map<String, String> DEFAULT_EXTENSIONS;
+    private static final Set<String> SOURCE_CODE_LANGUAGES = Set.of(
+            "java", "kotlin", "scala", "groovy", "clojure",
+            "c", "cpp", "csharp", "fsharp", "objectivec", "javascript", "typescript", "vue", "svelte",
+            "python", "ruby", "go", "rust", "swift", "php", "bash", "fish", "powershell",
+            "batch", "sql", "haskell", "ocaml", "elixir", "erlang", "lua", "r", "julia",
+            "dart", "zig", "nim", "v", "perl", "tcl", "splan", "terraform", "hcl",
+            "protobuf", "thrift", "graphql", "antlr", "cmake", "assembly", "make", "dockerfile");
 
     /** Per-file overrides: absolute path → forced language */
     private final Map<String, String> fileOverrides = new ConcurrentHashMap<>();
@@ -61,7 +68,11 @@ public class LanguageRegistry {
         m.put(".cxx", "cpp");
         m.put(".hpp", "cpp");
         m.put(".hxx", "cpp");
+        m.put(".cu", "cpp");
+        m.put(".cuh", "cpp");
         m.put(".cs", "csharp");
+        m.put(".fs", "fsharp");
+        m.put(".fsx", "fsharp");
         m.put(".m", "objectivec");
         m.put(".mm", "objectivec");
 
@@ -202,6 +213,12 @@ public class LanguageRegistry {
 
     public boolean isSupported(Path filePath) {
         return detectLanguage(filePath) != null;
+    }
+
+    /** Whether the file is executable/source/build code rather than structured data or prose. */
+    public boolean isSourceCode(Path filePath) {
+        String language = detectLanguage(filePath);
+        return language != null && SOURCE_CODE_LANGUAGES.contains(language);
     }
 
     /** Override the language for a specific file path */

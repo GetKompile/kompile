@@ -23,23 +23,31 @@ import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.utils.AnsiConstants;
 import org.jline.reader.LineReader;
 import org.jline.reader.Widget;
+import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStringBuilder;
 import org.jline.utils.WCWidth;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 import static ai.kompile.utils.AnsiConstants.*;
 
@@ -53,9 +61,10 @@ import static ai.kompile.utils.AnsiConstants.*;
  * │ ⚠ transient alert                            │  Row 2   ← fixed alert lane
  * ├─────────────────────────────────────────────┤  Row 3   ← TopBar separator
  * │                                              │
- * │  (scrollable content area — JLine readline,  │  Rows 4..N    ← scroll region
- * │   agent output, tool calls, markdown, etc.)  │
- * │                                              │
+ * │  (managed transcript — agent output, tools,  │  Rows 4..N    ← transcript region
+ * │   markdown, activity views, etc.)             │
+ * ├─────────────────────────────────────────────┤  ← input separator
+ * │ kompile &gt; user draft                         │  ← JLine-only input pane
  * │ Queue · 2 pending · ↑ edits latest            │  Fixed queue pane
  * │ → upcoming [a1b2c3d4] first pending message   │
  * ├─────────────────────────────────────────────┤  Row H-1 ← StatusBar separator
@@ -63,15 +72,23 @@ import static ai.kompile.utils.AnsiConstants.*;
  * └─────────────────────────────────────────────┘
  * </pre>
  *
- * The scroll region is set to {@code [TopBar.TOP_HEIGHT + 1, height - StatusBar.STATUS_HEIGHT]}.
- * TopBar and StatusBar draw outside the scroll region using save/restore cursor.
+ * The transcript scroll region ends above a dedicated input pane. TopBar,
+ * input, queue, activity, and StatusBar rows are never owned by transcript rendering.
  */
 public class KompileTui {
 
     private static final String MAIN_CONTENT_VIEW = "main";
     private static final String REDRAW_WIDGET = "kompile-redraw-frame";
+    private static final String REDRAW_WITH_INPUT_WIDGET = "kompile-redraw-frame-with-input";
+    private static final Object COMMAND_OUTPUT_MONITOR = new Object();
+    private static final InheritableThreadLocal<CommandOutputTransaction> ACTIVE_COMMAND_OUTPUT =
+            new InheritableThreadLocal<>();
+    private static final AtomicLong COMMAND_OUTPUT_SEQUENCE = new AtomicLong();
     private static final int MAX_MAIN_TRANSCRIPT_LINES = 2_000;
+    private static final int MAX_TEMPORARY_COMMAND_OUTPUT_LINES = 20;
+    private static final int MAX_COMMAND_PARTIAL_BYTES = 16 * 1024;
     private static final long MIN_ASYNC_FRAME_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
+    private static final long RESIZE_POLL_MILLIS = 100L;
     private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Scroll to bottom]";
 
     private final TopBar topBar;
@@ -86,18 +103,44 @@ public class KompileTui {
         thread.setDaemon(true);
         return thread;
     });
+    private final ScheduledExecutorService resizeExecutor =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread thread = new Thread(r, "kompile-tui-resize");
+                thread.setDaemon(true);
+                return thread;
+            });
     private final AtomicBoolean redrawQueued = new AtomicBoolean(false);
     private final AtomicBoolean redrawDirty = new AtomicBoolean(false);
+    private final AtomicBoolean inputRedisplayRequested = new AtomicBoolean(false);
     private final AtomicLong alertVersion = new AtomicLong();
     private volatile long lastFrameNanos;
 
     private volatile Terminal terminal;
     private volatile int terminalHeight;
     private volatile int terminalWidth;
+    // started is the retained surface lifetime; terminal attachment is independent.
     private volatile boolean started = false;
+    private volatile boolean stopped;
+    private volatile long attachmentVersion;
+    // Shared only as a callback guard: a late named JLine widget lookup may now
+    // resolve to another surface's widget on the same reader.
+    private record RedrawAttachment(KompileTui owner, long version) {}
+    private static final ThreadLocal<RedrawAttachment> REDRAW_ATTACHMENT = new ThreadLocal<>();
+    // A redraw acquires this only AFTER JLine's reader lock. Detach never acquires
+    // a reader lock, so it can wait for a frame without reversing JLine lock order.
+    private final java.util.concurrent.locks.ReentrantReadWriteLock attachmentLock =
+            new java.util.concurrent.locks.ReentrantReadWriteLock();
     private volatile LineReader lineReader;
+    private volatile boolean inputPaneLayout;
     private volatile Widget clearInputWidget;
     private volatile Widget redisplayWidget;
+    private volatile Object readerBinding;
+    private record ReaderRedrawDispatch(LineReader reader, String frame, String input) {}
+    private volatile ReaderRedrawDispatch readerRedrawDispatch;
+    private Widget ownedRedrawWidget;
+    private Widget ownedInputRedrawWidget;
+    private Widget previousRedrawWidget;
+    private Widget previousInputRedrawWidget;
 
     /**
      * Retained transcript entries let a running tool replace its own block while
@@ -134,10 +177,13 @@ public class KompileTui {
     private volatile String contentViewKey = MAIN_CONTENT_VIEW;
     private volatile String contentViewTitle = "Main chat";
     private volatile List<String> contentViewLines = List.of();
-    /** Lines above the bottom of the retained transcript currently being viewed. */
+    /** Rows from the transcript tail, or from the top for a temporary picker. */
     private volatile int contentScrollOffset = 0;
     /** Activity views pin their title row while their transcript body scrolls. */
     private volatile boolean contentViewPinsHeader = false;
+
+    /** Optional project dashboard pinned between the top bar and transcript. */
+    private volatile DashboardSnapshot dashboard = DashboardSnapshot.hidden();
 
     /** Browser-like transcript selection retained independently of viewport scroll. */
     private SelectionPoint selectionAnchorCell;
@@ -153,6 +199,8 @@ public class KompileTui {
     private volatile boolean temporaryWindowActive = false;
     private volatile String temporaryWindowTitle = "";
     private volatile List<String> temporaryWindowLines = List.of();
+    private final LinkedHashMap<String, String> temporaryCommandOutputBlocks =
+            new LinkedHashMap<>();
     private String savedContentViewKey;
     private String savedContentViewTitle;
     private List<String> savedContentViewLines;
@@ -212,44 +260,147 @@ public class KompileTui {
         return started;
     }
 
+    /** Replace the persistent project dashboard without appending transcript rows. */
+    public void setDashboard(String title, List<String> lines) {
+        String safeTitle = title == null || title.isBlank() ? "Dashboard" : title;
+        List<String> safeLines = lines == null ? List.of() : lines.stream()
+                .filter(java.util.Objects::nonNull)
+                .limit(8)
+                .toList();
+        dashboard = new DashboardSnapshot(true, safeTitle, safeLines);
+        if (started) requestRedrawWithInput();
+    }
+
+    /** Hide the project dashboard and release its pinned terminal rows. */
+    public void clearDashboard() {
+        dashboard = DashboardSnapshot.hidden();
+        if (started) requestRedrawWithInput();
+    }
+
+    public DashboardSnapshot getDashboardSnapshot() {
+        return dashboard;
+    }
+
+    public record DashboardSnapshot(boolean visible, String title, List<String> lines) {
+        public DashboardSnapshot {
+            title = title == null ? "Dashboard" : title;
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+
+        private static DashboardSnapshot hidden() {
+            return new DashboardSnapshot(false, "Dashboard", List.of());
+        }
+    }
+
+    public static final long EPHEMERAL_MESSAGE_SECONDS = 10;
+
     /** Show a transient warning in the permanently reserved top alert row. */
     public void showAlert(String message) {
         if (message == null || message.isBlank()) return;
-        long version = alertVersion.incrementAndGet();
-        topBar.setAlert(message);
-        if (started) requestRedraw();
-        CompletableFuture.delayedExecutor(8, TimeUnit.SECONDS).execute(() -> {
-            if (alertVersion.compareAndSet(version, version + 1)) {
-                topBar.setAlert("");
-                if (started) requestRedraw();
-            }
-        });
+        showAlert(message, CompletableFuture.delayedExecutor(EPHEMERAL_MESSAGE_SECONDS, TimeUnit.SECONDS));
+    }
+
+    void showAlert(String message, java.util.concurrent.Executor expiryExecutor) {
+        synchronized (drawLock) {
+            long version = alertVersion.incrementAndGet();
+            topBar.setAlert(message);
+            if (started) requestRedraw();
+            expiryExecutor.execute(() -> {
+                synchronized (drawLock) {
+                    if (alertVersion.compareAndSet(version, version + 1)) {
+                        topBar.setAlert("");
+                        if (started) requestRedraw();
+                    }
+                }
+            });
+        }
     }
 
     public void clearAlert() {
-        alertVersion.incrementAndGet();
-        topBar.setAlert("");
-        if (started) requestRedraw();
+        synchronized (drawLock) {
+            alertVersion.incrementAndGet();
+            topBar.setAlert("");
+            if (started) requestRedraw();
+        }
     }
 
     /**
      * The first row of the scrollable content region.
      */
     public int scrollTop() {
-        return TopBar.TOP_HEIGHT + 1;
+        return TopBar.TOP_HEIGHT + getDashboardRegionRows() + 1;
+    }
+
+    /** Stable responsive row budget; dashboard updates never resize the transcript. */
+    public int getDashboardRegionRows() {
+        if (!dashboard.visible()) return 0;
+        int height = terminalHeight > 0 ? terminalHeight : 24;
+        return dashboardRowsForLayout(
+                height, reservedMiddleRows, queueRowsForTerminal(height));
+    }
+
+    static int dashboardRowsForLayout(int height, int reservedRows, int queueRows) {
+        int desired = dashboardRowsForTerminal(height);
+        int baseScrollTop = TopBar.TOP_HEIGHT + 1;
+        int bottomWithoutDashboard = height - StatusBar.STATUS_HEIGHT
+                - Math.max(0, reservedRows) - Math.max(0, queueRows);
+        int availableScrollRows = Math.max(0, bottomWithoutDashboard - baseScrollTop + 1);
+        int rows = Math.min(desired, Math.max(0, availableScrollRows - 5));
+        return rows < 2 ? 0 : rows;
+    }
+
+    static int dashboardRowsForTerminal(int height) {
+        if (height < 18) return 0;
+        return Math.max(5, Math.min(9, height / 3));
     }
 
     /**
-     * The last row of the scrollable content region.
-     * Accounts for TopBar at top, StatusBar/activity rows at bottom, and the
-     * fixed queue pane. Queue rows are reserved even while empty so adding a
-     * message cannot move JLine's live input anchor.
+     * The last row of the central transcript/input allocation, immediately
+     * before the fixed queue pane. When JLine is attached, {@link #inputTop()}
+     * and {@link #transcriptBottom()} partition this allocation into disjoint
+     * editor and transcript regions. Queue rows remain reserved while empty so
+     * adding a message cannot move the live input pane.
      */
     public int scrollBottom() {
         if (terminalHeight <= 0) return scrollTop() + 2;
         return Math.max(scrollTop(),
                 terminalHeight - StatusBar.STATUS_HEIGHT
                         - reservedMiddleRows - getQueueRegionRows());
+    }
+
+    /**
+     * Stable row budget owned exclusively by an attached JLine editor. The pane
+     * grows on larger terminals but always leaves a separator and two transcript rows.
+     * Terminal detach retains this budget; surfaces without an editor use one prompt row.
+     */
+    public int getInputRegionRows() {
+        int desired = !inputPaneLayout
+                ? 1 : inputRowsForTerminal(terminalHeight > 0 ? terminalHeight : 24);
+        int maximum = Math.max(1, scrollBottom() - scrollTop() - 2);
+        return Math.min(desired, maximum);
+    }
+
+    static int inputRowsForTerminal(int height) {
+        if (height < 16) return 2;
+        return Math.max(3, Math.min(8, height / 6));
+    }
+
+    /** First 1-based row owned by the JLine editor. */
+    public int inputTop() {
+        return Math.max(scrollTop(), scrollBottom() - getInputRegionRows() + 1);
+    }
+
+    /** Separator row between transcript and the JLine-owned pane. */
+    public int inputSeparatorRow() {
+        return Math.max(scrollTop(), inputTop() - 1);
+    }
+
+    /** Last 1-based row owned by transcript content. */
+    public int transcriptBottom() {
+        if (!inputPaneLayout) {
+            return Math.max(scrollTop(), scrollBottom() - 1);
+        }
+        return Math.max(scrollTop(), inputSeparatorRow() - 1);
     }
 
     /** Number of fixed rows allocated to upcoming/queued messages. */
@@ -371,9 +522,9 @@ public class KompileTui {
         return Math.max(1, (width - controlWidth) / 2);
     }
 
-    /** Zero-based row immediately above JLine's live input row. */
+    /** Zero-based row at the bottom of the transcript viewport. */
     public int scrollToBottomControlY() {
-        return Math.max(scrollTop() - 1, scrollBottom() - 2);
+        return transcriptBottom() - 1;
     }
 
     /**
@@ -509,18 +660,90 @@ public class KompileTui {
      * them with printAbove/redisplay instead of letting ANSI frames interleave.
      */
     public void attachLineReader(LineReader reader) {
+        attachmentLock.writeLock().lock();
+        try {
+            attachLineReaderLocked(reader);
+        } finally {
+            attachmentLock.writeLock().unlock();
+        }
+    }
+
+    private void attachLineReaderLocked(LineReader reader) {
+        if (stopped) throw new IllegalStateException("Chat surface is stopped");
+        if (lineReader == reader) return;
+        detachLineReader();
         this.lineReader = reader;
+        inputPaneLayout = reader != null;
         if (reader == null) return;
+        Object binding = new Object();
+        readerBinding = binding;
         this.clearInputWidget = reader.getWidgets().get(LineReader.CLEAR);
         this.redisplayWidget = reader.getWidgets().get(LineReader.REDISPLAY);
-        reader.getWidgets().put(REDRAW_WIDGET, this::redrawReaderFrame);
+        ownedRedrawWidget = () -> redrawReaderFramePreservingInput(binding);
+        ownedInputRedrawWidget = () -> redrawReaderFrameWithInput(binding);
+        previousRedrawWidget = reader.getWidgets().put(REDRAW_WIDGET, ownedRedrawWidget);
+        previousInputRedrawWidget = reader.getWidgets().put(
+                REDRAW_WITH_INPUT_WIDGET, ownedInputRedrawWidget);
+        // Async dispatch must never resolve a restored, unrelated widget after detach.
+        // Keep the public aliases for existing callers, but give this binding private names.
+        String suffix = ":" + java.util.UUID.randomUUID();
+        ReaderRedrawDispatch dispatch = new ReaderRedrawDispatch(reader,
+                REDRAW_WIDGET + suffix, REDRAW_WITH_INPUT_WIDGET + suffix);
+        reader.getWidgets().put(dispatch.frame(), ownedRedrawWidget);
+        reader.getWidgets().put(dispatch.input(), ownedInputRedrawWidget);
+        readerRedrawDispatch = dispatch;
+    }
+
+    /**
+     * Clear JLine's accepted echo from the whole input pane, including wrapped
+     * and pasted rows. Call on the input thread after readLine returns and before
+     * dispatching the line or starting another read. Never queue this cleanup:
+     * an asynchronous clear could erase the next draft. JLine owns its buffer
+     * and history; only the completed editor's terminal rows are cleared here.
+     */
+    public void clearSubmittedInput() {
+        if (!started || lineReader == null) return;
+        renderFrame(false, true);
     }
 
     /** Detach the reader before terminal shutdown. */
     public void detachLineReader() {
+        attachmentLock.writeLock().lock();
+        try {
+            inputPaneLayout = false;
+            detachLineReaderLocked();
+        } finally {
+            attachmentLock.writeLock().unlock();
+        }
+    }
+
+    private void detachLineReaderLocked() {
+        LineReader previous = lineReader;
+        ReaderRedrawDispatch dispatch = readerRedrawDispatch;
+        readerRedrawDispatch = null;
+        readerBinding = null;
+        if (dispatch != null) {
+            dispatch.reader().getWidgets().remove(dispatch.frame(), ownedRedrawWidget);
+            dispatch.reader().getWidgets().remove(dispatch.input(), ownedInputRedrawWidget);
+        }
         this.lineReader = null;
         this.clearInputWidget = null;
         this.redisplayWidget = null;
+        if (previous != null) {
+            restoreWidget(previous, REDRAW_WIDGET, ownedRedrawWidget, previousRedrawWidget);
+            restoreWidget(previous, REDRAW_WITH_INPUT_WIDGET,
+                    ownedInputRedrawWidget, previousInputRedrawWidget);
+        }
+        ownedRedrawWidget = null;
+        ownedInputRedrawWidget = null;
+        previousRedrawWidget = null;
+        previousInputRedrawWidget = null;
+    }
+
+    private static void restoreWidget(LineReader reader, String name, Widget owned, Widget previous) {
+        if (owned == null) return;
+        if (previous == null) reader.getWidgets().remove(name, owned);
+        else reader.getWidgets().replace(name, owned, previous);
     }
 
     /**
@@ -533,11 +756,332 @@ public class KompileTui {
         // This synchronous key-driven frame already includes every pending state
         // change, so a queued asynchronous frame may safely become a no-op.
         redrawDirty.set(false);
-        redrawReaderFrame();
-        return true;
+        inputRedisplayRequested.set(false);
+        return redrawReaderFrameWithInput(readerBinding);
     }
 
-    private boolean redrawReaderFrame() {
+    /**
+     * Run one slash handler while routing its stdout/stderr into the retained
+     * transcript. The transaction context is inherited by command-created worker
+     * threads, while unrelated existing background producers retain their original
+     * streams. This keeps legacy handler output out of JLine's small input pane.
+     */
+    public boolean runCommandOutput(BooleanSupplier command) {
+        java.util.Objects.requireNonNull(command, "command");
+        if (!started) return command.getAsBoolean();
+
+        // System.out/System.err are process-wide. Serialize replacements across
+        // TUI instances; Java monitors are reentrant for nested slash dispatches.
+        synchronized (COMMAND_OUTPUT_MONITOR) {
+            return runCommandOutputLocked(command);
+        }
+    }
+
+    private boolean runCommandOutputLocked(BooleanSupplier command) {
+        synchronized (drawLock) {
+            temporaryCommandOutputBlocks.clear();
+        }
+
+        // readLine has returned, so the accepted command no longer belongs to
+        // a live editor. Clear it before any handler output is emitted.
+        renderFrame(false, true);
+
+        PrintStream originalOut = System.out;
+        PrintStream originalErr = System.err;
+        CommandOutputTransaction previousTransaction = ACTIVE_COMMAND_OUTPUT.get();
+        CommandOutputTransaction transaction = new CommandOutputTransaction(
+                this, COMMAND_OUTPUT_SEQUENCE.incrementAndGet());
+        CommandOutputStream output = new CommandOutputStream(transaction, originalOut);
+        CommandOutputStream error = new CommandOutputStream(transaction, originalErr);
+        PrintStream managedOut = commandPrintStream(output);
+        PrintStream managedErr = commandPrintStream(error);
+        boolean contextInstalled = false;
+        boolean outInstalled = false;
+        boolean errInstalled = false;
+        Throwable commandFailure = null;
+        try {
+            ACTIVE_COMMAND_OUTPUT.set(transaction);
+            contextInstalled = true;
+            System.setOut(managedOut);
+            outInstalled = true;
+            System.setErr(managedErr);
+            errInstalled = true;
+            return command.getAsBoolean();
+        } catch (RuntimeException | Error failure) {
+            commandFailure = failure;
+            throw failure;
+        } finally {
+            Throwable cleanupFailure = null;
+            cleanupFailure = runCleanup(cleanupFailure, managedOut::flush);
+            cleanupFailure = runCleanup(cleanupFailure, managedErr::flush);
+            cleanupFailure = runCleanup(cleanupFailure, transaction::finish);
+            if (outInstalled) {
+                cleanupFailure = runCleanup(
+                        cleanupFailure, () -> System.setOut(originalOut));
+            }
+            if (errInstalled) {
+                cleanupFailure = runCleanup(
+                        cleanupFailure, () -> System.setErr(originalErr));
+            }
+            if (contextInstalled) {
+                cleanupFailure = runCleanup(cleanupFailure, () -> {
+                    if (previousTransaction == null) {
+                        ACTIVE_COMMAND_OUTPUT.remove();
+                    } else {
+                        ACTIVE_COMMAND_OUTPUT.set(previousTransaction);
+                    }
+                });
+            }
+            cleanupFailure = runCleanup(cleanupFailure, () -> {
+                synchronized (drawLock) {
+                    temporaryCommandOutputBlocks.clear();
+                }
+                renderFrame(false, true);
+            });
+            if (cleanupFailure != null) {
+                if (commandFailure != null) {
+                    commandFailure.addSuppressed(cleanupFailure);
+                } else if (cleanupFailure instanceof RuntimeException runtime) {
+                    throw runtime;
+                } else if (cleanupFailure instanceof Error errorFailure) {
+                    throw errorFailure;
+                } else {
+                    throw new IllegalStateException(
+                            "Could not restore command output", cleanupFailure);
+                }
+            }
+        }
+    }
+
+    private static Throwable runCleanup(Throwable prior, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException | Error failure) {
+            if (prior == null) return failure;
+            prior.addSuppressed(failure);
+        }
+        return prior;
+    }
+
+    private PrintStream commandPrintStream(CommandOutputStream output) {
+        return new PrintStream(
+                output,
+                true, StandardCharsets.UTF_8);
+    }
+
+    private static final class CommandOutputTransaction {
+        private KompileTui tui;
+        private final String keyPrefix;
+        private long nextLine;
+        private CommandOutputStream activeStream;
+        private volatile boolean closed;
+
+        private CommandOutputTransaction(KompileTui tui, long sequence) {
+            this.tui = tui;
+            this.keyPrefix = "command-output:" + sequence + ":";
+        }
+
+        private void activate(CommandOutputStream stream) {
+            if (activeStream != null && activeStream != stream) {
+                activeStream.finishPartialLocked();
+            }
+            activeStream = stream;
+        }
+
+        private String nextKey() {
+            return keyPrefix + nextLine++;
+        }
+
+        private void finish() {
+            synchronized (this) {
+                try {
+                    if (activeStream != null) activeStream.finishPartialLocked();
+                } finally {
+                    activeStream = null;
+                    closed = true;
+                    tui = null;
+                }
+            }
+        }
+    }
+
+    private static final class CommandOutputStream extends OutputStream {
+        private final CommandOutputTransaction transaction;
+        private final PrintStream fallback;
+        private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+        private String currentKey;
+        private boolean partialTruncated;
+        private boolean afterCarriageReturn;
+
+        private CommandOutputStream(
+                CommandOutputTransaction transaction, PrintStream fallback) {
+            this.transaction = transaction;
+            this.fallback = fallback;
+        }
+
+        @Override
+        public void write(int value) {
+            if (!routesToTransaction()) {
+                fallback.write(value);
+                return;
+            }
+            synchronized (transaction) {
+                if (transaction.closed) {
+                    fallback.write(value);
+                    return;
+                }
+                transaction.activate(this);
+                appendByteLocked(value);
+                if (value != '\n' && value != '\r') {
+                    // Direct byte writers publish on flush/newline. Avoid decoding
+                    // the complete growing buffer once per byte.
+                    trimPendingLocked();
+                }
+            }
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) {
+            if (!routesToTransaction()) {
+                fallback.write(bytes, offset, length);
+                return;
+            }
+            synchronized (transaction) {
+                if (transaction.closed) {
+                    fallback.write(bytes, offset, length);
+                    return;
+                }
+                transaction.activate(this);
+                int end = offset + length;
+                for (int index = offset; index < end; index++) {
+                    appendByteLocked(bytes[index] & 0xff);
+                }
+                if (pending.size() > 0) {
+                    trimPendingLocked();
+                    publishLocked(false);
+                }
+            }
+        }
+
+        @Override
+        public void flush() {
+            if (routesToTransaction()) {
+                synchronized (transaction) {
+                    if (!transaction.closed) {
+                        transaction.activate(this);
+                        if (pending.size() > 0) publishLocked(false);
+                    }
+                }
+            }
+            fallback.flush();
+        }
+
+        private boolean routesToTransaction() {
+            return ACTIVE_COMMAND_OUTPUT.get() == transaction && !transaction.closed;
+        }
+
+        private void appendByteLocked(int value) {
+            if (value == '\r') {
+                if (pending.size() > 0) {
+                    trimPendingLocked();
+                    publishLocked(false);
+                }
+                pending.reset();
+                partialTruncated = false;
+                afterCarriageReturn = true;
+                return;
+            }
+            if (value == '\n') {
+                if (pending.size() > 0) {
+                    trimPendingLocked();
+                    publishLocked(true);
+                } else if (currentKey != null) {
+                    currentKey = null;
+                } else if (!afterCarriageReturn) {
+                    ensureCurrentKeyLocked();
+                    publishLocked(true);
+                }
+                afterCarriageReturn = false;
+                partialTruncated = false;
+                return;
+            }
+
+            ensureCurrentKeyLocked();
+            pending.write(value);
+            afterCarriageReturn = false;
+        }
+
+        private void trimPendingLocked() {
+            if (pending.size() <= MAX_COMMAND_PARTIAL_BYTES) return;
+            byte[] bytes = pending.toByteArray();
+            // Retain half the cap so byte-at-a-time writers have substantial
+            // headroom before another trim instead of copying on every byte.
+            int start = bytes.length - (MAX_COMMAND_PARTIAL_BYTES / 2);
+            while (start < bytes.length && (bytes[start] & 0xc0) == 0x80) start++;
+            pending.reset();
+            pending.write(bytes, start, bytes.length - start);
+            partialTruncated = true;
+        }
+
+        private void ensureCurrentKeyLocked() {
+            if (currentKey == null) currentKey = transaction.nextKey();
+        }
+
+        private void finishPartialLocked() {
+            if (pending.size() > 0) publishLocked(false);
+            pending.reset();
+            currentKey = null;
+            partialTruncated = false;
+            afterCarriageReturn = false;
+        }
+
+        private void publishLocked(boolean complete) {
+            byte[] bytes = pending.toByteArray();
+            int length = bytes.length;
+            KompileTui target = transaction.tui;
+            if (target == null) return;
+            String text = new String(bytes, 0, length, StandardCharsets.UTF_8);
+            target.recordCommandOutputBlock(
+                    currentKey, partialTruncated ? "…" + text : text);
+            if (complete) {
+                pending.reset();
+                currentKey = null;
+                partialTruncated = false;
+                afterCarriageReturn = false;
+            }
+        }
+    }
+
+    private void recordCommandOutputBlock(String key, String text) {
+        upsertMainTranscriptBlock(key, text);
+        synchronized (drawLock) {
+            if (temporaryWindowActive) {
+                temporaryCommandOutputBlocks.put(key, text);
+                while (temporaryCommandOutputBlocks.size()
+                        > MAX_TEMPORARY_COMMAND_OUTPUT_LINES) {
+                    var iterator = temporaryCommandOutputBlocks.keySet().iterator();
+                    iterator.next();
+                    iterator.remove();
+                }
+                contentViewLines = temporaryWindowDisplayLines();
+                contentScrollOffset = clampScrollOffset(
+                        contentScrollOffset, contentViewLines, contentViewPinsHeader);
+            }
+        }
+        requestRedraw();
+    }
+
+    private boolean redrawReaderFrameWithInput(Object binding) {
+        attachmentLock.readLock().lock();
+        try {
+            if (binding == null || binding != readerBinding || !isCurrentAttachment()) return false;
+            return redrawAttachedReaderFrameWithInput();
+        } finally {
+            attachmentLock.readLock().unlock();
+        }
+    }
+
+    private boolean redrawAttachedReaderFrameWithInput() {
         // Match LineReader.printAbove's ordering while replacing the whole frame:
         // remove the cached input, draw at absolute rows, then let JLine restore
         // both the prompt and its exact editing cursor.
@@ -545,7 +1089,10 @@ public class KompileTui {
         if (clearInput != null) {
             clearInput.apply();
         }
-        renderFrame();
+        // Resize/reflow can move transcript cells into the input pane. JLine's
+        // CLEAR only knows its cached draft footprint, not those foreign cells.
+        // Erase the entire pane under the reader lock before restoring the draft.
+        renderFrame(false, true);
         Widget redisplay = redisplayWidget;
         boolean applied = redisplay == null || redisplay.apply();
         // A frame/status redraw can occur while JLine has the cursor hidden.
@@ -553,32 +1100,77 @@ public class KompileTui {
         return applied;
     }
 
+    private boolean redrawReaderFramePreservingInput(Object binding) {
+        attachmentLock.readLock().lock();
+        try {
+            if (binding == null || binding != readerBinding || !isCurrentAttachment()) return false;
+            // Transcript frames never touch the dedicated input pane.
+            renderFrame(true);
+            return true;
+        } finally {
+            attachmentLock.readLock().unlock();
+        }
+    }
+
+    private boolean isCurrentAttachment() {
+        RedrawAttachment expected = REDRAW_ATTACHMENT.get();
+        return started && terminal != null
+                && (expected == null || (expected.owner() == this
+                && expected.version() == attachmentVersion));
+    }
+
     /** Coalesced redraw entry point used by status/activity listeners. */
     public void requestRedraw() {
-        if (!started) return;
+        if (!started || terminal == null) return;
         redrawDirty.set(true);
         if (!redrawQueued.compareAndSet(false, true)) return;
         try {
-            redrawExecutor.execute(this::runAsyncRedraw);
+            long version = attachmentVersion;
+            redrawExecutor.execute(() -> runAsyncRedraw(version));
         } catch (java.util.concurrent.RejectedExecutionException ignored) {
             redrawQueued.set(false);
         }
     }
 
-    private void runAsyncRedraw() {
+    private void requestRedrawWithInput() {
+        inputRedisplayRequested.set(true);
+        requestRedraw();
+    }
+
+    private void runAsyncRedraw(long version) {
+        REDRAW_ATTACHMENT.set(new RedrawAttachment(this, version));
         try {
             long remaining = MIN_ASYNC_FRAME_NANOS
                     - (System.nanoTime() - lastFrameNanos);
             if (remaining > 0L) LockSupport.parkNanos(remaining);
-            if (!started || Thread.currentThread().isInterrupted()) return;
-
-            // State accumulated before this point belongs to this frame. Updates
-            // arriving during render set dirty again and receive one trailing frame.
-            if (!redrawDirty.getAndSet(false)) return;
-            LineReader active = lineReader;
+            boolean redisplayInput;
+            ReaderRedrawDispatch dispatch;
+            attachmentLock.readLock().lock();
             try {
-                if (active != null && active.isReading()) {
-                    active.callWidget(REDRAW_WIDGET);
+                synchronized (drawLock) {
+                    if (!isCurrentAttachment() || Thread.currentThread().isInterrupted()) return;
+                    // Consume pending state only for this attachment, never its successor.
+                    if (!redrawDirty.getAndSet(false)) return;
+                    redisplayInput = inputRedisplayRequested.getAndSet(false);
+                    dispatch = readerRedrawDispatch;
+                }
+            } finally {
+                attachmentLock.readLock().unlock();
+            }
+            try {
+                if (dispatch != null) {
+                    try {
+                        // callWidget acquires JLine's reader lock and checks its reading
+                        // state atomically. A separate isReading() check races prompt
+                        // startup/teardown and can strand a fresh prompt at column 1.
+                        dispatch.reader().callWidget(redisplayInput
+                                ? dispatch.input() : dispatch.frame());
+                    } catch (IllegalStateException notReading) {
+                        // Never clear after releasing JLine's reader lock: the next
+                        // readLine may already be painting. Modal/command transitions
+                        // perform their destructive clear synchronously between reads.
+                        if (started) renderFrame(true);
+                    }
                 } else if (started) {
                     renderFrame();
                 }
@@ -587,6 +1179,7 @@ public class KompileTui {
                 if (started && lineReader == null) renderFrame();
             }
         } finally {
+            REDRAW_ATTACHMENT.remove();
             redrawQueued.set(false);
             if (started && redrawDirty.get()) requestRedraw();
         }
@@ -599,13 +1192,15 @@ public class KompileTui {
      */
     public void showTemporaryWindow(String title, List<String> lines) {
         List<String> window = new ArrayList<>();
-        window.add("╭─ " + (title == null || title.isBlank() ? "Kompile" : title) + " ─╮");
+        window.add("╭─ " + (title == null || title.isBlank() ? "Kompile" : title)
+                + " · PgUp/PgDn scroll ─╮");
         if (lines != null) {
             for (String line : lines) {
                 window.add("│ " + (line == null ? "" : line) + " │");
             }
         }
-        window.add("╰" + "─".repeat(Math.max(1, Math.min(120, terminalWidth - 2))) + "╯");
+        // Leave the terminal's final column unused, just like normal visual rows.
+        window.add("╰" + "─".repeat(Math.max(1, Math.min(120, terminalWidth - 3))) + "╯");
         synchronized (drawLock) {
             clearTranscriptSelectionLocked();
             if (!temporaryWindowActive) {
@@ -615,17 +1210,23 @@ public class KompileTui {
                 savedContentScrollOffset = contentScrollOffset;
                 savedContentViewPinsHeader = contentViewPinsHeader;
             }
+            // A new page replaces its predecessor, including command output
+            // (OAuth instructions, prompts, errors). Ordinary frame redraws keep
+            // this page's output; only an explicit page transition discards it.
+            temporaryCommandOutputBlocks.clear();
             temporaryWindowActive = true;
             temporaryWindowTitle = title == null ? "" : title;
             temporaryWindowLines = List.copyOf(window);
             contentViewKey = "__temporary__";
             contentViewTitle = temporaryWindowTitle;
-            contentViewLines = temporaryWindowLines;
+            contentViewLines = temporaryWindowDisplayLines();
+            // A picker is a document, not a streaming transcript: always begin at
+            // its first option and keep that position through background redraws.
             contentScrollOffset = 0;
-            contentViewPinsHeader = false;
+            contentViewPinsHeader = true;
             // The previous JLine prompt belongs to the readLine call that just
             // finished. Clear its row before the picker owns the input anchor.
-            replaceScrollRegion(contentViewLines, false, true);
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader, true);
         }
         if (!started) {
             window.forEach(System.out::println);
@@ -634,6 +1235,18 @@ public class KompileTui {
 
     public void updateTemporaryWindow(String title, List<String> lines) {
         showTemporaryWindow(title, lines);
+    }
+
+    private List<String> temporaryWindowDisplayLines() {
+        if (temporaryCommandOutputBlocks.isEmpty()) return temporaryWindowLines;
+        List<String> display = new ArrayList<>(temporaryWindowLines);
+        int insertion = Math.max(0, display.size() - 1);
+        for (String output : temporaryCommandOutputBlocks.values()) {
+            for (String line : splitLines(output)) {
+                display.add(insertion++, "│ " + (line == null ? "" : line) + " │");
+            }
+        }
+        return List.copyOf(display);
     }
 
     /** Close the modal and restore the exact view that was underneath it. */
@@ -654,6 +1267,7 @@ public class KompileTui {
             savedContentViewTitle = null;
             savedContentViewLines = null;
             temporaryWindowLines = List.of();
+            temporaryCommandOutputBlocks.clear();
             // The nested picker readLine has finished. Leave a clean cursor row
             // for the outer chat loop to render the normal "kompile> " prompt.
             replaceScrollRegion(contentViewLines, contentViewPinsHeader, true);
@@ -673,67 +1287,163 @@ public class KompileTui {
      * Start the TUI: set scroll regions, draw top/bottom bars, start refresh threads.
      */
     public void start(Terminal terminal) {
-        if (!renderer.isAnsiEnabled()) return;
+        attachTerminal(terminal);
+    }
 
+    /**
+     * Attach a terminal to this retained chat surface. Call on the input owner
+     * between readLine calls, after attachLineReader when using JLine. Repeated
+     * attachment to the same terminal is a no-op; moving requires detach first.
+     * Does not take ownership of closing the supplied terminal.
+     */
+    public void attachTerminal(Terminal terminal) {
+        java.util.Objects.requireNonNull(terminal, "terminal");
+        attachmentLock.writeLock().lock();
+        try {
+            if (stopped) throw new IllegalStateException("Chat surface is stopped");
+            if (this.terminal == terminal) return;
+            if (this.terminal != null) {
+                throw new IllegalStateException("Detach the current terminal first");
+            }
+            synchronized (drawLock) {
+                attachTerminalLocked(terminal);
+            }
+        } finally {
+            attachmentLock.writeLock().unlock();
+        }
+    }
+
+    private void attachTerminalLocked(Terminal terminal) {
+        if (!renderer.isAnsiEnabled()) return;
+        boolean firstStart = !started;
         this.terminal = terminal;
-        updateTerminalSize();
+        attachmentVersion++;
+        updateTerminalSize(terminal.getSize());
         // Recalculate reserved rows now that we have real terminal dimensions
         recalcReservedMiddleRows(reservedRowsCalculator);
 
-        if (terminalHeight < 12) return; // Too small for top+bottom bars
+        if (terminalHeight < 12) {
+            this.terminal = null;
+            return; // Too small for top+bottom bars; may retry with a larger terminal.
+        }
 
         started = true;
         topBar.setTerminalWidth(terminalWidth);
 
-        // Clear screen and draw initial layout
+        // Establish the complete layout synchronously before readLine can paint
+        // its first prompt. Leaving this to the queued status redraw races prompt
+        // startup and can place "kompile>" on the cleared screen's home row.
         synchronized (drawLock) {
             writeTerminal(ESC + "2J" + ESC + "H"); // clear + home
-            // Starts the status refresh thread. Its initial redraw is routed
-            // through the same frame coordinator installed in the constructor.
             statusBar.start(terminal);
+            redrawDirty.set(false); // the frame below includes the initial status state
+            renderFrame();
         }
 
-        // Handle terminal resize
-        terminal.handle(Terminal.Signal.WINCH, signal -> {
-            updateTerminalSize();
-            topBar.setTerminalWidth(terminalWidth);
-            recalcReservedMiddleRows(reservedRowsCalculator);
-            statusBar.syncTerminalSize();
-            requestRedraw();
-            fireResizeListeners();
-        });
+        // Keep JLine's WINCH handler installed and independently observe the
+        // terminal geometry. Some native-image and nested-terminal runtimes do
+        // not deliver WINCH, but their Terminal size still changes.
+        if (firstStart) {
+            resizeExecutor.scheduleWithFixedDelay(
+                    this::pollForTerminalResize,
+                    RESIZE_POLL_MILLIS,
+                    RESIZE_POLL_MILLIS,
+                    TimeUnit.MILLISECONDS);
+        }
     }
 
     /**
-     * Handle a terminal resize event. Call from an external WINCH handler
-     * when EmulatedPassthroughCommand overrides the default handler.
+     * Release only the display, retaining transcript, activity view, viewport,
+     * queue and background work. No terminal close or session shutdown occurs.
+     * The caller must stop readLine before detaching and retain its reader/draft.
+     * Static ChatCompleter routing is NOT switched by this surface-level method.
+     */
+    public void detachTerminal() {
+        attachmentLock.writeLock().lock();
+        try {
+            synchronized (drawLock) {
+                // A hidden surface cannot receive mouse release. Preserve the highlight,
+                // but invalidate delayed drag callbacks so its viewport stays put.
+                selectionDragging = false;
+                selectionAutoScrollScheduled = false;
+                selectionVersion++;
+                if (terminal == null) {
+                    detachLineReaderLocked();
+                    return;
+                }
+                writeTerminal(ESC + "r");
+                terminal = null;
+                attachmentVersion++;
+                // Keep the last input-pane geometry for detached viewport updates.
+                detachLineReaderLocked();
+                statusBar.detachTerminal();
+            }
+        } finally {
+            attachmentLock.writeLock().unlock();
+        }
+    }
+
+    public boolean isTerminalAttached() {
+        return terminal != null;
+    }
+
+    /**
+     * Refresh every layout layer after the terminal geometry changes.
      */
     public void handleResize() {
-        if (!started) return;
-        updateTerminalSize();
-        topBar.setTerminalWidth(terminalWidth);
-        recalcReservedMiddleRows(reservedRowsCalculator);
-        statusBar.syncTerminalSize();
-        requestRedraw();
-        fireResizeListeners();
+        Terminal active;
+        long version;
+        attachmentLock.readLock().lock();
+        try {
+            if (!started || terminal == null) return;
+            active = terminal;
+            version = attachmentVersion;
+        } finally {
+            attachmentLock.readLock().unlock();
+        }
+        // Terminal I/O may block. Do not prevent switching while sampling geometry.
+        Size size = active.getSize();
+        attachmentLock.writeLock().lock();
+        try {
+            if (!started || terminal != active || attachmentVersion != version) return;
+            synchronized (drawLock) {
+                if (!updateTerminalSize(size)) return;
+                topBar.setTerminalWidth(terminalWidth);
+                recalcReservedMiddleRows(reservedRowsCalculator);
+                statusBar.syncTerminalSize();
+                requestRedrawWithInput();
+            }
+            fireResizeListeners();
+        } finally {
+            attachmentLock.writeLock().unlock();
+        }
     }
 
     /**
      * Stop the TUI: reset scroll regions, clear bars, stop refresh threads.
      */
     public void stop() {
-        if (!started) return;
-        started = false;
-
-        statusBar.stop();
-        detachLineReader();
-        redrawExecutor.shutdownNow();
-
-        synchronized (drawLock) {
-            clearTranscriptSelectionLocked();
-            // Reset the region and clear through JLine's terminal stream so no
-            // buffered stdout frame can arrive after shutdown.
-            writeTerminal(ESC + "r" + ESC + "2J" + ESC + "H");
+        attachmentLock.writeLock().lock();
+        try {
+            if (stopped) return;
+            stopped = true;
+            started = false;
+            statusBar.stop();
+            detachLineReader();
+            resizeExecutor.shutdownNow();
+            redrawExecutor.shutdownNow();
+            synchronized (drawLock) {
+                clearTranscriptSelectionLocked();
+                // Only an attached surface may clear terminal rows on final close.
+                if (terminal != null) {
+                    terminal.writer().print(ESC + "r" + ESC + "2J" + ESC + "H");
+                    terminal.writer().flush();
+                }
+                terminal = null;
+                attachmentVersion++;
+            }
+        } finally {
+            attachmentLock.writeLock().unlock();
         }
     }
 
@@ -754,7 +1464,7 @@ public class KompileTui {
      * object, so redisplay cannot leave a stale or blank activity screen behind.
      */
     public void redrawContentView() {
-        if (!started || temporaryWindowActive) return;
+        if (!started) return;
         synchronized (drawLock) {
             writeTerminal(scrollRegionSequence()
                     + renderContentRegion(contentViewLines, contentViewPinsHeader, false)
@@ -874,6 +1584,7 @@ public class KompileTui {
         lines.addAll(splitLines(content));
         boolean plainOutput = !started;
         synchronized (drawLock) {
+            if (temporaryWindowActive) return;
             clearTranscriptSelectionLocked();
             contentViewKey = key == null || key.isBlank() ? "activity" : key;
             contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
@@ -888,54 +1599,51 @@ public class KompileTui {
     }
 
     /**
-     * Refresh a selected activity without snapping a reader back to the tail.
-     * This is used for live subagent chunks and process output updates.
+     * Refresh the currently selected activity without snapping a reader back to
+     * the tail. Updates for any other key are stale and are ignored; explicit
+     * navigation switches views through {@link #showActivityView}.
      */
     public void updateActivityView(String key, String title, String content) {
         if (key == null || key.isBlank()) return;
         List<String> lines = new ArrayList<>();
         lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
         lines.addAll(splitLines(content));
-        boolean plainOutput = false;
         synchronized (drawLock) {
-            if (temporaryWindowActive) return;
-            if (!key.equals(contentViewKey)) {
-                // A selection/process transition can arrive between refresh callbacks.
-                // Switch key and content atomically so a stale identity check cannot
-                // overwrite another view while leaving its key or selection behind.
+            if (temporaryWindowActive || !key.equals(contentViewKey)) return;
+            if (!selectionStableAcross(contentViewLines, true, lines, true)) {
                 clearTranscriptSelectionLocked();
-                contentViewKey = key;
-                contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
-                contentViewLines = List.copyOf(lines);
-                contentScrollOffset = 0;
-                contentViewPinsHeader = true;
-                replaceScrollRegion(contentViewLines, true);
-                plainOutput = !started;
-            } else {
-                if (!selectionStableAcross(contentViewLines, true, lines, true)) {
-                    clearTranscriptSelectionLocked();
-                }
-                int previousSize = visualBodyRows(contentViewLines, true).size();
-                boolean followingTail = contentScrollOffset == 0;
-                contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
-                contentViewLines = List.copyOf(lines);
-                contentViewPinsHeader = true;
-                int nextSize = visualBodyRows(lines, true).size();
-                if (!followingTail && nextSize > previousSize) {
-                    contentScrollOffset += nextSize - previousSize;
-                }
-                contentScrollOffset = clampScrollOffset(
-                        followingTail ? 0 : contentScrollOffset, contentViewLines, true);
-                replaceScrollRegion(contentViewLines, true);
             }
+            int previousSize = visualBodyRows(contentViewLines, true).size();
+            boolean followingTail = contentScrollOffset == 0;
+            contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+            contentViewLines = List.copyOf(lines);
+            contentViewPinsHeader = true;
+            int nextSize = visualBodyRows(lines, true).size();
+            if (!followingTail && nextSize > previousSize) {
+                contentScrollOffset += nextSize - previousSize;
+            }
+            contentScrollOffset = clampScrollOffset(
+                    followingTail ? 0 : contentScrollOffset, contentViewLines, true);
+            replaceScrollRegion(contentViewLines, true);
         }
-        if (plainOutput) lines.forEach(System.out::println);
     }
 
     /** Restore the retained parent-chat transcript in-place. */
     public void showMainView() {
-        if (temporaryWindowActive) return;
+        showMainViewIf(() -> true);
+    }
+
+    /**
+     * Restore Main only if the caller's selection is still current. The guard is
+     * evaluated under the draw lock so a delayed refresh cannot overwrite newer
+     * explicit navigation in either direction.
+     */
+    public void showMainViewIf(BooleanSupplier stillSelected) {
         synchronized (drawLock) {
+            // Opening a picker and a delayed activity refresh compete for this
+            // same lock. An ownership check before acquiring it is not sufficient.
+            if (temporaryWindowActive) return;
+            if (stillSelected != null && !stillSelected.getAsBoolean()) return;
             clearTranscriptSelectionLocked();
             contentViewKey = MAIN_CONTENT_VIEW;
             contentViewTitle = "Main chat";
@@ -952,7 +1660,8 @@ public class KompileTui {
         if (deltaLines == 0) return false;
         synchronized (drawLock) {
             int next = clampScrollOffset(
-                    contentScrollOffset + deltaLines, contentViewLines, contentViewPinsHeader);
+                    contentScrollOffset + (temporaryWindowActive ? -deltaLines : deltaLines),
+                    contentViewLines, contentViewPinsHeader);
             if (next == contentScrollOffset) return false;
             contentScrollOffset = next;
             replaceScrollRegion(contentViewLines, contentViewPinsHeader);
@@ -967,7 +1676,8 @@ public class KompileTui {
 
     public boolean scrollToTop() {
         synchronized (drawLock) {
-            int top = clampScrollOffset(Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
+            int top = temporaryWindowActive ? 0
+                    : clampScrollOffset(Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
             if (contentScrollOffset == top) return false;
             contentScrollOffset = top;
             replaceScrollRegion(contentViewLines, contentViewPinsHeader);
@@ -977,8 +1687,10 @@ public class KompileTui {
 
     public boolean scrollToBottom() {
         synchronized (drawLock) {
-            if (contentScrollOffset == 0) return false;
-            contentScrollOffset = 0;
+            int bottom = temporaryWindowActive
+                    ? clampScrollOffset(Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader) : 0;
+            if (contentScrollOffset == bottom) return false;
+            contentScrollOffset = bottom;
             replaceScrollRegion(contentViewLines, contentViewPinsHeader);
             return true;
         }
@@ -1028,45 +1740,138 @@ public class KompileTui {
     }
 
     private void writeScrollLine(String line) {
-        writeTerminal(ESC + scrollTop() + ";" + scrollBottom() + "r"
-                + ESC + scrollBottom() + ";1H" + ESC + "2K" + line + '\n');
+        int bottom = transcriptScrollRegionBottom();
+        writeTerminal(ESC + scrollTop() + ";" + bottom + "r"
+                + ESC + bottom + ";1H" + ESC + "2K" + line + '\n'
+                + (lineReader == null
+                        ? ESC + inputAnchorRow() + ";1H"
+                        : activeInputRegionSequence()));
     }
 
     /** Emit one complete cursor-addressed frame through the process terminal stream. */
     private void renderFrame() {
+        renderFrame(false, false);
+    }
+
+    private void renderFrame(boolean preserveInputCursor) {
+        renderFrame(preserveInputCursor, false);
+    }
+
+    private void renderFrame(boolean preserveInputCursor, boolean clearInputRows) {
         if (!started) return;
         synchronized (drawLock) {
+            if (!isCurrentAttachment()) return;
             StringBuilder frame = new StringBuilder();
+            if (preserveInputCursor) {
+                frame.append('\033').append('7').append(ESC).append("?25l");
+            }
             frame.append(scrollRegionSequence());
             frame.append(topBar.render(terminalWidth));
-            if (!temporaryWindowActive) {
-                frame.append(renderContentRegion(contentViewLines, contentViewPinsHeader, false));
-            } else {
-                frame.append(renderContentRegion(temporaryWindowLines, false, false));
-            }
+            frame.append(renderDashboardRegion());
+            frame.append(renderContentRegion(
+                    contentViewLines, contentViewPinsHeader, clearInputRows));
             frame.append(renderScrollToBottomControl());
+            frame.append(renderInputSeparator());
             frame.append(renderQueueRegion());
             frame.append(statusBar.render(terminalHeight, terminalWidth));
-            frame.append(ESC).append(scrollBottom()).append(";1H");
+            frame.append(ESC).append(inputAnchorRow()).append(";1H");
+            if (preserveInputCursor) {
+                frame.append('\033').append('8').append(ESC).append("?25h");
+            } else if (clearInputRows) {
+                frame.append(ESC).append("?25h");
+            }
             writeTerminal(frame.toString());
             lastFrameNanos = System.nanoTime();
         }
     }
 
     private String scrollRegionSequence() {
+        if (lineReader != null) return activeInputRegionSequence();
         int top = scrollTop();
         int bottom = scrollBottom();
         if (bottom <= top + 2) return "";
         return ESC + top + ";" + bottom + "r" + ESC + bottom + ";1H";
     }
 
+    /** Keep all JLine line insertion/deletion and overflow inside its own pane. */
+    private String activeInputRegionSequence() {
+        int top = inputTop();
+        int bottom = scrollBottom();
+        if (bottom <= top) return ESC + top + ";1H";
+        return ESC + top + ";" + bottom + "r" + ESC + top + ";1H";
+    }
+
+    private int transcriptScrollRegionBottom() {
+        return lineReader == null ? scrollBottom() : transcriptBottom();
+    }
+
+    private int inputAnchorRow() {
+        return lineReader == null ? scrollBottom() : inputTop();
+    }
+
+    private String renderInputSeparator() {
+        if (lineReader == null || inputSeparatorRow() >= inputTop()) return "";
+        int width = Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
+        return ESC + inputSeparatorRow() + ";1H" + ESC + "2K"
+                + DIM + "─".repeat(width) + RESET;
+    }
+
+    /** Paint the dashboard into rows permanently excluded from the transcript. */
+    private String renderDashboardRegion() {
+        DashboardSnapshot snapshot = dashboard;
+        int rows = getDashboardRegionRows();
+        if (!snapshot.visible() || rows <= 0) return "";
+
+        int width = Math.max(8, terminalWidth > 0 ? terminalWidth : 80);
+        int top = TopBar.TOP_HEIGHT + 1;
+        StringBuilder frame = new StringBuilder();
+        for (int row = top; row < top + rows; row++) {
+            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
+        }
+
+        String heading = "  " + snapshot.title();
+        frame.append(ESC).append(top).append(";1H")
+                .append(BOLD).append(CYAN).append(INVERSE)
+                .append(truncateDashboardLine(heading, width - 1))
+                .append(RESET);
+        int contentRows = rows - 1;
+        List<String> visibleLines = dashboardContentLines(snapshot.lines(), contentRows);
+        for (int index = 0; index < visibleLines.size() && index < contentRows; index++) {
+            String line = "  " + visibleLines.get(index);
+            frame.append(ESC).append(top + index + 1).append(";1H")
+                    .append(truncateDashboardLine(line, width - 1));
+        }
+        return frame.toString();
+    }
+
+    static List<String> dashboardContentLines(List<String> lines, int contentRows) {
+        if (lines == null || lines.isEmpty() || contentRows <= 0) return List.of();
+        if (lines.size() <= contentRows) return List.copyOf(lines);
+        if (contentRows == 1) return List.of(lines.get(lines.size() - 1));
+
+        int leadingRows = Math.max(0, contentRows - 2);
+        List<String> visible = new ArrayList<>(contentRows);
+        visible.addAll(lines.subList(0, leadingRows));
+        visible.add(lines.get(lines.size() - 1));
+        int hidden = lines.size() - visible.size();
+        visible.add("… " + hidden + " more details");
+        return List.copyOf(visible);
+    }
+
+    private String truncateDashboardLine(String value, int maxColumns) {
+        AttributedString text = AttributedString.fromAnsi(value == null ? "" : value);
+        if (text.columnLength() <= maxColumns) return toAnsi(text);
+        int bodyColumns = Math.max(0, maxColumns - 1);
+        return toAnsi(text.columnSubSequence(0, bodyColumns)) + "…";
+    }
+
     private String renderContentRegion(List<String> lines, boolean preserveHeader,
                                        boolean clearInputRow) {
         int top = scrollTop();
-        int bottom = scrollBottom();
-        int contentBottom = Math.max(top, bottom - 1);
+        int regionBottom = transcriptScrollRegionBottom();
+        int contentBottom = transcriptBottom();
         StringBuilder frame = new StringBuilder();
-        frame.append(ESC).append(top).append(';').append(bottom).append('r');
+        frame.append(ESC).append(top).append(';').append(regionBottom).append('r');
         for (int row = top; row <= contentBottom; row++) {
             frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
         }
@@ -1076,9 +1881,15 @@ public class KompileTui {
             frame.append(ESC).append(row).append(";1H").append(visible.get(i));
         }
         if (clearInputRow) {
-            frame.append(ESC).append(bottom).append(";1H").append(ESC).append("2K");
+            for (int inputRow = inputTop(); inputRow <= scrollBottom(); inputRow++) {
+                frame.append(ESC).append(inputRow).append(";1H").append(ESC).append("2K");
+            }
         }
-        frame.append(ESC).append(bottom).append(";1H");
+        if (lineReader != null) {
+            frame.append(activeInputRegionSequence());
+        } else {
+            frame.append(ESC).append(inputAnchorRow()).append(";1H");
+        }
         return frame.toString();
     }
 
@@ -1190,7 +2001,14 @@ public class KompileTui {
         // isReading here would deadlock a producer during an active prompt.
         LineReader reader = lineReader;
         if (reader != null) {
-            requestRedraw();
+            if (clearInputRow) {
+                // Modal transitions are invoked between nested readLine calls on
+                // the dispatch thread. Complete the destructive clear now so it
+                // cannot race the next prompt after JLine releases its lock.
+                renderFrame(false, true);
+            } else {
+                requestRedraw();
+            }
             return;
         }
         writeTerminal(renderContentRegion(lines, preserveHeader, clearInputRow)
@@ -1217,8 +2035,9 @@ public class KompileTui {
         if (preserveHeader && capacity > 1) {
             int bodyCapacity = capacity - 1;
             int bodySize = allRows.size() - 1;
-            int end = Math.max(0, bodySize - offset);
-            int start = Math.max(0, end - bodyCapacity);
+            int end = temporaryWindowActive ? Math.min(bodySize, offset + bodyCapacity)
+                    : Math.max(0, bodySize - offset);
+            int start = temporaryWindowActive ? offset : Math.max(0, end - bodyCapacity);
             List<VisualRow> visible = new ArrayList<>(capacity);
             List<Integer> indexes = new ArrayList<>(capacity);
             visible.add(allRows.get(0));
@@ -1229,8 +2048,9 @@ public class KompileTui {
             }
             return new VisibleVisualRows(allRows, List.copyOf(visible), List.copyOf(indexes));
         }
-        int end = Math.max(0, allRows.size() - offset);
-        int start = Math.max(0, end - capacity);
+        int end = temporaryWindowActive ? Math.min(allRows.size(), offset + capacity)
+                : Math.max(0, allRows.size() - offset);
+        int start = temporaryWindowActive ? offset : Math.max(0, end - capacity);
         List<Integer> indexes = new ArrayList<>(end - start);
         for (int index = start; index < end; index++) indexes.add(index);
         return new VisibleVisualRows(
@@ -1397,7 +2217,7 @@ public class KompileTui {
     }
 
     private int transcriptBottomY() {
-        return Math.max(scrollTop() - 1, scrollBottom() - 2);
+        return transcriptBottom() - 1;
     }
 
     private boolean selectionBelongsToActiveView() {
@@ -1493,7 +2313,7 @@ public class KompileTui {
     }
 
     private int transcriptCapacity() {
-        return Math.max(1, Math.max(scrollTop(), scrollBottom() - 1) - scrollTop() + 1);
+        return Math.max(1, transcriptBottom() - scrollTop() + 1);
     }
 
     /**
@@ -1541,14 +2361,11 @@ public class KompileTui {
 
     /** Keep TUI cursor controls and JLine input on one ordered terminal stream. */
     private void writeTerminal(String text) {
-        Terminal active = terminal;
-        if (active != null) {
-            active.writer().print(text);
-            active.writer().flush();
-            return;
+        synchronized (drawLock) {
+            if (!isCurrentAttachment()) return;
+            terminal.writer().print(text);
+            terminal.writer().flush();
         }
-        System.out.print(text);
-        System.out.flush();
     }
 
     private void setScrollRegion() {
@@ -1558,12 +2375,21 @@ public class KompileTui {
         writeTerminal(scrollRegionSequence());
     }
 
-    private void updateTerminalSize() {
-        int previousWidth = terminalWidth;
-        if (terminal != null) {
-            terminalHeight = terminal.getHeight();
-            terminalWidth = terminal.getWidth();
+    private void pollForTerminalResize() {
+        if (!started) return;
+        try {
+            handleResize();
+        } catch (RuntimeException ignored) {
+            // Terminal teardown can race the final scheduled size check.
         }
+    }
+
+    // Caller holds the attachment write lock and drawLock.
+    private boolean updateTerminalSize(Size size) {
+        int previousHeight = terminalHeight;
+        int previousWidth = terminalWidth;
+        terminalHeight = size.getRows();
+        terminalWidth = size.getColumns();
         if (terminalHeight <= 0) terminalHeight = 24;
         if (terminalWidth <= 0) terminalWidth = 80;
         if (previousWidth > 0 && previousWidth != terminalWidth) {
@@ -1571,6 +2397,7 @@ public class KompileTui {
                 clearTranscriptSelectionLocked();
             }
         }
+        return previousHeight != terminalHeight || previousWidth != terminalWidth;
     }
 
     private void fireResizeListeners() {

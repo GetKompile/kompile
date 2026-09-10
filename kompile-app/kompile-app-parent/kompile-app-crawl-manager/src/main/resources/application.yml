@@ -14,6 +14,13 @@ spring:
   application:
     name: kompile-app-crawl-manager
 
+# Process identity: this persona alone owns replacement-generation CAS and recovery. The launcher
+# forwards it to this persona's graph subprocess; admin/chat children remain non-authoritative.
+kompile:
+  graph:
+    generations:
+      authority: true
+
 # Upload limits are deliberately absent: AppConfig (kompile-app-web-shared) contributes a
 # MultipartConfigElement bean, and that bean beats spring.servlet.multipart.*, so anything set here
 # would be dead config. It reads kompile.multipart.max-file-size / max-request-size, which

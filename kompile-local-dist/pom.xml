@@ -49,6 +49,12 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-agent-cli</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-subprocess-serving</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>

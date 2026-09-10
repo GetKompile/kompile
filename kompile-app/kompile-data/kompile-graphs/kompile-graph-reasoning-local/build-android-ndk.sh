@@ -618,9 +618,17 @@ grep -q 'Machine:.*AArch64' "$GRAPH_OBJECT_HEADER" ||
 if [[ -n "$OBJECT_OUTPUT" ]]; then
     mkdir -p "$(dirname "$OBJECT_OUTPUT")"
     OBJECT_OUTPUT_TMP="$OBJECT_OUTPUT.tmp.$$"
-    cp "$GRAPH_OBJECT" "$OBJECT_OUTPUT_TMP"
-    [[ "$(sha256sum "$OBJECT_OUTPUT_TMP" | awk '{print $1}')" == "$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')" ]] ||
-        fail "Relocatable object changed during publication: $OBJECT_OUTPUT"
+    # Read every byte; cp's SEEK_HOLE optimization can skip readable data on
+    # the build filesystem. Publish only an independent, verified copy.
+    OBJECT_SOURCE_SHA256="$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')"
+    dd if="$GRAPH_OBJECT" of="$OBJECT_OUTPUT_TMP" bs=1M status=none
+    [[ "$(stat -c '%d:%i' "$GRAPH_OBJECT")" != "$(stat -c '%d:%i' "$OBJECT_OUTPUT_TMP")" ]] ||
+        fail "Relocatable object publication used a mutable hard link"
+    OBJECT_COPY_SHA256="$(sha256sum "$OBJECT_OUTPUT_TMP" | awk '{print $1}')"
+    OBJECT_SOURCE_AFTER_SHA256="$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')"
+    [[ "$OBJECT_COPY_SHA256" == "$OBJECT_SOURCE_SHA256" &&
+       "$OBJECT_SOURCE_AFTER_SHA256" == "$OBJECT_SOURCE_SHA256" ]] ||
+        fail "Relocatable object changed during publication: $OBJECT_OUTPUT source-before=$OBJECT_SOURCE_SHA256 target=$OBJECT_COPY_SHA256 source-after=$OBJECT_SOURCE_AFTER_SHA256"
     mv -f "$OBJECT_OUTPUT_TMP" "$OBJECT_OUTPUT"
     echo "Verified Android AArch64 relocatable object: $OBJECT_OUTPUT"
     exit 0

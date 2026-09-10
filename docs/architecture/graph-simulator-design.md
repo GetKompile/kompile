@@ -69,7 +69,7 @@ existing visualizer, and scored against what was planted.**
 | `GraphsHubComponent` | 24 panels (opinions, communities, folRules, factsByTier, weights, provenance, health, eval debugger, grounding console/monitor, audit, ontology…) all driven by `FactSheetService.activeSheet$` — **every panel works on a sim sheet for free** | `components/graphs-hub/` |
 | Fact-sheet lifecycle | `POST /api/fact-sheets` (create), `POST /{id}/activate`, `DELETE /{id}`, `POST /{src}/copy-to/{dst}` | `app-main/.../web/controllers/FactSheetController.java` |
 | Graph store | `@Primary` `MatrixKnowledgeGraphService` (never JPA), `graphIdForFactSheet = "factsheet_"+id`, `getOrCreateGraph` persists `:meta`, **batched** node/edge writes (`createEdgesBatch`, single-RPC, subprocess-safe) | kompile-knowledge-graph |
-| Crawl entry | `POST /api/unified-crawl/start` (+ `deriveOntology` toggle, `OntologyAutoProvisioner` SPI); structured-format path Tika → `TikaGenericGraphExtractor` (JSON/YAML/XML/CSV/TSV/MD); FP&A demo manifests | kompile-crawl-graph + app-main |
+| Crawl entry | `POST /api/unified-crawl/start` (+ `deriveOntology` toggle, `OntologyAutoProvisioner` SPI); structured-format path Tika → `TikaGenericGraphExtractor` (JSON/YAML/XML/CSV/TSV/MD); domain-planning demo manifests | kompile-crawl-graph + app-main |
 | Live progress | `CrawlProgressEvent` SSE (STARTED / throttled PROGRESS / COMPLETED / ERROR) with EventSource subscribers in both crawl UIs; `reasoning_trace` SSE → `ReasoningTrailComponent` for explanation cards | app-core/app-main |
 | Evaluation | `kompile-evaluation` `GraphEvaluator`s (EntityPresence, EntityTypeAccuracy, RelationshipPresence, GraphCompleteness — LLM-judged) + `grounding-evaluation-design.md` metric definitions (3-class verify accuracy, macro-F1 ≥70% synthetic target, calibration/ECE) | kompile-middleware/kompile-evaluation |
 | Grounding primitives | `KbVerifier`, `ConjunctiveQueryEngine`, `DerivationTree` (lib, `fol/grounding/`) — lets the scorer *verify* planted claims through the same path agents use | kompile-graph-reasoning |
@@ -133,7 +133,7 @@ generating rules + weights, corrupted-fact keys. Persisted as JSON with the run.
 
 ### 4.2 Real-data kinds (same bench, no ground-truth manifest)
 
-- **Corpus mode** — a docs directory / upload manifest (e.g. the FP&A demo set) crawled into
+- **Corpus mode** — a docs directory / upload manifest (e.g. the domain-planning demo set) crawled into
   the sim sheet via the existing `POST /api/unified-crawl/start` (with `deriveOntology` toggle).
   Slow and LLM-dependent — that is the point of having it *and* synthetic mode.
 - **Structured files** — CSV/JSON/YAML/XML through the existing structured-format extraction.

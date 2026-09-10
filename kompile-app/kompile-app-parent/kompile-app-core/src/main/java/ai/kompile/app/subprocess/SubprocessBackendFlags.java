@@ -68,6 +68,13 @@ public final class SubprocessBackendFlags {
             case CPU -> {
                 flags.add("-Dorg.nd4j.cpu.priority=1000");
                 flags.add("-Dorg.nd4j.gpu.priority=0");
+                // ZLUDA-shim hygiene: the CPU lane must never resolve the ZLUDA build of
+                // libnd4jcuda.so from the JavaCPP cache — that shim routes CUDA ABI calls to
+                // a ROCm HIP pool which does not exist on non-ROCm boxes, and even a 4-byte
+                // allocation then fails at Nd4j.<clinit>. Pin the CUDA bindings away from the
+                // ZLUDA jar so JavaCPP resolves the plain nd4j-cuda jar's natives instead.
+                flags.add("-Dorg.bytedeco.javacpp.platform.extra.excludes="
+                        + "nd4j-zluda*");
             }
             case GPU -> {
                 flags.add("-Dorg.nd4j.gpu.priority=1000");

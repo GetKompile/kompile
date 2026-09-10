@@ -38,7 +38,7 @@ public class SkillRegistry {
             "process-output", "process-status", "statusbar", "auto-dequeue", "stats",
             "passthrough", "resume", "mode", "menu", "skills", "roles", "role",
             "model", "enforce", "enforcer", "forward", "image", "file", "attach",
-            "attachments", "title", "activity", "keys", "render", "rules",
+            "attachments", "title", "activity", "dashboard", "keys", "render", "rules",
             "archive", "rollback", "diff", "purge");
     private final Map<String, SkillConfig> skills = new LinkedHashMap<>();
 

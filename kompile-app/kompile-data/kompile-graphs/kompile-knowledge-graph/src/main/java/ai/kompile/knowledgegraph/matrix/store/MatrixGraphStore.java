@@ -17,12 +17,14 @@ package ai.kompile.knowledgegraph.matrix.store;
 
 import ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph;
 import ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode;
+import ai.kompile.knowledgegraph.generation.GraphGeneration;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.io.IOException;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -117,6 +119,53 @@ public interface MatrixGraphStore {
      */
     List<String> listGraphsByFactSheet(Long factSheetId);
 
+    // ── Shadow generation lifecycle ──────────────────────────────────────────
+
+    default boolean supportsGraphGenerations() { return false; }
+
+    default GraphGeneration.Ref beginGeneration(long factSheetId, String logicalGraphId,
+                                                String generationId) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Validation validateGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Activation activateGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default void abortGeneration(GraphGeneration.Ref generation) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    default GraphGeneration.Activation rollbackGeneration(long factSheetId, String logicalGraphId,
+                                                           long expectedRevision) {
+        throw new UnsupportedOperationException("Graph generations are not supported");
+    }
+
+    /** Current compatibility pointer; production authority may be supplied by a durable journal. */
+    default Optional<GraphGeneration.Pointer> currentGenerationPointer(
+            long factSheetId, String logicalGraphId) {
+        return Optional.empty();
+    }
+
+    /** Bypass logical-pointer routing when validating an explicit rollback target. */
+    default boolean physicalGraphExists(String physicalGraphId, long factSheetId) {
+        return loadGraph(physicalGraphId)
+                .map(graph -> Objects.equals(graph.getFactSheetId(), factSheetId))
+                .orElse(false);
+    }
+
+    /** Strict durability barrier used immediately before authoritative activation. */
+    default void flushGeneration(GraphGeneration.Ref generation) {
+        flush();
+    }
+
+    /** Repair the non-authoritative compatibility pointer from the durable journal. */
+    default void repairGenerationPointer(GraphGeneration.Pointer pointer) { }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
@@ -189,6 +238,50 @@ public interface MatrixGraphStore {
     /** Bounded scan of canonical per-edge documents. */
     default ScanPage<StoredEdge> scanEdges(String graphId, int cursor, int pageSize) {
         throw new UnsupportedOperationException("MatrixGraphStore implementation must provide bounded edge scans");
+    }
+
+    enum EdgeDirection { OUTGOING, INCOMING, BOTH }
+
+    record IncidentEdges(List<StoredEdge> edges, boolean truncated) {
+        public IncidentEdges {
+            edges = edges == null ? List.of() : List.copyOf(edges);
+        }
+    }
+
+    /**
+     * Endpoint-indexed bounded adjacency read. Implementations should override this rather than scan
+     * the complete graph; the default preserves correctness for compatibility stores.
+     */
+    default IncidentEdges scanIncidentEdges(
+            String graphId, String nodeId, EdgeDirection direction, int maxEdges) {
+        EdgeDirection effective = direction == null ? EdgeDirection.BOTH : direction;
+        int limit = Math.max(0, maxEdges);
+        List<StoredEdge> result = new java.util.ArrayList<>(Math.min(limit, 1_000));
+        Set<String> seen = new LinkedHashSet<>();
+        int cursor = 0;
+        ScanPage<StoredEdge> page;
+        do {
+            page = scanEdges(graphId, cursor, 1_000);
+            for (StoredEdge edge : page.items()) {
+                boolean matches = switch (effective) {
+                    case OUTGOING -> nodeId.equals(edge.sourceNodeId())
+                            || edge.bidirectional() && nodeId.equals(edge.targetNodeId());
+                    case INCOMING -> nodeId.equals(edge.targetNodeId())
+                            || edge.bidirectional() && nodeId.equals(edge.sourceNodeId());
+                    case BOTH -> nodeId.equals(edge.sourceNodeId()) || nodeId.equals(edge.targetNodeId());
+                };
+                if (!matches) continue;
+                String key = edge.edgeType() + '\u0000' + edge.sourceNodeId() + '\u0000' + edge.targetNodeId();
+                if (!seen.add(key)) continue;
+                if (result.size() >= limit) return new IncidentEdges(result, true);
+                result.add(edge);
+            }
+            if (page.hasMore() && page.nextCursor() <= cursor) {
+                throw new IllegalStateException("Edge scan cursor did not advance for graph " + graphId);
+            }
+            cursor = page.nextCursor();
+        } while (page.hasMore());
+        return new IncidentEdges(result, false);
     }
 
     record ScanPage<T>(List<T> items, int nextCursor, boolean hasMore) {

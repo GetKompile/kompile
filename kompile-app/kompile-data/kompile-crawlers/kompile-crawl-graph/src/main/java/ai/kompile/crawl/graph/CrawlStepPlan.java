@@ -19,10 +19,12 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -94,24 +96,23 @@ public final class CrawlStepPlan {
      * Build a plan from a request. See the class Javadoc for the two selection modes.
      */
     public static CrawlStepPlan from(UnifiedCrawlRequest request) {
-        // Sorted so the resolved plan is deterministic for logging / equality in tests.
-        Map<String, Action> plan = new TreeMap<>();
-        for (CrawlPipelineStepRegistry.StepDescriptor d : CrawlPipelineStepRegistry.all()) {
-            plan.put(d.id(), Action.RUN);
-        }
         if (request == null) {
-            return new CrawlStepPlan(plan);
+            return new CrawlStepPlan(defaultPlan());
         }
 
-        List<String> enabled = request.getEnabledSteps();
-        List<String> archived = request.getArchivedSteps();
+        // Validate and canonicalize before resolving legacy defaults or explicit selection. An invalid
+        // request must never be able to fall through to the full-pipeline plan.
+        List<String> enabled = normalizeAndValidate("enabledSteps", request.getEnabledSteps());
+        List<String> archived = normalizeAndValidate("archivedSteps", request.getArchivedSteps());
+
+        // Sorted so the resolved plan is deterministic for logging / equality in tests.
+        Map<String, Action> plan = defaultPlan();
 
         // Seed of explicitly-ENABLED steps only. Archiving must NOT flip the plan to whitelist mode:
         // archived steps are subtracted from the default-everything-runs below. Seeding `archived` here
         // (the old behaviour) meant archiving ONE step silently SKIPped every unselected step —
         // ENRICHMENT and the rest of the graph pipeline — which is the opposite of a modular opt-out.
-        Set<String> selected = new LinkedHashSet<>();
-        addKnown(selected, enabled);
+        Set<String> selected = new LinkedHashSet<>(enabled);
         boolean explicitSelection = !selected.isEmpty();
         // Strict mode: honor the explicit selection as-is (plus hard deps + foundational steps below)
         // instead of force-seeding the graph spine. Only meaningful with a non-empty selection; legacy
@@ -212,15 +213,36 @@ public final class CrawlStepPlan {
         }
     }
 
-    private static void addKnown(Set<String> target, List<String> ids) {
-        if (ids == null) {
-            return;
+    private static Map<String, Action> defaultPlan() {
+        Map<String, Action> plan = new TreeMap<>();
+        for (CrawlPipelineStepRegistry.StepDescriptor d : CrawlPipelineStepRegistry.all()) {
+            plan.put(d.id(), Action.RUN);
         }
-        for (String id : ids) {
-            if (CrawlPipelineStepRegistry.isKnown(id)) {
-                target.add(id);
+        return plan;
+    }
+
+    private static List<String> normalizeAndValidate(String fieldName, List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        List<String> normalized = new ArrayList<>(ids.size());
+        List<String> invalid = new ArrayList<>();
+        for (String rawId : ids) {
+            String id = rawId == null ? "" : rawId.trim().toUpperCase(Locale.ROOT);
+            if (id.isEmpty() || !CrawlPipelineStepRegistry.isKnown(id)) {
+                invalid.add(rawId == null ? "<null>" : rawId.isBlank() ? "<blank>" : rawId);
+            } else {
+                normalized.add(id);
             }
         }
+        if (!invalid.isEmpty()) {
+            List<String> validIds = CrawlPipelineStepRegistry.all().stream()
+                    .map(CrawlPipelineStepRegistry.StepDescriptor::id)
+                    .toList();
+            throw new IllegalArgumentException("Unknown " + fieldName + " step ID(s): " + invalid
+                    + ". Valid step IDs: " + validIds);
+        }
+        return normalized;
     }
 
     /** All selected steps plus every step reachable through their hard-dependency edges. */

@@ -50,8 +50,6 @@ class LocalProjectModelBootstrapOptimizeTest {
                         Map.entry("force", true),
                         Map.entry("createBackup", false),
                         Map.entry("dryRun", true),
-                        Map.entry("stagingExecutable", tempDir.resolve("staging-native").toString()),
-                        Map.entry("stagingJar", tempDir.resolve("staging.jar").toString()),
                         Map.entry("javaExecutable", tempDir.resolve("java").toString()),
                         Map.entry("timeoutMinutes", 1L)));
 
@@ -68,8 +66,7 @@ class LocalProjectModelBootstrapOptimizeTest {
         assertTrue(arguments.contains("--force=true"));
         assertTrue(arguments.contains("--create-backup=false"));
         assertTrue(arguments.contains("--dry-run=true"));
-        assertTrue(arguments.contains("--staging-executable=" + tempDir.resolve("staging-native").toAbsolutePath().normalize()));
-        assertTrue(arguments.contains("--staging-jar=" + tempDir.resolve("staging.jar").toAbsolutePath().normalize()));
+        assertTrue(arguments.stream().noneMatch(argument -> argument.startsWith("--staging-")));
         assertTrue(arguments.contains("--java=" + tempDir.resolve("java").toAbsolutePath().normalize()));
     }
 }

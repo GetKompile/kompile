@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -51,7 +52,9 @@ public class StdioTaskTool {
     public String id() { return "task"; }
 
     public String description() {
-        return "Spawn a subagent to handle a delegated task. " +
+        return "Delegate one task; use multi_task for 2+ independent subtasks in one parallel batch. " +
+            "Do not call task repeatedly and wait for each result when the work can run concurrently. " +
+            "Use sequential task calls only when later work needs an earlier result, or shared files/resources require serialization.\n\n" +
             "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
             "with its own context window, then returns a summary.\n\n" +
             "Available agents: codex (default), claude, opencode. Roles customize the prompt and " +
@@ -59,6 +62,11 @@ public class StdioTaskTool {
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
             "The subagent runs once and returns — it cannot send follow-up messages.";
+    }
+
+    /** Keep parallel-tool discovery visible in compact MCP tools/list responses. */
+    public String compactHint() {
+        return "Delegate one task. For 2+ independent subtasks use multi_task in one parallel batch, not serial task calls. Sequence only for dependencies or shared files/resources.";
     }
 
     public JsonNode parameterSchema() {
@@ -91,6 +99,11 @@ public class StdioTaskTool {
     }
 
     public ToolResult execute(Map<String, Object> arguments) {
+        return execute(arguments, null);
+    }
+
+    public ToolResult execute(Map<String, Object> arguments, ToolContext context) {
+        if (context != null && context.isAborted()) return ToolResult.error("Task cancelled");
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
         String requestedAgent = String.valueOf(arguments.getOrDefault("agent", DEFAULT_AGENT))
@@ -124,7 +137,8 @@ public class StdioTaskTool {
         System.err.println("\u001B[32m  ⟳ Spawning " + displayName + " subagent: " + desc + "\u001B[0m");
 
         try {
-            String result = subagentRunner.runSubagent(agentConfig, prompt);
+            // The shared runner is a factory, never the cancellation target of a request.
+            String result = runWithCancellation(subagentRunner.forkForSubagent(), agentConfig, prompt, context);
             if (isAgentMissing(result)) {
                 return ToolResult.error(displayName + " is not available on PATH.");
             }
@@ -155,6 +169,53 @@ public class StdioTaskTool {
             return ToolResult.error(displayName + " is rate limited. No provider fallback was attempted.");
         } catch (Exception e) {
             return ToolResult.error("Subagent execution failed: " + e.getMessage());
+        }
+    }
+
+    static String runWithCancellation(DirectSubagentRunnerStdio runner, AgentConfig agent,
+                                      String prompt, ToolContext context) throws Exception {
+        if (context == null) return runner.runSubagent(agent, prompt);
+        try (CancellationWatch watch = new CancellationWatch(context, runner)) {
+            if (context.isAborted()) throw new InterruptedException("Task cancelled");
+            String result = runner.runSubagent(agent, prompt);
+            if (context.isAborted()) throw new InterruptedException("Task cancelled");
+            return result;
+        }
+    }
+
+    /** One execution owns one fork and one watcher; no shared runner or global cancel state. */
+    static final class CancellationWatch implements AutoCloseable {
+        private final ToolContext context;
+        private final DirectSubagentRunnerStdio runner;
+        final Thread thread;
+        private boolean closed;
+
+        CancellationWatch(ToolContext context, DirectSubagentRunnerStdio runner) {
+            this.context = context;
+            this.runner = runner;
+            thread = new Thread(() -> {
+                try {
+                    while (checkCancellation()) Thread.sleep(50);
+                } catch (InterruptedException ignored) {
+                    // close() retires the watcher, not the request's worker thread.
+                }
+            }, "mcp-task-cancellation");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        private synchronized boolean checkCancellation() {
+            if (closed) return false;
+            // Retry while aborted: the runner resets its local flag during startup,
+            // and may publish its managed runner only after the first cancellation.
+            if (context.isAborted()) runner.cancel();
+            return true;
+        }
+
+        @Override
+        public synchronized void close() {
+            closed = true;
+            thread.interrupt();
         }
     }
 

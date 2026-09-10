@@ -23,7 +23,11 @@ import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
+import org.graalvm.word.WordFactory;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,6 +48,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <pre>
  *   int         kgr_abi_version (kgr_thread_t*)
  *   long long   kgr_open        (kgr_thread_t*, const char* kgraph_path)
+ *   const char* kgr_last_error  (kgr_thread_t*)
  *   const char* kgr_tools       (kgr_thread_t*)
  *   const char* kgr_dispatch    (kgr_thread_t*, long long session, const char* tool, const char* args)
  *   int         kgr_save        (kgr_thread_t*, long long session, const char* path)
@@ -66,7 +71,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * conventions — refer to {@code bindings/} for ready-made wrappers.
  *
  * <h3>Memory contract</h3>
- * <p>Strings returned by {@code kgr_tools} and {@code kgr_dispatch} are UTF-8 C strings
+ * <p>Strings returned by {@code kgr_last_error}, {@code kgr_tools}, and
+ * {@code kgr_dispatch} are UTF-8 C strings
  * allocated in unmanaged (C-heap) memory via {@link UnmanagedMemory}. The caller is responsible
  * for freeing them with {@code kgr_free}. This ensures GC cannot move them after the JNI
  * boundary.</p>
@@ -82,6 +88,8 @@ public final class GraphReasoningCApi {
     private static final ConcurrentHashMap<Long, LocalReasoningSession> SESSIONS =
             new ConcurrentHashMap<>();
     private static final AtomicLong NEXT_ID = new AtomicLong(1L);
+    private static final ThreadLocal<String> LAST_ERROR = ThreadLocal.withInitial(() -> "");
+    private static final int MAX_LAST_ERROR_CHARS = 64 * 1024;
 
     // Shared dispatcher (stateless, thread-safe) — create once at class init.
     private static final LocalToolDispatcher DISPATCHER = LocalToolDispatcher.create();
@@ -181,6 +189,7 @@ public final class GraphReasoningCApi {
     @CEntryPoint(name = "kgr_open")
     public static long kgrOpen(IsolateThread thread, CCharPointer kgraphPath) {
         try {
+            LAST_ERROR.set("");
             LocalReasoningSession session;
             if (kgraphPath.isNull() || kgraphPath.read() == 0) {
                 session = LocalReasoningSession.createEmpty();
@@ -193,7 +202,24 @@ public final class GraphReasoningCApi {
             SESSIONS.put(id, session);
             return id;
         } catch (Throwable t) {
+            LAST_ERROR.set(failureDetails(t));
             return 0L;
+        }
+    }
+
+    /**
+     * Return the complete failure from the most recent C API operation on this isolate thread.
+     * The caller must release the returned string with {@code kgr_free}.
+     */
+    @CEntryPoint(name = "kgr_last_error")
+    public static CCharPointer kgrLastError(IsolateThread thread) {
+        try {
+            String error = LAST_ERROR.get();
+            return copyToUnmanaged(error == null || error.isBlank()
+                    ? "No native graph error was recorded"
+                    : error);
+        } catch (Throwable ignored) {
+            return WordFactory.nullPointer();
         }
     }
 
@@ -318,7 +344,7 @@ public final class GraphReasoningCApi {
      * The returned pointer MUST be freed with {@link UnmanagedMemory#free}.
      */
     private static CCharPointer copyToUnmanaged(String s) {
-        byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
         // Allocate len + 1 for the NUL terminator
         CCharPointer ptr = UnmanagedMemory.malloc(bytes.length + 1);
         for (int i = 0; i < bytes.length; i++) {
@@ -336,5 +362,15 @@ public final class GraphReasoningCApi {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    private static String failureDetails(Throwable failure) {
+        StringWriter text = new StringWriter();
+        failure.printStackTrace(new PrintWriter(text));
+        String details = text.toString();
+        if (details.length() <= MAX_LAST_ERROR_CHARS) {
+            return details;
+        }
+        return details.substring(0, MAX_LAST_ERROR_CHARS) + "\n[truncated]";
     }
 }

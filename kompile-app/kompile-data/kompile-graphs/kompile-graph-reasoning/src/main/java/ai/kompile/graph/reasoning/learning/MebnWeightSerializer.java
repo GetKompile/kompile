@@ -66,7 +66,11 @@ public final class MebnWeightSerializer {
                     sb.append(',');
                 }
                 first = false;
-                String compositeKey = mfrag.getName() + "|" + entry.getKey();
+                int arrow = entry.getKey().indexOf("->");
+                String compositeKey = arrow > 0
+                        ? edgeKey(mfrag.getName(), entry.getKey().substring(0, arrow),
+                        entry.getKey().substring(arrow + 2))
+                        : mfrag.getName() + "|" + entry.getKey();
                 sb.append('"').append(escape(compositeKey)).append("\":");
                 sb.append(String.format(Locale.ROOT, "%s", entry.getValue()));
             }
@@ -91,11 +95,15 @@ public final class MebnWeightSerializer {
             String compositeKey = entry.getKey();
             // Split on the LAST '|' to separate mfrag name from "parent->child"
             int lastPipe = compositeKey.lastIndexOf('|');
-            if (lastPipe < 0) {
-                continue;
+            int arrowInComposite = compositeKey.indexOf("->");
+            int separator = lastPipe;
+            if (separator < 0 && arrowInComposite > 0) {
+                // Legacy learning-subprocess form: frag:parent->child.
+                separator = compositeKey.lastIndexOf(':', arrowInComposite);
             }
-            String mfragName = compositeKey.substring(0, lastPipe);
-            String edgeKey   = compositeKey.substring(lastPipe + 1);
+            if (separator < 0) continue;
+            String mfragName = compositeKey.substring(0, separator);
+            String edgeKey   = compositeKey.substring(separator + 1);
             // Split "parent->child" on "->"
             int arrowIdx = edgeKey.indexOf("->");
             if (arrowIdx < 0) {
@@ -162,6 +170,11 @@ public final class MebnWeightSerializer {
             }
         }
         return out;
+    }
+
+    /** Canonical cross-process key for one MFrag parent edge. */
+    public static String edgeKey(String mfragName, String parent, String child) {
+        return mfragName + "|" + parent + "->" + child;
     }
 
     private static int endQuote(String s, int start) {

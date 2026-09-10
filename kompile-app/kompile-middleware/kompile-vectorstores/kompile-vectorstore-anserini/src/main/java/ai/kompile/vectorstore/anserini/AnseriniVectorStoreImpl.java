@@ -46,7 +46,11 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.util.Bits;
 import ai.kompile.vectorstore.anserini.util.NativeCompatibleDirectoryFactory;
 import org.apache.lucene.store.Directory;
@@ -111,6 +115,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     // Static ObjectMapper for JSON serialization - reuse to avoid per-document
     // allocation overhead
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
+    private static final String EXACT_METADATA_PREFIX = "metadata_exact_";
+    private static final Set<String> EXACT_METADATA_FIELDS = Set.of(
+            "type", "graphId", "sourceNodeId", "targetNodeId", "bidirectional");
 
     private static float[] toHostFloatVector(INDArray array) {
         if (array == null || array.isEmpty()) {
@@ -1972,9 +1979,9 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             try {
                 String metadataJson = OBJECT_MAPPER.writeValueAsString(springDoc.getMetadata());
                 doc.add(new StoredField("metadata", metadataJson));
+                addExactMetadataFields(doc, springDoc.getMetadata());
             } catch (Exception e) {
-                log.warn("addStoredOnlyDocuments: failed to serialise metadata for doc {}: {}",
-                        id, e.getMessage());
+                throw new IOException("Could not serialize stored-only metadata for " + id, e);
             }
         }
 
@@ -2034,12 +2041,24 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             try {
                 String metadataJson = OBJECT_MAPPER.writeValueAsString(springDoc.getMetadata());
                 doc.add(new StoredField("metadata", metadataJson));
+                addExactMetadataFields(doc, springDoc.getMetadata());
             } catch (Exception e) {
-                log.warn("Failed to serialize metadata for document {}: {}", springDoc.getId(), e.getMessage());
+                throw new IllegalArgumentException(
+                        "Could not serialize metadata for document " + springDoc.getId(), e);
             }
         }
 
         return doc;
+    }
+
+    private static void addExactMetadataFields(Document document, Map<String, Object> metadata) {
+        for (String key : EXACT_METADATA_FIELDS) {
+            Object value = metadata.get(key);
+            if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+                document.add(new StringField(
+                        EXACT_METADATA_PREFIX + key, String.valueOf(value), Field.Store.NO));
+            }
+        }
     }
 
     private VectorSimilarityFunction parseSimilarityFunction(String function) {
@@ -2606,6 +2625,129 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         return results;
     }
 
+    @Override
+    public List<Map<String, Object>> listVectorDocumentsByMetadata(
+            Map<String, String> filters, int limit) {
+        if (!isVectorStoreAvailable() || filters == null || filters.isEmpty() || limit <= 0) {
+            return Collections.emptyList();
+        }
+        for (String key : filters.keySet()) {
+            if (!EXACT_METADATA_FIELDS.contains(key)) {
+                return VectorStore.super.listVectorDocumentsByMetadata(filters, limit);
+            }
+        }
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+                BooleanQuery.Builder query = new BooleanQuery.Builder();
+                filters.forEach((key, value) -> query.add(
+                        new TermQuery(new Term(EXACT_METADATA_PREFIX + key, value)),
+                        BooleanClause.Occur.MUST));
+                TopDocs hits = new IndexSearcher(reader).search(query.build(), limit);
+                List<Map<String, Object>> results = new ArrayList<>(hits.scoreDocs.length);
+                for (ScoreDoc hit : hits.scoreDocs) {
+                    Document document = reader.storedFields().document(hit.doc);
+                    results.add(storedDocumentMap(document, hit.doc));
+                }
+                return results;
+            } catch (IndexNotFoundException empty) {
+                return Collections.emptyList();
+            } catch (Exception failure) {
+                throw new IllegalStateException("Exact metadata lookup failed", failure);
+            }
+        }
+    }
+
+    @Override
+    public List<Map<String, Object>> listVectorDocumentsStrict(int offset, int limit) {
+        if (!isVectorStoreAvailable()) {
+            throw new IllegalStateException("Vector store is unavailable");
+        }
+        if (offset < 0 || limit <= 0) {
+            throw new IllegalArgumentException("offset must be >= 0 and limit must be > 0");
+        }
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+                List<Map<String, Object>> results = new ArrayList<>(limit);
+                int liveDocsSeen = 0;
+                for (LeafReaderContext context : reader.leaves()) {
+                    LeafReader leaf = context.reader();
+                    Bits liveDocs = leaf.getLiveDocs();
+                    for (int localId = 0; localId < leaf.maxDoc() && results.size() < limit; localId++) {
+                        if (liveDocs != null && !liveDocs.get(localId)) continue;
+                        if (liveDocsSeen++ < offset) continue;
+                        results.add(storedDocumentMap(
+                                leaf.storedFields().document(localId), context.docBase + localId));
+                    }
+                    if (results.size() >= limit) break;
+                }
+                return results;
+            } catch (IndexNotFoundException empty) {
+                return Collections.emptyList();
+            } catch (Exception failure) {
+                throw new IllegalStateException("Strict vector document scan failed", failure);
+            }
+        }
+    }
+
+    @Override
+    public void scanVectorDocumentsStrict(
+            int pageSize, VectorStore.DocumentPageConsumer consumer) throws IOException {
+        if (!isVectorStoreAvailable()) throw new IOException("Vector store is unavailable");
+        if (pageSize <= 0) throw new IllegalArgumentException("pageSize must be > 0");
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+                List<Map<String, Object>> page = new ArrayList<>(pageSize);
+                for (LeafReaderContext context : reader.leaves()) {
+                    LeafReader leaf = context.reader();
+                    Bits liveDocs = leaf.getLiveDocs();
+                    for (int localId = 0; localId < leaf.maxDoc(); localId++) {
+                        if (liveDocs != null && !liveDocs.get(localId)) continue;
+                        page.add(storedDocumentMap(
+                                leaf.storedFields().document(localId), context.docBase + localId));
+                        if (page.size() == pageSize) {
+                            consumer.accept(List.copyOf(page));
+                            page.clear();
+                        }
+                    }
+                }
+                if (!page.isEmpty()) consumer.accept(List.copyOf(page));
+            } catch (IndexNotFoundException empty) {
+                return;
+            } catch (IOException failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new IOException("Strict vector document snapshot scan failed", failure);
+            }
+        }
+    }
+
+    private static Map<String, Object> storedDocumentMap(Document document, int internalId)
+            throws IOException {
+        Map<String, Object> result = new HashMap<>();
+        String id = document.get("id");
+        result.put("id", id != null ? id : "doc_" + internalId);
+        result.put("lucene_internal_id", internalId);
+        String content = document.get("contents");
+        if (content == null) content = document.get("text");
+        if (content != null) result.put("content", content);
+        String metadataJson = document.get("metadata");
+        if (metadataJson != null) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
+                result.put("metadata", metadata);
+            } catch (Exception malformed) {
+                throw new IOException("Malformed stored vector metadata for " + result.get("id"), malformed);
+            }
+        } else {
+            result.put("metadata", Map.of());
+        }
+        return result;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -3079,6 +3221,25 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             } catch (Exception e) {
                 log.warn("Error retrieving document '{}': {}", id, e.getMessage());
                 return null;
+            }
+        }
+    }
+
+    @Override
+    public Map<String, Object> getVectorDocumentStrict(String id) {
+        if (id == null || id.isEmpty()) return null;
+        if (!isVectorStoreAvailable()) throw new IllegalStateException("Vector store is unavailable");
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+                TopDocs hits = new IndexSearcher(reader).search(new TermQuery(new Term("id", id)), 1);
+                if (hits.scoreDocs.length == 0) return null;
+                ScoreDoc hit = hits.scoreDocs[0];
+                return storedDocumentMap(reader.storedFields().document(hit.doc), hit.doc);
+            } catch (IndexNotFoundException empty) {
+                return null;
+            } catch (Exception failure) {
+                throw new IllegalStateException("Exact vector document lookup failed for " + id, failure);
             }
         }
     }

@@ -325,20 +325,20 @@ class ExtractionPassPromptsTest {
     @Test
     void sourceFacetsRecoverExactPunctuationWithoutLanguageSpecificRoleClassification() {
         PassContext context = PassContext.forChunk("chunk-role", "doc-role",
-                        "M. Chen is VP, FP&A. 山田太郎は財務責任者です。")
+                        "M. Chen is VP, Planning. 山田太郎は財務責任者です。")
                 .withConceptHints(List.of(
                         new ConceptHint("M Chen", "PERSON", "deterministic-prepass", null),
-                        new ConceptHint("VP FP&A", "ROLE", "deterministic-prepass", null),
+                        new ConceptHint("VP Planning", "ROLE", "deterministic-prepass", null),
                         new ConceptHint("山田太郎", "PERSON", "unified-corpus", null),
                         new ConceptHint("is", "ACTION", "deterministic-prepass", null)));
 
         List<SourceGroundedConceptFacets.Facet> facets = SourceGroundedConceptFacets.from(context);
-        String prompt = ExtractionPassPrompts.proposition(context, "M. Chen is VP, FP&A.");
+        String prompt = ExtractionPassPrompts.proposition(context, "M. Chen is VP, Planning.");
 
-        assertEquals(List.of("M. Chen", "is", "VP, FP&A", "山田太郎"),
+        assertEquals(List.of("M. Chen", "is", "VP, Planning", "山田太郎"),
                 facets.stream().map(SourceGroundedConceptFacets.Facet::exactSurface).toList());
         assertTrue(prompt.contains("exactSourceSurface=<<<M. Chen>>> | alignment=TERM"));
-        assertTrue(prompt.contains("exactSourceSurface=<<<VP, FP&A>>> | alignment=TERM"));
+        assertTrue(prompt.contains("exactSourceSurface=<<<VP, Planning>>> | alignment=TERM"));
         assertTrue(prompt.contains("exactSourceSurface=<<<is>>> | alignment=TERM"));
         assertTrue(prompt.contains("category=PERSON"));
         assertTrue(prompt.contains("category=ROLE"));

@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOError;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -68,6 +70,32 @@ class ChatReplKeyBindingTest {
                 out, "123e4567-e89b-12d3-a456-426614174000", false);
 
         assertEquals("", buffer.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void unexpectedExitResumeCommandCannotLookLikeACleanExit() {
+        String transcriptUuid = "123e4567-e89b-12d3-a456-426614174000";
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(buffer, true, StandardCharsets.UTF_8);
+
+        ChatRepl.printUnexpectedExitResumeCommand(out, transcriptUuid, true);
+
+        assertEquals("\nChat ended unexpectedly; the transcript was preserved.\n"
+                        + "Resume this interrupted chat:\n"
+                        + "  kompile chat --resume " + transcriptUuid + " --mode standard\n",
+                buffer.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
+    void terminalReadFailurePreservesTheJlineRootCause() {
+        IOException sttyFailure = new IOException("stty: standard input: Input/output error");
+        IOError jlineFailure = new IOError(sttyFailure);
+
+        IOException failure = ChatRepl.terminalReadFailure(jlineFailure);
+
+        assertSame(jlineFailure, failure.getCause());
+        assertTrue(failure.getMessage().contains("Terminal I/O failed"));
+        assertTrue(failure.getMessage().contains(sttyFailure.getMessage()));
     }
 
     private KeyMap<Object> keyMap;

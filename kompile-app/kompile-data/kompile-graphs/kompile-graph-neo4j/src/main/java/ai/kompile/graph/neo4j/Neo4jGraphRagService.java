@@ -69,6 +69,9 @@ public class Neo4jGraphRagService implements GraphRagService {
             RETURN node.description AS context, node.title AS title, node.id AS entityId, labels(node) AS labels, score
             """;
 
+    private static final String INVALID_QUERY_MESSAGE = "Please provide a valid query.";
+    private static final String INVALID_EMBEDDING_MESSAGE = "Error generating query embedding. Please try again.";
+
     private static float[] toHostFloatVector(INDArray array) {
         long length = array.length();
         if (length > Integer.MAX_VALUE) {
@@ -98,6 +101,10 @@ public class Neo4jGraphRagService implements GraphRagService {
 
     @Override
     public GraphRagResult answerQuery(GraphRagQuery query) {
+        if (query == null || !StringUtils.hasText(query.getQuery())) {
+            return emptyResult(INVALID_QUERY_MESSAGE);
+        }
+
         String conversationId = query.getConversationId();
         int currentTurn = turnCounter.incrementAndGet();
 
@@ -120,15 +127,15 @@ public class Neo4jGraphRagService implements GraphRagService {
             queryVector = embeddingModel.embed(refinedQuery);
         } catch (NullPointerException e) {
             log.warn("Native pointer error during query embedding generation: {}", e.getMessage());
-            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
+            return emptyResult(INVALID_EMBEDDING_MESSAGE);
         } catch (RuntimeException e) {
             log.warn("Runtime error during query embedding generation: {}", e.getMessage());
-            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
+            return emptyResult(INVALID_EMBEDDING_MESSAGE);
         }
 
-        if (queryVector == null || queryVector.isEmpty() || queryVector.length() == 0) {
-            log.warn("Empty query embedding generated for query: {}", refinedQuery);
-            return GraphRagResult.builder().answer("Error generating query embedding. Please try again.").formattedContext("").build();
+        if (!isUsableQueryVector(queryVector)) {
+            log.warn("Invalid query embedding generated for query: {}", refinedQuery);
+            return emptyResult(INVALID_EMBEDDING_MESSAGE);
         }
 
         // 5. Retrieve context from the graph using vector search
@@ -147,6 +154,32 @@ public class Neo4jGraphRagService implements GraphRagService {
         chatMemory.add(conversationId, List.of(new UserMessage(query.getQuery()), new AssistantMessage(finalAnswer)));
 
         return GraphRagResult.builder().answer(finalAnswer).formattedContext(context).build();
+    }
+
+    private static GraphRagResult emptyResult(String answer) {
+        return GraphRagResult.builder().answer(answer).formattedContext("").build();
+    }
+
+    private static boolean isUsableQueryVector(INDArray queryVector) {
+        if (queryVector == null || queryVector.isEmpty() || queryVector.length() == 0) {
+            return false;
+        }
+
+        final float[] values;
+        try {
+            values = toHostFloatVector(queryVector);
+        } catch (RuntimeException e) {
+            return false;
+        }
+
+        double magnitudeSquared = 0.0;
+        for (float value : values) {
+            if (!Float.isFinite(value)) {
+                return false;
+            }
+            magnitudeSquared += (double) value * value;
+        }
+        return Double.isFinite(magnitudeSquared) && magnitudeSquared > 0.0;
     }
 
     /**

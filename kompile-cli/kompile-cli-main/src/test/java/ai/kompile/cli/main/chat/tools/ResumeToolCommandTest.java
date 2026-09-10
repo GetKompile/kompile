@@ -15,16 +15,22 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.cli.main.chat.format.ConversationExporter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.jline.reader.LineReader;
+import org.jline.terminal.Terminal;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -35,11 +41,126 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ResumeToolCommandTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void isolatedConstructionNeverCreatesTerminalOrReader() throws Exception {
+        try (ChatUiSession owner = new ChatUiSession(); ChatUiSession.Binding ignored = owner.bind()) {
+            for (ResumeTool tool : List.of(new ResumeTool(), new ResumeTool(false), new ResumeTool(true))) {
+                for (String name : List.of("terminal", "lineReader")) {
+                    Field field = ResumeTool.class.getDeclaredField(name);
+                    field.setAccessible(true);
+                    assertNull(field.get(tool), name + " must remain unallocated under isolated ownership");
+                }
+                assertIsolatedBrowserRejection(tool.runInteractiveBrowser());
+            }
+        }
+    }
+
+    @Test
+    void isolatedToolCallsRejectBrowserBeforeTerminalAccessIncludingCleanup() throws Exception {
+        // Tools registered before the owner is bound must use the invocation's owner.
+        ResumeTool modelTool = new ResumeTool(true);
+        Terminal terminal = failOnUse(Terminal.class);
+        LineReader lineReader = failOnUse(LineReader.class);
+        ResumeTool existingTerminalTool = new ResumeTool(terminal, lineReader, null, null, null, null);
+        ObjectMapper mapper = new ObjectMapper();
+        ToolContext context = new ToolContext("isolated-resume", null, null, tempDir, null);
+        try (ChatUiSession owner = new ChatUiSession()) {
+            try (ChatUiSession.Binding ignored = owner.bind()) {
+                // Both /tool resume and model dispatch enter execute; omitted action defaults to browse.
+                for (ResumeTool tool : List.of(modelTool, existingTerminalTool)) {
+                    for (String json : List.of("{}", "{\"action\":\"browse\"}", "{\"action\":\"BROWSE\"}")) {
+                        assertIsolatedBrowserRejection(tool.execute(mapper.readTree(json), context));
+                        assertIsolatedBrowserRejection(tool.execute(mapper.readTree(json), null));
+                    }
+                    assertIsolatedBrowserRejection(tool.runInteractiveBrowser());
+                }
+            }
+            Runnable captured = owner.capture(() ->
+                    assertIsolatedBrowserRejection(existingTerminalTool.runInteractiveBrowser()));
+            owner.close();
+            captured.run(); // A late callback must not regain the physical terminal after disposal.
+        }
+        // Unbound/legacy mode still enters the original browser rather than being rejected.
+        assertFalse(ChatUiSession.current().isIsolated());
+        assertThrows(AssertionError.class, existingTerminalTool::runInteractiveBrowser);
+    }
+
+    @Test
+    void isolatedDataActionsStillListSearchViewResumeAndMigrate() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        ChatSourceRegistry previousSources = ChatSourceRegistry.getInstance();
+        System.setProperty("user.home", tempDir.toString());
+        ChatSourceRegistry.setInstance(ChatSourceRegistry.of(List.of()));
+        try {
+            String sessionId = "isolated-data-session";
+            ChatHistory history = new ChatHistory(sessionId);
+            history.open("(local)", null, false, tempDir);
+            history.logUserMessage("saved isolated conversation");
+            history.close();
+            ObjectMapper mapper = new ObjectMapper();
+            ToolContext context = new ToolContext("data-resume", null, null, tempDir, null);
+            ResumeTool tool = new ResumeTool(failOnUse(Terminal.class), failOnUse(LineReader.class),
+                    null, null, null, new ConversationReader());
+            try (ChatUiSession owner = new ChatUiSession()) {
+                // Exercise identical execute paths in legacy and bound isolated ownership.
+                for (boolean isolated : List.of(false, true)) {
+                    try (ChatUiSession.Binding ignored = isolated ? owner.bind() : null) {
+                        for (String action : List.of("search", "recent", "view", "resume",
+                                "resume_all", "resume-all", "migrate")) {
+                            ObjectNode params = mapper.createObjectNode();
+                            params.put("action", action);
+                            params.put("session_id", sessionId);
+                            params.put("source", "kompile");
+                            params.put("output_format", "openai");
+                            params.put("compact", false);
+                            ToolResult result = tool.execute(params, context);
+                            assertFalse(result.isError(), action + ": " + result.getOutput());
+                            JsonNode output = mapper.readTree(result.getOutput());
+                            switch (action) {
+                                case "search", "recent" -> assertEquals(sessionId,
+                                        output.path("conversations").get(0).path("session_id").asText());
+                                case "resume_all", "resume-all" -> {
+                                    assertEquals(1, output.path("restored").asInt());
+                                    assertEquals(0, output.path("failed").asInt());
+                                }
+                                case "view" -> assertTrue(output.path("transcript").asText()
+                                        .contains("saved isolated conversation"));
+                                case "resume" -> assertEquals(sessionId, output.path("session_id").asText());
+                                case "migrate" -> assertTrue(Files.readString(Path.of(
+                                        output.path("output_path").asText())).contains("saved isolated conversation"));
+                            }
+                        }
+                        // Migration outputs must not become input sessions for the next listing.
+                        Files.deleteIfExists(tempDir.resolve(".kompile/conversations/" + sessionId + "-migrated.openai"));
+                    }
+                }
+            }
+        } finally {
+            ChatSourceRegistry.setInstance(previousSources);
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
+    private static void assertIsolatedBrowserRejection(ToolResult result) {
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("multi-session chat"), result.getOutput());
+        assertTrue(result.getOutput().contains("host owns the physical terminal"), result.getOutput());
+    }
+
+    private static <T> T failOnUse(Class<T> type) {
+        return type.cast(Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type},
+                (proxy, method, args) -> {
+                    throw new AssertionError("Unexpected terminal interaction: " + method.getName());
+                }));
+    }
 
     @Test
     void codexResumePlacesBypassFlagBeforeResumeSubcommand() throws Exception {
@@ -226,7 +347,7 @@ class ResumeToolCommandTest {
         assertTrue(ResumeTool.isStandardKompileChatSession(
                 "cli-standard456", "kompile", "unknown", ""));
         assertTrue(ResumeTool.isStandardKompileChatSession(
-                "fpna-20260809-0826", "kompile", "coder", null));
+                "planning-20260809-0826", "kompile", "coder", null));
 
         assertFalse(ResumeTool.isStandardKompileChatSession(
                 "cli-wrapper", "kompile", "opencode", null));

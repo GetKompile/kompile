@@ -2453,7 +2453,7 @@ public class UnifiedCrawlController {
                 Map<String, Object> s = new LinkedHashMap<>();
                 s.put("label", src.getLabel());
                 s.put("sourceType", src.getSourceType() != null ? src.getSourceType().name() : null);
-                s.put("pathOrUrl", src.getPathOrUrl());
+                s.put("pathOrUrl", SourceCredentialRedactor.redact(src.getPathOrUrl()));
                 s.put("maxDepth", src.getMaxDepth());
                 s.put("maxDocuments", src.getMaxDocuments());
                 if (src.getIncludePatterns() != null && !src.getIncludePatterns().isEmpty())
@@ -2899,6 +2899,7 @@ public class UnifiedCrawlController {
                 case LOCAL_MODEL -> "Local model (SameDiff/ONNX) — cheapest but resource-constrained";
                 case CLI_AGENT -> "CLI agent subprocess (Claude Code, Codex, Gemini CLI)";
                 case API_AGENT -> "API endpoint (OpenAI, Anthropic, etc.) — unlimited capacity";
+                case CHAT_MODEL -> "Native chat text completion — requires the MCP host bridge, not this managed server";
             });
             types.add(typeInfo);
         }

@@ -71,6 +71,9 @@ public class UnifiedCrawlSource {
     @Builder.Default
     private Map<String, Object> properties = new HashMap<>();
 
+    /** Explicit ingest pipeline override; takes precedence over request route rules/defaults. */
+    private String pipelineId;
+
     /**
      * Optional override for the document loader to use for this source
      * (null = auto-detect from content type / global config).

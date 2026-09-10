@@ -11,6 +11,10 @@ import org.junit.jupiter.api.Test;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -84,7 +88,7 @@ class DirectLlmClientKompileServingTest {
             assertEquals("object", structured.path("tools").path(0)
                     .path("parameters").path("type").asText());
             assertEquals("AUTO", structured.path("toolChoice").asText());
-            assertEquals("FLAT",
+            assertEquals("STANDARD",
                     structured.path("toolDefinitionFormat").asText());
             assertEquals("NATIVE",
                     structured.path("toolCallFormat").asText());
@@ -125,6 +129,64 @@ class DirectLlmClientKompileServingTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void retriesToolResultWithoutDuplicatingItInHistory() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/api/llm/chat", exchange -> {
+            try {
+                requests.add(mapper.readTree(exchange.getRequestBody()));
+                if (calls.getAndIncrement() == 0) {
+                    byte[] body = "{\"error\":\"retry\"}".getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(503, body.length);
+                    exchange.getResponseBody().write(body);
+                } else {
+                    byte[] body = "{\"content\":\"ok\",\"toolCalls\":[],"
+                            .concat("\"finishReason\":\"completed\"}")
+                            .getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, body.length);
+                    exchange.getResponseBody().write(body);
+                }
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+
+        try {
+            ProviderConnectivityPolicy policy = new ProviderConnectivityPolicy(
+                    Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(1),
+                    Duration.ofSeconds(1), 2, Duration.ofMillis(1), Duration.ofMillis(2));
+            DirectLlmClient client = new DirectLlmClient(
+                    preparedConfig(server), mapper, policy);
+            client.setOutputConsumer(ignored -> { });
+            List<DirectLlmClient.ToolCallResultInput> toolResults = List.of(
+                    new DirectLlmClient.ToolCallResultInput(
+                            "call_1", "read", "contents", false));
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat(null, null, null, toolResults);
+
+            assertEquals("ok", result.text);
+            assertEquals(2, requests.size());
+            assertEquals(1, countRole(requests.get(0), "tool"));
+            assertEquals(1, countRole(requests.get(1), "tool"),
+                    "the retry must stage the pending result once, not replay + resubmit it");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private int countRole(JsonNode request, String role) {
+        int count = 0;
+        for (JsonNode message : request.path("request").path("messages")) {
+            if (role.equals(message.path("role").asText())) count++;
+        }
+        return count;
     }
 
     private ChatConfig preparedConfig(HttpServer server) {

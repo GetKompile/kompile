@@ -742,6 +742,10 @@ public class DiffIndexService {
                     .forEach(p -> {
                         try {
                             DiffIndexEntry entry = mapper.readValue(p.toFile(), DiffIndexEntry.class);
+                            if (entry == null || entry.getId() == null || entry.getId().isBlank()) {
+                                log.warn("Skipping diff index entry without an id: {}", p);
+                                return;
+                            }
                             entries.put(entry.getId(), entry);
                             // Track id counter
                             long numericPart = 0;

@@ -10,6 +10,7 @@
 package ai.kompile.graph.reasoning.psl;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -29,11 +30,10 @@ import java.util.Set;
  * <ul>
  *   <li>An {@code IncrementalGrounder} wraps a {@link PslProgram} and maintains a
  *       live {@code List<GroundRule>} that always reflects the current ground closure.</li>
- *   <li>When {@link #addAtom} or {@link #removeAtom} is called, only rules whose template
- *       bodies/heads mention the changed predicate are re-grounded. All other ground rules
- *       stay unchanged.</li>
- *   <li>After each delta the maintained list is deduplicated (same {@link GroundRule#display()}
- *       is treated as the same instantiation).</li>
+ *   <li>Atom deltas are applied to the wrapped program first, then all affected templates are
+ *       invalidated and re-grounded once per batch. All other ground rules stay unchanged.</li>
+ *   <li>Ground rules are keyed by template index plus display, so distinct templates that happen
+ *       to render identically (including equal weights) are not collapsed.</li>
  *   <li>The invariant: {@code groundRules()} equals what you would get from a full
  *       {@link PslProgram#ground()} on the same program state (ignoring ordering), as long as
  *       atoms are only added/removed through this grounder and not directly on the program.</li>
@@ -44,20 +44,45 @@ import java.util.Set;
  */
 public class IncrementalGrounder {
 
+    /** Operation represented by one entry in a batched atom delta. */
+    public enum DeltaKind { OBSERVE, TARGET, REMOVE }
+
+    /** Immutable atom mutation used by {@link #applyAtomDeltas(List)}. */
+    public record AtomDelta(DeltaKind kind, PslAtom atom, double value) {
+        public AtomDelta {
+            if (kind == null) throw new IllegalArgumentException("kind must not be null");
+            if (atom == null || !atom.isGround()) {
+                throw new IllegalArgumentException("Atom must be ground: " + atom);
+            }
+        }
+
+        public static AtomDelta observe(PslAtom atom, double value) {
+            return new AtomDelta(DeltaKind.OBSERVE, atom, value);
+        }
+
+        public static AtomDelta target(PslAtom atom) {
+            return new AtomDelta(DeltaKind.TARGET, atom, 0.0);
+        }
+
+        public static AtomDelta remove(PslAtom atom) {
+            return new AtomDelta(DeltaKind.REMOVE, atom, 0.0);
+        }
+    }
+
+    /** Identity of one grounded template instance. */
+    private record GroundRuleKey(int templateIndex, String display) { }
+
     /** The program whose atoms and rules are managed. */
     private final PslProgram program;
 
-    /** Maintained set of all current ground rules (deduplicated by display string). */
+    /** Maintained list of all current ground rules. */
     private final List<GroundRule> groundRules = new ArrayList<>();
 
-    /** Display strings of ground rules currently in the maintained set (for deduplication). */
-    private final Set<String> groundRuleDisplays = new LinkedHashSet<>();
+    /** Ground rules indexed without conflating distinct template indexes. */
+    private final Map<GroundRuleKey, GroundRule> groundRulesByKey = new LinkedHashMap<>();
 
-    /**
-     * Index: predicate name → the rules that mention it (in body or head).
-     * Used to scope re-grounding to only affected rules.
-     */
-    private final Map<String, List<PslRule>> predicateToRules = new LinkedHashMap<>();
+    /** Index: predicate name → the template indexes that mention it. */
+    private final Map<String, List<Integer>> predicateToTemplateIndexes = new LinkedHashMap<>();
 
     /**
      * Create an incremental grounder for {@code program}, performing an initial full
@@ -68,18 +93,18 @@ public class IncrementalGrounder {
     public IncrementalGrounder(PslProgram program) {
         if (program == null) throw new IllegalArgumentException("program must not be null");
         this.program = program;
-        // Build predicate → rules index.
-        for (PslRule rule : program.rules()) {
+        // Build predicate → template-index index.
+        for (int i = 0; i < program.rules().size(); i++) {
+            PslRule rule = program.rules().get(i);
             for (String pred : predicatesOf(rule)) {
-                predicateToRules.computeIfAbsent(pred, k -> new ArrayList<>()).add(rule);
+                predicateToTemplateIndexes.computeIfAbsent(pred, k -> new ArrayList<>()).add(i);
             }
         }
         // Initial full grounding.
         for (GroundRule gr : program.ground()) {
-            if (groundRuleDisplays.add(gr.display())) {
-                groundRules.add(gr);
-            }
+            groundRulesByKey.put(groundRuleKey(gr), gr);
         }
+        rebuildGroundRuleList();
     }
 
     // ─── Atom delta API ──────────────────────────────────────────────────────────
@@ -94,9 +119,7 @@ public class IncrementalGrounder {
      * @param value the observed truth value in [0, 1]
      */
     public void addAtom(PslAtom atom, double value) {
-        if (!atom.isGround()) throw new IllegalArgumentException("Atom must be ground: " + atom);
-        program.observe(atom, value);
-        regroundForPredicate(atom.predicate());
+        applyAtomDeltas(List.of(AtomDelta.observe(atom, value)));
     }
 
     /**
@@ -105,32 +128,65 @@ public class IncrementalGrounder {
      * @param atom the ground target atom to add
      */
     public void addTargetAtom(PslAtom atom) {
-        if (!atom.isGround()) throw new IllegalArgumentException("Atom must be ground: " + atom);
-        program.target(atom);
-        regroundForPredicate(atom.predicate());
+        applyAtomDeltas(List.of(AtomDelta.target(atom)));
     }
 
     /**
-     * Remove an atom from the maintained ground-rule set.
+     * Apply a batch of atom mutations and re-ground each affected template at most once.
      *
-     * <p>All ground rules that reference the removed atom (in body or head) are dropped
-     * from the maintained set. The atom itself is not removed from the underlying
-     * {@link PslProgram} (the program API does not expose removal), but its ground rules
-     * are pruned so they no longer participate in inference.</p>
+     * <p>The operations are applied in list order, so a remove followed by an add in the same
+     * batch has the expected final state. Structural changes and observed/target role changes
+     * are coalesced by predicate before any grounding work is performed.</p>
+     *
+     * @param deltas atom operations to apply
+     */
+    public void applyAtomDeltas(List<AtomDelta> deltas) {
+        if (deltas == null) throw new IllegalArgumentException("deltas must not be null");
+        if (deltas.isEmpty()) return;
+        // Validate the complete batch before mutating the program so a malformed entry cannot
+        // leave earlier entries applied without their corresponding grounding replacement.
+        for (AtomDelta delta : deltas) {
+            if (delta == null) throw new IllegalArgumentException("delta must not be null");
+        }
+
+        Set<String> affectedPredicates = new LinkedHashSet<>();
+        for (AtomDelta delta : deltas) {
+            switch (delta.kind()) {
+                case OBSERVE -> {
+                    program.observe(delta.atom(), delta.value());
+                    affectedPredicates.add(delta.atom().predicate());
+                }
+                case TARGET -> {
+                    program.target(delta.atom());
+                    affectedPredicates.add(delta.atom().predicate());
+                }
+                case REMOVE -> {
+                    if (program.removeAtom(delta.atom())) {
+                        affectedPredicates.add(delta.atom().predicate());
+                    }
+                }
+            }
+        }
+
+        replaceTemplatesForPredicates(affectedPredicates);
+    }
+
+    /** Varargs convenience overload for callers constructing a small delta batch inline. */
+    public void applyAtomDeltas(AtomDelta... deltas) {
+        if (deltas == null) throw new IllegalArgumentException("deltas must not be null");
+        applyAtomDeltas(Arrays.asList(deltas));
+    }
+
+    /**
+     * Remove an atom from both the maintained ground-rule set and the underlying program.
      *
      * @param atomKey the canonical key of the atom to remove (e.g. {@code "State(alice)"})
      */
     public void removeAtom(String atomKey) {
-        // Remove all ground rules that reference this atom.
-        List<GroundRule> removed = new ArrayList<>();
-        for (GroundRule gr : groundRules) {
-            if (referencesAtom(gr, atomKey)) {
-                removed.add(gr);
-            }
-        }
-        for (GroundRule gr : removed) {
-            groundRules.remove(gr);
-            groundRuleDisplays.remove(gr.display());
+        if (atomKey == null) return;
+        PslAtom atom = parseAtomKey(atomKey);
+        if (atom != null) {
+            applyAtomDeltas(List.of(AtomDelta.remove(atom)));
         }
     }
 
@@ -140,17 +196,12 @@ public class IncrementalGrounder {
      * @param rule the PSL rule to add
      */
     public void addRule(PslRule rule) {
+        int templateIndex = program.rules().size();
         program.addRule(rule);
         for (String pred : predicatesOf(rule)) {
-            predicateToRules.computeIfAbsent(pred, k -> new ArrayList<>()).add(rule);
+            predicateToTemplateIndexes.computeIfAbsent(pred, k -> new ArrayList<>()).add(templateIndex);
         }
-        // Ground the new rule against all current atoms via a temporary mini-program.
-        List<GroundRule> newGround = groundSingleRule(rule);
-        for (GroundRule gr : newGround) {
-            if (groundRuleDisplays.add(gr.display())) {
-                groundRules.add(gr);
-            }
-        }
+        replaceTemplates(Set.of(templateIndex));
     }
 
     // ─── Accessors ───────────────────────────────────────────────────────────────
@@ -188,42 +239,34 @@ public class IncrementalGrounder {
 
     // ─── Internal helpers ────────────────────────────────────────────────────────
 
-    /**
-     * Re-ground all rules that mention {@code predicate} and add any new ground rules
-     * to the maintained set.
-     */
-    private void regroundForPredicate(String predicate) {
-        List<PslRule> affectedRules = predicateToRules.getOrDefault(predicate, List.of());
-        for (PslRule rule : affectedRules) {
-            for (GroundRule gr : groundSingleRule(rule)) {
-                if (groundRuleDisplays.add(gr.display())) {
-                    groundRules.add(gr);
-                }
-            }
+    /** Re-ground all templates mentioning any changed predicate, once per template. */
+    private void replaceTemplatesForPredicates(Set<String> predicates) {
+        if (predicates.isEmpty()) return;
+        Set<Integer> affectedTemplates = new LinkedHashSet<>();
+        for (String predicate : predicates) {
+            affectedTemplates.addAll(predicateToTemplateIndexes.getOrDefault(predicate, List.of()));
         }
+        replaceTemplates(affectedTemplates);
     }
 
-    /**
-     * Ground a single rule against all atoms currently in the program.
-     * Uses the same backtracking join as {@link PslProgram#ground()} but restricted to one rule.
-     */
-    private List<GroundRule> groundSingleRule(PslRule rule) {
-        // Build a temporary single-rule program sharing the same atoms by re-using the
-        // grounding engine indirectly: create a fresh PslProgram that has the same atoms
-        // but only this rule, and call ground() on it.
-        PslProgram mini = new PslProgram();
-        mini.addRule(rule);
-        // Copy all atoms from the main program to mini.
-        for (String key : program.atomKeys()) {
-            PslAtom atom = parseAtomKey(key);
-            if (atom == null) continue;
-            if (program.isObserved(key)) {
-                mini.observe(atom, program.value(key));
-            } else {
-                mini.target(atom);
-            }
+    /** Replace all maintained groundings for a set of templates with fresh groundings. */
+    private void replaceTemplates(Set<Integer> affectedTemplates) {
+        if (affectedTemplates.isEmpty()) return;
+        groundRulesByKey.entrySet().removeIf(entry ->
+                affectedTemplates.contains(entry.getKey().templateIndex()));
+        for (GroundRule gr : program.groundRulesForTemplates(affectedTemplates)) {
+            groundRulesByKey.put(groundRuleKey(gr), gr);
         }
-        return mini.ground();
+        rebuildGroundRuleList();
+    }
+
+    private GroundRuleKey groundRuleKey(GroundRule groundRule) {
+        return new GroundRuleKey(groundRule.templateIndex(), groundRule.display());
+    }
+
+    private void rebuildGroundRuleList() {
+        groundRules.clear();
+        groundRules.addAll(groundRulesByKey.values());
     }
 
     /**
@@ -248,16 +291,4 @@ public class IncrementalGrounder {
         return preds;
     }
 
-    /**
-     * True if the given ground rule references {@code atomKey} in any literal.
-     */
-    private static boolean referencesAtom(GroundRule gr, String atomKey) {
-        for (GroundRule.Lit l : gr.body()) {
-            if (l.atomKey().equals(atomKey)) return true;
-        }
-        for (GroundRule.Lit l : gr.head()) {
-            if (l.atomKey().equals(atomKey)) return true;
-        }
-        return false;
-    }
 }

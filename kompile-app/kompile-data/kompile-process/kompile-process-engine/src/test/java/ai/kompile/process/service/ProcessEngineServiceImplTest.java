@@ -51,6 +51,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -163,6 +164,72 @@ class ProcessEngineServiceImplTest {
                         OntologySchema.builder().name("x").build()));
     }
 
+    @Test
+    void restoreOntologyPreservesExactVersionAndReloadsAfterRestart() {
+        OntologySchema snapshot = OntologySchema.builder()
+                .id("portable").name("Portable").version(4)
+                .createdAt(Instant.parse("2025-01-01T00:00:00Z"))
+                .updatedAt(Instant.parse("2025-02-01T00:00:00Z"))
+                .entityTypes(List.of()).relationshipTypes(List.of()).globalRules(List.of())
+                .metadata(Map.of("domain", "finance")).build();
+
+        service.restoreOntologySchema(snapshot);
+        ProcessEngineServiceImpl restarted = new ProcessEngineServiceImpl();
+        restarted.init();
+
+        OntologySchema restored = restarted.getOntology("portable", 4);
+        assertEquals(snapshot.getCreatedAt(), restored.getCreatedAt());
+        assertEquals(snapshot.getUpdatedAt(), restored.getUpdatedAt());
+        assertEquals(4, restored.getVersion());
+    }
+
+    @Test
+    void restoreOntologyRejectsConflictingSameVersion() {
+        OntologySchema first = OntologySchema.builder()
+                .id("portable").name("First").version(2).build();
+        service.restoreOntologySchema(first);
+
+        assertEquals(first, service.restoreOntologySchema(first));
+        assertThrows(IllegalStateException.class, () -> service.restoreOntologySchema(
+                OntologySchema.builder().id("portable").name("Different").version(2).build()));
+    }
+
+    @Test
+    void restoreOntologyRejectsPathTraversalAndSupportsUpdateAfterImportedVersion() {
+        assertThrows(IllegalArgumentException.class, () -> service.restoreOntologySchema(
+                OntologySchema.builder().id("../escape").name("Bad").version(1).build()));
+        Instant created = Instant.parse("2025-01-01T00:00:00Z");
+        service.restoreOntologySchema(OntologySchema.builder()
+                .id("portable").name("Imported v4").version(4).createdAt(created).build());
+
+        OntologySchema updated = service.updateOntology("portable",
+                OntologySchema.builder().name("Updated v5").build());
+
+        assertEquals(5, updated.getVersion());
+        assertEquals(created, updated.getCreatedAt());
+    }
+
+    @Test
+    void removeOntologySnapshotIsDurableAndRecomputesLatestVersion() {
+        service.restoreOntologySchema(OntologySchema.builder()
+                .id("portable-remove").name("v1").version(1).build());
+        service.restoreOntologySchema(OntologySchema.builder()
+                .id("portable-remove").name("v2").version(2).build());
+
+        service.removeOntologySchemaSnapshot("portable-remove", 2);
+        assertEquals(1, service.listOntologies().stream()
+                .filter(schema -> "portable-remove".equals(schema.getId()))
+                .findFirst().orElseThrow().getVersion());
+        service.removeOntologySchemaSnapshot("portable-remove", 1);
+        assertTrue(service.listOntologies().stream()
+                .noneMatch(schema -> "portable-remove".equals(schema.getId())));
+
+        ProcessEngineServiceImpl restarted = new ProcessEngineServiceImpl();
+        restarted.init();
+        assertThrows(IllegalArgumentException.class,
+                () -> restarted.getOntology("portable-remove", 1));
+    }
+
     // -------------------------------------------------------------------------
     // Process definition create and approve
     // -------------------------------------------------------------------------
@@ -216,6 +283,53 @@ class ProcessEngineServiceImplTest {
     void reviseProcess_throwsForUnknownId() {
         assertThrows(IllegalArgumentException.class,
                 () -> service.reviseProcess("no-such-process", minimalDefinition("x")));
+    }
+
+    @Test
+    void restoreProcessDefinitionIsExactDurableAndConflictSafe() {
+        ProcessDefinition snapshot = ProcessDefinition.builder()
+                .id("portable-process").name("Portable").version(3).status(ProcessStatus.DRAFT)
+                .phases(List.of()).controls(List.of()).agentSpecs(List.of()).build();
+
+        assertEquals(snapshot, service.restoreProcessDefinition(snapshot));
+        assertEquals(snapshot, service.restoreProcessDefinition(snapshot));
+        assertThrows(IllegalStateException.class, () -> service.restoreProcessDefinition(
+                ProcessDefinition.builder().id("portable-process").name("Different")
+                        .version(3).status(ProcessStatus.DRAFT).phases(List.of()).build()));
+
+        ProcessEngineServiceImpl restarted = new ProcessEngineServiceImpl();
+        restarted.init();
+        assertEquals(snapshot, restarted.getProcess("portable-process", 3));
+    }
+
+    @Test
+    void restoreProcessDefinitionRejectsNonPositiveVersion() {
+        assertThrows(IllegalArgumentException.class, () -> service.restoreProcessDefinition(
+                ProcessDefinition.builder().id("portable-process").name("Bad")
+                        .version(0).status(ProcessStatus.DRAFT).build()));
+    }
+
+    @Test
+    void removeProcessDefinitionSnapshotIsDurableAndRecomputesLatestVersion() {
+        ProcessDefinition first = ProcessDefinition.builder()
+                .id("portable-process").name("v1").version(1).status(ProcessStatus.DRAFT).build();
+        ProcessDefinition second = ProcessDefinition.builder()
+                .id("portable-process").name("v2").version(2).status(ProcessStatus.DRAFT).build();
+        service.restoreProcessDefinition(first);
+        service.restoreProcessDefinition(second);
+
+        service.removeProcessDefinitionSnapshot("portable-process", 2);
+        assertEquals(first, service.listProcessDefinitions().stream()
+                .filter(definition -> "portable-process".equals(definition.getId()))
+                .findFirst().orElseThrow());
+        service.removeProcessDefinitionSnapshot("portable-process", 1);
+        assertTrue(service.listProcessDefinitions().stream()
+                .noneMatch(definition -> "portable-process".equals(definition.getId())));
+
+        ProcessEngineServiceImpl restarted = new ProcessEngineServiceImpl();
+        restarted.init();
+        assertThrows(IllegalArgumentException.class,
+                () -> restarted.getProcess("portable-process", 1));
     }
 
     // -------------------------------------------------------------------------

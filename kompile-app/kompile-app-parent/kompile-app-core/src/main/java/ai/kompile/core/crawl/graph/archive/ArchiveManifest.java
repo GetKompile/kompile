@@ -16,6 +16,7 @@
 
 package ai.kompile.core.crawl.graph.archive;
 
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -42,9 +43,11 @@ import java.util.Map;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class ArchiveManifest {
 
+    public static final int CURRENT_SCHEMA_VERSION = 4;
+
     /** Bumped if the on-disk layout changes; readers tolerate older versions where possible. */
     @Builder.Default
-    private int schemaVersion = 1;
+    private int schemaVersion = CURRENT_SCHEMA_VERSION;
 
     private String jobId;
     private String name;
@@ -62,6 +65,16 @@ public class ArchiveManifest {
 
     /** Latest {@code UnifiedCrawlJob.toProgressSnapshot()} for cross-restart rehydration. */
     private Object progressSnapshot;
+
+    /** Exact corpus schema frozen by the prepass, including zero-instance hierarchy declarations. */
+    private GraphSchema frozenGraphSchema;
+
+    /** Full document-topic census and accepted bindings that produced the frozen schema. */
+    @Builder.Default
+    private Map<String, Object> corpusTopicEvidence = new LinkedHashMap<>();
+
+    /** Original ontology-derivation policy; null retains the normal enabled-by-default behavior. */
+    private Boolean deriveOntology;
 
     @Data
     @NoArgsConstructor

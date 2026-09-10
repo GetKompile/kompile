@@ -98,6 +98,21 @@ public class ExtractionLlmServiceRegistry {
         return candidates.get(0);
     }
 
+    /** Explicit selections never enter the availability or call-time fallback chain. */
+    public ExtractionLlmService select(String providerId, String model) {
+        boolean explicitProvider = providerId != null && !providerId.isBlank()
+                && !"default".equalsIgnoreCase(providerId);
+        boolean explicitModel = model != null && !model.isBlank();
+        if (!explicitProvider && !explicitModel) return getOrFallback(null);
+        String id = resolvePreferredProviderId(providerId);
+        ExtractionLlmService service = id == null ? null : providers.get(id);
+        if (service == null || !service.isAvailable()) {
+            throw new ExtractionLlmService.ExtractionLlmException(
+                    "Selected extraction provider is unavailable: " + id + "; no fallback was attempted");
+        }
+        return service.forModel(model);
+    }
+
     private String resolvePreferredProviderId(String preferredId) {
         if (preferredId != null && !preferredId.isBlank() && !"default".equalsIgnoreCase(preferredId)) {
             return preferredId;

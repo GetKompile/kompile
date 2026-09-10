@@ -131,8 +131,19 @@ public class IndexFileStore {
      * List all shard files and read their entities. Used for DB rebuild.
      */
     public List<FileShard> readAllShards() throws IOException {
+        return readAllShards(false);
+    }
+
+    public List<FileShard> readAllShardsStrict() throws IOException {
+        return readAllShards(true);
+    }
+
+    private List<FileShard> readAllShards(boolean strict) throws IOException {
         Path filesDir = indexDir.resolve("files");
-        if (!Files.isDirectory(filesDir)) return List.of();
+        if (!Files.isDirectory(filesDir)) {
+            if (strict) throw new IOException("Cannot rebuild index: missing shard directory " + filesDir);
+            return List.of();
+        }
 
         List<FileShard> shards = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(filesDir, "*.json")) {
@@ -140,7 +151,8 @@ public class IndexFileStore {
                 try {
                     shards.add(objectMapper.readValue(file.toFile(), FileShard.class));
                 } catch (IOException e) {
-                    // Skip corrupt shards
+                    if (strict) throw new IOException("Cannot rebuild index: unreadable shard " + file, e);
+                    // Search fallback is best-effort; recovery is not.
                 }
             }
         }

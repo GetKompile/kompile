@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.tools.grounding;
 
+import ai.kompile.core.crawl.graph.SourceCredentialRedactor;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -46,13 +47,15 @@ final class LocalCrawlJobStore {
     private static final String STATE_FILE = "state.json";
     private static final String REQUEST_FILE = "request.json";
     private static final String TRACE_FILE = "trace.jsonl";
+    private static final String FOREIGN_CANCEL_REASON =
+            "Cancellation is available only from the MCP process that owns this running crawl.";
     private static final long RETENTION_MS = Long.getLong(
             "kompile.crawl.asyncDiskRetentionMs", 86_400_000L);
     private static final int MAX_RETAINED = Math.max(16,
             Integer.getInteger("kompile.crawl.asyncDiskMaxCompleted", 128));
     private static final Set<String> SENSITIVE_KEYS = Set.of(
-            "apikey", "api_key", "password", "secret", "access_token", "refresh_token",
-            "authorization", "credential", "credentials", "privatekey", "private_key");
+            "apikey", "password", "secret", "accesstoken", "refreshtoken",
+            "authorization", "credential", "credentials", "privatekey");
     private static final ConcurrentHashMap<Path, Object> LOCKS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Path, AtomicLong> SEQUENCES = new ConcurrentHashMap<>();
 
@@ -102,10 +105,11 @@ final class LocalCrawlJobStore {
         synchronized (lock(directory)) {
             try {
                 Files.createDirectories(directory);
-                atomicWrite(directory.resolve(STATE_FILE), state);
+                ObjectNode sanitizedState = (ObjectNode) redact(state);
+                atomicWrite(directory.resolve(STATE_FILE), sanitizedState);
                 ObjectNode event = MAPPER.createObjectNode();
                 event.put("eventType", eventType == null ? "JOB_STATE" : eventType);
-                event.set("state", state.deepCopy());
+                event.set("state", sanitizedState.deepCopy());
                 appendTraceLocked(directory, event);
             } catch (IOException e) {
                 throw new IllegalStateException("Unable to persist local crawl job " + jobId, e);
@@ -120,7 +124,7 @@ final class LocalCrawlJobStore {
         synchronized (lock(directory)) {
             try {
                 Files.createDirectories(directory);
-                appendTraceLocked(directory, event);
+                appendTraceLocked(directory, (ObjectNode) redact(event));
             } catch (IOException e) {
                 throw new IllegalStateException("Unable to append local crawl trace " + jobId, e);
             }
@@ -259,6 +263,7 @@ final class LocalCrawlJobStore {
         enriched.put("status", state.path("status").asText());
         enriched.put("terminal", true);
         ObjectNode payload = state.deepCopy();
+        markForeignCancellationUnavailable(payload, enriched);
         CrawlResultHandle.from(payload, "project-local", jobId,
                 state.path("knowledgeBaseId").asText(null)).attachTo(enriched);
         return new ToolResult(result.path("title").asText("crawl_result"),
@@ -279,11 +284,20 @@ final class LocalCrawlJobStore {
         metadata.put("stage", state.path("stage").asText());
         metadata.put("progressPercent", state.path("progressPercent").asInt());
         ObjectNode payload = state.deepCopy();
+        markForeignCancellationUnavailable(payload, metadata);
         CrawlResultHandle.from(payload, "project-local", jobId,
                 state.path("knowledgeBaseId").asText(null)).attachTo(metadata);
         payload.set("crawlResult", mapper.valueToTree(metadata.get("crawlResult")));
         payload.set("nextActions", mapper.valueToTree(metadata.get("nextActions")));
         return ToolResult.success("crawl_status", payload.toPrettyString(), metadata);
+    }
+
+    private static void markForeignCancellationUnavailable(
+            ObjectNode payload, Map<String, Object> metadata) {
+        payload.put("cancellable", false);
+        payload.put("cancellationReason", FOREIGN_CANCEL_REASON);
+        metadata.put("cancellable", false);
+        metadata.put("cancellationReason", FOREIGN_CANCEL_REASON);
     }
 
     static void prune(Path root) {
@@ -310,7 +324,7 @@ final class LocalCrawlJobStore {
         }
     }
 
-    private static JsonNode redact(JsonNode value) {
+    static JsonNode redact(JsonNode value) {
         JsonNode copy = value.deepCopy();
         redactInPlace(copy);
         return copy;
@@ -323,18 +337,31 @@ final class LocalCrawlJobStore {
             node.fieldNames().forEachRemaining(names::add);
             for (String name : names) {
                 JsonNode child = node.get(name);
-                String normalized = name.toLowerCase(Locale.ROOT).replace("-", "_");
+                String normalized = name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
                 if (SENSITIVE_KEYS.contains(normalized)
-                        || normalized.endsWith("_password")
-                        || normalized.endsWith("_secret")
-                        || normalized.endsWith("_api_key")) {
+                        || normalized.endsWith("password")
+                        || normalized.endsWith("secret")
+                        || normalized.endsWith("apikey")
+                        || normalized.endsWith("token")
+                        || normalized.endsWith("privatekey")) {
                     ((ObjectNode) node).put(name, "***REDACTED***");
+                } else if (child != null && child.isTextual()) {
+                    ((ObjectNode) node).put(name, SourceCredentialRedactor.redact(child.asText()));
                 } else {
                     redactInPlace(child);
                 }
             }
         } else if (node.isArray()) {
-            node.forEach(LocalCrawlJobStore::redactInPlace);
+            ArrayNode array = (ArrayNode) node;
+            for (int index = 0; index < array.size(); index++) {
+                JsonNode child = array.get(index);
+                if (child != null && child.isTextual()) {
+                    array.set(index, com.fasterxml.jackson.databind.node.TextNode.valueOf(
+                            SourceCredentialRedactor.redact(child.asText())));
+                } else {
+                    redactInPlace(child);
+                }
+            }
         }
     }
 

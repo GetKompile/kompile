@@ -22,13 +22,18 @@ import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import org.junit.jupiter.api.Test;
+import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -395,8 +400,8 @@ class Node2VecLearnerTest {
         double lr = 0.025;
         long seed = 99L;
 
-        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
-                entityIds, dim, negSamples, lr, seed);
+        try (SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+                entityIds, dim, negSamples, lr, seed)) {
 
         // (centerIdx, posIdx) pairs covering edges in the cluster graph.
         // Negatives are fixed to the opposite cluster for strong signal.
@@ -440,6 +445,158 @@ class Node2VecLearnerTest {
                         + " final=" + meanLossN
                         + ". Check that the SameDiff graph, gradient computation, and SGD update"
                         + " are all wired correctly.");
+        }
+    }
+
+    @Test
+    void sameDiffTrainerReleasesPerStepResultsAndPreservesNextStepNumerics() {
+        SameDiffEmbeddingTrainer.resetExecutionResultCloseCountForTests();
+
+        double[] firstRun = runSmallTrainerSequence();
+        double[] secondRun = runSmallTrainerSequence();
+
+        assertArrayEquals(firstRun, secondRun, 1e-12,
+                "releasing SameDiff results must not change subsequent numeric behavior");
+        assertTrue(SameDiffEmbeddingTrainer.executionResultCloseCountForTests() >= 28,
+                "each repeated training step must release its caller-owned loss/gradient results");
+    }
+
+    private static double[] runSmallTrainerSequence() {
+        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+                List.of("A", "B", "C"), 4, 1, 0.025, 31L, 2);
+        try (trainer) {
+            double[] losses = new double[6];
+            for (int i = 0; i < losses.length; i++) {
+                losses[i] = trainer.fitPair(i % 3, (i + 1) % 3, new int[]{(i + 2) % 3});
+                assertTrue(Double.isFinite(losses[i]), "small training loss must remain finite");
+            }
+            double nextStep = trainer.fitPair(0, 1, new int[]{2});
+            assertTrue(Double.isFinite(nextStep), "post-cleanup training step must remain finite");
+            return losses;
+        }
+    }
+
+    @Test
+    void sameDiffTrainerCloseIsIdempotentAndRejectsUseAfterClose() {
+        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+                List.of("A", "B", "C"), 8, 2, 0.025, 12L);
+        double[][] snapshot;
+        try (trainer) {
+            trainer.fitPair(0, 1, new int[]{2, 2});
+            snapshot = trainer.entityMatrix();
+
+            trainer.close();
+            trainer.close();
+        }
+
+        assertEquals(3, snapshot.length, "Readout before close must remain a Java snapshot");
+        assertThrows(IllegalStateException.class,
+                () -> trainer.fitPair(0, 1, new int[]{2, 2}));
+        assertThrows(IllegalStateException.class, trainer::entityMatrix);
+        assertThrows(IllegalStateException.class, () -> trainer.entityRow(0));
+    }
+
+    @Test
+    void tryWithResourcesClosesTrainerWhenTrainingFails() {
+        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+                List.of("A", "B", "C"), 8, 2, 0.025, 13L);
+
+        assertThrows(ArrayIndexOutOfBoundsException.class, () -> {
+            try (trainer) {
+                trainer.fitPair(0, 1, new int[]{2});
+            }
+        });
+        assertThrows(IllegalStateException.class, trainer::entityMatrix);
+    }
+
+    @Test
+    void trainerConstructorFailureClosesAlreadyAllocatedParameterRoot() {
+        List<INDArray> allocated = new ArrayList<>();
+        SameDiffEmbeddingTrainer.ArrayAllocatorForTests allocator = new SameDiffEmbeddingTrainer.ArrayAllocatorForTests() {
+            private int matrixCalls;
+
+            @Override
+            public INDArray create(double[][] values) {
+                if (matrixCalls++ == 1) {
+                    throw new IllegalStateException("injected constructor allocation failure");
+                }
+                INDArray array = Nd4j.create(values);
+                allocated.add(array);
+                return array;
+            }
+
+            @Override
+            public INDArray zeros(DataType dataType, long rows, long columns) {
+                return Nd4j.zeros(dataType, rows, columns);
+            }
+
+            @Override
+            public INDArray createFromArray(long[] values) {
+                return Nd4j.createFromArray(values);
+            }
+        };
+        SameDiffEmbeddingTrainer.setArrayAllocatorForTests(allocator);
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> new SameDiffEmbeddingTrainer(List.of("A", "B"), 4, 1, 0.025, 7L));
+        } finally {
+            SameDiffEmbeddingTrainer.resetArrayAllocatorForTests();
+        }
+        assertEquals(1, allocated.size());
+        assertTrue(allocated.get(0).wasClosed(),
+                "constructor failure must close the parameter root allocated before the failure");
+    }
+
+    @Test
+    void secondPlaceholderAllocationFailureClosesFirstPlaceholder() {
+        SameDiffEmbeddingTrainer trainer = new SameDiffEmbeddingTrainer(
+                List.of("A", "B", "C"), 4, 1, 0.025, 8L);
+        List<INDArray> allocated = new ArrayList<>();
+        SameDiffEmbeddingTrainer.ArrayAllocatorForTests allocator = new SameDiffEmbeddingTrainer.ArrayAllocatorForTests() {
+            private int placeholderCalls;
+
+            @Override
+            public INDArray create(double[][] values) {
+                return Nd4j.create(values);
+            }
+
+            @Override
+            public INDArray zeros(DataType dataType, long rows, long columns) {
+                return Nd4j.zeros(dataType, rows, columns);
+            }
+
+            @Override
+            public INDArray createFromArray(long[] values) {
+                if (placeholderCalls++ == 1) {
+                    throw new IllegalStateException("injected second placeholder allocation failure");
+                }
+                INDArray array = Nd4j.createFromArray(values);
+                allocated.add(array);
+                return array;
+            }
+        };
+        SameDiffEmbeddingTrainer.setArrayAllocatorForTests(allocator);
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> trainer.fitPair(0, 1, new int[]{2}));
+        } finally {
+            SameDiffEmbeddingTrainer.resetArrayAllocatorForTests();
+            trainer.close();
+        }
+        assertEquals(1, allocated.size());
+        assertTrue(allocated.get(0).wasClosed(),
+                "placeholder cleanup must release the first root when a later allocation fails");
+    }
+
+    @Test
+    void node2VecReturnsJavaEmbeddingCopyAfterTrainerClose() {
+        EmbeddingConfig cfg = new EmbeddingConfig(8, 5, 3, 2, 2,
+                1.0, 1.0, 1, 0.025, 23L);
+        EmbeddingTable table = new Node2VecLearner().learn(buildSimpleGraph(4), cfg);
+
+        double[] vector = table.vector("e0");
+        assertFinite(vector, "e0 after trainer close");
+        assertEquals(8, vector.length);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -11,6 +11,8 @@ package ai.kompile.graph.reasoning.bayesian;
 
 import ai.kompile.graph.reasoning.domain.InferenceStep;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>Handle evidence variables with a DETERMINISTIC step</li>
  * </ul>
  */
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class TracedQueryAllTest {
 
     /** Simple 3-node chain: A → B → C */
@@ -202,5 +205,62 @@ class TracedQueryAllTest {
         assertEquals(2, allTraced.size());
         assertEquals(0.3, allTraced.get("X").getFactor().normalize().getValues()[1], 1e-9);
         assertEquals(0.7, allTraced.get("Y").getFactor().normalize().getValues()[1], 1e-9);
+    }
+
+    @Test
+    @DisplayName("Fan-out query uses elimination instead of a dense trace joint")
+    void fanOutQueryDoesNotMaterializeTraceJoint() {
+        BayesianNetwork fanOut = new BayesianNetwork();
+        BayesianNode hub = new BayesianNode("H", "H", "Hub");
+        fanOut.addNode(hub);
+        hub.setCpt(NoisyOrCpt.buildPrior("H", 0.25));
+
+        for (int i = 0; i < 27; i++) {
+            String variable = "C" + i;
+            BayesianNode child = new BayesianNode(variable, variable, "Child " + i);
+            fanOut.addNode(child);
+            fanOut.addEdge("H", variable);
+            child.setCpt(NoisyOrCpt.buildCpt(variable, List.of("H"), new double[]{0.8}, 0.05));
+        }
+
+        Factor direct = VariableElimination.query(fanOut, "H", Map.of());
+        assertEquals(0.25, direct.getValue(1), 1e-9,
+                "The non-traced path must retain the exact hub prior");
+
+        VariableElimination.TracedResult traced =
+                VariableElimination.queryWithTrace(fanOut, "H", Map.of());
+        assertEquals(0.25, traced.getFactor().getValue(1), 1e-9,
+                "The exact trace estimator must retain the hub prior");
+        assertTrue(traced.getTrace().stream().anyMatch(step -> "MARGINALIZE".equals(step.getOperation())));
+    }
+
+    @Test
+    @DisplayName("Factor rejects overflowing dense scopes before allocation")
+    void factorRejectsOverflowingScope() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new Factor(List.of("A", "B"), new int[]{Integer.MAX_VALUE, 2}, new double[]{0.0}));
+        assertTrue(error.getMessage().contains("array limit"), error.getMessage());
+    }
+
+    @Test
+    @DisplayName("Factor rejects a configured work budget before product allocation")
+    void factorRejectsConfiguredWorkBudget() {
+        String property = "kompile.bayesian.maxFactorBytes";
+        String previous = System.getProperty(property);
+        try {
+            System.setProperty(property, "16");
+            Factor left = new Factor(List.of("A"), new int[]{2}, new double[]{0.5, 0.5});
+            Factor right = new Factor(List.of("B"), new int[]{2}, new double[]{0.5, 0.5});
+
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Factor.product(left, right));
+            assertTrue(error.getMessage().contains("work budget"), error.getMessage());
+        } finally {
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
     }
 }

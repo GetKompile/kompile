@@ -18,8 +18,10 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.CredentialFailure;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -73,8 +75,96 @@ public class ChatConfig {
     @JsonProperty
     private String thinking;
 
+    /** Explicit opt-in to the selected provider's premium fast mode. */
+    @JsonProperty
+    private volatile boolean fastMode;
+
     @JsonProperty
     private String baseUrl; // null = use provider default
+
+    /** In-memory launch binding; retaining a chat configuration must not pin a loaded model. */
+    @JsonIgnore
+    private transient LocalServingRuntimePool.Binding localServingBinding;
+
+    /** Selected non-secret authentication route: none, native, oauth, or api-key. */
+    @JsonProperty
+    private String authenticationMethod;
+
+    /** Session pins are non-secret names in the managed credential store. */
+    @JsonProperty
+    private Map<String, String> credentialNames = new LinkedHashMap<>();
+    @JsonProperty
+    private String authenticationScope = "session";
+    @JsonIgnore
+    private transient Path sessionSettingsPath;
+
+    public String getAuthenticationScope() { return authenticationScope; }
+    public void setAuthenticationScope(String scope) {
+        if (!"session".equals(scope) && !"global".equals(scope))
+            throw new IllegalArgumentException("Authentication scope must be session or global");
+        authenticationScope = scope;
+    }
+    @JsonIgnore
+    public String getCredentialName() {
+        return "global".equals(authenticationScope) || provider == null ? null
+                : credentialNames.get(provider.toLowerCase(java.util.Locale.ROOT));
+    }
+    public void setCredentialName(String name) {
+        if (provider == null) throw new IllegalStateException("Select a provider first");
+        String key = provider.toLowerCase(java.util.Locale.ROOT);
+        if (name == null) credentialNames.remove(key); else credentialNames.put(key, name);
+        apiKey = null;
+    }
+    public void pinActiveCredential() throws IOException {
+        pinActiveCredential(System::getenv);
+    }
+
+    void pinActiveCredential(java.util.function.Function<String, String> environment) throws IOException {
+        if (!"session".equals(authenticationScope) || provider == null || getCredentialName() != null
+                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)) return;
+        CredentialStore store = CredentialStore.create();
+        String name = store.activeCredentialName(provider);
+        if (name == null && !"oauth".equalsIgnoreCase(authenticationMethod)) {
+            String variable = getEnvironmentVariable(provider);
+            String key = variable == null ? null : environment.apply(variable);
+            if (key != null && !key.isBlank()) {
+                name = "session-" + java.util.UUID.randomUUID();
+                store.putApiKey(provider, name, key, false);
+            }
+        }
+        if (name != null) setCredentialName(name);
+    }
+
+    public static Path sessionConfigPath(String sessionId) {
+        if (sessionId == null || !sessionId.matches("[A-Za-z0-9_-]+"))
+            throw new IllegalArgumentException("Invalid conversation id");
+        return KompileHome.homeDirectory().toPath().resolve("conversations")
+                .resolve(sessionId + ".chat-config.json");
+    }
+
+    public static ChatConfig loadSession(String sessionId) {
+        Path path = sessionConfigPath(sessionId);
+        if (!Files.exists(path)) return null;
+        try {
+            ChatConfig config = MAPPER.readValue(path.toFile(), ChatConfig.class);
+            config.sessionSettingsPath = path;
+            return config;
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot load session authentication settings", e);
+        }
+    }
+
+    public void bindSession(String sessionId) throws IOException {
+        sessionSettingsPath = sessionConfigPath(sessionId);
+        // Preserve explicitly supplied keys before pinning an existing account.
+        if (apiKey == null || apiKey.isBlank()) pinActiveCredential();
+        saveLoadedOrGlobal();
+    }
+
+    /** Provider cache preference: none, short, or long. Defaults to short-lived caching. */
+    @JsonProperty
+    private String promptCacheRetention =
+            ProviderPromptCacheCapabilities.Retention.SHORT.wireValue();
 
     /** Provider-neutral automatic context compaction policy. */
     @JsonProperty
@@ -118,10 +208,9 @@ public class ChatConfig {
     private boolean passthroughManaged = true; // true = kompile REPL wraps agent subprocess
 
     /**
-     * The setup wizard's per-session answer to "Enable rule enforcement?".
-     * Transient (NOT persisted): it reflects only THIS run's explicit choice so the
-     * router can honor an opt-out even when a project {@code .kompile/enforcer-config.json}
-     * is present. {@code null} = not asked this run -> fall back to project auto-detection.
+     * Legacy programmatic one-run judge-policy override. The setup wizard no longer asks
+     * an activation question; interactive control lives under {@code /judge}.
+     * Transient and never persisted. {@code null} uses project auto-detection.
      */
     @JsonIgnore
     private Boolean enforcementEnabled;
@@ -134,6 +223,34 @@ public class ChatConfig {
         GLOBAL
     }
 
+    /** A managed credential must not silently fall back to another identity or no auth. */
+    public static final class AuthenticationException extends IllegalStateException {
+        private final CredentialFailure failure;
+
+        public AuthenticationException(String provider) {
+            this(provider, CredentialFailure.reauthRequired(), false);
+        }
+
+        public AuthenticationException(String provider, IOException cause) {
+            this(provider, CredentialFailure.classify(cause), false);
+        }
+
+        private AuthenticationException(String provider, CredentialFailure failure, boolean afterUnauthorized) {
+            // Never retain the original exception: provider bodies and causes may echo tokens.
+            // Recovery may fail on local I/O before any token refresh reaches the provider.
+            super((afterUnauthorized ? "Credential recovery after HTTP 401 failed for "
+                    : "Could not prepare credentials for ") + provider + ". " + failure.message()
+                    + " " + failure.diagnostic()
+                    + (failure.kind() == CredentialFailure.Kind.REAUTH_REQUIRED
+                    ? " Run `kompile auth login " + provider + "` to sign in again." : ""), null);
+            this.failure = failure;
+        }
+
+        public CredentialFailure failure() {
+            return failure;
+        }
+    }
+
     public ChatConfig() {}
 
     public ChatConfig(String provider, String apiKey, String model, String baseUrl) {
@@ -141,6 +258,36 @@ public class ChatConfig {
         this.apiKey = apiKey;
         this.model = model;
         this.baseUrl = baseUrl;
+    }
+
+    /**
+     * Isolated in-memory settings for a child conversation. Do not round-trip JSON:
+     * credentials and the local serving binding are deliberately not serialized.
+     */
+    public ChatConfig copy() {
+        ChatConfig copy = new ChatConfig(provider, apiKey, model, baseUrl);
+        copy.thinking = thinking;
+        copy.fastMode = fastMode;
+        copy.localServingBinding = localServingBinding;
+        copy.authenticationMethod = authenticationMethod;
+        copy.authenticationScope = authenticationScope;
+        copy.credentialNames = new LinkedHashMap<>(credentialNames);
+        copy.promptCacheRetention = promptCacheRetention;
+        copy.autoCompactEnabled = autoCompactEnabled;
+        copy.autoCompactThreshold = autoCompactThreshold;
+        copy.compactionReserveTokens = compactionReserveTokens;
+        copy.contextWindowTokens = contextWindowTokens;
+        copy.maxOutputTokens = maxOutputTokens;
+        copy.defaultAgent = defaultAgent;
+        copy.defaultRag = defaultRag;
+        copy.defaultMemory = defaultMemory;
+        copy.cancelKey = cancelKey;
+        copy.chatMode = chatMode;
+        copy.passthroughAgent = passthroughAgent;
+        copy.passthroughManaged = passthroughManaged;
+        copy.enforcementEnabled = enforcementEnabled;
+        copy.loadedFrom = loadedFrom;
+        return copy;
     }
 
     // --- Getters/Setters ---
@@ -162,21 +309,30 @@ public class ChatConfig {
     /** Resolve and, when necessary, refresh the provider's request credential. */
     @JsonIgnore
     public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
-        if (apiKey != null && !apiKey.isBlank()) {
+        if ("none".equalsIgnoreCase(authenticationMethod)
+                || "native".equalsIgnoreCase(authenticationMethod)) {
+            return null;
+        }
+        boolean oauthOnly = "oauth".equalsIgnoreCase(authenticationMethod);
+        boolean apiKeyOnly = "api-key".equalsIgnoreCase(authenticationMethod);
+        if (!oauthOnly && apiKey != null && !apiKey.isBlank()) {
             return OAuthProviderFlow.RequestAuth.apiKey(apiKey);
         }
         if (provider == null || provider.isBlank()) {
             return null;
         }
         try {
-            OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create().resolve(provider);
-            if (stored != null) {
+            OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create().resolve(provider,
+                    oauthOnly ? "oauth" : apiKeyOnly ? "api_key" : null, getCredentialName());
+            if (stored != null
+                    && (!oauthOnly || stored.oauth())
+                    && (!apiKeyOnly || !stored.oauth())) {
                 return stored;
             }
         } catch (IOException e) {
-            System.err.println("Warning: Could not resolve managed credentials for "
-                    + provider + ": " + e.getMessage());
+            throw new AuthenticationException(provider, e);
         }
+        if (oauthOnly || getCredentialName() != null) throw new AuthenticationException(provider);
         String environmentName = getEnvironmentVariable(provider);
         if (environmentName == null) {
             return null;
@@ -185,6 +341,26 @@ public class ChatConfig {
         return value == null || value.isBlank()
                 ? null
                 : OAuthProviderFlow.RequestAuth.apiKey(value);
+    }
+
+    /**
+     * Refresh a provider-managed OAuth credential after an HTTP 401. API keys are
+     * not retried because resending the same rejected secret cannot recover.
+     */
+    @JsonIgnore
+    public OAuthProviderFlow.RequestAuth refreshRequestAuthAfterUnauthorized(
+            OAuthProviderFlow.RequestAuth rejectedAuth) {
+        if (rejectedAuth == null || !rejectedAuth.oauth()
+                || provider == null || provider.isBlank()) {
+            return null;
+        }
+        try {
+            return getCredentialName() != null
+                    ? OAuthCredentialManager.create().refreshNamedAfterUnauthorized(provider, rejectedAuth)
+                    : OAuthCredentialManager.create().refreshAfterUnauthorized(provider, rejectedAuth);
+        } catch (IOException e) {
+            throw new AuthenticationException(provider, CredentialFailure.classify(e), true);
+        }
     }
 
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -208,9 +384,11 @@ public class ChatConfig {
     public List<String> getConfiguredModels(String provider) {
         String discoveryBaseUrl = provider != null && provider.equalsIgnoreCase(this.provider)
                 ? getBaseUrl() : null;
-        String discoveryApiKey = provider != null && provider.equalsIgnoreCase(this.provider)
-                ? getApiKey() : null;
-        return ModelDiscoveryHttp.discoverResult(provider, discoveryApiKey, discoveryBaseUrl).models().stream()
+        OAuthProviderFlow.RequestAuth discoveryAuth =
+                provider != null && provider.equalsIgnoreCase(this.provider)
+                        ? resolveRequestAuth() : null;
+        return ModelDiscoveryHttp.discoverResultWithAuth(
+                        provider, discoveryAuth, discoveryBaseUrl).models().stream()
                 .map(LiveModelDiscovery.Model::id)
                 .toList();
     }
@@ -226,8 +404,68 @@ public class ChatConfig {
     public String getThinking() { return thinking; }
     public void setThinking(String thinking) { this.thinking = thinking; }
 
+    public boolean isFastMode() { return fastMode; }
+    public void setFastMode(boolean fastMode) { this.fastMode = fastMode; }
+
+    @JsonIgnore
+    public ProviderFastModeCapabilities fastModeCapabilities() {
+        return ProviderFastModeCapabilities.forProvider(provider);
+    }
+
+    @JsonIgnore
+    public boolean supportsFastMode() {
+        return fastModeCapabilities().supports(model);
+    }
+
+    /** Recheck the effective request model, including per-request overrides. */
+    public boolean useFastMode(String requestModel) {
+        return fastMode && fastModeCapabilities().supports(requestModel);
+    }
+
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+
+    @JsonIgnore
+    public LocalServingRuntimePool.Binding getLocalServingBinding() { return localServingBinding; }
+    public void setLocalServingBinding(LocalServingRuntimePool.Binding binding) {
+        this.localServingBinding = binding;
+    }
+
+    public String getAuthenticationMethod() { return authenticationMethod; }
+    public void setAuthenticationMethod(String authenticationMethod) {
+        this.authenticationMethod = authenticationMethod;
+    }
+
+    public String getPromptCacheRetention() {
+        return promptCacheRetention().wireValue();
+    }
+
+    public void setPromptCacheRetention(String promptCacheRetention) {
+        this.promptCacheRetention = ProviderPromptCacheCapabilities.Retention
+                .from(promptCacheRetention).wireValue();
+    }
+
+    @JsonIgnore
+    public ProviderPromptCacheCapabilities.Retention promptCacheRetention() {
+        return ProviderPromptCacheCapabilities.Retention.from(promptCacheRetention);
+    }
+
+    @JsonIgnore
+    public ProviderPromptCacheCapabilities promptCacheCapabilities() {
+        ChatProvider descriptor = ChatProviderRegistry.find(provider);
+        return descriptor == null
+                ? ProviderPromptCacheCapabilities.forProvider(provider)
+                : descriptor.promptCacheCapabilities();
+    }
+
+    /** Resolve timeout and retry behavior from the selected provider descriptor. */
+    @JsonIgnore
+    public ProviderConnectivityPolicy connectivityPolicy() {
+        ChatProvider descriptor = ChatProviderRegistry.find(provider);
+        return descriptor == null
+                ? ProviderConnectivityPolicy.forProvider(provider)
+                : descriptor.connectivityPolicy();
+    }
 
     public boolean isAutoCompactEnabled() { return autoCompactEnabled; }
     public void setAutoCompactEnabled(boolean autoCompactEnabled) {
@@ -275,7 +513,12 @@ public class ChatConfig {
         this.apiKey = source.apiKey;
         this.model = source.model;
         this.thinking = source.thinking;
+        this.fastMode = source.useFastMode(source.model);
         this.baseUrl = source.baseUrl;
+        this.localServingBinding = source.localServingBinding;
+        this.authenticationMethod = source.authenticationMethod;
+        this.authenticationScope = source.authenticationScope;
+        this.credentialNames = new LinkedHashMap<>(source.credentialNames);
         // These limits describe the selected provider/model. The provider-neutral
         // enable/threshold/reserve policy intentionally remains session-wide.
         this.contextWindowTokens = source.contextWindowTokens;
@@ -340,10 +583,26 @@ public class ChatConfig {
         // First-party Kompile serving and external local endpoints do not require an API key.
         if ("kompile-local".equals(provider)
                 || "ollama".equals(provider)
-                || "custom".equals(provider)
                 || isOpenCodeNative()) return true;
-        String resolvedApiKey = getApiKey();
-        return resolvedApiKey != null && !resolvedApiKey.isBlank();
+        if ("custom".equals(provider)) {
+            if (baseUrl == null || baseUrl.isBlank()) return false;
+            if ("oauth".equalsIgnoreCase(authenticationMethod)
+                    || "native".equalsIgnoreCase(authenticationMethod)) return false;
+            if ("api-key".equalsIgnoreCase(authenticationMethod)) {
+                return hasUsableCredential();
+            }
+            return true;
+        }
+        return hasUsableCredential();
+    }
+
+    private boolean hasUsableCredential() {
+        try {
+            String token = getApiKey();
+            return token != null && !token.isBlank();
+        } catch (AuthenticationException e) {
+            return false; // Configuration validation may offer setup; requests still fail closed.
+        }
     }
 
     /**
@@ -486,7 +745,7 @@ public class ChatConfig {
 
     public static ChatConfig loadEffective(Path projectRoot) {
         ChatConfig project = loadProject(projectRoot);
-        if (project != null && project.isValid()) {
+        if (project != null) {
             return project;
         }
         return loadGlobal();
@@ -513,7 +772,29 @@ public class ChatConfig {
 
     /** Persist back to the scope this config was loaded from, or globally if new. */
     public void saveLoadedOrGlobal() throws IOException {
-        if (loadedFrom != null) {
+        if (sessionSettingsPath != null) {
+            if (apiKey != null && !apiKey.isBlank() && provider != null) {
+                if ("global".equals(authenticationScope)) {
+                    CredentialStore.create().putApiKey(provider, apiKey);
+                    apiKey = null;
+                } else {
+                    String name = "session-" + java.util.UUID.randomUUID();
+                    CredentialStore.create().putApiKey(provider, name, apiKey, false);
+                    setCredentialName(name);
+                }
+            }
+            Files.createDirectories(sessionSettingsPath.getParent());
+            Path temporary = Files.createTempFile(sessionSettingsPath.getParent(), ".chat-config-", ".tmp");
+            try {
+                MAPPER.writeValue(temporary.toFile(), this);
+                try {
+                    Files.move(temporary, sessionSettingsPath, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(temporary, sessionSettingsPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally { Files.deleteIfExists(temporary); }
+        } else if (loadedFrom != null) {
             saveTo(loadedFrom);
         } else {
             saveGlobal();
@@ -578,7 +859,7 @@ public class ChatConfig {
 
     public static ChatConfig loadOrFromEnv(Path projectRoot) {
         ChatConfig config = loadEffective(projectRoot);
-        if (config != null && config.isValid()) {
+        if (config != null) {
             return config;
         }
         return fromEnv();
@@ -586,7 +867,7 @@ public class ChatConfig {
 
     public static ChatConfig loadGlobalOrFromEnv() {
         ChatConfig config = loadGlobal();
-        if (config != null && config.isValid()) {
+        if (config != null) {
             return config;
         }
         return fromEnv();
@@ -636,13 +917,21 @@ public class ChatConfig {
         return java.util.Collections.unmodifiableMap(descriptions);
     }
 
-    // Available passthrough agents — derived from CliAgentRegistry (single source of truth).
+    // Available passthrough agents. General-purpose agents come from CliAgentRegistry.
+    // DeepSeek Harness is intentionally scoped to this surface: its shipped headless
+    // profile is one-shot and is not compatible with every persistent registry consumer.
     // Computed lazily to avoid baking empty results into native image heap at build time.
     public static Map<String, String> getPassthroughAgents() {
         Map<String, String> agents = new LinkedHashMap<>();
         for (AgentProvider p : CliAgentRegistry.loadAll()) {
-            agents.put(p.getCommand(), p.getDisplayName());
+            String label = p.getDisplayName();
+            if (p.getModelListCommand() != null && !p.getModelListCommand().isEmpty()) {
+                label += " (requires installed '" + p.getCommand() + "' CLI)";
+            }
+            agents.put(p.getCommand(), label);
         }
+        agents.putIfAbsent("dsh",
+                "DeepSeek Harness (developer preview; managed one-shot; requires installed 'dsh' CLI)");
         return agents;
     }
 

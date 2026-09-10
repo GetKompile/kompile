@@ -276,8 +276,8 @@ class UnifiedCrawlControllerTest {
                 .build());
 
         FactSheetService factSheetService = mock(FactSheetService.class);
-        when(factSheetService.getSheetByName("FP&A")).thenReturn(Optional.of(
-                FactSheet.builder().id(91L).name("FP&A").build()));
+        when(factSheetService.getSheetByName("Planning")).thenReturn(Optional.of(
+                FactSheet.builder().id(91L).name("Planning").build()));
 
         UnifiedCrawlController controller = new UnifiedCrawlController(crawlService);
         setField(controller, "objectMapper", new ObjectMapper());
@@ -287,7 +287,7 @@ class UnifiedCrawlControllerTest {
         MockMultipartFile file = new MockMultipartFile(
                 "files", "budget.txt", "text/plain", "budget".getBytes());
         String config = """
-                {"name":"FP&A upload","factSheetName":"FP&A","vectorIndex":{"enabled":false}}
+                {"name":"Planning upload","factSheetName":"Planning","vectorIndex":{"enabled":false}}
                 """;
 
         ResponseEntity<?> response = controller.startJobWithFiles(
@@ -297,7 +297,7 @@ class UnifiedCrawlControllerTest {
         ArgumentCaptor<UnifiedCrawlRequest> requestCaptor =
                 ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
         verify(crawlService).startJob(requestCaptor.capture());
-        assertEquals("FP&A", requestCaptor.getValue().getFactSheetName());
+        assertEquals("Planning", requestCaptor.getValue().getFactSheetName());
         assertEquals(91L, requestCaptor.getValue().getFactSheetId());
     }
 

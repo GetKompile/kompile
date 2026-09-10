@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -17,6 +18,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.client.MockClientHttpRequest;
@@ -24,7 +27,10 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -77,8 +83,52 @@ class CrawlDocumentsToolTest {
                 .path("registeredPipelineId").path("description").asText()
                 .contains("Inherited options are effective defaults"));
         assertTrue(schema.path("properties").path("pipelines").path("items").path("properties")
-                .path("options").path("description").asText()
+                                .path("options").path("description").asText()
                 .contains("maxNewTokens"));
+        JsonNode processorType = schema.path("properties").path("pipelines").path("items")
+                .path("properties").path("processor").path("properties").path("type").path("enum");
+        assertTrue(processorType.toString().contains("CHAT_MODEL"), processorType.toString());
+        assertEquals("string", schema.path("properties").path("pipelines").path("items")
+                .path("properties").path("processor").path("properties").path("pageRange")
+                .path("type").asText());
+        assertTrue(schema.path("pipelineTypeGuide").path("CHAT_MODEL").asText()
+                .contains("configured direct chat provider"));
+        assertTrue(schema.path("properties").path("processingRoute").path("description").asText()
+                .contains("semantic graph-extraction"));
+    }
+
+    @Test
+    void chatPdfDryRunReportsTheActualSelectedPageRange() throws Exception {
+        new ChatConfig("custom", null, "dry-run-model", "http://127.0.0.1:1/v1")
+                .saveProject(tempDir);
+        Path pdfPath = tempDir.resolve("dry-run-pages.pdf");
+        try (PDDocument pdf = new PDDocument()) {
+            for (int i = 0; i < 10; i++) pdf.addPage(new PDPage());
+            pdf.save(pdfPath.toFile());
+        }
+
+        ObjectNode request = mapper.createObjectNode().put("dryRun", true).put("async", false);
+        request.putObject("knowledgeBase").put("name", "chat-page-preview");
+        request.putArray("documents").addObject()
+                .put("path", pdfPath.toString()).put("pipelineId", "chat-pdf");
+        request.putArray("pipelines").addObject()
+                .put("pipelineId", "chat-pdf").put("pipelineType", "VLM")
+                .put("loaderName", "auto").put("chunkerName", "no-op")
+                .putObject("processor").put("type", "CHAT_MODEL")
+                .put("pageRange", "7-9").put("maxPages", 10);
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> preview = (Map<String, Object>) result.getMetadata().get("preview");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> resolved = (List<Map<String, Object>>) preview.get("resolvedDocuments");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> modelResolution = (Map<String, Object>) resolved.get(0).get("modelResolution");
+        assertEquals("7-9", modelResolution.get("selectedPageRange"));
+        assertEquals(10, modelResolution.get("totalPages"));
+        assertEquals(3, modelResolution.get("selectedPageCount"));
     }
 
     @Test
@@ -110,6 +160,53 @@ class CrawlDocumentsToolTest {
         assertFalse(result.isError(), result.getOutput());
         assertEquals("project-local", result.getMetadata().get("backend"));
         assertFalse(result.getMetadata().containsKey("factSheetId"));
+    }
+
+    @Test
+    void obsidianVaultStaysProjectLocalWhenManagerIsConfigured() throws Exception {
+        Path vault = Files.createDirectories(tempDir.resolve("vault"));
+        Files.writeString(vault.resolve("note.md"), "obsidian-local-robin-marker", StandardCharsets.UTF_8);
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
+        CrawlDocumentsTool tool = new CrawlDocumentsTool(
+                new GroundingBackendClient("http://crawl", restTemplate), mapper);
+        ObjectNode request = mapper.createObjectNode().put("async", false);
+        request.putObject("runtimeConfig").put("runReasoningLearning", false);
+        request.putObject("knowledgeBase").put("name", "obsidian-local");
+        request.putArray("documents").addObject()
+                .put("path", vault.toString()).put("sourceType", "OBSIDIAN");
+
+        ToolResult result = tool.execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("project-local", result.getMetadata().get("backend"));
+        assertTrue(Files.readString(tempDir.resolve("data/crawls/obsidian-local/chunks.jsonl"))
+                .contains("obsidian-local-robin-marker"));
+        server.verify();
+    }
+
+    @Test
+    void chatModelPipelineStaysProjectLocalWhenManagerIsConfigured() throws Exception {
+        Path document = tempDir.resolve("remote.txt");
+        Files.writeString(document, "remote model input", StandardCharsets.UTF_8);
+        new ChatConfig("kompile-local", null, "local-only", "http://127.0.0.1:1")
+                .saveProject(tempDir);
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
+        CrawlDocumentsTool tool = new CrawlDocumentsTool(
+                new GroundingBackendClient("http://crawl", restTemplate), mapper);
+        ObjectNode request = mapper.createObjectNode().put("async", false);
+        request.putObject("knowledgeBase").put("name", "chat-model-local-routing");
+        request.putArray("documents").addObject()
+                .put("path", document.toString())
+                .put("pipelineId", "chat-model-document");
+        request.put("defaultPipelineId", "chat-model-document");
+
+        ToolResult result = tool.execute(request, context);
+
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Use UNIFIED_PIPELINE"), result.getOutput());
+        server.verify();
     }
 
     @Test
@@ -200,6 +297,41 @@ class CrawlDocumentsToolTest {
     }
 
     @Test
+    void managedExternalSourceKeepsMultiDocumentDefaultAndRedactsResultMetadata() throws Exception {
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
+        CrawlDocumentsTool tool = new CrawlDocumentsTool(
+                new GroundingBackendClient("http://crawl", restTemplate), mapper);
+        server.expect(requestTo("http://crawl/api/unified-crawl/start"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(request -> {
+                    JsonNode body = mapper.readTree(((MockClientHttpRequest) request).getBodyAsString());
+                    JsonNode source = body.path("sources").get(0);
+                    assertEquals("NOTION", source.path("sourceType").asText());
+                    assertEquals(0, source.path("maxDocuments").asInt());
+                    assertEquals("runtime-secret", source.path("properties").path("apiToken").asText());
+                })
+                .andRespond(withSuccess("""
+                        {"jobId":"notion-1","status":"QUEUED","factSheetId":7,"sourceCount":1}
+                        """, MediaType.APPLICATION_JSON));
+        ObjectNode request = mapper.createObjectNode();
+        request.putObject("knowledgeBase").put("id", 7);
+        request.putArray("documents").addObject()
+                .put("path", "0123456789abcdef0123456789abcdef")
+                .put("sourceType", "NOTION")
+                .putObject("properties").put("apiToken", "runtime-secret");
+
+        ToolResult result = tool.execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        JsonNode metadata = (JsonNode) result.getMetadata().get("requestedConfiguration");
+        assertEquals("***REDACTED***",
+                metadata.path("sources").get(0).path("properties").path("apiToken").asText());
+        assertFalse(result.getMetadata().toString().contains("runtime-secret"));
+        server.verify();
+    }
+
+    @Test
     void resolvesDiscoveredCodeProjectsIntoIncrementalCodeGraphSources() throws Exception {
         RestTemplate restTemplate = new RestTemplate();
         MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
@@ -215,6 +347,7 @@ class CrawlDocumentsToolTest {
                             "codeProjectId":"kompile",
                             "name":"Kompile",
                             "rootPath":"/workspace/kompile",
+                            "factSheetId":7,
                             "includePatterns":"**/*.java,**/*.md",
                             "excludePatterns":"**/generated/**",
                             "lifecycle":"ACTIVE",
@@ -240,6 +373,12 @@ class CrawlDocumentsToolTest {
                     assertTrue(source.path("excludePatterns").toString().contains("**/generated/**"));
                     assertTrue(source.path("properties").path("kompileCodeProject").asBoolean());
                     assertEquals("kompile", source.path("properties").path("codeProjectId").asText());
+                    assertTrue(source.path("properties").path("projectManaged").asBoolean());
+                    assertEquals("CODE", source.path("properties").path("pipelineType").asText());
+                    assertEquals("code_graph", source.path("properties").path("structuralIndex").asText());
+                    assertEquals("Kompile", source.path("properties").path("codeProjectName").asText());
+                    assertFalse(source.path("properties").has("factSheetId"),
+                            "explicit crawl target must replace the stale project binding");
                     assertTrue(body.path("runtimeConfig").path("incrementalByContentHash").asBoolean());
                     assertFalse(body.path("runtimeConfig").path("forceFullRecrawl").asBoolean());
                     assertTrue(body.path("runtimeConfig").path("trainEmbeddingsAfterEnrichment").asBoolean());
@@ -259,14 +398,6 @@ class CrawlDocumentsToolTest {
                           "scheduled":true
                         }
                         """, MediaType.APPLICATION_JSON));
-        server.expect(requestTo("http://crawl/api/projects/current/code-projects/kompile/fact-sheet"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(request -> {
-                    JsonNode body = mapper.readTree(((MockClientHttpRequest) request).getBodyAsString());
-                    assertEquals(9, body.path("factSheetId").asLong());
-                })
-                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
-
         ObjectNode params = mapper.createObjectNode();
         params.putArray("codeProjects").add("*");
         params.putObject("knowledgeBase").put("id", 9);
@@ -283,6 +414,7 @@ class CrawlDocumentsToolTest {
         assertTrue(result.getOutput().contains("incremental CODE pipeline"));
         assertEquals(1, result.getMetadata().get("codeProjectCount"));
         assertEquals(1, result.getMetadata().get("sourceCount"));
+        assertEquals("managed-by-crawl", result.getMetadata().get("codeProjectFactSheetBindings"));
         assertTrue(result.getMetadata().get("nextTools").toString().contains("graph_reasoning_query"));
         assertTrue(result.getMetadata().get("nextTools").toString().contains("graph_embeddings"));
         assertTrue(result.getMetadata().get("nextTools").toString().contains("code_graph"));

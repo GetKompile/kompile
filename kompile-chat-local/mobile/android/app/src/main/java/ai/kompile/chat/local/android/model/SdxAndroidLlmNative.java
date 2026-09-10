@@ -6,6 +6,13 @@ package ai.kompile.chat.local.android.model;
  * This class intentionally has no JavaCPP dependency. Android ART and the embedded
  * GraalVM isolate are separate JVMs in one process, so they must not share JavaCPP's
  * process-global JNI class, field, and method caches.
+ *
+ * <p>This is intentionally the Android-used subset of {@code sdx_llm_c.h}, not a
+ * second full binding. Android prepares verified GGUF in the isolated importer process,
+ * loads compiled bundles, and implements chat as render + streaming generate + parse.
+ * Raw-model loading, blocking generation, VLM/audio, info, and detokenization therefore
+ * remain available in the stable C ABI without an ART wrapper. The packaging script
+ * derives its JNI symbol audit directly from the native declarations below.</p>
  */
 public final class SdxAndroidLlmNative {
     public static final int SDX_LLM_ABI_VERSION = 2;

@@ -186,16 +186,46 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
 
     @Override
     public String complete(String prompt) {
+        return complete(prompt, null, false);
+    }
+
+    @Override
+    public ExtractionLlmService forModel(String model) {
+        if (model == null || model.isBlank()) return this;
+        if (agentConfig.getModelFlag() == null || agentConfig.getModelFlag().isBlank()) {
+            throw new ExtractionLlmException("CLI agent " + agentName + " cannot select an exact model");
+        }
+        String selected = model.trim();
+        return new ExtractionLlmService() {
+            public String getId() { return agentName; }
+            public String getDescription() { return displayName + " (request-scoped CLI model)"; }
+            public boolean isAvailable() { return CliAgentExtractionLlmService.this.isAvailable(); }
+            public String getEffectiveModel() { return selected; }
+            public String complete(String prompt) {
+                return CliAgentExtractionLlmService.this.complete(prompt, selected, true);
+            }
+        };
+    }
+
+    private String complete(String prompt, String model, boolean requestScoped) {
         log.info("CLI extraction request to {}: prompt length={}", agentName, prompt.length());
-
-        ensurePoolInitialized();
-
+        if (!requestScoped) ensurePoolInitialized();
+        Process process = null;
+        ScheduledExecutorService deadline = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "cli-extraction-deadline-" + agentName);
+            thread.setDaemon(true);
+            return thread;
+        });
+        AtomicBoolean expired = new AtomicBoolean();
+        Thread owner = Thread.currentThread();
+        long expiresAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
         try {
-            Process process = takeFromPool();
+            if (owner.isInterrupted()) throw new InterruptedException("Extraction cancelled");
+            process = requestScoped ? null : takeFromPool();
             if (process != null) {
                 log.info("CLI extraction {} pool hit — reusing PID {}", agentName, process.pid());
             } else {
-                List<String> command = buildCommand();
+                List<String> command = requestScoped ? buildCommand(model) : buildCommand();
                 ProcessBuilder pb = new ProcessBuilder(command);
                 pb.redirectErrorStream(true);
                 pb.environment().putAll(agentConfig.safeEnvironment());
@@ -203,8 +233,15 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
                 log.info("CLI extraction {} pool miss — spawned fresh PID {}", agentName, process.pid());
             }
 
-            // Replenish pool asynchronously
-            poolReplenisher.submit(this::replenishPool);
+            // Exact request models never borrow or populate the default-model pool.
+            if (!requestScoped) poolReplenisher.submit(this::replenishPool);
+            Process owned = process;
+            deadline.scheduleWithFixedDelay(() -> {
+                if (owner.isInterrupted() || System.nanoTime() >= expiresAt) {
+                    expired.set(true);
+                    destroyOwned(owned);
+                }
+            }, 0, 50, TimeUnit.MILLISECONDS);
 
             // Write prompt to stdin, then close so agent knows input is complete
             try (BufferedWriter writer = new BufferedWriter(
@@ -281,9 +318,11 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
 
             // Wait for process exit
             boolean exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!exited) {
-                log.warn("CLI agent {} timed out after {}s, destroying", agentName, timeoutSeconds);
-                process.destroyForcibly();
+            if (!exited || expired.get() || owner.isInterrupted()) {
+                throw new ExtractionLlmException("CLI agent " + agentName + " timed out or was cancelled");
+            }
+            if (process.exitValue() != 0) {
+                throw new ExtractionLlmException("CLI agent " + agentName + " failed with exit " + process.exitValue());
             }
 
             String output = textOutput.toString().trim();
@@ -299,10 +338,19 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
         } catch (ExtractionLlmException e) {
             throw e;
         } catch (Exception e) {
+            if (e instanceof InterruptedException) owner.interrupt();
             log.error("CLI agent {} subprocess error", agentName, e);
             throw new ExtractionLlmException(
                     "CLI agent " + agentName + " failed: " + e.getMessage(), e);
+        } finally {
+            deadline.shutdownNow();
+            if (process != null) destroyOwned(process);
         }
+    }
+
+    private static void destroyOwned(Process process) {
+        process.descendants().forEach(child -> { if (child.isAlive()) child.destroyForcibly(); });
+        if (process.isAlive()) process.destroyForcibly();
     }
 
     @Override
@@ -371,6 +419,10 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private List<String> buildCommand() {
+        return buildCommand(resolveModel());
+    }
+
+    private List<String> buildCommand(String model) {
         List<String> command = new ArrayList<>();
         command.add(agentConfig.getCommand());
 
@@ -392,9 +444,10 @@ public class CliAgentExtractionLlmService implements ExtractionLlmService {
 
         // Append model selection if configured (runtime override or cli-llm-config.json);
         // when unset the CLI uses its own default model.
-        String model = resolveModel();
-        if (agentConfig.getModelFlag() != null && !agentConfig.getModelFlag().isBlank()
-                && model != null && !model.isBlank()) {
+        if (model != null && !model.isBlank()) {
+            if (agentConfig.getModelFlag() == null || agentConfig.getModelFlag().isBlank()) {
+                throw new ExtractionLlmException("CLI agent " + agentName + " cannot select an exact model");
+            }
             command.add(agentConfig.getModelFlag());
             command.add(model);
         }

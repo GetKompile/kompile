@@ -44,6 +44,7 @@ class CrawlDocumentChunkingServiceTest {
     private CrawlDocumentChunkingService service;
     private TextChunker recursive;
     private TextChunker sentence;
+    private TextChunker codeAware;
 
     @BeforeEach
     void setUp() {
@@ -51,11 +52,14 @@ class CrawlDocumentChunkingServiceTest {
                 mock(PipelineStepTracker.class), mock(CrawlDocumentTracker.class));
         recursive = mock(TextChunker.class);
         sentence = mock(TextChunker.class);
+        codeAware = mock(TextChunker.class);
         when(recursive.getName()).thenReturn("recursive-character");
         when(recursive.getDefaultOptions()).thenReturn(Map.of("chunkSize", 2_000, "overlap", 200));
         when(sentence.getName()).thenReturn("sentence");
         when(sentence.getDefaultOptions()).thenReturn(Map.of("chunkSize", 800, "overlap", 100));
-        ReflectionTestUtils.setField(service, "textChunkers", List.of(recursive, sentence));
+        when(codeAware.getName()).thenReturn("code-aware");
+        when(codeAware.getDefaultOptions()).thenReturn(Map.of("chunkSize", 1800, "overlap", 0));
+        ReflectionTestUtils.setField(service, "textChunkers", List.of(codeAware, recursive, sentence));
         ReflectionTestUtils.setField(service, "projectChunkerName", "recursive");
         ReflectionTestUtils.setField(service, "projectChunkSize", 400);
         ReflectionTestUtils.setField(service, "projectChunkOverlap", 40);
@@ -129,6 +133,20 @@ class CrawlDocumentChunkingServiceTest {
         assertEquals(400, plan.options().get("chunkSize"));
         assertEquals(0, plan.options().get("overlap"));
         assertEquals(0, plan.options().get("chunkOverlap"));
+    }
+
+    @Test
+    void codeAwareChunkerIsSelectedOnlyForCodeContent() {
+        ReflectionTestUtils.setField(service, "projectChunkerName", null);
+        CrawlDocumentChunkingService.ChunkingPlan codePlan = service.resolvePlan(
+                new Document("class Example {}", Map.of(GraphConstants.META_CONTENT_TYPE, "code")),
+                UnifiedCrawlJob.builder().request(UnifiedCrawlRequest.builder().build()).build());
+        CrawlDocumentChunkingService.ChunkingPlan textPlan = service.resolvePlan(
+                new Document("ordinary prose", Map.of()),
+                UnifiedCrawlJob.builder().request(UnifiedCrawlRequest.builder().build()).build());
+
+        assertSame(codeAware, codePlan.chunker());
+        assertSame(recursive, textPlan.chunker());
     }
 
     @Test

@@ -56,6 +56,28 @@ class OAuthCredentialLifecycleTest {
     }
 
     @Test
+    void rejectsExpiredNonRefreshableAndExpiredRefreshedTokens() {
+        ManagedCredential expired = ManagedCredential.oauth("dead", "", 1_000L);
+        assertThrows(IOException.class, () -> OAuthCredentialLifecycle.resolve(
+                expired, 100L, 1_000L, ignored -> fail("must not call a provider without refresh token")));
+        ManagedCredential refreshable = ManagedCredential.oauth("old", "refresh", 1_000L);
+        assertThrows(IOException.class, () -> OAuthCredentialLifecycle.resolve(
+                refreshable, 100L, 1_000L, ignored -> refreshable));
+    }
+
+    @Test
+    void refreshRetainsIdentityAndUnrotatedRefreshTokenButAcceptsUpdatedMetadata() throws Exception {
+        ManagedCredential current = ManagedCredential.oauth("old", "refresh", 1_000L,
+                Map.of("subject", "user-1", "accountId", "account-1", "scope", "old"));
+        ManagedCredential refreshed = OAuthCredentialLifecycle.resolve(current, 100L, 1_000L,
+                ignored -> ManagedCredential.oauth("new", "", 5_000L, Map.of("scope", "new")));
+        assertEquals("refresh", refreshed.getRefresh());
+        assertEquals("user-1", refreshed.getMetadata("subject"));
+        assertEquals("account-1", refreshed.getMetadata("accountId"));
+        assertEquals("new", refreshed.getMetadata("scope"));
+    }
+
+    @Test
     void normalizesBlankRefreshTokenForRevocation() throws Exception {
         ManagedCredential current = ManagedCredential.oauth("access", "", Long.MAX_VALUE);
 

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.agent;
 
+import ai.kompile.cli.agent.spin.SpinCommand;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
@@ -25,7 +26,6 @@ import java.util.concurrent.Callable;
                 AgentWorkflowCommand.class,
                 AgentTaskCommand.class,
                 AgentDefaultsCommand.class,
-                AgentChannelCommand.class,
                 AgentSessionCommand.class,
                 AgentChatCommand.class,
                 AgentBundleValidateCommand.class,
@@ -34,6 +34,7 @@ import java.util.concurrent.Callable;
                 AgentBundleRunCommand.class,
                 AgentBundleToolsCommand.class,
                 AgentBundleServeCommand.class,
+                SpinCommand.class,
                 AgentMonitorCommand.class,
                 AgentLogsCommand.class,
                 SubprocessLogsCommand.class,
@@ -44,7 +45,7 @@ import java.util.concurrent.Callable;
         },
         mixinStandardHelpOptions = true,
         usageHelpAutoWidth = true,
-        description = "Agent and workflow management: run, serve, validate, inspect, pack, tools, workflow, task, defaults, channel, session, chat, monitor, logs, subprocess-logs, chat-import, process, process-discovery, rules.")
+        description = "Agent and workflow management: spins, packaged agents, workflow, task, defaults, session, chat, monitor, logs, chat import, process discovery, and rules. Channel credentials are managed by `kompile auth channel`.")
 public class AgentCliMain implements Callable<Integer> {
 
     @Override

@@ -45,6 +45,8 @@ class LocalCrawlJobRegistryTest {
         assertFalse(status.path("terminal").asBoolean());
         assertEquals("RUNNING", status.path("status").asText());
         assertEquals(1_000, status.path("pollAfterMs").asInt());
+        assertTrue(status.path("cancellable").asBoolean());
+        assertTrue(status.path("nextActions").findValuesAsText("name").contains("cancel"));
 
         release.countDown();
         JsonNode terminal = awaitTerminal(jobId);
@@ -58,6 +60,10 @@ class LocalCrawlJobRegistryTest {
         assertFalse(transcript.isError(), transcript.getOutput());
         assertTrue(transcript.getOutput().contains("durable-test"));
         assertTrue(transcript.getOutput().contains("JOB_TERMINAL"));
+        JsonNode durable = LocalCrawlJobStore.load(projectRoot, jobId).orElseThrow();
+        assertEquals("COMPLETED", durable.path("status").asText());
+        assertTrue(durable.path("terminal").asBoolean());
+        assertFalse(durable.path("finishedAt").asText().isBlank());
     }
 
     @Test
@@ -74,6 +80,41 @@ class LocalCrawlJobRegistryTest {
         ToolResult result = LocalCrawlJobRegistry.result(jobId, mapper);
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("java.lang.AssertionError: linkage-style failure"));
+    }
+
+    @Test
+    void terminalResultAdoptsAndPersistsWorkerKnowledgeBase() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        LocalCrawlJobRegistry.submit(jobId, null, projectRoot,
+                mapper.createObjectNode().put("name", "selector-test"), null, () -> {
+            started.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return ToolResult.success("crawl_documents", "done",
+                    Map.of("status", "COMPLETED", "knowledgeBase", "project-knowledge"));
+        });
+
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+        JsonNode running = mapper.readTree(
+                LocalCrawlJobRegistry.status(jobId, mapper).getOutput());
+        assertFalse(running.path("crawlResult").has("knowledgeBase"));
+        assertFalse(running.path("nextActions").toString().contains("inspectKnowledge"));
+
+        release.countDown();
+        JsonNode terminal = awaitTerminal(jobId);
+        assertEquals("project-knowledge",
+                terminal.path("crawlResult").path("knowledgeBase").asText());
+        assertTrue(terminal.path("nextActions").toString().contains("inspectKnowledge"));
+
+        ToolResult result = LocalCrawlJobRegistry.result(jobId, mapper);
+        assertEquals("project-knowledge",
+                ((Map<?, ?>) result.getMetadata().get("crawlResult")).get("knowledgeBase"));
+        ToolResult stored = LocalCrawlJobStore.storedResult(projectRoot, jobId, mapper);
+        assertEquals("project-knowledge",
+                ((Map<?, ?>) stored.getMetadata().get("crawlResult")).get("knowledgeBase"));
+        assertEquals("COMPLETED", stored.getMetadata().get("status"));
+        assertEquals(true, stored.getMetadata().get("terminal"));
     }
 
     @Test

@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import ai.kompile.cli.main.chat.tools.SearchExclusions;
 
+import java.nio.charset.CharacterCodingException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
@@ -49,11 +50,13 @@ import java.util.stream.Collectors;
  */
 public class LocalCodeIndexer {
 
+    private static final int RELATION_EXTRACTION_VERSION = 2;
+
     private static final Set<String> IGNORED_DIRS = Set.of(
             ".git", ".svn", ".hg", "node_modules", "__pycache__", ".gradle",
             "target", "build", "dist", "out", ".idea", ".vscode", ".settings",
             ".kompile", ".claude", ".codex", ".gemini", ".opencode", ".cursor",
-            "vendor", ".tox", ".mypy_cache", ".pytest_cache", ".angular",
+            "vendor", "venv", ".venv", ".tox", ".mypy_cache", ".pytest_cache", ".angular",
             ".next", ".nuxt", "coverage", ".cache", "bin", "obj"
     );
 
@@ -113,15 +116,29 @@ public class LocalCodeIndexer {
     // --- Regex patterns for entity extraction ---
 
     // Java / JVM
-    private static final Pattern JAVA_PACKAGE = Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;");
-    private static final Pattern JAVA_IMPORT = Pattern.compile("^\\s*import\\s+(static\\s+)?([\\w.*]+)\\s*;");
+    private static final Pattern JAVA_PACKAGE = Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;?");
+    private static final Pattern JAVA_IMPORT = Pattern.compile("^\\s*import\\s+(static\\s+)?([\\w.*]+)\\s*;?");
     private static final Pattern JAVA_CLASS = Pattern.compile(
+            "^\\s*(public|protected|private)?\\s*(static\\s+)?(abstract\\s+)?(final\\s+)?" +
+                    "(class|interface|enum|record|@interface)\\s+(\\w+)(?:<[^>]*>)?" +
+                    "(?:\\(.*\\))?(?:\\s+extends\\s+([\\w.<>,\\s]+?))?" +
+                    "(?:\\s+implements\\s+([\\w.<>,\\s]+?))?(?:\\s+permits\\s+[\\w.<>,\\s]+)?" +
+                    "\\s*(?:\\{|$)", Pattern.DOTALL);
+    private static final Pattern JVM_CLASS_PREFIX = Pattern.compile(
             "^\\s*(public|protected|private)?\\s*(static\\s+)?(abstract\\s+)?(final\\s+)?" +
                     "(class|interface|enum|record|@interface)\\s+(\\w+)(?:\\s+extends\\s+([\\w.]+))?" +
                     "(?:\\s+implements\\s+([\\w.,\\s]+))?");
     private static final Pattern JAVA_METHOD = Pattern.compile(
             "^\\s*(public|protected|private)?\\s*(static\\s+)?(abstract\\s+)?(?:synchronized\\s+)?" +
+                    "(?:(?:final|native|default)\\s+)*(?:<[^>]+>\\s+)?" +
+                    "([?@\\w$][\\w$<>\\[\\].,?]*(?:\\s+[?@\\w$][\\w$<>\\[\\].,?]*)*)\\s+" +
+                    "(\\w+)\\s*\\(([^)]*)\\)\\s*(?:throws\\s+[\\w$.,<>?\\s]+)?\\s*(?:\\{|;|$)");
+    private static final Pattern JVM_METHOD_PREFIX = Pattern.compile(
+            "^\\s*(public|protected|private)?\\s*(static\\s+)?(abstract\\s+)?(?:synchronized\\s+)?" +
                     "((?:[\\w.<>\\[\\],?\\s]+)\\s+)(\\w+)\\s*\\(([^)]*)\\)");
+    private static final Pattern JAVA_CONSTRUCTOR = Pattern.compile(
+            "^\\s*(public|protected|private)?\\s*(\\w+)\\s*\\(([^)]*)\\)\\s*" +
+                    "(?:throws\\s+[\\w$.,<>?\\s]+)?\\s*\\{");
     private static final Pattern JAVA_FIELD = Pattern.compile(
             "^\\s*(public|protected|private)?\\s*(static\\s+)?(final\\s+)?(\\w[\\w.<>\\[\\]]*\\s+)(\\w+)\\s*[=;]");
 
@@ -211,13 +228,22 @@ public class LocalCodeIndexer {
                 migrateFromLegacy(store, projectId, absRoot, out);
                 out.println("Migration complete.");
             }
+            Map<String, Object> priorMetadata = store.loadMetadata();
+            // The periodic background pass must check the DB even when source fingerprints are clean.
+            // A marker survives crashes between SQLite commit and JSON publication.
+            Path pendingUpdate = indexDir.resolve("update.pending");
+            IndexMaintenance.Result maintenance = IndexMaintenance.checkLocked(indexDir, priorMetadata, forceReindex);
+            forceReindex |= maintenance.reindexRequired() || Files.exists(pendingUpdate);
+            // Unchanged file fingerprints cannot validate relationships produced by an older parser.
+            forceReindex |= !Integer.valueOf(RELATION_EXTRACTION_VERSION)
+                    .equals(priorMetadata.get("relationExtractionVersion"));
 
             out.println("Indexing: " + absRoot + (forceReindex ? " (full re-index)" : " (incremental)"));
             out.println("Project: " + projectId);
 
             // Load existing fingerprints
             Map<String, IndexFileStore.FileFingerprint> oldFingerprints =
-                    forceReindex ? new LinkedHashMap<>() : store.loadFingerprints();
+                    store.loadFingerprints();
 
             // Collect current source files (walk captures mtime+size — no re-stat later)
             List<SourceFile> sourceFiles = collectSourceFiles(absRoot, includeSet, excludeSet);
@@ -240,7 +266,7 @@ public class LocalCodeIndexer {
 
             for (SourceFile file : sourceFiles) {
                 IndexFileStore.FileFingerprint old = oldFingerprints.get(file.relPath());
-                if (old != null && old.lastModified() == file.mtime() && old.size() == file.size()) {
+                if (!forceReindex && old != null && old.lastModified() == file.mtime() && old.size() == file.size()) {
                     skipped++;
                     continue; // mtime+size unchanged — skip
                 }
@@ -267,15 +293,33 @@ public class LocalCodeIndexer {
             out.println("  To re-index: " + toReparse.size());
             out.println("  Deleted: " + deleted.size());
 
-            // Fast path: clean tree — don't open the DB or rewrite index files.
+            // Fast path after throttled integrity maintenance: avoid entity scans and index rewrites.
             // The auto-refresher runs this method before read actions every 30s;
             // without this, every clean pass still paid a DB open, two COUNT
             // scans and a full fingerprints+metadata rewrite.
-            if (toReparse.isEmpty() && deleted.isEmpty()) {
-                Map<String, Object> priorMeta = store.loadMetadata();
+            if (!forceReindex && toReparse.isEmpty() && deleted.isEmpty()) {
+                Map<String, Object> priorMeta = priorMetadata;
                 if (!priorMeta.isEmpty()) {
+                    String requestedIncludes = includes == null || includes.isBlank() ? null : includes;
+                    String requestedExcludes = excludes == null || excludes.isBlank() ? null : excludes;
+                    boolean scopeChanged = !Objects.equals(requestedIncludes,
+                            stringMetadata(priorMeta.get("includePatterns")))
+                            || !Objects.equals(requestedExcludes,
+                            stringMetadata(priorMeta.get("excludePatterns")));
+                    boolean clearPriorErrors = priorMeta.get("errors") instanceof Number n
+                            && n.intValue() > 0;
                     if (fingerprintDriftOnly) {
                         store.saveFingerprints(oldFingerprints);
+                    }
+                    if (scopeChanged || clearPriorErrors) {
+                        if (requestedIncludes == null) priorMeta.remove("includePatterns");
+                        else priorMeta.put("includePatterns", requestedIncludes);
+                        if (requestedExcludes == null) priorMeta.remove("excludePatterns");
+                        else priorMeta.put("excludePatterns", requestedExcludes);
+                        // Membership is unchanged: preserve the committed SQLite generation.
+                        priorMeta.put("errors", 0);
+                        priorMeta.put("filesReindexed", 0);
+                        store.saveMetadata(priorMeta);
                     }
                     Map<String, Integer> storedLangCounts = new TreeMap<>();
                     if (priorMeta.get("languageCounts") instanceof Map<?, ?> lc) {
@@ -294,7 +338,8 @@ public class LocalCodeIndexer {
             }
 
             // Open DB and perform incremental update
-            Map<String, IndexFileStore.FileFingerprint> newFingerprints = new LinkedHashMap<>(oldFingerprints);
+            Map<String, IndexFileStore.FileFingerprint> newFingerprints = forceReindex
+                    ? new LinkedHashMap<>() : new LinkedHashMap<>(oldFingerprints);
             AtomicInteger errorCount = new AtomicInteger(0);
             Map<String, Integer> langCounts = new TreeMap<>();
             int totalEntities = 0;
@@ -302,16 +347,13 @@ public class LocalCodeIndexer {
             // Capture a single timestamp for the entire indexing run
             String indexTimestamp = Instant.now().toString();
 
-            // A fully processed file: entities + relations extracted, shard written.
+            // A parsed file ready for publication by the single writer.
             record ParsedFile(String relPath, String lang, List<Map<String, Object>> entities,
                               List<Map<String, Object>> relations,
                               IndexFileStore.FileFingerprint fingerprint) {}
 
-            // Everything per-file and DB-free runs on the parse pool: read,
-            // entity parse, relation extraction, shard write. (Relation
-            // extraction and shard writes used to run on the single DB-writer
-            // thread, and every parsed file's full line array was retained
-            // until that phase — slow and memory-heavy on big passes.)
+            // Parse workers only read and extract entities/relations. The writer publishes
+            // shards under the project lock, so cancelled workers cannot overwrite a newer run.
             store.ensureFilesDir();
             java.util.function.Function<SourceFile, ParsedFile> parseOne = file -> {
                 try {
@@ -348,13 +390,13 @@ public class LocalCodeIndexer {
                     IndexFileStore.FileFingerprint fp = new IndexFileStore.FileFingerprint(
                             file.mtime(), file.size(), sha);
 
-                    store.writeFileShard(file.relPath(), fp, fileEntities);
-
+                    // Workers are side-effect free: failed/cancelled runs cannot publish shards
+                    // after the writer releases the project lock.
                     return new ParsedFile(file.relPath(), lang, fileEntities, relations, fp);
                 } catch (Exception e) {
                     int n = errorCount.incrementAndGet();
                     if (n <= 5) {
-                        out.println("  Error indexing file: " + e.getMessage());
+                        out.println(formatIndexingError(file, e));
                     } else if (n == 6) {
                         out.println("  (suppressing further error details)");
                     }
@@ -372,11 +414,13 @@ public class LocalCodeIndexer {
             // running as strict phases, and peak memory stays bounded by the
             // in-flight files instead of the whole change set.
             List<String> writtenPaths = new ArrayList<>(toReparse.size());
+            Files.writeString(pendingUpdate, indexTimestamp);
             try (IndexDatabase db = IndexDatabase.open(indexDir)) {
                 db.beginTransaction();
                 try {
-                    // Remove deleted files (bulk)
-                    db.deleteFiles(deleted);
+                    // Full rebuilds clear unknown/stale membership too, within the same transaction.
+                    if (forceReindex) db.clearIndex();
+                    else db.deleteFiles(deleted);
                     for (String delPath : deleted) {
                         store.deleteFileShard(delPath);
                         newFingerprints.remove(delPath);
@@ -430,6 +474,7 @@ public class LocalCodeIndexer {
                             db.upsertFile(pf.relPath(), IndexFileStore.shardName(pf.relPath()),
                                     pf.fingerprint());
 
+                            store.writeFileShard(pf.relPath(), pf.fingerprint(), pf.entities());
                             newFingerprints.put(pf.relPath(), pf.fingerprint());
                             writtenPaths.add(pf.relPath());
 
@@ -439,13 +484,25 @@ public class LocalCodeIndexer {
                                 out.flush();
                             }
                         } catch (Exception e) {
-                            int n = errorCount.incrementAndGet();
-                            if (n <= 5) {
-                                out.println("  Error writing file: " + e.getMessage());
-                            }
+                            // A batch may already have changed metadata but not FTS. Continuing
+                            // and committing here creates logical SQLITE_CORRUPT_VTAB damage.
+                            throw new IOException("Error writing file " + pf.relPath() + ": " + e.getMessage(), e);
                         }
                     }
 
+                    // Resolve against the final declaration set BEFORE committing its generation.
+                    // Otherwise readers could observe two different graphs with the same token.
+                    if (!writtenPaths.isEmpty() || !deleted.isEmpty()) {
+                        int resolved = db.ensureConnectivity(
+                                writtenPaths.size() == sourceFiles.size() ? null : writtenPaths);
+                        if (resolved > 0) {
+                            out.println("  Graph: updated " + resolved + " cross-file relation targets");
+                        }
+                    }
+                    String committedGeneration = forceReindex || !writtenPaths.isEmpty() || !deleted.isEmpty()
+                            ? indexTimestamp
+                            : stringMetadata(priorMetadata.get("indexedAt"));
+                    db.setIndexGeneration(committedGeneration);
                     db.commit();
                     totalEntities = db.getEntityCount();
 
@@ -454,50 +511,44 @@ public class LocalCodeIndexer {
                         langCounts = db.getLanguageCounts();
                     }
 
-                    // Post-commit: resolve cross-file FQN targets in relations.
-                    // Incremental passes only resolve the changed scope; a full
-                    // pass (everything re-parsed) resolves across the index.
-                    if (!writtenPaths.isEmpty()) {
-                        try {
-                            db.beginTransaction();
-                            int resolved = db.ensureConnectivity(
-                                    writtenPaths.size() == sourceFiles.size() ? null : writtenPaths);
-                            db.commit();
-                            if (resolved > 0) {
-                                out.println("  Graph: resolved " + resolved + " cross-file relation targets");
-                            }
-                        } catch (Exception ce) {
-                            db.rollback();
-                            // Non-fatal — index is still usable
-                            out.println("  Warning: connectivity pass failed: " + ce.getMessage());
-                        }
-                    }
                 } catch (Exception e) {
                     db.rollback();
+                    IndexMaintenance.invalidate(indexDir);
                     throw new IOException("Index update failed: " + e.getMessage(), e);
                 }
             } catch (java.sql.SQLException e) {
+                IndexMaintenance.invalidate(indexDir);
                 throw new IOException("Database error: " + e.getMessage(), e);
             } finally {
-                if (parsePool != null) parsePool.shutdown();
+                if (parsePool != null) parsePool.shutdownNow();
             }
 
             // Save fingerprints
             store.saveFingerprints(newFingerprints);
 
             // Save metadata
+            int successfulReindexed = Math.max(0, toReparse.size() - errorCount.get());
+            Object previousGeneration = priorMetadata.get("indexedAt");
+            String committedGeneration = forceReindex || !writtenPaths.isEmpty() || !deleted.isEmpty()
+                    ? indexTimestamp
+                    : previousGeneration == null ? null : previousGeneration.toString();
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("projectId", projectId);
             metadata.put("rootPath", absRoot.toString());
-            metadata.put("indexedAt", Instant.now().toString());
+            if (committedGeneration != null) metadata.put("indexedAt", committedGeneration);
             metadata.put("filesProcessed", currentRelPaths.size());
             metadata.put("entitiesFound", totalEntities);
             metadata.put("errors", errorCount.get());
             metadata.put("languageCounts", langCounts);
             metadata.put("filesSkipped", skipped);
             metadata.put("filesDeleted", deleted.size());
-            metadata.put("filesReindexed", toReparse.size());
+            metadata.put("filesReindexed", successfulReindexed);
+            metadata.put("relationExtractionVersion", RELATION_EXTRACTION_VERSION);
+            if (includes != null && !includes.isBlank()) metadata.put("includePatterns", includes);
+            if (excludes != null && !excludes.isBlank()) metadata.put("excludePatterns", excludes);
             store.saveMetadata(metadata);
+            Files.deleteIfExists(pendingUpdate);
+            if (forceReindex) IndexMaintenance.invalidate(indexDir);
 
             out.println("  Processed " + toReparse.size() + " files, " +
                     totalEntities + " entities total, " + errorCount.get() + " errors");
@@ -530,6 +581,23 @@ public class LocalCodeIndexer {
     }
 
     /**
+     * Return structural entities declared in one indexed file.
+     */
+    public List<Map<String, Object>> entitiesForFile(String projectId, String filePath,
+                                                      int maxResults) throws IOException {
+        Path indexDir = getIndexDir(projectId);
+        if (!Files.isRegularFile(indexDir.resolve("index.db"))) return List.of();
+        try (IndexLockManager.LockToken ignored = IndexLockManager.acquireReadLock(projectId);
+             IndexDatabase db = IndexDatabase.open(indexDir)) {
+            List<Map<String, Object>> entities = db.getEntitiesForFile(filePath);
+            return entities.size() <= maxResults
+                    ? entities : new ArrayList<>(entities.subList(0, maxResults));
+        } catch (java.sql.SQLException e) {
+            throw new IOException("Unable to list entities for " + filePath, e);
+        }
+    }
+
+    /**
      * List all locally indexed projects.
      */
     public List<Map<String, Object>> listProjects() throws IOException {
@@ -542,9 +610,15 @@ public class LocalCodeIndexer {
                 if (!Files.isDirectory(dir)) continue;
                 Path metaFile = dir.resolve("metadata.json");
                 if (Files.exists(metaFile)) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> meta = objectMapper.readValue(metaFile.toFile(), Map.class);
-                    projects.add(meta);
+                    try {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> meta =
+                                objectMapper.readValue(metaFile.toFile(), Map.class);
+                        projects.add(meta);
+                    } catch (IOException malformedProjectMetadata) {
+                        // One stale/partial index must not disable root discovery for
+                        // every healthy project in the shared local registry.
+                    }
                 }
             }
         }
@@ -581,6 +655,11 @@ public class LocalCodeIndexer {
      */
     public IndexFileWatcher createWatcher(Path rootDir, String projectId, PrintStream out) {
         return new IndexFileWatcher(rootDir, projectId, this, out);
+    }
+
+    public IndexFileWatcher createWatcher(Path rootDir, String projectId,
+                                          String includes, String excludes, PrintStream out) {
+        return new IndexFileWatcher(rootDir, projectId, this, includes, excludes, out);
     }
 
     // -----------------------------------------------------------------------
@@ -721,15 +800,20 @@ public class LocalCodeIndexer {
                                                 String projectId, String lang) {
         List<Map<String, Object>> entities = new ArrayList<>();
         String packageName = null;
-        String currentClass = null;
+        Deque<JvmTypeScope> typeScopes = new ArrayDeque<>();
         StringBuilder docBuffer = new StringBuilder();
         boolean inDocComment = false;
         // Spring annotation state — tracks annotations on the NEXT class/field/method
         List<String> pendingAnnotations = new ArrayList<>();
+        boolean javaOrGroovy = "java".equals(lang) || "groovy".equals(lang);
 
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             int lineNum = i + 1;
+            while (!typeScopes.isEmpty() && i > typeScopes.peek().endIndex()) {
+                typeScopes.pop();
+            }
+            String currentClass = typeScopes.isEmpty() ? null : typeScopes.peek().fqn();
 
             // Doc comments
             if (line.trim().startsWith("/**")) {
@@ -793,15 +877,19 @@ public class LocalCodeIndexer {
             }
 
             // Class / Interface / Enum / Record
-            m = JAVA_CLASS.matcher(line);
+            JvmDeclaration typeDeclaration = collectJvmDeclaration(lines, i);
+            m = (javaOrGroovy ? JAVA_CLASS : JVM_CLASS_PREFIX)
+                    .matcher(declarationForMatching(typeDeclaration.text()));
             if (m.find()) {
                 String visibility = m.group(1);
                 String kind = m.group(5);
                 String name = m.group(6);
                 String extendsClass = m.group(7);
                 String implementsStr = m.group(8);
-                String fqn = packageName != null ? packageName + "." + name : name;
-                currentClass = fqn;
+                String fqn = currentClass != null
+                        ? currentClass + "." + name
+                        : packageName != null ? packageName + "." + name : name;
+                int endIndex = findJvmBlockEnd(lines, i, "groovy".equals(lang));
                 String entityType = switch (kind) {
                     case "interface" -> "INTERFACE";
                     case "enum" -> "ENUM";
@@ -812,7 +900,7 @@ public class LocalCodeIndexer {
                 String doc = docBuffer.length() > 0 ? docBuffer.toString() : null;
                 docBuffer.setLength(0);
                 Map<String, Object> entity = makeEntity(projectId, entityType, name, fqn,
-                        filePath, lang, lineNum, lineNum, line.trim(), doc);
+                        filePath, lang, lineNum, endIndex + 1, line.trim(), doc);
                 if (visibility != null) entity.put("visibility", visibility);
                 if (extendsClass != null && !extendsClass.isBlank())
                     entity.put("inheritedFrom", extendsClass.trim());
@@ -825,12 +913,45 @@ public class LocalCodeIndexer {
                     pendingAnnotations.clear();
                 }
                 entities.add(entity);
+                typeScopes.push(new JvmTypeScope(fqn, endIndex));
+                i = typeDeclaration.endIndex();
                 continue;
             }
 
-            // Method
-            m = JAVA_METHOD.matcher(line);
-            if (m.find() && !line.contains("new ") && !line.trim().startsWith("//")) {
+            JvmDeclaration declaration = collectJvmDeclaration(lines, i);
+            String declarationText = declaration.text();
+            String declarationMatchText = declarationForMatching(declarationText);
+
+            // Constructor (kept as METHOD in the lightweight local schema).
+            m = JAVA_CONSTRUCTOR.matcher(declarationMatchText);
+            if (m.find() && currentClass != null
+                    && m.group(2).equals(simpleName(currentClass))) {
+                String visibility = m.group(1);
+                String constructorName = m.group(2);
+                String params = m.group(3);
+                String fqn = currentClass + "." + constructorName;
+                String sig = constructorName + "(" + (params != null ? params.trim() : "") + ")";
+                String doc = docBuffer.length() > 0 ? docBuffer.toString() : null;
+                docBuffer.setLength(0);
+                int bodyEnd = declarationHasBody(declarationText)
+                        ? findJvmBlockEnd(lines, i, "groovy".equals(lang)) : declaration.endIndex();
+                Map<String, Object> entity = makeEntity(projectId, "METHOD", constructorName, fqn,
+                        filePath, lang, lineNum, bodyEnd + 1, sig, doc);
+                if (visibility != null) entity.put("visibility", visibility);
+                if (!pendingAnnotations.isEmpty()) {
+                    entity.put("annotations", String.join(", ", pendingAnnotations));
+                    pendingAnnotations.clear();
+                }
+                entities.add(entity);
+                i = bodyEnd;
+                continue;
+            }
+
+            // Method. Collect a bounded multiline declaration before matching so
+            // ordinary Java formatting does not make definitions disappear.
+            m = (javaOrGroovy ? JAVA_METHOD : JVM_METHOD_PREFIX).matcher(declarationMatchText);
+            if (m.find() && !declarationMatchText.substring(0, m.end()).contains("new ")
+                    && !line.trim().startsWith("//")) {
                 String visibility = m.group(1);
                 String methodName = m.group(5);
                 String params = m.group(6);
@@ -839,14 +960,18 @@ public class LocalCodeIndexer {
                 String sig = methodName + "(" + (params != null ? params.trim() : "") + ")";
                 String doc = docBuffer.length() > 0 ? docBuffer.toString() : null;
                 docBuffer.setLength(0);
+                int bodyEnd = declarationHasBody(declarationText)
+                        ? findJvmBlockEnd(lines, i, "groovy".equals(lang)) : declaration.endIndex();
                 Map<String, Object> entity = makeEntity(projectId, "METHOD", methodName, fqn,
-                        filePath, lang, lineNum, lineNum, sig, doc);
+                        filePath, lang, lineNum, bodyEnd + 1, sig, doc);
                 if (visibility != null) entity.put("visibility", visibility);
                 if (!pendingAnnotations.isEmpty()) {
                     entity.put("annotations", String.join(", ", pendingAnnotations));
                     pendingAnnotations.clear();
                 }
                 entities.add(entity);
+                // Call sites are extracted separately from the recorded callable bounds.
+                i = bodyEnd;
                 continue;
             }
 
@@ -877,6 +1002,344 @@ public class LocalCodeIndexer {
             docBuffer.setLength(0);
         }
         return entities;
+    }
+
+    private static String stringMetadata(Object value) {
+        return value == null || value.toString().isBlank() ? null : value.toString();
+    }
+
+    private static String formatIndexingError(SourceFile file, Exception error) {
+        Throwable cause = error;
+        while (cause != null && !(cause instanceof CharacterCodingException)) {
+            cause = cause.getCause();
+        }
+        String detail;
+        if (cause instanceof CharacterCodingException) {
+            detail = "invalid UTF-8";
+        } else {
+            detail = error.getMessage();
+            if (detail == null || detail.isBlank()) detail = error.getClass().getSimpleName();
+        }
+        return "  Error indexing " + file.relPath() + ": " + detail;
+    }
+
+    private record JvmTypeScope(String fqn, int endIndex) {}
+
+    private record JvmDeclaration(String text, int endIndex) {}
+
+    private static JvmDeclaration collectJvmDeclaration(String[] lines, int startIndex) {
+        StringBuilder declaration = new StringBuilder(lines[startIndex].trim());
+        int balance = parenthesisBalance(lines[startIndex]);
+        int endIndex = startIndex;
+        int limit = Math.min(lines.length, startIndex + 64);
+        while (balance > 0 && endIndex + 1 < limit) {
+            endIndex++;
+            String next = lines[endIndex].trim();
+            if (!next.isEmpty()) declaration.append('\n').append(next);
+            balance += parenthesisBalance(lines[endIndex]);
+        }
+        boolean inContinuation = declarationContinues(declaration.toString());
+        while (balance <= 0 && endIndex + 1 < limit
+                && !declarationEndsHeader(declaration.toString())) {
+            String next = lines[endIndex + 1].trim();
+            if (next.isEmpty()) {
+                endIndex++;
+                continue;
+            }
+            boolean startsContinuation = next.startsWith("throws ") || next.startsWith("extends ")
+                    || next.startsWith("implements ") || next.startsWith("permits ")
+                    || next.startsWith("{");
+            if (!inContinuation && !startsContinuation) break;
+            endIndex++;
+            declaration.append('\n').append(next);
+            balance += parenthesisBalance(next);
+            inContinuation = true;
+        }
+        return new JvmDeclaration(declaration.toString(), endIndex);
+    }
+
+    private static boolean declarationEndsHeader(String declaration) {
+        String trimmed = declaration.trim();
+        return trimmed.endsWith(";") || declarationHasBody(declaration);
+    }
+
+    private static boolean declarationContinues(String declaration) {
+        int closingParenthesis = declaration.lastIndexOf(')');
+        if (closingParenthesis >= 0) {
+            String tail = declaration.substring(closingParenthesis + 1).trim();
+            return tail.matches("^(?:throws|extends|implements|permits)\\b.*");
+        }
+        return declaration.matches("(?s).*\\b(?:extends|implements|permits)\\b[^;{]*$");
+    }
+
+    private static boolean declarationHasBody(String declaration) {
+        boolean inString = false;
+        boolean inChar = false;
+        boolean inBlockComment = false;
+        boolean escaped = false;
+        int parentheses = 0;
+        for (int i = 0; i < declaration.length(); i++) {
+            char c = declaration.charAt(i);
+            char next = i + 1 < declaration.length() ? declaration.charAt(i + 1) : 0;
+            if (inBlockComment) {
+                if (c == '*' && next == '/') {
+                    inBlockComment = false;
+                    i++;
+                }
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '/') {
+                int newline = declaration.indexOf("\n", i + 2);
+                if (newline < 0) return false;
+                i = newline;
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '*') {
+                inBlockComment = true;
+                i++;
+                continue;
+            }
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!inChar && c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString && c == '\'') {
+                inChar = !inChar;
+                continue;
+            }
+            if (!inString && !inChar) {
+                if (c == '(') parentheses++;
+                else if (c == ')' && parentheses > 0) parentheses--;
+                else if (parentheses == 0 && c == ';') return false;
+                else if (parentheses == 0 && c == '{') return true;
+            }
+        }
+        return false;
+    }
+
+    private static String declarationForMatching(String declaration) {
+        StringBuilder result = new StringBuilder(declaration.length());
+        boolean inString = false;
+        boolean inChar = false;
+        boolean inBlockComment = false;
+        boolean inLineComment = false;
+        boolean escaped = false;
+        for (int i = 0; i < declaration.length(); i++) {
+            char c = declaration.charAt(i);
+            char next = i + 1 < declaration.length() ? declaration.charAt(i + 1) : 0;
+            if (inLineComment) {
+                if (c == '\n') {
+                    inLineComment = false;
+                    result.append(c);
+                }
+                continue;
+            }
+            if (inBlockComment) {
+                if (c == '*' && next == '/') {
+                    inBlockComment = false;
+                    result.append(' ');
+                    i++;
+                }
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '/') {
+                inLineComment = true;
+                i++;
+                continue;
+            }
+            if (!inString && !inChar && c == '/' && next == '*') {
+                inBlockComment = true;
+                i++;
+                continue;
+            }
+            result.append(c);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+            } else if (!inChar && c == '"') {
+                inString = !inString;
+            } else if (!inString && c == '\'') {
+                inChar = !inChar;
+            }
+        }
+        return result.toString();
+    }
+
+    private static int parenthesisBalance(String line) {
+        int balance = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        boolean escaped = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if ((inString || inChar) && c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (!inChar && c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString && c == '\'') {
+                inChar = !inChar;
+                continue;
+            }
+            if (!inString && !inChar) {
+                if (c == '(') balance++;
+                else if (c == ')') balance--;
+            }
+        }
+        return balance;
+    }
+
+    private static String simpleName(String fqn) {
+        int separator = fqn.lastIndexOf('.');
+        return separator >= 0 ? fqn.substring(separator + 1) : fqn;
+    }
+
+    private static int findJvmBlockEnd(String[] lines, int startIndex) {
+        return findJvmBlockEnd(lines, startIndex, false);
+    }
+
+    private static int findJvmBlockEnd(String[] lines, int startIndex, boolean groovy) {
+        int braces = 0;
+        int parentheses = 0;
+        boolean foundOpen = false;
+        boolean inBlockComment = false;
+        boolean inTextBlock = false;
+        boolean inGroovyTripleSingle = false;
+        boolean inGroovyDollarSlashy = false;
+        boolean inGroovySlashy = false;
+        for (int i = startIndex; i < lines.length; i++) {
+            String line = lines[i];
+            boolean inString = false;
+            boolean inChar = false;
+            boolean escaped = false;
+            for (int j = 0; j < line.length(); j++) {
+                char c = line.charAt(j);
+                char next = j + 1 < line.length() ? line.charAt(j + 1) : 0;
+                boolean tripleQuote = c == '"' && j + 2 < line.length()
+                        && line.charAt(j + 1) == '"' && line.charAt(j + 2) == '"'
+                        && !isEscapedQuote(line, j);
+                boolean tripleSingle = c == '\'' && j + 2 < line.length()
+                        && line.charAt(j + 1) == '\'' && line.charAt(j + 2) == '\''
+                        && !isEscapedQuote(line, j);
+                if (inBlockComment) {
+                    if (c == '*' && next == '/') {
+                        inBlockComment = false;
+                        j++;
+                    }
+                    continue;
+                }
+                if (inGroovyTripleSingle) {
+                    if (tripleSingle) {
+                        inGroovyTripleSingle = false;
+                        j += 2;
+                    }
+                    continue;
+                }
+                if (inGroovyDollarSlashy) {
+                    if (c == '/' && next == '$') {
+                        inGroovyDollarSlashy = false;
+                        j++;
+                    }
+                    continue;
+                }
+                if (inGroovySlashy) {
+                    if (c == '\\') j++;
+                    else if (c == '/') inGroovySlashy = false;
+                    continue;
+                }
+                if (groovy && !inString && !inChar && !inTextBlock && tripleSingle) {
+                    inGroovyTripleSingle = true;
+                    j += 2;
+                    continue;
+                }
+                if (groovy && !inString && !inChar && !inTextBlock && c == '$' && next == '/') {
+                    inGroovyDollarSlashy = true;
+                    j++;
+                    continue;
+                }
+                if (!inString && !inChar && tripleQuote) {
+                    inTextBlock = !inTextBlock;
+                    j += 2;
+                    continue;
+                }
+                if (inTextBlock) continue;
+                if (!inString && !inChar && c == '/' && next == '/') break;
+                if (!inString && !inChar && c == '/' && next == '*') {
+                    inBlockComment = true;
+                    j++;
+                    continue;
+                }
+                if (groovy && !inString && !inChar && c == '/'
+                        && isLikelyGroovySlashyStart(line, j)) {
+                    inGroovySlashy = true;
+                    continue;
+                }
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if ((inString || inChar) && c == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (!inChar && c == '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (!inString && c == '\'') {
+                    inChar = !inChar;
+                    continue;
+                }
+                if (!inString && !inChar) {
+                    if (!foundOpen && c == '(') {
+                        parentheses++;
+                    } else if (!foundOpen && c == ')' && parentheses > 0) {
+                        parentheses--;
+                    } else if (c == '{' && (foundOpen || parentheses == 0)) {
+                        braces++;
+                        foundOpen = true;
+                    } else if (c == '}' && foundOpen && --braces == 0) {
+                        return i;
+                    }
+                }
+            }
+        }
+        return startIndex;
+    }
+
+    private static boolean isEscapedQuote(String line, int quoteIndex) {
+        int backslashes = 0;
+        for (int i = quoteIndex - 1; i >= 0 && line.charAt(i) == '\\'; i--) {
+            backslashes++;
+        }
+        return (backslashes & 1) == 1;
+    }
+
+    private static boolean isLikelyGroovySlashyStart(String line, int slashIndex) {
+        char next = slashIndex + 1 < line.length() ? line.charAt(slashIndex + 1) : 0;
+        if (next == 0 || next == '/' || next == '*') return false;
+        String prefix = line.substring(0, slashIndex).trim();
+        if (prefix.isEmpty() || prefix.endsWith("return") || prefix.endsWith("case")) return true;
+        char previous = prefix.charAt(prefix.length() - 1);
+        return "=(:,[!&|?{;~+-*%^<>".indexOf(previous) >= 0;
     }
 
     private List<Map<String, Object>> parsePython(String[] lines, String filePath,
@@ -1328,6 +1791,13 @@ public class LocalCodeIndexer {
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
                 String dirName = dir.getFileName().toString();
                 if (IGNORED_DIRS.contains(dirName)) return FileVisitResult.SKIP_SUBTREE;
+                String relative = normalizeRelativePath(root.relativize(dir));
+                if (relative.equals("data/crawls") || relative.startsWith("data/crawls/")
+                        || relative.equals("data/code-projects") || relative.startsWith("data/code-projects/")
+                        || relative.equals("data/graph") || relative.startsWith("data/graph/")
+                        || relative.equals("data/markdown") || relative.startsWith("data/markdown/")) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
                 // Project-specific git-ignored data directories (no hard-coded names).
                 if (gitFilter.isIgnoredDir(root.relativize(dir).toString(), dirName)) {
                     return FileVisitResult.SKIP_SUBTREE;
@@ -1344,6 +1814,7 @@ public class LocalCodeIndexer {
                 if (detectLanguage(file) == null) return FileVisitResult.CONTINUE;
 
                 String fileName = file.getFileName().toString();
+                if ("kompile.project.json".equals(fileName)) return FileVisitResult.CONTINUE;
                 if (!includes.isEmpty() && !matchesAny(fileName, includes)) {
                     return FileVisitResult.CONTINUE;
                 }
@@ -1361,6 +1832,10 @@ public class LocalCodeIndexer {
             }
         });
         return files;
+    }
+
+    private static String normalizeRelativePath(Path path) {
+        return path.toString().replace('\\', '/');
     }
 
     private boolean matchesAny(String value, Set<String> patterns) {
@@ -1382,7 +1857,29 @@ public class LocalCodeIndexer {
     }
 
     public static Path getIndexDir(String projectId) {
-        return getBaseIndexDir().resolve(projectId);
+        if (!isSafeProjectId(projectId)) {
+            throw new IllegalArgumentException("Invalid code-index project id: " + projectId);
+        }
+        Path base = getBaseIndexDir().toAbsolutePath().normalize();
+        Path resolved = base.resolve(projectId).normalize();
+        if (!resolved.startsWith(base)) {
+            throw new IllegalArgumentException("Code-index project id escapes index root: " + projectId);
+        }
+        return resolved;
+    }
+
+    static boolean isSafeProjectId(String projectId) {
+        if (projectId == null || projectId.isBlank()
+                || ".".equals(projectId) || "..".equals(projectId)
+                || projectId.contains("/") || projectId.contains("\\")) {
+            return false;
+        }
+        try {
+            Path path = Path.of(projectId);
+            return !path.isAbsolute() && path.getNameCount() == 1;
+        } catch (RuntimeException invalidPath) {
+            return false;
+        }
     }
 
     // -----------------------------------------------------------------------

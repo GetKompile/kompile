@@ -68,14 +68,15 @@ public class EditBatchTool implements CliTool {
                 + "Every touched file must have been read first. Edits are grouped per file and applied "
                 + "in order (later edits see earlier results); a file is only written when ALL of its "
                 + "edits apply, and a failing file does not stop the rest (set stop_on_error=true to "
-                + "halt at the first failing file). Per-file results are returned.";
+                + "halt at the first failing file). Per-file results are returned. Managed memory "
+                + "paths are rejected; use the memory tool instead.";
     }
 
     @Override
     public String compactHint() {
         return "Many exact string replaces in ONE call (multi-file) — same rules as edit: read files "
                 + "first, old_string unique per file. Per-file atomic; failures don't stop other files. "
-                + "edits=[{file_path,old_string,new_string,replace_all?}].";
+                + "edits=[{file_path,old_string,new_string,replace_all?}]. Managed memory → memory tool.";
     }
 
     @Override
@@ -142,7 +143,7 @@ public class EditBatchTool implements CliTool {
             if (oldString.equals(newString)) {
                 return ToolResult.error("edits[" + (index - 1) + "]: old_string and new_string must be different");
             }
-            Path path = context.resolvePath(filePath);
+            Path path = context.resolveMutationPath(filePath);
             perFile.computeIfAbsent(path, p -> new ArrayList<>())
                     .add(new Edit(index, oldString, newString, replaceAll));
         }

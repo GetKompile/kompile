@@ -17,6 +17,8 @@
         <module>kompile-orchestrator</module>
         <module>kompile-chat-history</module>
         <module>kompile-react-agent</module>
+        <module>kompile-agent-graph</module>
+        <module>kompile-channel-api</module>
         <module>kompile-agent-gateway-core</module>
         <module>kompile-kclaw</module>
         <module>kompile-kvcache</module>

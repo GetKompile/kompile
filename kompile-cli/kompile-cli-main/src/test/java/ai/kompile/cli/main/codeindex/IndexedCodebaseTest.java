@@ -5,7 +5,9 @@ import org.junit.jupiter.api.*;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.file.*;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -418,6 +420,31 @@ class IndexedCodebaseTest {
         assertNotNull(report);
         assertEquals(2, report.fileImpacts().size());
         assertTrue(report.totalUniqueImpact() >= 0);
+    }
+
+    @Test
+    void testAggregateImpactMatchesRepeatedMultiFileTraversal() throws Exception {
+        List<String> changedFiles = List.of(
+                "com/example/model/User.java",
+                "com/example/model/Order.java");
+        ImpactAnalyzer.ImpactReport repeated =
+                ImpactAnalyzer.analyzeFiles(changedFiles, indexDir, 2);
+        ImpactAnalyzer.AggregateImpact aggregate =
+                ImpactAnalyzer.analyzeFilesAggregate(changedFiles, indexDir, 2);
+
+        Set<String> expectedImpact = new LinkedHashSet<>(repeated.allImpacted());
+        expectedImpact.removeAll(changedFiles);
+        Set<String> expectedTests = new LinkedHashSet<>(repeated.allAffectedTests());
+        expectedTests.removeAll(changedFiles);
+        Set<String> expectedRoutes = new LinkedHashSet<>(repeated.allAffectedRoutes());
+        expectedRoutes.removeAll(changedFiles);
+
+        assertEquals(expectedImpact, aggregate.allImpacted());
+        assertEquals(expectedTests, aggregate.allAffectedTests());
+        assertEquals(expectedRoutes, aggregate.allAffectedRoutes());
+        assertEquals(expectedImpact.size(), aggregate.totalUniqueImpact());
+        assertTrue(Collections.disjoint(changedFiles, aggregate.allImpacted()),
+                "changed source files should not appear in their own aggregate blast radius");
     }
 
     @Test

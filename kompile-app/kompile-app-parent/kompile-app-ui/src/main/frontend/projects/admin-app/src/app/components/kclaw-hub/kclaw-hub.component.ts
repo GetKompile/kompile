@@ -17,7 +17,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Subject, takeUntil } from 'rxjs';
 import { KClawService } from '@shared/services/kclaw.service';
-import { AgentDefinition, ChannelStatus, HeartbeatInfo, KClawConfig } from '@shared/models/kclaw-models';
+import { AgentDefinition, ChannelConnectionView, HeartbeatInfo, KClawConfig } from '@shared/models/kclaw-models';
 
 @Component({
   selector: 'app-kclaw-hub',
@@ -30,7 +30,7 @@ export class KClawHubComponent implements OnInit, OnDestroy {
 
   config: KClawConfig | null = null;
   agents: AgentDefinition[] = [];
-  channels: ChannelStatus[] = [];
+  channels: ChannelConnectionView[] = [];
   heartbeats: HeartbeatInfo[] = [];
   
   loading = false;
@@ -83,7 +83,7 @@ export class KClawHubComponent implements OnInit, OnDestroy {
       .pipe(takeUntil(this.destroy$))
       .subscribe(channels => {
         this.channels = channels;
-        this.stats.activeChannels = channels.filter(c => c.running).length;
+        this.stats.activeChannels = channels.filter(c => c.runtimeState === 'RUNNING').length;
       });
 
     this.kClawService.heartbeats$

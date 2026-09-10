@@ -871,6 +871,10 @@ public final class GraphConstants {
     public static final String META_CHUNK_SIZE_OVERRIDE = "_kompile_chunk_size";
     public static final String META_CHUNK_OVERLAP_OVERRIDE = "_kompile_chunk_overlap";
     public static final String META_CHUNKER_OPTIONS = "_kompile_chunker_options";
+    public static final String META_PIPELINE_ID = "_kompile_pipeline_id";
+    public static final String META_PIPELINE_TYPE = "_kompile_pipeline_type";
+    public static final String META_PIPELINE_ROUTE = "_kompile_pipeline_route";
+    public static final String META_PIPELINE_FINGERPRINT = "_kompile_pipeline_fingerprint";
 
     // SQL crawler metadata
     public static final String META_SQL_TABLE_NAME = "sql.tableName";

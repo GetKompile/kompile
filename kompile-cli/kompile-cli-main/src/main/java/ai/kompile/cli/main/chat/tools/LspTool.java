@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.codeindex.IndexDatabase;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
+import ai.kompile.cli.main.codeindex.LocalCodeKGraphPublisher;
 import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.lsp.LspException;
@@ -31,6 +32,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.eclipse.lsp4j.CallHierarchyItem;
 import org.eclipse.lsp4j.Diagnostic;
 import org.eclipse.lsp4j.DiagnosticSeverity;
 import org.eclipse.lsp4j.DocumentSymbol;
@@ -99,8 +101,9 @@ public class LspTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Language-server ops: action=definition|references|hover|symbols|workspace_symbols|rename|diagnostics|servers."
-                + " Address by file_path+line+column (1-based) or symbol. rename is dry_run by default.";
+        return "Language-server ops: action=definition|references|call_hierarchy|hover|symbols|workspace_symbols|rename|diagnostics|servers."
+                + " Address by file_path+line+column (1-based) or symbol; call_hierarchy requires explicit position,"
+                + " direction=incoming|outgoing, max_depth=1, max_results<=100. rename is dry_run by default.";
     }
 
     @Override
@@ -111,6 +114,7 @@ public class LspTool implements CliTool {
                 Actions:
                   definition        — go to a symbol's definition
                   references        — find all references to a symbol
+                  call_hierarchy    — opt-in one-hop static incoming/outgoing calls (explicit file_path+line+column)
                   hover             — type/signature/doc at a position
                   symbols           — document symbol outline for a file
                   workspace_symbols — search symbols across a project (needs query + file_path or language)
@@ -122,6 +126,14 @@ public class LspTool implements CliTool {
                   - explicit: file_path + line + column   (line/column are 1-based)
                   - or:       symbol (+ optional project_id, resolved via the local code index)
 
+                call_hierarchy requires advertised server support and explicit declaration addressing, not symbol lookup.
+                direction=incoming (default) or outgoing; max_depth=1 only; max_results=20 (1–100), also caps
+                call-site ranges per edge. timeout_ms=10000 (1–30000) bounds prepare+calls after document sync,
+                additionally limited by the server's configured request timeout; startup/lock wait are separate.
+                Ambiguous prepared declarations return choices, not a guessed overload. Ranges use LSP zero-based
+                UTF-16 coordinates with exclusive ends. fromRanges belong to the caller (incoming: from; outgoing: target).
+                Static analysis is server-dependent, not exact runtime dispatch or a completeness guarantee.
+                No graph persistence. LSP cannot cap remote computation/response size; cancellation is best-effort.
                 rename never writes unless dry_run=false; a dry run renders a diff preview.
                 Supported languages: java (jdtls), c/c++/cuda (clangd), rust (rust-analyzer),
                 python (pyright), typescript/javascript (typescript-language-server), go (gopls).
@@ -139,7 +151,7 @@ public class LspTool implements CliTool {
         action.put("type", "string");
         action.put("description", "Which operation to run.");
         ArrayNode actionEnum = action.putArray("enum");
-        for (String a : List.of("definition", "references", "hover", "symbols",
+        for (String a : List.of("definition", "references", "call_hierarchy", "hover", "symbols",
                 "workspace_symbols", "rename", "diagnostics", "servers")) {
             actionEnum.add(a);
         }
@@ -162,7 +174,15 @@ public class LspTool implements CliTool {
         }
 
         strProp(props, "language", "Language key for workspace_symbols / server start|stop|restart (e.g. java, go).");
-        intProp(props, "timeout_ms", "Per-request timeout override (advisory).");
+        intProp(props, "timeout_ms", "call_hierarchy protocol budget: 1–30000 ms (default 10000); excludes startup/sync/lock wait. Advisory for other actions.");
+        ObjectNode direction = props.putObject("direction");
+        direction.put("type", "string");
+        direction.put("description", "For call_hierarchy: incoming (default) or outgoing.");
+        direction.putArray("enum").add("incoming").add("outgoing");
+        intProp(props, "max_results", "call_hierarchy: declarations/edges and ranges per edge, 1–100 (default 20); no remote response-size limit.");
+        ((ObjectNode) props.get("max_results")).put("minimum", 1).put("maximum", 100);
+        intProp(props, "max_depth", "call_hierarchy: only one-hop static calls are supported (must be 1).");
+        ((ObjectNode) props.get("max_depth")).put("minimum", 1).put("maximum", 1);
         intProp(props, "diag_wait_ms", "How long to wait for diagnostics to publish (default: 3000).");
         intProp(props, "max_tokens", "Truncate output to this token budget (0 = unlimited).");
 
@@ -176,7 +196,7 @@ public class LspTool implements CliTool {
         String action = text(params, "action");
         if (action.isEmpty()) {
             return ToolResult.error("action is required "
-                    + "(definition|references|hover|symbols|workspace_symbols|rename|diagnostics|servers)");
+                    + "(definition|references|call_hierarchy|hover|symbols|workspace_symbols|rename|diagnostics|servers)");
         }
         manager.setWorkingDirectory(context.getWorkingDirectory());
         int maxTokens = params.path("max_tokens").asInt(0);
@@ -184,6 +204,7 @@ public class LspTool implements CliTool {
             ToolResult result = switch (action) {
                 case "definition" -> doDefinition(params, context);
                 case "references" -> doReferences(params, context);
+                case "call_hierarchy" -> doCallHierarchy(params, context);
                 case "hover" -> doHover(params, context);
                 case "symbols" -> doSymbols(params, context);
                 case "workspace_symbols" -> doWorkspaceSymbols(params, context);
@@ -223,6 +244,97 @@ public class LspTool implements CliTool {
         List<? extends Location> refs = conn.references(target.file(), target.position(), true);
         List<Location> locs = refs == null ? List.of() : new ArrayList<>(refs);
         return renderLocations("References", locs, context);
+    }
+
+    private ToolResult doCallHierarchy(JsonNode params, ToolContext context) throws Exception {
+        String direction = text(params, "direction");
+        if (!params.has("direction")) direction = "incoming";
+        if (!List.of("incoming", "outgoing").contains(direction)) {
+            return ToolResult.error("direction must be incoming or outgoing");
+        }
+        int maxResults = boundedCallHierarchyInt(params, "max_results", 20, 1,
+                LspServerConnection.MAX_CALL_HIERARCHY_RESULTS);
+        int timeoutMs = boundedCallHierarchyInt(params, "timeout_ms", 10000, 1,
+                (int) LspServerConnection.MAX_CALL_HIERARCHY_TIMEOUT_MS);
+        boundedCallHierarchyInt(params, "max_depth", 1, 1, 1);
+        if (text(params, "file_path").isEmpty() || !text(params, "symbol").isEmpty()) {
+            return ToolResult.error("call_hierarchy requires explicit file_path, line and column;"
+                    + " symbol/index heuristics are not used. Choose the exact declaration.");
+        }
+        boundedCallHierarchyInt(params, "line", 0, 1, Integer.MAX_VALUE);
+        boundedCallHierarchyInt(params, "column", 0, 1, Integer.MAX_VALUE);
+        Target target = resolveTarget(params, context);
+        LspServerConnection conn = manager.getOrStart(target.file());
+        return renderCallHierarchy(conn.callHierarchy(target.file(), target.position(), direction,
+                maxResults, timeoutMs), direction);
+    }
+
+    private static int boundedCallHierarchyInt(JsonNode params, String key, int defaultValue, int min, int max) {
+        JsonNode value = params.get(key);
+        if (value != null && (!value.isIntegralNumber() || !value.canConvertToInt())) {
+            throw new IllegalArgumentException(key + " must be an integer between " + min + " and " + max);
+        }
+        int number = value == null ? defaultValue : value.intValue();
+        if (number < min || number > max) {
+            throw new IllegalArgumentException(key + " must be between " + min + " and " + max);
+        }
+        return number;
+    }
+
+    private static ToolResult renderCallHierarchy(LspServerConnection.CallHierarchyResult result,
+                                                   String direction) throws Exception {
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("analysis", "language-server static call hierarchy; not exact runtime dispatch or guaranteed complete");
+        output.put("direction", direction);
+        output.put("maxDepth", 1);
+        output.put("coordinates", "LSP: zero-based UTF-16, end-exclusive ranges");
+        output.put("persisted", false);
+        output.put("totalDeclarations", result.totalDeclarations());
+        output.put("declarations", result.declarations().stream().map(LspTool::callDeclaration).toList());
+        output.put("declarationsTruncated", result.totalDeclarations() > result.declarations().size());
+        boolean ambiguous = result.totalDeclarations() > 1;
+        output.put("status", ambiguous ? "ambiguous" : result.totalDeclarations() == 0 ? "no_declaration" : "ok");
+        if (ambiguous) {
+            output.put("message", "Ambiguous prepared declarations; no calls requested. Choose an exact declaration"
+                    + " from the URI/selectionRange choices and retry with file_path and 1-based line/column.");
+        } else if (result.totalDeclarations() == 0) {
+            output.put("message", "No callable declaration prepared at this position; this does not prove there are no calls.");
+        }
+        List<Map<String, Object>> edges = new ArrayList<>();
+        for (var edge : result.calls()) {
+            CallHierarchyItem target = result.declarations().get(0);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("from", callDeclaration("incoming".equals(direction) ? edge.peer() : target));
+            row.put("to", callDeclaration("incoming".equals(direction) ? target : edge.peer()));
+            row.put("fromUri", "incoming".equals(direction) ? edge.peer().getUri() : target.getUri());
+            row.put("fromRanges", edge.fromRanges().stream().map(LspTool::callRange).toList());
+            row.put("totalRanges", edge.totalRanges());
+            row.put("rangesTruncated", edge.totalRanges() > edge.fromRanges().size());
+            edges.add(row);
+        }
+        output.put("calls", edges);
+        output.put("totalCalls", result.totalCalls());
+        output.put("callsTruncated", result.totalCalls() > result.calls().size());
+        output.put("limits", "Client-retained results only; LSP has no remote result-size bound. Cancellation is best-effort.");
+        return new ToolResult("Static call hierarchy", JsonUtils.standardMapper()
+                .writerWithDefaultPrettyPrinter().writeValueAsString(output), output, ambiguous);
+    }
+
+    // Do not serialize server-private opaque data into the tool result; the connection round-trips it unchanged.
+    private static Map<String, Object> callDeclaration(CallHierarchyItem item) {
+        Map<String, Object> declaration = new LinkedHashMap<>();
+        declaration.put("name", item.getName());
+        declaration.put("kind", item.getKind() == null ? null : item.getKind().name());
+        declaration.put("detail", item.getDetail());
+        declaration.put("uri", item.getUri());
+        declaration.put("range", callRange(item.getRange()));
+        declaration.put("selectionRange", callRange(item.getSelectionRange()));
+        return declaration;
+    }
+
+    private static Map<String, Object> callRange(Range range) {
+        return Map.of("start", Map.of("line", range.getStart().getLine(), "character", range.getStart().getCharacter()),
+                "end", Map.of("line", range.getEnd().getLine(), "character", range.getEnd().getCharacter()));
     }
 
     private ToolResult doHover(JsonNode params, ToolContext context) throws Exception {
@@ -478,18 +590,12 @@ public class LspTool implements CliTool {
 
     private Target resolveSymbol(String symbol, String projectId, ToolContext context) throws ToolExecutionException {
         String project = projectId.isEmpty() ? "default" : projectId;
-        IndexDatabase index;
-        try {
-            index = LocalCodeIndexTool.getCachedDb(project);
-        } catch (Exception e) {
-            throw new ToolExecutionException("index lookup failed for project " + project + ": " + e.getMessage());
-        }
-        if (index == null) {
-            throw new ToolExecutionException("no local index for project " + project
-                    + "; pass file_path/line/column or run local_code_index action='index'");
-        }
         List<Map<String, Object>> rows;
-        try {
+        try (IndexDatabase index = LocalCodeIndexTool.openReader(project)) {
+            if (index == null) {
+                throw new ToolExecutionException("no local index for project " + project
+                        + "; pass file_path/line/column or run local_code_index action='index'");
+            }
             rows = index.search(symbol, null, 50);
         } catch (Exception e) {
             throw new ToolExecutionException("index search failed: " + e.getMessage());
@@ -661,7 +767,14 @@ public class LspTool implements CliTool {
 
     private void reindex(Path root, String projectId) {
         try (PrintStream sink = new PrintStream(OutputStream.nullOutputStream())) {
-            new LocalCodeIndexer().index(root, projectId, null, null, sink);
+            LocalCodeIndexer indexer = new LocalCodeIndexer();
+            Map<String, Object> stats = indexer.getStats(projectId);
+            String includes = stats.get("includePatterns") == null
+                    ? null : stats.get("includePatterns").toString();
+            String excludes = stats.get("excludePatterns") == null
+                    ? null : stats.get("excludePatterns").toString();
+            indexer.index(root, projectId, includes, excludes, sink);
+            LocalCodeKGraphPublisher.publish(root, projectId, includes, excludes);
         } catch (Exception e) {
             CodeIndexDiagnostics.alert(
                     "[LSP] incremental reindex after rename failed: " + e.getMessage());

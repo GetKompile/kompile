@@ -49,8 +49,10 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(
         name = "crawl",
         description = "Crawl and index content from web, file, and email sources.%n%n" +
-                "Manages long-running crawl jobs with pause/resume/cancel support.%n%n" +
+                "Running `kompile app crawl` with no subcommand starts the interactive crawl%n" +
+                "wizard (source selection, indexing, graph extraction, model and presets).%n%n" +
                 "Examples:%n" +
+                "  kompile app crawl                      # interactive wizard%n" +
                 "  kompile app crawl start --url=https://docs.example.com --depth=2%n" +
                 "  kompile app crawl status%n" +
                 "  kompile app crawl pause <crawlId>%n" +
@@ -78,8 +80,7 @@ public class CrawlCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        new CommandLine(this).usage(System.out);
-        return 0;
+        return new CommandLine(new CrawlWizardCmd()).execute();
     }
 
     // -----------------------------------------------------------------------
@@ -204,7 +205,7 @@ public class CrawlCommand implements Callable<Integer> {
         private String graphSchemaMode;
 
         @CommandLine.Option(names = {"--schema-preset"},
-                description = "Named schema preset to load entity/relationship types from (e.g., fpna-cpg-channel-v1)")
+                description = "Named schema preset used to load entity and relationship types")
         private String schemaPresetId;
 
         @CommandLine.Option(names = {"--graph-prompt"},

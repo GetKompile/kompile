@@ -19,7 +19,6 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactContributor;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactImporter;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.extern.slf4j.Slf4j;
@@ -27,7 +26,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -63,9 +61,6 @@ public class ReasoningTraceArtifactAdapter
     /** Artifact entry name used inside the {@code .kgraph} ZIP. */
     public static final String ARTIFACT_NAME = "reasoning/traces.json";
 
-    private static final TypeReference<List<Map<String, Object>>> TRACE_LIST_TYPE =
-            new TypeReference<>() {};
-
     private final ReasoningTraceStore traceStore;
     private final ObjectMapper objectMapper;
 
@@ -94,8 +89,8 @@ public class ReasoningTraceArtifactAdapter
             log.debug("ReasoningTraceArtifactAdapter: bundled {} trace(s) for factSheet={} ({} bytes)",
                     traces.size(), factSheetId, bytes.length);
         } catch (Exception e) {
-            log.warn("ReasoningTraceArtifactAdapter: could not serialise traces for factSheet={}: {}",
-                    factSheetId, e.getMessage());
+            throw new IllegalStateException(
+                    "Could not serialize reasoning traces for factSheet=" + factSheetId, e);
         }
     }
 
@@ -103,28 +98,18 @@ public class ReasoningTraceArtifactAdapter
 
     @Override
     public int importArtifacts(Long factSheetId, UnifiedGraph graph) {
-        if (graph == null || traceStore == null) {
-            return 0;
-        }
-        byte[] artifact = graph.artifact(ARTIFACT_NAME);
-        if (artifact == null || artifact.length == 0) {
-            return 0;
-        }
-        try {
-            List<Map<String, Object>> traces = objectMapper.readValue(
-                    new String(artifact, StandardCharsets.UTF_8), TRACE_LIST_TYPE);
-            for (Map<String, Object> dto : traces) {
-                if (dto != null && !dto.isEmpty()) {
-                    traceStore.storeTrace(dto);
-                }
-            }
-            log.debug("ReasoningTraceArtifactAdapter: restored {} trace(s) for factSheet={}",
-                    traces.size(), factSheetId);
-            return traces.size();
-        } catch (Exception e) {
-            log.warn("ReasoningTraceArtifactAdapter: could not deserialise traces for factSheet={}: {}",
-                    factSheetId, e.getMessage());
-            return 0;
-        }
+        // Historical UI trace DTOs remain portable but are not activated into the global bounded
+        // runtime buffer. Activation would be append-only and cannot be rolled back exactly.
+        return 0;
+    }
+
+    @Override
+    public boolean supportsExactRollback() {
+        return true;
+    }
+
+    @Override
+    public java.util.Set<String> managedArtifactPrefixes() {
+        return java.util.Set.of(ARTIFACT_NAME);
     }
 }

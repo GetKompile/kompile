@@ -36,7 +36,8 @@ public class LlmLoadModelRequest {
     @Builder.Default
     private String kvCacheType = "STATIC";
     /**
-     * Explicit path to model file. When set, used instead of resolving from modelId.
+     * Optional explicit path assertion. The path must resolve to exactly the checksum-verified
+     * file registered for {@code modelId}; it never permits loading an arbitrary model file.
      */
     private String modelPath;
 }
