@@ -152,8 +152,8 @@ data class ModelPreparationOptions(
 
     /** Single-line human label for cache/UI display; the only place labels are composed. */
     fun profileLabel(): String =
-        "$weightOptimization.label · $kvCacheOptimization.label · batch $tensorBatchSize · " +
-            "diagnostics $diagnosticMode.label"
+        "${weightOptimization.label} · ${kvCacheOptimization.label} · batch $tensorBatchSize · " +
+            "diagnostics ${diagnosticMode.label}"
 
     /**
      * Canonical trace/diagnostic field list for this profile. The single source of truth —
@@ -238,20 +238,21 @@ data class ModelPreparationOptions(
         ): ModelPreparationOptions = ModelPreparationOptions(
             weightOptimization = enumValueOrDefault(weightOptimization, WeightOptimization.Q4_K),
             kvCacheOptimization = enumValueOrDefault(kvCacheOptimization, KvCacheOptimization.INT8),
-            tensorBatchSize = tensorBatchSize.coerceIn(1, 256),
+            tensorBatchSize = tensorBatchSize,
             useMemoryMapping = useMemoryMapping,
             diagnosticMode = diagnosticModeOrDefault(diagnosticMode),
         )
 
         private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, fallback: T): T =
-            runCatching { enumValueOf<T>(value.orEmpty()) }.getOrDefault(fallback)
+            if (value == null) fallback else enumValueOf<T>(value)
 
         private fun diagnosticModeOrDefault(value: String?): ModelDiagnosticMode {
-            val normalized = value?.trim().orEmpty()
+            if (value == null) return ModelDiagnosticMode.OFF
+            val normalized = value.trim()
             return ModelDiagnosticMode.entries.firstOrNull { mode ->
                 mode.name.equals(normalized, ignoreCase = true) ||
                     mode.wireValue.equals(normalized, ignoreCase = true)
-            } ?: ModelDiagnosticMode.OFF
+            } ?: throw IllegalArgumentException("Unknown diagnostic mode: $value")
         }
 
     }

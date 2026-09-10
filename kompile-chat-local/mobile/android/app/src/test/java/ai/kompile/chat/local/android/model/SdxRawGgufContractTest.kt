@@ -12,6 +12,35 @@ import java.io.File
 class SdxRawGgufContractTest {
 
     @Test
+    fun malformedExplicitProfilesNeverSilentlyChangePrecisionOrBatch() {
+        for (batch in listOf(0, -1, 257, Int.MAX_VALUE)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                ModelPreparationOptions.fromWire(null, null, batch, true, null)
+            }
+        }
+        for (value in listOf("", "unknown")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                ModelPreparationOptions.fromWire(value, null, 4, true, null)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                ModelPreparationOptions.fromWire(null, value, 4, true, null)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                ModelPreparationOptions.fromWire(null, null, 4, true, value)
+            }
+        }
+        for (batch in listOf(1, 256)) {
+            assertEquals(batch, ModelPreparationOptions.fromWire(null, null, batch, true, null).tensorBatchSize)
+        }
+        val options = ModelPreparationOptions.fromWire("BF16", "OFF", 1, false, "off")
+        assertEquals(WeightOptimization.BF16, options.weightOptimization)
+        assertEquals(KvCacheOptimization.OFF, options.kvCacheOptimization)
+        assertFalse(options.useMemoryMapping)
+        assertTrue(options.profileLabel().contains("BF16 · Float cache"))
+        assertFalse(options.profileLabel().contains(".label"))
+    }
+
+    @Test
     fun cachedCanonicalSdzBypassesRawModelPreparation() {
         assertTrue(SdxGgufModelImporter.supports("retained.gguf"))
         assertTrue(SdxGgufModelImporter.supports("retained.ggml"))

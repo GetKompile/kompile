@@ -743,7 +743,7 @@ public class DiffIndexService {
                         try {
                             DiffIndexEntry entry = mapper.readValue(p.toFile(), DiffIndexEntry.class);
                             if (entry == null || entry.getId() == null || entry.getId().isBlank()) {
-                                log.warn("Skipping diff index entry without an id: {}", p);
+                                log.debug("Skipping diff index entry without an id: {}", p);
                                 return;
                             }
                             entries.put(entry.getId(), entry);

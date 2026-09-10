@@ -42,10 +42,14 @@ class TensorG3QualificationTest {
             expectedCacheHit = null,
             passMarker = "FUNCTIONAL_DECODE_PASS",
             strictQualification = false,
-            preparationOptions = ModelPreparationOptions(
-                weightOptimization = weightOptimization,
-                diagnosticMode = arguments.getString("diagnostic_mode")
-                    ?.let(ModelDiagnosticMode::valueOf) ?: ModelDiagnosticMode.OFF,
+            preparationOptions = ModelPreparationOptions.fromWire(
+                weightOptimization = weightOptimization.name,
+                kvCacheOptimization = arguments.getString("kv_cache_optimization"),
+                tensorBatchSize = optionalLongArgument("tensor_batch_size", 4L, 1L..256L).toInt(),
+                useMemoryMapping = arguments.getString("use_memory_mapping")?.let {
+                    requireNotNull(it.toBooleanStrictOrNull()) { "use_memory_mapping must be true or false" }
+                } ?: true,
+                diagnosticMode = arguments.getString("diagnostic_mode"),
             ),
         )
     }
@@ -273,6 +277,12 @@ class TensorG3QualificationTest {
         )
     }
 
+    private fun optionalLongArgument(name: String, fallback: Long, range: LongRange): Long {
+        val raw = arguments.getString(name) ?: return fallback
+        return raw.toLongOrNull()?.takeIf { it in range }
+            ?: error("$name must be an integer in $range")
+    }
+
     private fun requiredArgument(name: String): String =
         arguments.getString(name)?.takeIf(String::isNotBlank)
             ?: error("missing instrumentation argument: $name")
@@ -300,13 +310,16 @@ class TensorG3QualificationTest {
     /** Qualification environment policy only; this is not a model-fit admission test. */
     private fun preflightMemoryFloor() {
         val preflight = awaitModelPreparationMemoryPreflight(
-            timeoutMillis = MODEL_PREPARATION_QUALIFICATION_WAIT_TIMEOUT_MILLIS,
+            timeoutMillis = optionalLongArgument("memory_wait_timeout_ms",
+                MODEL_PREPARATION_QUALIFICATION_WAIT_TIMEOUT_MILLIS, 0L..300_000L),
             onWaiting = { waiting ->
                 requireReadableMemoryPreflight(waiting)
                 sendStatus("MEMORY_PREFLIGHT_WAIT:${waiting.statusFields()}")
             },
-            minimumAvailableBytes = TENSOR_G3_QUALIFICATION_MIN_AVAILABLE_BYTES,
-            minimumSwapFreeBytes = TENSOR_G3_QUALIFICATION_MIN_SWAP_FREE_BYTES,
+            minimumAvailableBytes = optionalLongArgument("min_available_ram_bytes",
+                TENSOR_G3_QUALIFICATION_MIN_AVAILABLE_BYTES, 0L..Long.MAX_VALUE),
+            minimumSwapFreeBytes = optionalLongArgument("min_free_swap_bytes",
+                TENSOR_G3_QUALIFICATION_MIN_SWAP_FREE_BYTES, 0L..Long.MAX_VALUE),
         )
         requireReadableMemoryPreflight(preflight)
         sendStatus("MEMORY_PREFLIGHT:${preflight.statusFields()}")
