@@ -55,11 +55,17 @@ for name in ("kompile-server", "kompile-chat", "kompile-crawl-manager"):
         manifest = jar.read("META-INF/MANIFEST.MF").decode("utf-8")
         manifest = manifest.replace("\r\n", "\n").replace("\n ", "")
         attributes = dict(line.split(": ", 1) for line in manifest.splitlines() if ": " in line)
-        launcher = "org.springframework.boot.loader.JarLauncher"
-        if attributes.get("Main-Class") != launcher:
-            raise SystemExit(f"ERROR: {name} must use the classic Boot loader for large JARs")
-        if launcher.replace(".", "/") + ".class" not in jar.namelist():
-            raise SystemExit(f"ERROR: {name} is missing its classic Boot launcher class")
+        # Boot 3.2 CLASSIC also ships a .launch.JarLauncher compatibility entry
+        # point, so the manifest alone cannot distinguish the implementations.
+        launchers = ("org.springframework.boot.loader.JarLauncher",
+                     "org.springframework.boot.loader.launch.JarLauncher")
+        launcher = attributes.get("Main-Class")
+        names = set(jar.namelist())
+        if launcher not in launchers or launcher.replace(".", "/") + ".class" not in names:
+            raise SystemExit(f"ERROR: {name} is missing its Boot launcher entry point")
+        if ("org/springframework/boot/loader/jar/JarFileEntries.class" not in names
+                or "org/springframework/boot/loader/zip/ZipContent.class" in names):
+            raise SystemExit(f"ERROR: {name} must use the classic Boot ZIP implementation for large JARs")
     print(f"{name}: classic Boot loader verified")
 PY
 
