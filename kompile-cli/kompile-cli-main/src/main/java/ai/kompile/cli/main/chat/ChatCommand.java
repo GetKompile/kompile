@@ -81,7 +81,7 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Spec
     private CommandLine.Model.CommandSpec commandSpec;
 
-    @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI and print its localhost URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
+    @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI (LAN-accessible by default) and print its local URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
     private boolean web;
 
     @CommandLine.Option(names = "--open-browser", description = "Also open the web UI in a local browser (requires --web).")

@@ -36,6 +36,13 @@ public class SpaForwardController {
         logger.info("SpaForwardController initialized and active for forwarding '/' to index.html");
     }
 
+    // The browser apps use hash routing. Accept the obvious entry URL too,
+    // without catching API endpoints or missing static assets in a SPA fallback.
+    @GetMapping({"/chat", "/chat/"})
+    public String redirectChatToSpa() {
+        return "redirect:/#/chat";
+    }
+
     @GetMapping("/")
     public String forwardRootToIndexHtml() {
         logger.trace("Forwarding root path '/' to internal /index.html resource");

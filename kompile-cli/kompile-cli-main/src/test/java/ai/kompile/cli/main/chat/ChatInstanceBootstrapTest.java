@@ -134,7 +134,7 @@ class ChatInstanceBootstrapTest {
         assertEquals(nested.toRealPath().toFile(), services.workDirectory);
         assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.working-directory=" + nested.toRealPath()));
         assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.config-scope=global"));
-        assertEquals(List.of("--server.address=127.0.0.1"), services.appArgs);
+        assertEquals(List.of(), services.appArgs, "Web launch must not override the distribution bind address");
         assertEquals("kompile-chat-web-9181", services.instanceName);
         CapturingServiceManager healthy = new CapturingServiceManager(true);
         org.junit.jupiter.api.Assertions.assertThrows(ChatInstanceBootstrap.BootstrapException.class,

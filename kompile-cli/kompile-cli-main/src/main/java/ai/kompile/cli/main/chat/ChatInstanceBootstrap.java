@@ -19,7 +19,6 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.WebChatContext;
 import java.nio.file.Path;
 import java.net.ServerSocket;
-import java.net.InetAddress;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
@@ -75,7 +74,7 @@ final class ChatInstanceBootstrap {
             throws BootstrapException, IOException {
         // A fresh port/instance avoids reusing an admin persona or another project's harness.
         int port;
-        try (ServerSocket socket = new ServerSocket(0, 0, InetAddress.getByName("127.0.0.1"))) {
+        try (ServerSocket socket = new ServerSocket(0)) {
             port = socket.getLocalPort();
         }
         return ensureReady("http://127.0.0.1:" + port, timeout, new ComponentRegistry(),
@@ -131,7 +130,9 @@ final class ChatInstanceBootstrap {
                     chatPort,
                     workDirectory,
                     webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig) : List.of(),
-                    webHandoff ? List.of("--server.address=127.0.0.1") : List.of(),
+                    // Use the CHAT distribution's all-interface default and honor operator
+                    // overrides (KOMPILE_CHAT_ADDRESS / SERVER_ADDRESS), rather than forcing loopback.
+                    List.of(),
                     logDirectory,
                     false);
         } catch (IOException e) {
