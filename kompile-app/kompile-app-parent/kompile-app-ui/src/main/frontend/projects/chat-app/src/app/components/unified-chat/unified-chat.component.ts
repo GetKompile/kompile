@@ -278,6 +278,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   // The browser does not advertise a permission toggle: CLI defaults are not a security boundary.
   skipPermissions: boolean = false;
   agentsLoading: boolean = false;
+  agentsError: string | null = null;
 
   // Context budget of the selected agent's model (staging metadata for local models,
   // model catalogs otherwise) — drives the usage indicator and auto-compaction.
@@ -1819,6 +1820,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   private loadAgents(): void {
     this.agentsLoading = true;
+    this.agentsError = null;
     this.cdr.markForCheck();
     this.agentService.getChatHarnessAgents().subscribe({
       next: (agents: AgentProvider[]) => {
@@ -1841,9 +1843,13 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           this.cdr.detectChanges();
         });
       },
-      error: () => {
+      error: (err: Error) => {
         this.ngZone.run(() => {
           this.agentsLoading = false;
+          this.agentsError = err.message || 'Failed to load Kompile chat harness';
+          this.agents = [];
+          this.selectedAgent = null;
+          this.refreshContextBudget();
           this.cdr.detectChanges();
         });
       }
@@ -1855,6 +1861,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    */
   refreshAgents(): void {
     this.agentsLoading = true;
+    this.agentsError = null;
     this.cdr.markForCheck();
     this.agentService.refreshChatHarnessAgents().subscribe({
       next: (agents: AgentProvider[]) => {
@@ -1862,20 +1869,28 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           this.agents = agents;
           this.agentsLoading = false;
 
-          const stillAvailable = this.selectedAgent
-            ? agents.find((a: AgentProvider) => a.name === this.selectedAgent?.name && a.available)
+          const preferredAgent = this.selectedAgent?.name || this.currentSession?.agentName;
+          const stillAvailable = preferredAgent
+            ? agents.find((a: AgentProvider) => a.name === preferredAgent && a.available)
             : undefined;
           this.selectedAgent = stillAvailable
             || agents.find((a: AgentProvider) => a.isDefault && a.available)
             || agents.find((a: AgentProvider) => a.available)
             || null;
+          if (this.selectedAgent) {
+            this.loadAgentCapabilities(this.selectedAgent);
+          }
           this.refreshContextBudget();
           this.cdr.detectChanges();
         });
       },
-      error: () => {
+      error: (err: Error) => {
         this.ngZone.run(() => {
           this.agentsLoading = false;
+          this.agentsError = err.message || 'Failed to load Kompile chat harness';
+          this.agents = [];
+          this.selectedAgent = null;
+          this.refreshContextBudget();
           this.cdr.detectChanges();
         });
       }
