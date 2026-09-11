@@ -121,6 +121,43 @@ class ChatInstanceBootstrapTest {
         assertEquals(8081, ChatInstanceBootstrap.portForLocalChatUrl("http://localhost"));
     }
 
+    @Test
+    void webLaunchCarriesExactContextAndNeverReusesHealthyServer(@TempDir Path tempDir) throws Exception {
+        Path lib = Files.createDirectories(tempDir.resolve("lib"));
+        Files.writeString(lib.resolve("kompile-chat.jar"), "test");
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        Path nested = Files.createDirectories(tempDir.resolve("nested project"));
+        CapturingServiceManager services = new CapturingServiceManager(false);
+        ChatInstanceBootstrap.ensureReady("http://127.0.0.1:9181", 7, registry, services,
+                nested.toFile(), true, true);
+        assertEquals(nested.toRealPath().toFile(), services.workDirectory);
+        assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.working-directory=" + nested.toRealPath()));
+        assertTrue(services.jvmArgs.contains("-Dkompile.chat.handoff.config-scope=global"));
+        assertEquals(List.of("--server.address=127.0.0.1"), services.appArgs);
+        assertEquals("kompile-chat-web-9181", services.instanceName);
+        CapturingServiceManager healthy = new CapturingServiceManager(true);
+        org.junit.jupiter.api.Assertions.assertThrows(ChatInstanceBootstrap.BootstrapException.class,
+                () -> ChatInstanceBootstrap.ensureReady("http://127.0.0.1:9181", 7, registry, healthy,
+                        nested.toFile(), true, false));
+        assertFalse(healthy.started);
+    }
+
+    @Test
+    void webNativeTierFailsExplicitly(@TempDir Path tempDir) throws Exception {
+        Path bin = Files.createDirectories(tempDir.resolve("bin"));
+        File nativeChat = Files.writeString(bin.resolve("kompile-chat"), "native").toFile();
+        assertTrue(nativeChat.setExecutable(true));
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        CapturingServiceManager services = new CapturingServiceManager(false);
+        var error = org.junit.jupiter.api.Assertions.assertThrows(ChatInstanceBootstrap.BootstrapException.class,
+                () -> ChatInstanceBootstrap.ensureReady("http://127.0.0.1:9181", 7, registry, services,
+                        tempDir.toFile(), true, false));
+        assertTrue(error.getMessage().contains("JAR tier"));
+        assertFalse(services.started);
+    }
+
     private static final class CapturingServiceManager extends ServiceManager {
         private final boolean initiallyHealthy;
         private boolean started;
@@ -131,6 +168,8 @@ class ChatInstanceBootstrapTest {
         private File workDirectory;
         private File logDirectory;
         private boolean foreground;
+        private List<String> jvmArgs;
+        private List<String> appArgs;
         private int healthTimeoutSeconds;
 
         private CapturingServiceManager(boolean initiallyHealthy) {
@@ -148,6 +187,8 @@ class ChatInstanceBootstrapTest {
                                              List<String> jvmArgs, List<String> appArgs,
                                              File logDirectory, boolean foreground)
                 throws IOException {
+            this.jvmArgs = jvmArgs;
+            this.appArgs = appArgs;
             this.started = true;
             this.instanceName = instanceName;
             this.type = type;

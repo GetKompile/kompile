@@ -213,6 +213,25 @@
             </activation>
             <build>
                 <plugins>
+                    <!-- Each native worker owns its side-loaded dependency payload. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-libs</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
@@ -239,8 +258,10 @@
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--enable-url-protocols=http,https</buildArg>
                                 <buildArg>-H:+AddAllCharsets</buildArg>
-                                <buildArg>-H:ConfigurationFileDirectories=${maven.multiModuleProjectDirectory}/kompile-app/kompile-app-parent/kompile-app-main/src/main/resources/META-INF/native-image/pipeline-runtime</buildArg>
-                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/../../../kompile-app-parent/kompile-app-main/src/main/resources/META-INF/native-image/pipeline-runtime</buildArg>
+                                <!-- MarkerFactory initializes the selected logging provider;
+                                     keep that complete initialization at runtime. -->
+                                <buildArg>--initialize-at-run-time=org.slf4j,ch.qos.logback</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp,org.nd4j,org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
@@ -251,6 +272,42 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <!-- Match app-main's CUDA activation and platform redist lane; the
+             standalone worker must not depend on app-main or a host toolkit. -->
+        <profile>
+            <id>cuda-dual-backend</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cublas</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusolver</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusparse</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+            </dependencies>
         </profile>
     </profiles>
 </project>

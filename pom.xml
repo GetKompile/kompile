@@ -1008,6 +1008,14 @@
       <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><kompile.cuda.redist.version>12.9-9.10-1.5.12</kompile.cuda.redist.version><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-compile</kompile.distribution.platform.classifier></properties>
     </profile>
 
+    <!-- CUDA 13.1's plain platform artifact already includes Triton. Do not
+         substitute an unattested -compile classifier for this lane. -->
+    <profile>
+      <id>backend-cuda-13.1</id>
+      <activation><property><name>kompile.backend</name><value>cuda-13.1</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-13.1</nd4j.backend><kompile.cuda.redist.version>13.1-9.19-1.5.13</kompile.cuda.redist.version><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-13.1</kompile.distribution.platform.classifier></properties>
+    </profile>
+
     <profile>
       <id>backend-vulkan</id>
       <activation><property><name>kompile.backend</name><value>vulkan</value></property></activation>

@@ -78,6 +78,15 @@ public class ChatCommand implements Callable<Integer> {
     private static final int RESTART_MANAGED_CHAT = Integer.MIN_VALUE;
     private TranscriptLogScope transcriptLogScope;
 
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec commandSpec;
+
+    @CommandLine.Option(names = "--web", description = "Start a fresh installed CHAT web UI and print its localhost URL using CLI config (CHAT JAR tier only). Combine with --setup to configure first.")
+    private boolean web;
+
+    @CommandLine.Option(names = "--open-browser", description = "Also open the web UI in a local browser (requires --web).")
+    private boolean openBrowser;
+
     @FunctionalInterface
     interface StandardSessionRunner {
         boolean run(String transcriptUuid, boolean resume) throws Exception;
@@ -329,13 +338,15 @@ public class ChatCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
+        if (openBrowser && !web) return printError("--open-browser requires --web.", 2);
+        if (web) return runWebHandoff();
         if (multiSession) {
             String unsupported = multiSessionOptionError();
             if (unsupported != null) return printError(unsupported, 2);
         }
         if (printCapabilities) {
             System.out.println(ChatHarnessCapabilities.toJson(
-                    ChatHarnessCapabilities.inspect(effectiveWorkingDirectory())));
+                    ChatHarnessCapabilities.inspect(effectiveWorkingDirectory(), globalConfig)));
             return 0;
         }
         boolean headless = isHeadlessRequested();
@@ -370,8 +381,10 @@ public class ChatCommand implements Callable<Integer> {
 
         // Handle --setup: run wizard and exit
         if (runSetup) {
-            ChatConfig config = runSetupWizard();
-            return config != null ? 0 : 1;
+            SetupWizard.SetupResult result = runSetupWizard();
+            if (result == null) return 1;
+            return result.destination() == SetupWizard.Destination.BROWSER
+                    ? runWebHandoff(result.config()) : 0;
         }
 
         // Handle --list: just print conversations and exit
@@ -459,7 +472,11 @@ public class ChatCommand implements Callable<Integer> {
             return printError("--multi-session requires a configured direct provider. Run `kompile chat --setup` separately first.", 2);
         }
         if (!multiSession && !headless && shouldRunSetupWizard(config, hasExplicitAction)) {
-            config = runSetupWizard();
+            SetupWizard.SetupResult result = runSetupWizard();
+            config = result == null ? null : result.config();
+            if (result != null && result.destination() == SetupWizard.Destination.BROWSER) {
+                return runWebHandoff(config);
+            }
             configSelectedInThisRun = true;
             if (config == null) {
                 System.err.println("Setup cancelled.");
@@ -529,6 +546,78 @@ public class ChatCommand implements Callable<Integer> {
             return 1;
         } finally {
             transcriptLogScope = null;
+        }
+    }
+
+    String webOptionError() {
+        if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
+        if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
+            var allowed = java.util.Set.of("--web", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout");
+            for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
+                if (!allowed.contains(option.longestName())) {
+                    return "--web cannot be combined with " + option.longestName()
+                            + "; configure saved defaults with --setup instead.";
+                }
+            }
+        }
+        return null;
+    }
+
+    static String webConfigError(ChatConfig config) {
+        if (config == null) return "Setup cancelled, save failed, or no saved chat configuration found.";
+        if (!"standard".equalsIgnoreCase(config.getChatMode()) || config.isKompileServer()) {
+            return "--web requires a saved Standard Chat direct/local provider, not passthrough, resume, or a Kompile server.";
+        }
+        return config.isValid() ? null : "Incomplete chat configuration; run kompile chat --setup --web.";
+    }
+
+    ChatConfig selectWebConfig(Path directory) {
+        ChatConfig.Scope scope = globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT;
+        ChatConfig saved = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv(directory);
+        return runSetup || saved == null ? SetupWizard.runForWeb(scope, directory) : saved;
+    }
+
+    ChatInstanceBootstrap.StartupResult startWeb(Path directory) throws Exception {
+        return ChatInstanceBootstrap.startWeb(directory, globalConfig, startupTimeoutSeconds);
+    }
+
+    void openWebBrowser(String address) {
+        // Browser is optional (headless/SSH hosts can use the printed URL); no credentials in URL.
+        try {
+            String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+            ProcessBuilder opener = os.contains("mac") ? new ProcessBuilder("open", address)
+                    : os.contains("win") ? new ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", address)
+                    : new ProcessBuilder("xdg-open", address);
+            Process process = opener.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException ignored) { }
+    }
+
+    private int runWebHandoff() {
+        return runWebHandoff(null);
+    }
+
+    private int runWebHandoff(ChatConfig wizardConfig) {
+        String error = webOptionError();
+        if (error != null) return printError(error, 2);
+        try {
+            Path directory = effectiveWorkingDirectory().toRealPath();
+            if (!Files.isDirectory(directory)) return printError("Not a working directory: " + directory, 2);
+            ChatConfig config = wizardConfig != null ? wizardConfig : selectWebConfig(directory);
+            error = webConfigError(config);
+            if (error != null) return printError(error, 1);
+            ChatInstanceBootstrap.StartupResult result = startWeb(directory);
+            System.out.println("Web chat: " + result.chatUrl());
+            System.out.println("Working directory: " + directory + "; config scope: "
+                    + (globalConfig ? "global" : "project")
+                    + ". New sessions bind current CLI config on their first turn; resumed sessions retain their pins.");
+            if (openBrowser) openWebBrowser(result.chatUrl());
+            return 0;
+        } catch (Exception e) {
+            return printError("Web chat handoff failed: " + e.getMessage(), 1);
         }
     }
 
@@ -820,9 +909,14 @@ public class ChatCommand implements Callable<Integer> {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private ChatConfig runSetupWizard() {
-        return SetupWizard.run(globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT,
-                effectiveWorkingDirectory());
+    SetupWizard.SetupResult runSetupWizard() {
+        ChatConfig.Scope scope = globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT;
+        // Resume and other terminal-only flags cannot be carried into a fresh browser chat.
+        if (webOptionError() != null) {
+            ChatConfig config = SetupWizard.run(scope, effectiveWorkingDirectory());
+            return config == null ? null : new SetupWizard.SetupResult(config, SetupWizard.Destination.TERMINAL);
+        }
+        return SetupWizard.runWithDestination(scope, effectiveWorkingDirectory());
     }
 
     ChatConfig normalizeResumeConfig(ChatConfig config, boolean isResume) {

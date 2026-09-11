@@ -386,6 +386,35 @@ class KompileCliHarnessClientTest {
         assertTrue(prompt.contains(selectedFile.toString()), prompt);
     }
 
+    @Test
+    void handoffContextControlsCapabilitiesAndTurnScope() throws Exception {
+        String directoryKey = ai.kompile.cli.common.WebChatContext.WORKING_DIRECTORY;
+        String scopeKey = ai.kompile.cli.common.WebChatContext.CONFIG_SCOPE;
+        String oldDirectory = System.getProperty(directoryKey);
+        String oldScope = System.getProperty(scopeKey);
+        Path nested = Files.createDirectories(tempDir.resolve("nested project"));
+        try {
+            System.setProperty(directoryKey, nested.toString());
+            System.setProperty(scopeKey, "global");
+            client = clientWith(new FakeProcess("{\"available\":true,\"engine\":\"kompile-cli-main\"}\n", "", 0));
+            client.capabilities(null, true);
+            assertTrue(capturedCommand.get().contains("--global-config"));
+            assertTrue(capturedCommand.get().contains(nested.toRealPath().toString()));
+            for (boolean resume : new boolean[] {false, true}) {
+                var command = client.buildCommand(List.of("kompile"), request("hello"), nested,
+                        "session", resume, 30, List.of());
+                assertTrue(command.contains("--global-config"));
+                assertTrue(command.contains(resume ? "--resume" : "--session-id"));
+            }
+            var invalid = client.capabilities(tempDir.toString(), true);
+            assertFalse(invalid.path("available").asBoolean());
+            assertTrue(invalid.path("status").asText().contains("bound to"));
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+            if (oldScope == null) System.clearProperty(scopeKey); else System.setProperty(scopeKey, oldScope);
+        }
+    }
+
     private KompileCliHarnessClient clientWith(FakeProcess fake) {
         process.set(fake);
         return new KompileCliHarnessClient(

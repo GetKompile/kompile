@@ -118,6 +118,58 @@ class SetupWizardProfilesTest {
         assertFalse(SetupWizard.configurePassthroughModel(reader("cancel"), config));
     }
 
+    @Test
+    void destinationIsTransientAndProfileReuseOffersTheSameChoice() throws Exception {
+        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        ChatProfiles.save(project, ChatProfiles.capture("local", config), false);
+        ChatConfig reused = SetupWizard.selectProjectProfile(reader("y", "1", "1"), project, "standard").config();
+        for (ChatConfig candidate : List.of(config, reused)) {
+            assertEquals(SetupWizard.Destination.TERMINAL,
+                    SetupWizard.selectDestination(reader("1"), candidate, false, true));
+            assertEquals(SetupWizard.Destination.BROWSER,
+                    SetupWizard.selectDestination(reader("2"), candidate, false, true));
+            assertEquals(SetupWizard.Destination.TERMINAL,
+                    SetupWizard.selectDestination(reader(""), candidate, false, true));
+            assertNull(SetupWizard.selectDestination(reader("q"), candidate, false, true));
+            assertNull(SetupWizard.selectDestination(reader(), candidate, false, true));
+        }
+        assertFalse(Files.exists(ChatConfig.configPath(ChatConfig.Scope.PROJECT, project)));
+        assertFalse(Files.readString(ChatProfiles.path(project)).contains("destination"));
+    }
+
+    @Test
+    void explicitWebSkipsDestinationAndOtherModesStayTerminal() {
+        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        assertEquals(SetupWizard.Destination.BROWSER,
+                SetupWizard.selectDestination(reader(), config, true, true));
+        assertEquals(SetupWizard.Destination.TERMINAL,
+                SetupWizard.selectDestination(reader(), config, false, false));
+        for (String mode : List.of("passthrough", "resume", "resume-all")) {
+            config.setChatMode(mode);
+            assertEquals(SetupWizard.Destination.TERMINAL,
+                    SetupWizard.selectDestination(reader(), config, false, true));
+            assertNull(SetupWizard.selectDestination(reader(), config, true, true));
+        }
+        assertNull(SetupWizard.selectDestination(reader(),
+                new ChatConfig("kompile", null, null, null), true, true));
+    }
+
+    @Test
+    void browserRequiresSuccessfulPersistenceWhileTerminalRetainsFallback() throws Exception {
+        ChatConfig config = new ChatConfig("ollama", null, "model", null);
+        Path blocked = project.resolve("blocked");
+        Files.writeString(blocked, "not a directory");
+        assertThrows(java.io.IOException.class, () -> SetupWizard.saveConfiguration(config,
+                SetupWizard.Destination.BROWSER, ChatConfig.Scope.PROJECT, blocked));
+        assertFalse(SetupWizard.saveConfiguration(config, SetupWizard.Destination.TERMINAL,
+                ChatConfig.Scope.PROJECT, blocked));
+        assertTrue(SetupWizard.saveConfiguration(config, SetupWizard.Destination.BROWSER,
+                ChatConfig.Scope.PROJECT, project));
+        String saved = Files.readString(ChatConfig.configPath(ChatConfig.Scope.PROJECT, project));
+        assertFalse(saved.contains("destination"));
+        assertEquals("model", ChatConfig.loadProject(project).getModel());
+    }
+
     private static LineReader reader(String... answers) {
         ArrayDeque<String> input = new ArrayDeque<>(List.of(answers));
         return (LineReader) Proxy.newProxyInstance(LineReader.class.getClassLoader(), new Class<?>[]{LineReader.class},

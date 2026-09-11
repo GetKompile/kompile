@@ -6,6 +6,7 @@ package ai.kompile.app.services.agent;
 
 import ai.kompile.app.web.dto.AgentChatRequest;
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.WebChatContext;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.chat.history.service.FolderService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -474,6 +475,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             List<Path> attachments) {
         List<String> command = new ArrayList<>(launcher);
         command.add("chat");
+        if (WebChatContext.globalConfig()) command.add("--global-config");
         command.add("--output-format");
         command.add("stream-json");
         command.add("--local");
@@ -607,6 +609,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         try {
             List<String> command = new ArrayList<>(launcherResolver.resolve());
             command.add("chat");
+            if (WebChatContext.globalConfig()) command.add("--global-config");
             command.add("--capabilities");
             command.add("--working-dir");
             command.add(workDir.toString());
@@ -888,8 +891,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     }
 
     private static Path resolveWorkingDirectory(String configured) throws IOException {
-        Path projectRoot = KompileHome.resolvedProjectDirectory().toPath()
-                .toAbsolutePath().normalize();
+        Path handoffDirectory = WebChatContext.workingDirectory();
+        Path projectRoot = handoffDirectory != null ? handoffDirectory
+                : KompileHome.resolvedProjectDirectory().toPath().toAbsolutePath().normalize();
         if (!Files.isDirectory(projectRoot)) {
             throw new IOException("Chat project root does not exist: " + projectRoot);
         }
@@ -900,6 +904,9 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             throw new IOException("Chat working directory does not exist: " + candidate);
         }
         candidate = candidate.toRealPath();
+        if (handoffDirectory != null && !candidate.equals(handoffDirectory)) {
+            throw new IOException("This CLI web chat is bound to: " + handoffDirectory);
+        }
         if (!candidate.startsWith(projectRoot)) {
             throw new IOException("Chat working directory must stay inside project root: " + projectRoot);
         }

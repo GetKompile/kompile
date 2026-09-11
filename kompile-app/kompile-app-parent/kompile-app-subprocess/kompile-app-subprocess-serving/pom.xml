@@ -158,6 +158,25 @@
             </activation>
             <build>
                 <plugins>
+                    <!-- Each native worker owns its side-loaded dependency payload. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-libs</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
@@ -224,6 +243,32 @@
                     <groupId>org.eclipse.deeplearning4j</groupId>
                     <artifactId>nd4j-native</artifactId>
                     <version>${nd4j.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <!-- CUDA JNI bridges do not contain the redistributable runtime.
+                     Each native worker owns the matching side-loaded payload. -->
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cublas</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusolver</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusparse</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
                     <classifier>${javacpp.platform}</classifier>
                 </dependency>
             </dependencies>

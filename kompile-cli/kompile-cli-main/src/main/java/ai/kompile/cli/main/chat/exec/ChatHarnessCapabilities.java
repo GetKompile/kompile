@@ -78,10 +78,14 @@ public final class ChatHarnessCapabilities {
     }
 
     public static Report inspect(Path workingDirectory) {
+        return inspect(workingDirectory, false);
+    }
+
+    public static Report inspect(Path workingDirectory, boolean globalConfig) {
         Path workDir = workingDirectory == null
                 ? Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize()
                 : workingDirectory.toAbsolutePath().normalize();
-        ChatConfig config = ChatConfig.loadOrFromEnv(workDir);
+        ChatConfig config = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv(workDir);
         return inspect(workDir, config);
     }
 

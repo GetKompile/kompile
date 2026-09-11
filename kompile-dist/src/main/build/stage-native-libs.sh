@@ -625,14 +625,24 @@ require_destination_native() {
 # validate the dynamic dependencies that libnd4jcuda requires from dist/lib.
 if [ "${OS}" = linux ]; then
     case "${BACKEND_ARTIFACT}" in
+        nd4j-cuda-13.*)
+            # CUDA 13 bumps these ABIs, but cuSPARSE remains at SONAME 12.
+            require_destination_native CUDA-runtime 'libcudart.so.13' 'libcudart.so.13.*'
+            require_destination_native cuBLAS 'libcublas.so.13' 'libcublas.so.13.*'
+            require_destination_native cuBLAS-Lt 'libcublasLt.so.13' 'libcublasLt.so.13.*'
+            require_destination_native cuSOLVER 'libcusolver.so.12' 'libcusolver.so.12.*'
+            require_destination_native cuSPARSE 'libcusparse.so.12' 'libcusparse.so.12.*'
+            require_destination_native NVRTC 'libnvrtc.so.13' 'libnvrtc.so.13.*'
+            require_destination_native NVJitLink 'libnvJitLink.so.13' 'libnvJitLink.so.13.*'
+            ;;
         nd4j-cuda-*)
-            require_destination_native CUDA-runtime 'libcudart.so.12*'
-            require_destination_native cuBLAS 'libcublas.so.12*'
-            require_destination_native cuBLAS-Lt 'libcublasLt.so.12*'
-            require_destination_native cuSOLVER 'libcusolver.so.11*'
-            require_destination_native cuSPARSE 'libcusparse.so.12*'
-            require_destination_native NVRTC 'libnvrtc.so.12*'
-            require_destination_native NVJitLink 'libnvJitLink.so.12*'
+            require_destination_native CUDA-runtime 'libcudart.so.12' 'libcudart.so.12.*'
+            require_destination_native cuBLAS 'libcublas.so.12' 'libcublas.so.12.*'
+            require_destination_native cuBLAS-Lt 'libcublasLt.so.12' 'libcublasLt.so.12.*'
+            require_destination_native cuSOLVER 'libcusolver.so.11' 'libcusolver.so.11.*'
+            require_destination_native cuSPARSE 'libcusparse.so.12' 'libcusparse.so.12.*'
+            require_destination_native NVRTC 'libnvrtc.so.12' 'libnvrtc.so.12.*'
+            require_destination_native NVJitLink 'libnvJitLink.so.12' 'libnvJitLink.so.12.*'
             ;;
     esac
 fi

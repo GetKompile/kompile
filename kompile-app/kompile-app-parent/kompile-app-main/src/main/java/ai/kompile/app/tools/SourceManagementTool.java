@@ -17,7 +17,9 @@
 package ai.kompile.app.tools;
 
 import ai.kompile.app.web.controllers.SourceViewerController;
-import ai.kompile.app.web.controllers.SourceProviderController;
+import ai.kompile.core.source.provider.SourceProvider;
+import ai.kompile.core.source.provider.SourceProviderDto;
+import ai.kompile.core.source.provider.SourceProviderRegistry;
 import ai.kompile.app.web.controllers.DocumentDebuggerController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,16 +40,16 @@ public class SourceManagementTool {
     private static final Logger logger = LoggerFactory.getLogger(SourceManagementTool.class);
 
     private final SourceViewerController sourceViewerController;
-    private final SourceProviderController sourceProviderController;
+    private final SourceProviderRegistry sourceProviderRegistry;
     private final DocumentDebuggerController documentDebuggerController;
 
     @Autowired
     public SourceManagementTool(
             @Autowired(required = false) SourceViewerController sourceViewerController,
-            @Autowired(required = false) SourceProviderController sourceProviderController,
+            @Autowired(required = false) SourceProviderRegistry sourceProviderRegistry,
             @Autowired(required = false) DocumentDebuggerController documentDebuggerController) {
         this.sourceViewerController = sourceViewerController;
-        this.sourceProviderController = sourceProviderController;
+        this.sourceProviderRegistry = sourceProviderRegistry;
         this.documentDebuggerController = documentDebuggerController;
     }
 
@@ -125,10 +127,22 @@ public class SourceManagementTool {
             description = "Gets all available source providers. Set includeUnavailable=true to include unavailable providers.")
     public Map<String, Object> getSourceProviders(GetSourceProvidersInput input) {
         try {
-            if (sourceProviderController == null) return Map.of("status", "error", "error", "Source provider registry not available");
+            if (sourceProviderRegistry == null) return Map.of("status", "error", "error", "Source provider registry not available");
             boolean includeUnavailable = input.includeUnavailable() != null && input.includeUnavailable();
-            ResponseEntity<?> response = sourceProviderController.getSourceProviders(includeUnavailable);
-            return Map.of("status", "success", "data", response.getBody());
+            Collection<SourceProvider> providers = includeUnavailable
+                    ? sourceProviderRegistry.getAllProviders()
+                    : sourceProviderRegistry.getAvailableProviders();
+            List<SourceProviderDto> providerDtos = providers.stream()
+                    .map(SourceProviderDto::fromProvider)
+                    .sorted(Comparator.comparing(SourceProviderDto::getCategory)
+                            .thenComparing(SourceProviderDto::getOrder)
+                            .thenComparing(SourceProviderDto::getDisplayName))
+                    .toList();
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("providers", providerDtos);
+            data.put("totalCount", sourceProviderRegistry.getProviderCount());
+            data.put("availableCount", sourceProviderRegistry.getAvailableProviderCount());
+            return Map.of("status", "success", "data", data);
         } catch (Exception e) {
             logger.error("Error getting source providers: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", e.getMessage());
@@ -139,9 +153,11 @@ public class SourceManagementTool {
             description = "Gets source providers organized by category (file upload, cloud storage, web, etc.).")
     public Map<String, Object> getSourceProvidersByCategory(GetSourceProvidersByCategoryInput input) {
         try {
-            if (sourceProviderController == null) return Map.of("status", "error", "error", "Source provider registry not available");
-            ResponseEntity<?> response = sourceProviderController.getProvidersByCategory();
-            return Map.of("status", "success", "data", response.getBody());
+            if (sourceProviderRegistry == null) return Map.of("status", "error", "error", "Source provider registry not available");
+            Map<String, List<SourceProviderDto>> data = new LinkedHashMap<>();
+            sourceProviderRegistry.getProvidersByCategories().forEach((category, providers) ->
+                    data.put(category, providers.stream().map(SourceProviderDto::fromProvider).toList()));
+            return Map.of("status", "success", "data", data);
         } catch (Exception e) {
             logger.error("Error getting source providers by category: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", e.getMessage());
@@ -152,10 +168,11 @@ public class SourceManagementTool {
             description = "Gets detailed information about a specific source provider by ID.")
     public Map<String, Object> getSourceProvider(GetSourceProviderInput input) {
         try {
-            if (sourceProviderController == null) return Map.of("status", "error", "error", "Source provider registry not available");
+            if (sourceProviderRegistry == null) return Map.of("status", "error", "error", "Source provider registry not available");
             if (input.providerId() == null) return Map.of("status", "error", "error", "Provider ID is required");
-            ResponseEntity<?> response = sourceProviderController.getProvider(input.providerId());
-            return Map.of("status", "success", "data", response.getBody());
+            SourceProvider provider = sourceProviderRegistry.getProvider(input.providerId());
+            if (provider == null) return Map.of("status", "error", "error", "Source provider not found: " + input.providerId());
+            return Map.of("status", "success", "data", SourceProviderDto.fromProvider(provider));
         } catch (Exception e) {
             logger.error("Error getting source provider: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", e.getMessage());
@@ -166,12 +183,33 @@ public class SourceManagementTool {
             description = "Gets category metadata including display names, icons, and ordering.")
     public Map<String, Object> getSourceProviderCategories(GetSourceProviderCategoriesInput input) {
         try {
-            if (sourceProviderController == null) return Map.of("status", "error", "error", "Source provider registry not available");
-            ResponseEntity<?> response = sourceProviderController.getCategories();
-            return Map.of("status", "success", "data", response.getBody());
+            if (sourceProviderRegistry == null) return Map.of("status", "error", "error", "Source provider registry not available");
+            // Presentation metadata matches the source-provider REST response, without
+            // importing the crawl persona's controller into the admin application's classpath.
+            List<Map<String, Object>> categories = List.of(
+                    categoryMeta("local", "Local Sources", "computer", 1,
+                            "Files and paths from the local filesystem"),
+                    categoryMeta("web", "Web Sources", "language", 2,
+                            "URLs, web pages, and web content"),
+                    categoryMeta("cloud", "Cloud Storage", "cloud", 3,
+                            "Cloud storage services like Google Drive, OneDrive"),
+                    categoryMeta("collaboration", "Collaboration Tools", "groups", 4,
+                            "Installed team sources such as Confluence, Slack, Discord, and email"));
+            return Map.of("status", "success", "data", categories);
         } catch (Exception e) {
             logger.error("Error getting source provider categories: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", e.getMessage());
         }
+    }
+
+    private static Map<String, Object> categoryMeta(String id, String displayName, String icon,
+                                                    int order, String description) {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("id", id);
+        meta.put("displayName", displayName);
+        meta.put("icon", icon);
+        meta.put("order", order);
+        meta.put("description", description);
+        return meta;
     }
 }

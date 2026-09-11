@@ -27,7 +27,7 @@
 #   --version VER        Version string (default: from pom.xml)
 #   --platform PLATFORM  Maven/JavaCPP platform classifier (default: detected host)
 #   --sdx-assets DIR     DL4J SDK assets (runtime packages plus jars/) for backend variants
-#   --cuda-version VER   CUDA artifact line for the cuda variant: 12.6 or 12.9 (default: 12.9)
+#   --cuda-version VER   CUDA artifact line for the cuda variant: 12.6, 12.9 or 13.1 (default: 12.9)
 #   --backend-profile P  Exact root-POM backend profile (normally supplied by build-common.sh)
 #   --sdk-classifier C   Exact DL4J SDK/native classifier (normally derived from the profile)
 #   --distribution-classifier C  Unique Maven/archive classifier (variant plus release lane)
@@ -231,8 +231,8 @@ case "${VARIANT}" in
         APP_NATIVE=true
         STAGING_NATIVE=true
         case "${CUDA_VERSION}" in
-            12.6|12.9) ;;
-            *) echo "Unsupported CUDA version: ${CUDA_VERSION} (expected 12.6 or 12.9)" >&2; exit 1 ;;
+            12.6|12.9|13.1) ;;
+            *) echo "Unsupported CUDA version: ${CUDA_VERSION} (expected 12.6, 12.9 or 13.1)" >&2; exit 1 ;;
         esac
         ND4J_BACKEND="nd4j-cuda-${CUDA_VERSION}"
         KOMPILE_BACKEND_PROFILE="cuda-${CUDA_VERSION}"
@@ -263,6 +263,7 @@ if [ -n "${BACKEND_PROFILE_OVERRIDE}" ]; then
     case "${KOMPILE_BACKEND_PROFILE}" in
         cuda-12.6*) ND4J_BACKEND="nd4j-cuda-12.6"; CUDA_VERSION="12.6"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         cuda-12.9*) ND4J_BACKEND="nd4j-cuda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true" ;;
+        cuda-13.1) ND4J_BACKEND="nd4j-cuda-13.1"; CUDA_VERSION="13.1"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         zluda) ND4J_BACKEND="nd4j-zluda"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
         zluda-rocm-7.2.4|zluda-rocm-10.0.0) ND4J_BACKEND="nd4j-zluda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
         vulkan*) ND4J_BACKEND="nd4j-vulkan" ;;
@@ -297,7 +298,7 @@ if [ -n "${SDK_CLASSIFIER_OVERRIDE}" ]; then
     SDK_CLASSIFIER="${SDK_CLASSIFIER_OVERRIDE}"
 else
     case "${KOMPILE_BACKEND_PROFILE}" in
-        ""|cpu|cuda-12.6|cuda-12.9|vulkan|hexagon|tpu) SDK_CLASSIFIER="${PLATFORM}" ;;
+        ""|cpu|cuda-12.6|cuda-12.9|cuda-13.1|vulkan|hexagon|tpu) SDK_CLASSIFIER="${PLATFORM}" ;;
         cpu-*) SDK_CLASSIFIER="${PLATFORM}-${KOMPILE_BACKEND_PROFILE#cpu-}" ;;
         cuda-12.6-cudnn|cuda-12.9-cudnn) SDK_CLASSIFIER="${PLATFORM}-cudnn" ;;
         cuda-12.6-compile|cuda-12.9-compile|vulkan-compile) SDK_CLASSIFIER="${PLATFORM}-compile" ;;
@@ -1450,14 +1451,29 @@ if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
         "${NATIVE_PLATFORM_EXTENSION}" \
         none
 
-    if { [ "${APP_NATIVE}" = true ] || [ "${STAGING_NATIVE}" = true ] \
-            || [ "${LOCAL_RUNTIME}" = true ]; }; then
+    # Only require app-main's closure when its image is actually included.
+    if [ "${APP_NATIVE}" = true ]; then
         bash "${NATIVE_STAGER}" \
             "${APP_NATIVE_LIBS}" \
             "${DIST_DIR}/lib" \
             "${PLATFORM}" \
             "${NATIVE_PLATFORM_EXTENSION}" \
             "${ND4J_BACKEND:-none}"
+    fi
+
+    # CLI-only backend distributions include these workers, not app-main.
+    # Stage both real producer closures; never substitute a copied app tree.
+    if [ "${LOCAL_RUNTIME}" = true ]; then
+        for RUNTIME_MODULE in \
+            "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving" \
+            "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving"; do
+            bash "${NATIVE_STAGER}" \
+                "${RUNTIME_MODULE}/target/native-libs" \
+                "${DIST_DIR}/lib" \
+                "${PLATFORM}" \
+                "${NATIVE_PLATFORM_EXTENSION}" \
+                "${ND4J_BACKEND:-none}"
+        done
     fi
 else
     echo "  SKIP: side-loaded native libraries are not required by this variant"
