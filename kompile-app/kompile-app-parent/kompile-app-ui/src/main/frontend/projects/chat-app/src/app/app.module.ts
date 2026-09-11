@@ -58,7 +58,7 @@ import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
 
 import { HttpErrorInterceptor } from '@shared/services/http-error.interceptor';
-import { ServiceEndpointRoutingModule } from '@shared/services/service-endpoint-routing';
+import { CURRENT_SERVICE_PERSONA, ServiceEndpointRoutingModule } from '@shared/services/service-endpoint-routing';
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
 
@@ -147,6 +147,7 @@ import { SourceCitationComponent } from '@shared/components/source-citation/sour
     SourceCitationComponent
   ],
   providers: [
+    { provide: CURRENT_SERVICE_PERSONA, useValue: 'chat' },
     { provide: HTTP_INTERCEPTORS, useClass: HttpErrorInterceptor, multi: true }
   ],
   bootstrap: [AppComponent]

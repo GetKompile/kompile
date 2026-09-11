@@ -58,7 +58,7 @@ import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
 
 import { HttpErrorInterceptor } from '@shared/services/http-error.interceptor';
-import { ServiceEndpointRoutingModule } from '@shared/services/service-endpoint-routing';
+import { CURRENT_SERVICE_PERSONA, ServiceEndpointRoutingModule } from '@shared/services/service-endpoint-routing';
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
 
@@ -289,6 +289,7 @@ import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-or
     VlmOrchestrationComponent
   ],
   providers: [
+    { provide: CURRENT_SERVICE_PERSONA, useValue: 'admin' },
     { provide: HTTP_INTERCEPTORS, useClass: HttpErrorInterceptor, multi: true }
   ],
   bootstrap: [AppComponent]

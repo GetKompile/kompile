@@ -14,7 +14,7 @@
  *  limitations under the License.
  */
 
-import { APP_INITIALIZER, Injectable, NgModule } from '@angular/core';
+import { APP_INITIALIZER, Inject, Injectable, InjectionToken, NgModule, Optional } from '@angular/core';
 import {
   HTTP_INTERCEPTORS,
   HttpClient,
@@ -35,6 +35,9 @@ export interface ManagedServiceEndpoints {
 }
 
 export type RoutedPersona = 'admin' | 'chat' | 'crawl';
+
+/** The hosting UI's persona; omitted by embeddings that need topology-only routing. */
+export const CURRENT_SERVICE_PERSONA = new InjectionToken<RoutedPersona>('CURRENT_SERVICE_PERSONA');
 
 export interface ManagedDependencyStatus {
   dependency: string;
@@ -58,7 +61,10 @@ export class ServiceEndpointRouter {
   private endpoints: ManagedServiceEndpoints | null = null;
   private dependencies: Partial<Record<RoutedPersona, ManagedDependencyStatus>> = {};
 
-  constructor(private readonly http: HttpClient) {}
+  constructor(
+    private readonly http: HttpClient,
+    @Optional() @Inject(CURRENT_SERVICE_PERSONA) private readonly currentPersona: RoutedPersona | null = null
+  ) {}
 
   async load(): Promise<void> {
     try {
@@ -132,7 +138,9 @@ export class ServiceEndpointRouter {
     }
 
     const target = this.ownerForPath(url.pathname);
-    if (!target) {
+    // The browser origin is authoritative for this UI, including LAN hosts and
+    // dynamically assigned ports that differ from the managed topology defaults.
+    if (!target || target === this.currentPersona) {
       return requestUrl;
     }
 
