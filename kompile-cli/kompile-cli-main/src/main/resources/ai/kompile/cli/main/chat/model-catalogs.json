@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "providers": [
+    {"id":"openai","route":"VERSIONED","path":"/models","responseProfile":"OPENAI","idFields":["id"]},
+    {"id":"anthropic","route":"VERSIONED","path":"/models","responseProfile":"ANTHROPIC","idFields":["id"],"paginationQuery":"after_id","paginationToken":"last_id","paginationHasMore":"has_more"},
+    {"id":"gemini","route":"STRIP_SUFFIX","stripSuffix":"/openai","path":"/models","responseProfile":"GEMINI","idFields":["baseModelId","name"],"paginationQuery":"pageToken","paginationToken":"nextPageToken"},
+    {"id":"ollama","route":"STRIP_SUFFIX","stripSuffix":"/v1","path":"/api/tags","responseProfile":"OLLAMA","idFields":["model","name"]},
+    {"id":"openrouter","route":"VERSIONED","path":"/models","responseProfile":"OPENROUTER","idFields":["id"]},
+    {"id":"xai","route":"VERSIONED","path":"/models","responseProfile":"XAI","idFields":["id"]},
+    {"id":"zai","route":"DIRECT","path":"/models","responseProfile":"OPENAI","idFields":["id"]},
+    {"id":"github-copilot","route":"DIRECT","path":"/models","responseProfile":"GITHUB_COPILOT","idFields":["id"]},
+    {"id":"radius","route":"VERSIONED","path":"/config","responseProfile":"RADIUS","idFields":["id"]},
+    {"id":"deepseek","route":"VERSIONED","path":"/models","responseProfile":"DEEPSEEK","idFields":["id"]},
+    {"id":"groq","route":"VERSIONED","path":"/models","responseProfile":"GROQ","idFields":["id"]}
+  ]
+}

@@ -104,9 +104,10 @@ class ModelToCrawlJvmIT {
     private static final int MAX_TOKENS = Integer.getInteger(MAX_TOKENS_PROPERTY, 768);
     private static final boolean ENABLE_THINKING =
             Boolean.getBoolean(ENABLE_THINKING_PROPERTY);
-    private static final String SCHEMA_TOOL_NAME = "submit_corpus_schema";
+    private static final Set<String> SCHEMA_TOOL_NAMES = Set.of(
+            "submit_node_types", "submit_relationship_types",
+            "bind_relationship_signatures", "bind_topics_to_schema");
     private static final String GRAPH_DELTA_TOOL_NAME = "submit_graph_delta";
-    private static final String ONTOLOGY_DISCOVERY_MARKER = "ONTOLOGY DISCOVERY PREPASS";
     private static final Set<String> PROJECT_LOCAL_MODEL_TOOL_IDS = Set.of(
             "knowledge_search", "knowledge_status", "rag_search", "graph_search",
             "graph_aggregate", "graph_forecast", "graph_centrality", "knowledge_graph",
@@ -945,40 +946,9 @@ class ModelToCrawlJvmIT {
                     "model-schema-prepass-jvm-it",
                     null);
 
-            assertEquals(0, modelSession.schemaPrepassRequests(),
-                    "Production ontology discovery must not use the weaker abstract schema tool");
-            assertTrue(modelSession.ontologyDiscoveryRequests() > 0,
-                    "The production crawl never ran decomposed model ontology discovery");
-            assertTrue(modelSession.ontologyDiscoveryToolResponses() > 0,
-                    () -> "Model did not submit a graph delta during ontology discovery: "
-                            + modelSession.lastOntologyDiscoveryResponseSummary());
+            modelSession.assertVocabularyPrepass(result);
             assertTrue(modelSession.boundedDocumentRequests() > 0,
                     "The ordinary document request never carried its source-derived proposal plan");
-
-            Map<String, Object> discovery = modelSession.lastOntologyDiscoveryToolArguments();
-            Object rawEntities = discovery.get("entities");
-            Object rawRelations = discovery.get("relations");
-            assertTrue(rawEntities instanceof List<?>,
-                    () -> "Ontology discovery returned no entity array: " + discovery);
-            assertTrue(rawRelations instanceof List<?>,
-                    () -> "Ontology discovery returned no relation array: " + discovery);
-            List<?> discoveredEntities = (List<?>) rawEntities;
-            List<?> discoveredRelations = (List<?>) rawRelations;
-            assertEquals(2, discoveredEntities.size(),
-                    () -> "Ontology discovery added or missed entities: " + discovery);
-            assertTrue(containsEntity(discoveredEntities, "Jordan Lee", "PERSON"),
-                    () -> "Ontology discovery missed Jordan Lee/PERSON: " + discovery);
-            assertTrue(containsEntity(discoveredEntities, "Helios Dynamics", "COMPANY"),
-                    () -> "Ontology discovery missed Helios Dynamics/COMPANY: " + discovery);
-            assertEquals(1, discoveredRelations.size(),
-                    () -> "Ontology discovery added or missed relations: " + discovery);
-            Map<?, ?> founded = (Map<?, ?>) discoveredRelations.get(0);
-            assertEquals(0, ((Number) founded.get("source")).intValue(),
-                    () -> "FOUNDED source did not reference Jordan Lee: " + discovery);
-            assertEquals(1, ((Number) founded.get("target")).intValue(),
-                    () -> "FOUNDED target did not reference Helios Dynamics: " + discovery);
-            assertEquals("FOUNDED", founded.get("type"),
-                    () -> "Ontology discovery inferred the wrong relation type: " + discovery);
 
             assertFalse(result.failed(), () -> "Model-backed derived-schema crawl failed: "
                     + result.errors() + "; last response=" + modelSession.lastResponseSummary());
@@ -1012,6 +982,66 @@ class ModelToCrawlJvmIT {
 
         assertFalse(modelSession.isAvailable(),
                 "The parent did not release the model lease after derived-schema crawl completion");
+    }
+
+    private record SchemaObservation(
+            int call,
+            StructuredChatLanguageModel.Request request,
+            StructuredChatLanguageModel.Response response) {
+        private String tool() {
+            return request.tools().get(0).name();
+        }
+
+        private JsonNode arguments() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            if (response.toolCalls().size() == 1
+                    && tool().equals(response.toolCalls().get(0).name())) {
+                return mapper.valueToTree(response.toolCalls().get(0).arguments());
+            }
+            // Production also accepts native validated JSON without a synthetic tool call.
+            if (response.toolCalls().isEmpty() && response.content() != null
+                    && !response.content().isBlank()) {
+                return mapper.readTree(response.content());
+            }
+            throw new AssertionError("Missing response for " + tool() + ": " + response);
+        }
+
+        private JsonNode promptJson(String marker) throws Exception {
+            String prompt = request.messages().stream()
+                    .map(StructuredChatLanguageModel.Message::content)
+                    .filter(message -> message.contains(marker)).findFirst()
+                    .orElseThrow(() -> new AssertionError("Missing schema prompt section: " + marker));
+            return new ObjectMapper().readTree(prompt.substring(prompt.indexOf(marker) + marker.length()));
+        }
+
+        private boolean hasFoundedSignature() {
+            try {
+                boolean topic = "bind_topics_to_schema".equals(tool());
+                JsonNode arguments = arguments();
+                JsonNode options = promptJson("BINDING_OPTION_IDS_JSON=");
+                for (String signature : arguments.path(topic ? "b" : "s").asText().split(";")) {
+                    String[] ids = signature.split("\\|", -1);
+                    if (ids.length != (topic ? 8 : 4)) continue;
+                    int relation = topic ? 3 : 0;
+                    int source = topic ? 5 : 1;
+                    int target = topic ? 6 : 2;
+                    int evidence = topic ? 7 : 3;
+                    if ("FOUNDED".equals(option(options, "relationshipIds", ids[relation]))
+                            && "PERSON".equals(option(options, "endpointIds", ids[source]))
+                            && "COMPANY".equals(option(options, "endpointIds", ids[target]))
+                            && !option(options, "evidenceIds", ids[evidence]).isBlank()) {
+                        return true;
+                    }
+                }
+            } catch (Exception | AssertionError invalidAttempt) {
+                // Retain failed attempts for diagnostics; a later production retry may succeed.
+            }
+            return false;
+        }
+
+        private static String option(JsonNode options, String field, String id) {
+            return options.path(field).path(Integer.parseInt(id) - 1).asText();
+        }
     }
 
     private record ModelRuntimeKey(
@@ -1245,15 +1275,10 @@ class ModelToCrawlJvmIT {
         private final AtomicInteger activeGenerations = new AtomicInteger();
         private final AtomicBoolean forcedEmploymentEntityRepair = new AtomicBoolean();
         private final Object generationDrain = new Object();
-        private final AtomicInteger schemaPrepassRequests = new AtomicInteger();
-        private final AtomicInteger schemaPrepassToolResponses = new AtomicInteger();
-        private final AtomicInteger ontologyDiscoveryRequests = new AtomicInteger();
-        private final AtomicInteger ontologyDiscoveryToolResponses = new AtomicInteger();
+        private final List<SchemaObservation> schemaObservations =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final AtomicInteger firstInstanceRequest = new AtomicInteger(Integer.MAX_VALUE);
         private final AtomicInteger boundedDocumentRequests = new AtomicInteger();
-        private volatile Map<String, Object> lastSchemaToolArguments = Map.of();
-        private volatile Map<String, Object> lastOntologyDiscoveryToolArguments = Map.of();
-        private volatile String lastSchemaResponseSummary = "none";
-        private volatile String lastOntologyDiscoveryResponseSummary = "none";
         private volatile String lastResponseSummary = "none";
         private volatile boolean closed;
 
@@ -1422,18 +1447,19 @@ class ModelToCrawlJvmIT {
                 int maxNewTokens) {
             int call = beginCall();
             boolean schemaPrepass = request.tools().stream()
-                    .anyMatch(tool -> SCHEMA_TOOL_NAME.equals(tool.name()));
-            boolean ontologyDiscovery = request.tools().stream()
-                    .anyMatch(tool -> GRAPH_DELTA_TOOL_NAME.equals(tool.name()))
-                    && request.messages().stream().map(StructuredChatLanguageModel.Message::content)
-                    .anyMatch(message -> message.contains(ONTOLOGY_DISCOVERY_MARKER));
-            boolean foundingDocument = !ontologyDiscovery
+                    .anyMatch(tool -> SCHEMA_TOOL_NAMES.contains(tool.name()));
+            if (!schemaPrepass && request.tools().stream().anyMatch(tool ->
+                    Set.of(GRAPH_DELTA_TOOL_NAME, "submit_typed_entities", "submit_relations")
+                            .contains(tool.name()))) {
+                firstInstanceRequest.accumulateAndGet(call, Math::min);
+            }
+            boolean foundingDocument = !schemaPrepass
                     && request.tools().stream()
                     .anyMatch(tool -> GRAPH_DELTA_TOOL_NAME.equals(tool.name()))
                     && request.messages().stream().map(StructuredChatLanguageModel.Message::content)
                     .anyMatch(message -> message.contains("Jordan Lee")
                             && message.contains("Helios Dynamics"));
-            boolean employmentDocument = !ontologyDiscovery
+            boolean employmentDocument = !schemaPrepass
                     && request.tools().stream()
                     .anyMatch(tool -> GRAPH_DELTA_TOOL_NAME.equals(tool.name()))
                     && request.messages().stream().map(StructuredChatLanguageModel.Message::content)
@@ -1449,19 +1475,11 @@ class ModelToCrawlJvmIT {
                             && message.contains("Acme Robotics")
                             && message.contains("Nova Labs"));
             if (schemaPrepass) {
-                schemaPrepassRequests.incrementAndGet();
                 System.err.printf(
                         "MODEL_TO_CRAWL_SCHEMA_REQUEST call=%d tools=%s messages=%s%n",
                         call,
                         request.tools().stream().map(StructuredChatLanguageModel.Tool::name).toList(),
                         bounded(request.messages().toString()));
-            }
-            if (ontologyDiscovery) {
-                ontologyDiscoveryRequests.incrementAndGet();
-                System.err.printf(
-                        "MODEL_TO_CRAWL_ONTOLOGY_DISCOVERY_REQUEST call=%d tools=%s%n",
-                        call,
-                        request.tools().stream().map(StructuredChatLanguageModel.Tool::name).toList());
             }
             if (foundingDocument) {
                 StructuredChatLanguageModel.Tool submit = request.tools().stream()
@@ -1523,34 +1541,11 @@ class ModelToCrawlJvmIT {
                             List.of());
                 }
                 if (schemaPrepass) {
-                    response.toolCalls().stream()
-                            .filter(toolCall -> SCHEMA_TOOL_NAME.equals(toolCall.name()))
-                            .findFirst()
-                            .ifPresent(toolCall -> {
-                                schemaPrepassToolResponses.incrementAndGet();
-                                lastSchemaToolArguments = toolCall.arguments();
-                            });
-                    lastSchemaResponseSummary = "raw=" + bounded(response.rawText())
-                            + ", content=" + bounded(response.content())
-                            + ", reasoning=" + bounded(response.reasoningContent())
-                            + ", blocks=" + bounded(response.outputBlocks().toString())
-                            + ", calls=" + response.toolCalls()
-                            + ", parseErrors=" + response.parseErrors();
-                }
-                if (ontologyDiscovery) {
-                    response.toolCalls().stream()
-                            .filter(toolCall -> GRAPH_DELTA_TOOL_NAME.equals(toolCall.name()))
-                            .findFirst()
-                            .ifPresent(toolCall -> {
-                                ontologyDiscoveryToolResponses.incrementAndGet();
-                                lastOntologyDiscoveryToolArguments = toolCall.arguments();
-                            });
-                    lastOntologyDiscoveryResponseSummary = "raw=" + bounded(response.rawText())
-                            + ", content=" + bounded(response.content())
-                            + ", reasoning=" + bounded(response.reasoningContent())
-                            + ", blocks=" + bounded(response.outputBlocks().toString())
-                            + ", calls=" + response.toolCalls()
-                            + ", parseErrors=" + response.parseErrors();
+                    schemaObservations.add(new SchemaObservation(call, request, response));
+                    System.err.printf("MODEL_TO_CRAWL_SCHEMA_RESPONSE call=%d tools=%s response=%s%n",
+                            call, request.tools().stream()
+                                    .map(StructuredChatLanguageModel.Tool::name).toList(),
+                            bounded(response.toString()));
                 }
                 lastResponseSummary = "raw=" + bounded(response.rawText())
                         + ", content=" + bounded(response.content())
@@ -1644,40 +1639,53 @@ class ModelToCrawlJvmIT {
             return generationCalls.get();
         }
 
-        private int schemaPrepassRequests() {
-            return schemaPrepassRequests.get();
-        }
-
-        private int schemaPrepassToolResponses() {
-            return schemaPrepassToolResponses.get();
-        }
-
-        private int ontologyDiscoveryRequests() {
-            return ontologyDiscoveryRequests.get();
-        }
-
-        private int ontologyDiscoveryToolResponses() {
-            return ontologyDiscoveryToolResponses.get();
-        }
-
         private int boundedDocumentRequests() {
             return boundedDocumentRequests.get();
         }
 
-        private Map<String, Object> lastSchemaToolArguments() {
-            return lastSchemaToolArguments;
+        private void assertVocabularyPrepass(HeadlessUnifiedCorpusExtractor.Result result) throws Exception {
+            assertFalse(schemaObservations.isEmpty(), "The real model never ran the vocabulary prepass");
+            assertTrue(firstInstanceRequest.get() < Integer.MAX_VALUE,
+                    "The crawl never reached instance extraction");
+            assertTrue(schemaObservations.stream().allMatch(stage -> stage.call() < firstInstanceRequest.get()),
+                    "Vocabulary/hierarchy/signature generation must finish before instance extraction");
+            SchemaObservation nodes = lastSchemaStage("submit_node_types");
+            assertTrue(nodes.arguments().path("nodeTypes").isArray(),
+                    () -> "Missing classified node vocabulary response: " + nodes.response());
+            SchemaObservation relations = lastSchemaStage("submit_relationship_types");
+            assertTrue(nodes.call() < relations.call(), "Node vocabulary must precede predicate vocabulary");
+            assertTrue(relations.arguments().path("relationshipTypes").isArray(),
+                    () -> "Missing classified predicate vocabulary response: " + relations.response());
+
+            // The headless result exposes the job's frozen schema. Baseline types need not
+            // be reproposed by the model, but the accepted hierarchy/signature must survive.
+            var schema = result.canonicalGraphSchema();
+            assertNotNull(schema, "The crawl did not expose its frozen corpus schema");
+            assertTrue(schema.getAllNodeLabels().containsAll(List.of("PERSON", "COMPANY")),
+                    () -> "Frozen vocabulary missed PERSON or COMPANY: " + schema);
+            assertTrue(schema.getNodeTypes().stream().anyMatch(node ->
+                            "COMPANY".equals(node.getLabel())
+                                    && "ORGANIZATION".equals(node.getParentType())),
+                    () -> "Frozen hierarchy missed COMPANY -> ORGANIZATION: " + schema);
+            assertTrue(schema.getAllRelationshipTypes().contains("FOUNDED"));
+            assertNotNull(schema.getPatterns(), "The frozen schema has no endpoint signatures");
+            assertTrue(schema.getPatterns().contains("(PERSON)-[:FOUNDED]->(COMPANY)"),
+                    () -> "Frozen schema missed the directed founding signature: " + schema.getPatterns());
+            boolean foundedSignature = false;
+            for (SchemaObservation stage : schemaObservations) {
+                if (Set.of("bind_relationship_signatures", "bind_topics_to_schema").contains(stage.tool())) {
+                    foundedSignature |= stage.hasFoundedSignature();
+                }
+            }
+            assertTrue(foundedSignature,
+                    () -> "Model never bound PERSON -[FOUNDED]-> COMPANY before extraction: "
+                            + schemaObservations);
         }
 
-        private String lastSchemaResponseSummary() {
-            return lastSchemaResponseSummary;
-        }
-
-        private Map<String, Object> lastOntologyDiscoveryToolArguments() {
-            return lastOntologyDiscoveryToolArguments;
-        }
-
-        private String lastOntologyDiscoveryResponseSummary() {
-            return lastOntologyDiscoveryResponseSummary;
+        private SchemaObservation lastSchemaStage(String tool) {
+            return schemaObservations.stream().filter(stage -> tool.equals(stage.tool()))
+                    .reduce((previous, current) -> current)
+                    .orElseThrow(() -> new AssertionError("Missing schema stage: " + tool));
         }
 
         private String lastResponseSummary() {
