@@ -34,6 +34,8 @@ import ai.kompile.cli.main.chat.exec.ExecJsonEvents;
 import ai.kompile.cli.main.chat.exec.HeadlessAgentRunner;
 import ai.kompile.cli.main.chat.exec.HeadlessRunEvent;
 import ai.kompile.cli.main.chat.exec.PromptResolver;
+import ai.kompile.cli.main.chat.exec.WebChatInput;
+import ai.kompile.cli.main.chat.exec.WebCommandResolver;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
@@ -99,6 +101,11 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--prompt"}, paramLabel = "TEXT",
             description = "Prompt for a non-interactive turn (alternative to positional PROMPT).")
     private String headlessPrompt;
+
+    @CommandLine.Option(names = {"--input-format"}, paramLabel = "FORMAT",
+            description = "Opt-in structured input: web-json (version 1, rawInput, supplementalContext). Default: plain prompt.")
+    private String inputFormat;
+    private WebChatInput webInput;
 
     @CommandLine.Option(names = {"--json"}, defaultValue = "false",
             description = "Emit an ordered streaming JSONL event stream to stdout.")
@@ -365,6 +372,23 @@ public class ChatCommand implements Callable<Integer> {
             }
             try {
                 resolvedPrompt = resolveHeadlessPrompt();
+                if (inputFormat != null) {
+                    if (!WebChatInput.FORMAT.equals(inputFormat)) {
+                        throw new IllegalArgumentException("Unsupported --input-format: " + inputFormat);
+                    }
+                    webInput = WebChatInput.parse(resolvedPrompt);
+                    var resolution = WebCommandResolver.resolve(webInput, effectiveWorkingDirectory());
+                    if (resolution.isCommandOutcome()) {
+                        if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
+                        // Commands do not require model config, attachments, transcripts,
+                        // or a mutable runtime; the runner owns the ordered event lifecycle.
+                        return new HeadlessAgentRunner().run(new HeadlessAgentRunner.Options(
+                                "", sessionId, false, null, null, headlessMode,
+                                effectiveWorkingDirectory(), 0, outputLastMessage)
+                                .withWebInput(webInput)).exitCode();
+                    }
+                    resolvedPrompt = webInput.rawInput();
+                }
             } catch (IllegalArgumentException | IOException e) {
                 return headlessError(e.getMessage(), 2);
             }
@@ -638,7 +662,7 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     boolean isHeadlessRequested() {
-        return jsonOutput || blankToNull(outputFormat) != null
+        return inputFormat != null || jsonOutput || blankToNull(outputFormat) != null
                 || headlessPrompt != null
                 || (promptParts != null && !promptParts.isEmpty());
     }
@@ -872,7 +896,7 @@ public class ChatCommand implements Callable<Integer> {
                 memory,
                 resolvedRole,
                 dangerouslySkipPermissions,
-                attachments);
+                attachments, webInput);
         return new HeadlessAgentRunner().run(options).exitCode();
     }
 

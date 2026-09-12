@@ -25,21 +25,8 @@ import java.util.stream.Collectors;
  */
 public class SkillRegistry {
     private static final String VALID_NAME_PATTERN = "[A-Za-z][A-Za-z0-9_-]*";
-    private static final Set<String> RESERVED_CHAT_COMMANDS = Set.of(
-            "quit", "exit", "help", "setup", "provider", "tools", "subagents",
-            "local-tools", "tool", "local-tool", "status", "history", "clear",
-            "compact", "auto-compact", "rag", "agents", "local-agents", "agent",
-            "local-agent", "config", "sessions", "ask", "agent-chat", "crawl",
-            "conversations", "transcript", "copy", "memory", "recall", "reminder",
-            "reminder-global", "permissions", "todos", "plan", "queue", "queues",
-            "queue-send", "queue-send-all",
-            "queue-remove", "queue-edit", "queue-move", "queue-clear", "queue-status",
-            "loop", "jobs", "jobs-remove", "jobs-clear", "processes", "process-kill",
-            "process-output", "process-status", "statusbar", "auto-dequeue", "stats",
-            "passthrough", "resume", "mode", "menu", "skills", "roles", "role",
-            "model", "enforce", "enforcer", "forward", "image", "file", "attach",
-            "attachments", "title", "activity", "dashboard", "keys", "render", "rules",
-            "archive", "rollback", "diff", "purge");
+    private static final Set<String> RESERVED_CHAT_COMMANDS =
+            ai.kompile.cli.main.chat.ChatCommandCatalog.names();
     private final Map<String, SkillConfig> skills = new LinkedHashMap<>();
 
     public SkillRegistry() {

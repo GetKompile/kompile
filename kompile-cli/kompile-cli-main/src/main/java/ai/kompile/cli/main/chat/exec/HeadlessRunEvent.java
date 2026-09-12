@@ -28,7 +28,8 @@ public record HeadlessRunEvent(
         long durationMs,
         int exitCode,
         String message,
-        Map<String, String> metadata) {
+        Map<String, String> metadata,
+        com.fasterxml.jackson.databind.JsonNode data) {
 
     public enum Type {
         RUN_STARTED,
@@ -39,6 +40,7 @@ public record HeadlessRunEvent(
         TOOL_STARTED,
         TOOL_COMPLETED,
         TOKEN_USAGE,
+        COMMAND_OUTCOME,
         RUN_COMPLETED,
         RUN_FAILED,
         RUN_DETACHED
@@ -64,9 +66,22 @@ public record HeadlessRunEvent(
                 durationMs, exitCode, message, Map.of());
     }
 
+    public HeadlessRunEvent(long sequence, Type type, String sessionId, String callId,
+                            String toolName, String rawInput, String text, boolean ok,
+                            long durationMs, int exitCode, String message,
+                            Map<String, String> metadata) {
+        this(sequence, type, sessionId, callId, toolName, rawInput, text, ok,
+                durationMs, exitCode, message, metadata, null);
+    }
+
     public HeadlessRunEvent withSequence(long value) {
         return new HeadlessRunEvent(value, type, sessionId, callId, toolName, rawInput,
-                text, ok, durationMs, exitCode, message, metadata);
+                text, ok, durationMs, exitCode, message, metadata, data);
+    }
+
+    /** Structured payload accessor for command outcomes (e.g. /model menu or state). */
+    public com.fasterxml.jackson.databind.JsonNode data() {
+        return data;
     }
 
     public static HeadlessRunEvent started(String sessionId, String model, String cwd) {
@@ -121,6 +136,13 @@ public record HeadlessRunEvent(
                 "output_tokens", Long.toString(Math.max(0, output)),
                 "cache_read_tokens", Long.toString(Math.max(0, cacheRead)),
                 "cache_creation_tokens", Long.toString(Math.max(0, cacheCreation))));
+    }
+
+    public static HeadlessRunEvent commandOutcome(String sessionId, WebCommandResolver.Resolution result) {
+        return new HeadlessRunEvent(0, Type.COMMAND_OUTCOME, sessionId, "", "", "",
+                result.text(), result.exitCode() == 0, 0, result.exitCode(), "", Map.of(
+                "command", result.command(), "status", result.status().name(),
+                "protocol_version", Integer.toString(WebChatInput.VERSION)), result.data());
     }
 
     public static HeadlessRunEvent completed(String sessionId, String text,

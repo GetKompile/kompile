@@ -176,6 +176,29 @@ public final class ChatHarnessCapabilities {
         root.put("ragEnabled", report.ragEnabled());
         root.put("workflowEnabled", report.workflowEnabled());
         root.put("attachmentsSupported", report.attachmentsSupported());
+        ObjectNode webInput = root.putObject("webInput");
+        webInput.put("format", WebChatInput.FORMAT);
+        webInput.put("version", WebChatInput.VERSION);
+        webInput.put("option", "--input-format");
+        webInput.putArray("requiredFields").add("version").add("rawInput");
+        webInput.putArray("optionalFields").add("supplementalContext");
+        webInput.put("commandEvent", "command");
+        webInput.putArray("commandLifecycle").add("session").add("command").add("result");
+        webInput.putArray("commandStatuses").add("COMPLETED").add("UNKNOWN_COMMAND")
+                .add("TERMINAL_REQUIRED").add("LIVE_SESSION_REQUIRED").add("NOT_YET_SUPPORTED")
+                .add("INTERACTION_REQUIRED").add("INVALID");
+        webInput.put("skillDiscovery", "/skills");
+        webInput.put("durableSessionCommands", true);
+        webInput.put("durableSessionCommandsNote",
+                "/model persists its selection per session id + working directory; "
+                        + "a stored selection applies to later MODEL_INPUT turns.");
+        ArrayNode commands = root.putArray("commands");
+        for (var entry : ai.kompile.cli.main.chat.ChatCommandCatalog.entries()) {
+            ObjectNode command = commands.addObject();
+            command.put("name", entry.name());
+            command.put("kind", "builtin");
+            command.put("webSupport", entry.webSupport().name());
+        }
         ArrayNode personas = root.putArray("personas");
         for (Persona persona : report.personas()) {
             ObjectNode node = personas.addObject();
