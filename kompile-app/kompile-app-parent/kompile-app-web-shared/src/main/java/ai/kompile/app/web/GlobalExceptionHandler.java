@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.HashMap;
@@ -179,6 +180,17 @@ public class GlobalExceptionHandler {
         errorResponse.put("timestamp", System.currentTimeMillis());
 
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse);
+    }
+
+    /** Preserve intentional HTTP errors instead of misreporting them as server failures. */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatusException(ResponseStatusException ex) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", ex.getStatusCode().toString());
+        body.put("message", ex.getReason() != null ? ex.getReason() : ex.getStatusCode().toString());
+        body.put("type", ex.getClass().getSimpleName());
+        body.put("timestamp", System.currentTimeMillis());
+        return ResponseEntity.status(ex.getStatusCode()).headers(ex.getHeaders()).body(body);
     }
 
     /**

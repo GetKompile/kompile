@@ -424,6 +424,154 @@ class NativeLibraryResolverTest {
         Files.writeString(temporaryDirectory.resolve(name), "test");
     }
 
+    @Test
+    void acceptsCurrentCudaProducerManifestWithZeroResources() throws Exception {
+        writeNative("libnd4jcuda.so");
+        writeNative("libMLIR.so.22.0git");
+        writeNative("libLLVM.so.22.0git");
+        writeRuntimeManifest("# runtime-count=2\n# resource-count=0\n"
+                + "libMLIR.so.22.0git\nlibLLVM.so.22.0git\n");
+        assertDoesNotThrow(this::validateRuntimeManifest);
+    }
+
+    @Test
+    void acceptsProducerResourcesAndPackagedAliasesWithoutPreloadingThem() throws Exception {
+        writeNative("libnd4jzluda.so");
+        writeNative("libnvcuda.so");
+        writeNative("libcuda.so"); // Classifier aliases can be regular copies.
+        Files.createSymbolicLink(temporaryDirectory.resolve("libcuda.so.1"), Path.of("libnvcuda.so"));
+        Files.createDirectories(temporaryDirectory.resolve("rocblas/library"));
+        Files.createDirectories(temporaryDirectory.resolve(".kpack"));
+        writeNative("rocblas/library/TensileLibrary.dat");
+        writeNative(".kpack/blas_lib_gfx1103.kpack");
+        writeRuntimeManifest("# runtime-count=1\n# runtime-alias-count=2\n"
+                + "# runtime-alias=libcuda.so->libnvcuda.so\n"
+                + "# runtime-alias=libcuda.so.1->libnvcuda.so\n"
+                + "# resource-count=2\n# resource=rocblas/library/TensileLibrary.dat\n"
+                + "# resource=.kpack/blas_lib_gfx1103.kpack\nlibnvcuda.so\n");
+        assertDoesNotThrow(this::validateRuntimeManifest);
+    }
+
+    @Test
+    void rejectsMalformedOrInconsistentProducerMetadata() throws Exception {
+        writeNative("libnd4jcpu.so");
+        writeNative("libLLVM.so");
+        writeNative("libalias.so");
+        Files.createDirectories(temporaryDirectory.resolve(".kpack"));
+        writeNative(".kpack/test.kpack");
+        for (String metadata : List.of(
+                "# resource-count=-1\n", "# resource-count=not-a-count\n",
+                "# resource-count=2147483648\n", "# resource-count=+0\n",
+                "# resource-count=0\n# resource-count=0\n",
+                "# resource-count=1\n", "# resource=.kpack/test.kpack\n",
+                "# resource-count=2\n# resource=.kpack/test.kpack\n# resource=.kpack/test.kpack\n",
+                "# runtime-alias-count=-1\n", "# runtime-alias-count=x\n",
+                "# runtime-alias-count=2147483648\n",
+                "# runtime-alias-count=0\n# runtime-alias-count=0\n",
+                "# runtime-alias-count=1\n", "# runtime-alias=libalias.so->libLLVM.so\n",
+                "# runtime-alias-count=2\n# runtime-alias=libalias.so->libLLVM.so\n# runtime-alias=libalias.so->libLLVM.so\n",
+                "# runtime-alias-count=1\n# runtime-alias=libalias.so->missing.so\n",
+                "# runtime-alias-count=1\n# runtime-alias=libLLVM.so->libLLVM.so\n",
+                "# runtime-alias-count=1\n# runtime-alias=missing.so->libLLVM.so\n",
+                "# runtime-alias-count=1\n# runtime-alias=libalias.so->libLLVM.so->other.so\n",
+                "# runtime-alias-count=1\n# runtime-alias=../libalias.so->libLLVM.so\n",
+                "# resource-count=1\n# resource=.kpack/missing.kpack\n",
+                "# unknown-metadata=0\n", "# runtime-count=1\n")) {
+            writeRuntimeManifest("# runtime-count=1\n" + metadata + "libLLVM.so\n");
+            assertThrows(IllegalStateException.class, this::validateRuntimeManifest, metadata);
+        }
+    }
+
+    @Test
+    void rejectsUnsafeResourcePathsEvenWhenNormalizationWouldFindAFile() throws Exception {
+        writeNative("libnd4jcpu.so");
+        Files.createDirectories(temporaryDirectory.resolve(".kpack"));
+        writeNative(".kpack/test.kpack");
+        for (String resource : List.of("", "/tmp/test.kpack", "C:/test.kpack",
+                "../test.kpack", ".kpack/../.kpack/test.kpack", ".kpack/./test.kpack",
+                ".kpack//test.kpack", ".kpack/", ".kpack/..", ".kpack/.",
+                ".kpack\\test.kpack", ".kpack/C:test.kpack", ".kpack/te\u0000st.kpack",
+                "other/test.kpack")) {
+            writeRuntimeManifest("# runtime-count=0\n# resource-count=1\n# resource=" + resource + "\n");
+            assertThrows(IllegalStateException.class, this::validateRuntimeManifest, resource);
+        }
+    }
+
+    @Test
+    void rejectsResourceDirectoriesAndEscapingOrDanglingSymlinks() throws Exception {
+        Path lib = Files.createDirectory(temporaryDirectory.resolve("lib"));
+        Files.writeString(lib.resolve("libnd4jcpu.so"), "test");
+        Path outside = Files.createDirectory(temporaryDirectory.resolve("outside"));
+        Files.writeString(outside.resolve("test.kpack"), "test");
+        Files.createSymbolicLink(lib.resolve(".kpack"), outside);
+        Path manifest = lib.resolve(NativeLibraryResolver.SHARED_RUNTIME_MANIFEST);
+        Files.writeString(manifest, "# nd4j-shared-runtime-manifest-v1\n"
+                + "# runtime-count=0\n# resource-count=1\n# resource=.kpack/test.kpack\n");
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)));
+        Files.delete(lib.resolve(".kpack"));
+        Files.createDirectory(lib.resolve(".kpack"));
+        Files.createDirectory(lib.resolve(".kpack/test.kpack"));
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)));
+        Files.delete(lib.resolve(".kpack/test.kpack"));
+        Files.createSymbolicLink(lib.resolve(".kpack/test.kpack"), outside.resolve("test.kpack"));
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)));
+        Files.delete(outside.resolve("test.kpack"));
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)));
+    }
+
+    @Test
+    void rejectsUnsafeDuplicateAndEscapingRuntimeEntries() throws Exception {
+        Path lib = Files.createDirectory(temporaryDirectory.resolve("lib"));
+        Files.writeString(lib.resolve("libnd4jcpu.so"), "test");
+        writeNative("libLLVM.so");
+        Files.createSymbolicLink(lib.resolve("libLLVM.so"), temporaryDirectory.resolve("libLLVM.so"));
+        for (String entry : List.of("../libLLVM.so", "libLLVM.so", "C:libLLVM.so",
+                ".", "..", "dir/libLLVM.so", "dir\\libLLVM.so")) {
+            Files.writeString(lib.resolve(NativeLibraryResolver.SHARED_RUNTIME_MANIFEST),
+                    "# nd4j-shared-runtime-manifest-v1\n# runtime-count=1\n" + entry + "\n");
+            assertThrows(IllegalStateException.class, () ->
+                    NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)), entry);
+        }
+        writeNative("libnd4jcpu.so");
+        writeRuntimeManifest("# runtime-count=2\nlibLLVM.so\nlibLLVM.so\n");
+        assertThrows(IllegalStateException.class, this::validateRuntimeManifest);
+    }
+
+    private void writeRuntimeManifest(String body) throws Exception {
+        Files.writeString(temporaryDirectory.resolve(NativeLibraryResolver.SHARED_RUNTIME_MANIFEST),
+                "# nd4j-shared-runtime-manifest-v1\n" + body);
+    }
+
+    @Test
+    void acceptsCurrentProducerEmptySections() throws Exception {
+        writeNative("libnd4jcpu.so");
+        writeRuntimeManifest("# runtime-count=0\n# runtime-alias-count=0\n# resource-count=0\n");
+        assertDoesNotThrow(this::validateRuntimeManifest);
+    }
+
+    @Test
+    void rejectsAliasSymlinkOutsideDistribution() throws Exception {
+        Path lib = Files.createDirectory(temporaryDirectory.resolve("lib"));
+        Files.writeString(lib.resolve("libnd4jcpu.so"), "test");
+        Files.writeString(lib.resolve("libLLVM.so"), "test");
+        writeNative("libalias.so");
+        Files.createSymbolicLink(lib.resolve("libalias.so"), temporaryDirectory.resolve("libalias.so"));
+        Files.writeString(lib.resolve(NativeLibraryResolver.SHARED_RUNTIME_MANIFEST),
+                "# nd4j-shared-runtime-manifest-v1\n# runtime-count=1\n"
+                        + "# runtime-alias-count=1\n# runtime-alias=libalias.so->libLLVM.so\n"
+                        + "# resource-count=0\nlibLLVM.so\n");
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.validateSideLoadedRuntime(List.of(lib)));
+    }
+
+    private void validateRuntimeManifest() {
+        NativeLibraryResolver.validateSideLoadedRuntime(List.of(temporaryDirectory));
+    }
+
     private void writeJniEntrypointManifest(String... names) throws Exception {
         Files.writeString(
                 temporaryDirectory.resolve(NativeLibraryResolver.JNI_ENTRYPOINT_MANIFEST),

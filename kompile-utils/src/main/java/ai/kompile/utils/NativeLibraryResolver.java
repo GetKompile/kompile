@@ -86,6 +86,10 @@ public class NativeLibraryResolver {
     private static final String SHARED_RUNTIME_MANIFEST_FORMAT =
             "# nd4j-shared-runtime-manifest-v1";
     private static final String RUNTIME_COUNT_PREFIX = "# runtime-count=";
+    private static final String RESOURCE_COUNT_PREFIX = "# resource-count=";
+    private static final String RESOURCE_PREFIX = "# resource=";
+    private static final String RUNTIME_ALIAS_COUNT_PREFIX = "# runtime-alias-count=";
+    private static final String RUNTIME_ALIAS_PREFIX = "# runtime-alias=";
 
     /** Producer-generated list of direct JNI payloads safe to load at process bootstrap. */
     static final String JNI_ENTRYPOINT_MANIFEST = "jni-entrypoint-manifest.txt";
@@ -742,7 +746,11 @@ public class NativeLibraryResolver {
 
     private static void validateSharedRuntimeManifest(Path manifest) {
         int declaredCount;
+        Integer resourceCount = null;
+        Integer aliasCount = null;
         Set<String> runtimeNames = new LinkedHashSet<>();
+        Set<String> resourceNames = new LinkedHashSet<>();
+        Map<String, String> aliases = new LinkedHashMap<>();
         try (BufferedReader reader = Files.newBufferedReader(
                 manifest, StandardCharsets.UTF_8)) {
             String format = reader.readLine();
@@ -755,17 +763,7 @@ public class NativeLibraryResolver {
                 throw new IllegalStateException(
                         "Missing runtime-count in " + manifest);
             }
-            try {
-                declaredCount = Integer.parseInt(
-                        countLine.substring(RUNTIME_COUNT_PREFIX.length()));
-            } catch (NumberFormatException e) {
-                throw new IllegalStateException(
-                        "Invalid runtime-count in " + manifest + ": " + countLine, e);
-            }
-            if (declaredCount < 0) {
-                throw new IllegalStateException(
-                        "Negative runtime-count in " + manifest);
-            }
+            declaredCount = parseRuntimeManifestCount(countLine, RUNTIME_COUNT_PREFIX, manifest);
 
             String line;
             while ((line = reader.readLine()) != null) {
@@ -773,33 +771,111 @@ public class NativeLibraryResolver {
                 if (runtimeName.isEmpty()) {
                     continue;
                 }
-                if (runtimeName.startsWith("#")
-                        || runtimeName.contains("/")
-                        || runtimeName.contains("\\")
-                        || !runtimeName.equals(Path.of(runtimeName).getFileName().toString())) {
+                if (runtimeName.startsWith(RESOURCE_COUNT_PREFIX)) {
+                    if (resourceCount != null) {
+                        throw new IllegalStateException("Duplicate resource-count in " + manifest);
+                    }
+                    resourceCount = parseRuntimeManifestCount(runtimeName, RESOURCE_COUNT_PREFIX, manifest);
+                    continue;
+                }
+                if (runtimeName.startsWith(RUNTIME_ALIAS_COUNT_PREFIX)) {
+                    if (aliasCount != null) {
+                        throw new IllegalStateException("Duplicate runtime-alias-count in " + manifest);
+                    }
+                    aliasCount = parseRuntimeManifestCount(runtimeName, RUNTIME_ALIAS_COUNT_PREFIX, manifest);
+                    continue;
+                }
+                if (runtimeName.startsWith(RESOURCE_PREFIX)) {
+                    String resource = runtimeName.substring(RESOURCE_PREFIX.length());
+                    // These are the resource roots emitted by StageSharedRuntime.cmake.
+                    // Do not normalize away traversal or accept OS-specific separators.
+                    if (!(resource.startsWith("rocblas/library/") || resource.startsWith(".kpack/"))
+                            || resource.contains("\\") || resource.contains(":")
+                            || Arrays.stream(resource.split("/", -1)).anyMatch(part ->
+                                    part.isEmpty() || part.equals(".") || part.equals("..")
+                                            || part.chars().anyMatch(Character::isISOControl))) {
+                        throw new IllegalStateException("Invalid runtime resource '" + resource + "' in " + manifest);
+                    }
+                    if (!resourceNames.add(resource)) {
+                        throw new IllegalStateException("Duplicate runtime resource '" + resource + "' in " + manifest);
+                    }
+                    validateRuntimeManifestFile(manifest, resource);
+                    continue;
+                }
+                if (runtimeName.startsWith(RUNTIME_ALIAS_PREFIX)) {
+                    String[] mapping = runtimeName.substring(RUNTIME_ALIAS_PREFIX.length()).split("->", -1);
+                    if (mapping.length != 2) {
+                        throw new IllegalStateException("Invalid runtime alias '" + runtimeName + "' in " + manifest);
+                    }
+                    validateRuntimeManifestName(mapping[0], manifest);
+                    validateRuntimeManifestName(mapping[1], manifest);
+                    if (aliases.putIfAbsent(mapping[0], mapping[1]) != null) {
+                        throw new IllegalStateException("Duplicate runtime alias '" + mapping[0] + "' in " + manifest);
+                    }
+                    validateRuntimeManifestFile(manifest, mapping[0]);
+                    continue;
+                }
+                if (runtimeName.startsWith("#")) {
                     throw new IllegalStateException(
                             "Invalid runtime entry '" + runtimeName + "' in " + manifest);
                 }
+                validateRuntimeManifestName(runtimeName, manifest);
                 if (!runtimeNames.add(runtimeName)) {
                     throw new IllegalStateException(
                             "Duplicate runtime entry '" + runtimeName + "' in " + manifest);
                 }
-                Path runtime = manifest.getParent().resolve(runtimeName);
-                if (!Files.isRegularFile(runtime)) {
-                    throw new IllegalStateException(
-                            "Manifest-declared runtime is missing: " + runtime);
-                }
+                validateRuntimeManifestFile(manifest, runtimeName);
             }
         } catch (IOException e) {
             throw new IllegalStateException(
                     "Cannot read ND4J shared-runtime manifest " + manifest, e);
         }
 
+        // Older v1 manifests omit both optional metadata sections entirely.
+        if (resourceNames.size() != (resourceCount == null ? 0 : resourceCount)
+                || aliases.size() != (aliasCount == null ? 0 : aliasCount)) {
+            throw new IllegalStateException("ND4J shared-runtime resource/alias count mismatch in " + manifest);
+        }
+        for (Map.Entry<String, String> alias : aliases.entrySet()) {
+            if (runtimeNames.contains(alias.getKey()) || !runtimeNames.contains(alias.getValue())) {
+                throw new IllegalStateException("Invalid canonical runtime for alias '" + alias.getKey()
+                        + "' in " + manifest);
+            }
+        }
         if (runtimeNames.size() != declaredCount) {
             throw new IllegalStateException(
                     "ND4J shared-runtime manifest count mismatch in " + manifest
                             + ": declared " + declaredCount + " but found "
                             + runtimeNames.size());
+        }
+    }
+
+    private static int parseRuntimeManifestCount(String line, String prefix, Path manifest) {
+        String count = line.substring(prefix.length());
+        try {
+            if (!count.matches("[0-9]+")) {
+                throw new NumberFormatException("Expected a nonnegative decimal count");
+            }
+            return Integer.parseInt(count);
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("Invalid manifest count '" + line + "' in " + manifest, e);
+        }
+    }
+
+    private static void validateRuntimeManifestName(String name, Path manifest) {
+        if (!name.matches("[A-Za-z0-9][A-Za-z0-9._+@-]*")) {
+            throw new IllegalStateException("Invalid runtime entry '" + name + "' in " + manifest);
+        }
+    }
+
+    private static void validateRuntimeManifestFile(Path manifest, String name) throws IOException {
+        Path root = manifest.getParent().toRealPath();
+        Path file = root.resolve(name).normalize();
+        // Permit packaged SONAME symlinks, but never links (including resource
+        // directory links) that escape the selected distribution closure.
+        if (!file.startsWith(root) || !Files.isRegularFile(file)
+                || !file.toRealPath().startsWith(root)) {
+            throw new IllegalStateException("Manifest-declared runtime/resource is missing or escapes its directory: " + file);
         }
     }
 

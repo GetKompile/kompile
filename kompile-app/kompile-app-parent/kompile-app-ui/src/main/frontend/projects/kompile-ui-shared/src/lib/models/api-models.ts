@@ -2933,7 +2933,55 @@ export type MessageRole = 'USER' | 'ASSISTANT' | 'SYSTEM';
 /**
  * Chat message for local agent conversations.
  */
-export interface LocalAgentMessage {
+export interface CommandOutcome {
+  command: string;
+  status: string;
+  text: string;
+  ok: boolean;
+  exit: number;
+  /** Structured command payload (e.g. the /model menu or applied state). Omitted for plain-text outcomes. */
+  data?: CommandEventData;
+}
+
+/** One selectable entry of a CLI {@code /model} menu. */
+export interface CommandModelEntry {
+  /** Canonical model id — the exact token sent back via {@code /model <id>}. */
+  id: string;
+  /** Optional friendly name when it differs from the id. */
+  display?: string;
+  /** Optional context window in tokens, when the catalog knows it. */
+  contextLimit?: number;
+  /** True for the model this browser session currently uses. */
+  current?: boolean;
+}
+
+/**
+ * Structured payload of a command outcome. Only {@code menu:"model"} has a
+ * browser-rendered shape today; unknown menus degrade to status text.
+ */
+export interface CommandEventData {
+  menu?: 'model';
+  provider?: string;
+  currentModel?: string;
+  liveListingAvailable?: boolean;
+  persistedForSession?: boolean;
+  note?: string;
+  models?: CommandModelEntry[];
+  /** Applied session state after {@code /model <id>} succeeded. */
+  state?: {
+    sessionId?: string;
+    workingDirectory?: string;
+    model?: string;
+  };
+}
+
+/** Persisted transcript entries which must never become model context. */
+export interface CommandMessageMetadata {
+  commandOnly?: boolean;
+  commandOutcome?: CommandOutcome;
+}
+
+export interface LocalAgentMessage extends CommandMessageMetadata {
   /** Unique message ID */
   id: string;
 

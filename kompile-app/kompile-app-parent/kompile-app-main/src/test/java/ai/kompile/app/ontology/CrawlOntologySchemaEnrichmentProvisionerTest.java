@@ -19,6 +19,9 @@ import ai.kompile.app.web.dto.ontology.OwlClassificationResponse;
 import org.junit.jupiter.api.Test;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -39,7 +42,14 @@ class CrawlOntologySchemaEnrichmentProvisionerTest {
                 .consistent(true)
                 .build());
 
-        new CrawlOntologySchemaEnrichmentProvisioner(schemaEnrichmentService).provisionOntology(7L);
+        GraphOntologyBindingService bindingService = mock(GraphOntologyBindingService.class);
+        doAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return null;
+        }).when(bindingService).withOntologyMutationLock(eq(7L), any(Runnable.class));
+        new CrawlOntologySchemaEnrichmentProvisioner(schemaEnrichmentService, bindingService)
+                .provisionOntology(7L);
+        verify(bindingService).withOntologyMutationLock(eq(7L), any(Runnable.class));
 
         verify(schemaEnrichmentService).generateSchemaAndTypes(7L);
     }
@@ -49,7 +59,14 @@ class CrawlOntologySchemaEnrichmentProvisionerTest {
         OntologySchemaEnrichmentService schemaEnrichmentService = mock(OntologySchemaEnrichmentService.class);
         when(schemaEnrichmentService.generateSchemaAndTypes(7L)).thenThrow(new IllegalStateException("bad graph"));
 
-        new CrawlOntologySchemaEnrichmentProvisioner(schemaEnrichmentService).provisionOntology(7L);
+        GraphOntologyBindingService bindingService = mock(GraphOntologyBindingService.class);
+        doAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return null;
+        }).when(bindingService).withOntologyMutationLock(eq(7L), any(Runnable.class));
+        new CrawlOntologySchemaEnrichmentProvisioner(schemaEnrichmentService, bindingService)
+                .provisionOntology(7L);
+        verify(bindingService).withOntologyMutationLock(eq(7L), any(Runnable.class));
 
         verify(schemaEnrichmentService).generateSchemaAndTypes(7L);
     }

@@ -16,6 +16,9 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.WebChatContext;
+import java.nio.file.Path;
+import java.net.ServerSocket;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
@@ -63,6 +66,25 @@ final class ChatInstanceBootstrap {
     static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
                                      ComponentRegistry registry, ServiceManager serviceManager,
                                      File dataDirectory) throws BootstrapException {
+        return ensureReady(requestedChatUrl, startupTimeoutSeconds, registry, serviceManager,
+                dataDirectory, false, false);
+    }
+
+    static StartupResult startWeb(Path workingDirectory, boolean globalConfig, int timeout)
+            throws BootstrapException, IOException {
+        // A fresh port/instance avoids reusing an admin persona or another project's harness.
+        int port;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        return ensureReady("http://127.0.0.1:" + port, timeout, new ComponentRegistry(),
+                new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig);
+    }
+
+    static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
+                                     ComponentRegistry registry, ServiceManager serviceManager,
+                                     File dataDirectory, boolean webHandoff, boolean globalConfig)
+            throws BootstrapException {
         List<String> missing = missingDistributionComponents(registry);
         if (!missing.isEmpty()) {
             throw new BootstrapException("The installed distribution is missing required component: "
@@ -75,6 +97,7 @@ final class ChatInstanceBootstrap {
 
         int chatPort = portForLocalChatUrl(requestedChatUrl);
         if (serviceManager.checkHealth(chatPort)) {
+            if (webHandoff) throw new BootstrapException("Web handoff will not reuse an existing server; retry for a fresh port.");
             return new StartupResult(requestedChatUrl, false);
         }
 
@@ -83,25 +106,32 @@ final class ChatInstanceBootstrap {
             throw new BootstrapException("The installed Kompile chat executable was not found.");
         }
 
+        if (webHandoff && !chatArtifact.getName().endsWith(".jar")) {
+            throw new BootstrapException("--web currently requires the installed CHAT JAR tier; native CHAT handoff is not supported.");
+        }
         File workDirectory = dataDirectory.getAbsoluteFile();
         if (!workDirectory.isDirectory() && !workDirectory.mkdirs()) {
             throw new BootstrapException("Could not create Kompile data directory: " + workDirectory);
         }
-        File logDirectory = new File(workDirectory, "logs");
+        File logDirectory = new File(webHandoff ? KompileHome.homeDirectory() : workDirectory, "logs");
+        String instanceName = webHandoff ? "kompile-chat-web-" + chatPort : INSTANCE_NAME;
 
-        System.out.println("No Kompile chat instance is configured; starting the installed chat subprocess...");
+        System.out.println(webHandoff ? "Starting an isolated installed CHAT web subprocess..."
+                : "No Kompile chat instance is configured; starting the installed chat subprocess...");
         System.out.println("  Component: " + chatArtifact.getAbsolutePath());
         System.out.println("  URL: " + requestedChatUrl);
 
         Process process;
         try {
             process = serviceManager.startProjectComponent(
-                    INSTANCE_NAME,
+                    instanceName,
                     ComponentRegistry.KOMPILE_APP_CHAT,
                     chatArtifact,
                     chatPort,
                     workDirectory,
-                    List.of(),
+                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig) : List.of(),
+                    // Use the CHAT distribution's all-interface default and honor operator
+                    // overrides (KOMPILE_CHAT_ADDRESS / SERVER_ADDRESS), rather than forcing loopback.
                     List.of(),
                     logDirectory,
                     false);
@@ -111,11 +141,11 @@ final class ChatInstanceBootstrap {
         }
 
         int timeoutSeconds = Math.max(1, startupTimeoutSeconds);
-        if (!serviceManager.waitForHealth(chatPort, timeoutSeconds)) {
+        if (!serviceManager.waitForHealth(chatPort, timeoutSeconds) || !process.isAlive()) {
             if (process.isAlive()) {
                 process.destroyForcibly();
             }
-            InstanceRegistry.unregister(INSTANCE_NAME);
+            InstanceRegistry.unregister(instanceName);
             throw new BootstrapException("The Kompile chat subprocess did not become ready at "
                     + requestedChatUrl + " within " + timeoutSeconds + " seconds. Logs: "
                     + logDirectory.getAbsolutePath());

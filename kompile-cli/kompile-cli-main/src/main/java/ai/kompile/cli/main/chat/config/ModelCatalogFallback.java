@@ -77,9 +77,10 @@ public final class ModelCatalogFallback {
 
     /**
      * Record against an explicit store; {@code null} storePath uses the default
-     * {@code ~/.kompile/cache/model-catalogs.json} location.
+     * {@code ~/.kompile/cache/model-catalogs.json} location. Public so the shared
+     * web-command catalog surface and tests can seed explicit stores.
      */
-    static void record(String provider, List<String> models, String baseUrl, Path storePath) {
+    public static void record(String provider, List<String> models, String baseUrl, Path storePath) {
         Path effective = storePath == null ? defaultStorePath() : storePath;
         if (provider == null || provider.isBlank()
                 || models == null || models.isEmpty()) {
@@ -110,7 +111,8 @@ public final class ModelCatalogFallback {
         return lookup(provider, defaultStorePath());
     }
 
-    static Optional<RecordedCatalog> lookup(String provider, Path storePath) {
+    /** The provider's last known good catalog from an explicit store (default when null). */
+    public static Optional<RecordedCatalog> lookup(String provider, Path storePath) {
         if (provider == null || provider.isBlank()) {
             return Optional.empty();
         }
@@ -125,7 +127,8 @@ public final class ModelCatalogFallback {
         return knows(provider, modelId, defaultStorePath());
     }
 
-    static boolean knows(String provider, String modelId, Path storePath) {
+    /** Whether the model id appears in the provider's recorded catalog (explicit store). */
+    public static boolean knows(String provider, String modelId, Path storePath) {
         return lookup(provider, storePath)
                 .map(recorded -> recorded.knows(modelId))
                 .orElse(false);

@@ -12,6 +12,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -73,6 +74,32 @@ class DistributedGraphAuthorityControllerTest {
     @AfterEach
     void tearDown() {
         if (child != null) child.stop(0);
+    }
+
+    @Test
+    void springSelectsProductionConstructorWithoutAnHttpClientBean() {
+        try (var context = new AnnotationConfigApplicationContext()) {
+            context.getBeanFactory().registerSingleton("coordinator", coordinator);
+            context.getBeanFactory().registerSingleton("graphLauncher",
+                    mock(GraphMatrixSubprocessLauncher.class));
+            context.getBeanFactory().registerSingleton("configService",
+                    mock(ResourceSchedulerConfigService.class));
+            context.getBeanFactory().registerSingleton("mapper", new ObjectMapper());
+            context.register(DistributedGraphAuthorityController.class);
+            context.refresh();
+            org.junit.jupiter.api.Assertions.assertNotNull(
+                    context.getBean(DistributedGraphAuthorityController.class));
+        }
+    }
+
+    @Test
+    void gatewayIsAbsentWithoutDistributedCrawlCoordinator() {
+        try (var context = new AnnotationConfigApplicationContext()) {
+            context.register(DistributedGraphAuthorityController.class);
+            context.refresh();
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    context.getBeansOfType(DistributedGraphAuthorityController.class).isEmpty());
+        }
     }
 
     @Test

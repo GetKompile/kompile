@@ -827,6 +827,12 @@
           <groupId>org.springframework.boot</groupId>
           <artifactId>spring-boot-maven-plugin</artifactId>
           <version>${spring-boot.version}</version>
+          <configuration>
+            <!-- CUDA service JARs exceed 2 GiB. Boot 3.2's new ZIP loader overflows
+                 large offsets (spring-boot#42012). Apply the classic loader to every
+                 app executable until the Boot baseline includes that fix. -->
+            <loaderImplementation>CLASSIC</loaderImplementation>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>com.github.eirslett</groupId>

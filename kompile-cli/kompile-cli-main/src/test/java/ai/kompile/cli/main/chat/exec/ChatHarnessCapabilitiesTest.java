@@ -85,6 +85,27 @@ class ChatHarnessCapabilitiesTest {
     }
 
     @Test
+    void explicitGlobalScopeIsNotShadowedByProjectConfig() throws Exception {
+        String oldHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", tempDir.toString());
+            Path project = java.nio.file.Files.createDirectories(tempDir.resolve("project"));
+            ChatConfig global = new ChatConfig("custom", "secret", "global-model", "https://example.test/v1");
+            global.setChatMode("standard");
+            global.setContextWindowTokens(8192);
+            global.save(ChatConfig.Scope.GLOBAL, project);
+            ChatConfig local = new ChatConfig("custom", "secret", "project-model", "https://example.test/v1");
+            local.setChatMode("standard");
+            local.setContextWindowTokens(8192);
+            local.save(ChatConfig.Scope.PROJECT, project);
+            assertEquals("global-model", ChatHarnessCapabilities.inspect(project, true).model());
+            assertEquals("project-model", ChatHarnessCapabilities.inspect(project, false).model());
+        } finally {
+            System.setProperty("user.home", oldHome);
+        }
+    }
+
+    @Test
     void refusesRecursiveKompileServerConfiguration() {
         ChatConfig config = new ChatConfig(
                 "kompile", null, null, "http://localhost:8081");

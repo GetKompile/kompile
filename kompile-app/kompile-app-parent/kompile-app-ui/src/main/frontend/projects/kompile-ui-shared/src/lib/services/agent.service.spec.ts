@@ -136,6 +136,49 @@ describe('AgentService', () => {
   });
 
   describe('getChatHarnessAgents()', () => {
+    [403, 500].forEach(status => {
+      it(`propagates the backend access reason for HTTP ${status}`, () => {
+        const reason = 'Harness access denied by server policy';
+        let latestError: string | null = null;
+        service.error$.subscribe(value => latestError = value);
+        service.getChatHarnessAgents().subscribe({
+          next: () => fail('Expected a capability error'),
+          error: err => {
+            expect(err.message).toBe(reason);
+            expect(err.status).toBe(status);
+          }
+        });
+        httpMock.expectOne(r => r.url.endsWith('/agents/chat/capabilities'))
+          .flush({ message: reason }, { status, statusText: 'Error' });
+        expect<string | null>(latestError).toBe(reason);
+      });
+    });
+
+    it('reports unavailable capability status and clears it on a successful retry', () => {
+      let latestError: string | null = null;
+      let loading = false;
+      service.error$.subscribe(value => latestError = value);
+      service.loading$.subscribe(value => loading = value);
+      service.getChatHarnessAgents().subscribe({
+        next: () => fail('Expected unavailable capabilities to fail'),
+        error: err => expect(err.message).toBe('Provider credentials are missing')
+      });
+      httpMock.expectOne(r => r.url.endsWith('/agents/chat/capabilities')).flush({
+        available: false, status: 'Provider credentials are missing', personas: []
+      });
+      expect<string | null>(latestError).toBe('Provider credentials are missing');
+      expect(loading).toBeFalse();
+      expect(service.getSelectedAgent()).toBeNull();
+
+      service.refreshChatHarnessAgents().subscribe(agents => expect(agents).toEqual([]));
+      expect<string | null>(latestError).toBeNull();
+      httpMock.expectOne(r => r.url.endsWith('/agents/chat/capabilities')).flush({
+        available: true, status: 'ready', personas: []
+      });
+      expect<string | null>(latestError).toBeNull();
+      expect(loading).toBeFalse();
+    });
+
     it('maps CLI harness personas and forwards project/refresh selectors', () => {
       service.getChatHarnessAgents(true, '/workspace/project').subscribe(agents => {
         expect(agents.length).toBe(2);

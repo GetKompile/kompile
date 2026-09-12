@@ -122,6 +122,46 @@ describe('ServiceEndpointRouter', () => {
       .toBe('http://localhost:9382/api/cross-index/status/1');
   });
 
+  it('keeps chat APIs same-origin on a random-port LAN deployment despite localhost defaults', async () => {
+    router = new ServiceEndpointRouter(client, 'chat');
+    await load({
+      ...endpoints,
+      chatUrl: 'http://localhost:8081',
+      routes: { ...endpoints.routes, '/api/agents': 'chat' }
+    });
+
+    const path = '/api/agents/chat/capabilities?refresh=true#details';
+    expect(router.resolve(path)).toBe(path);
+    // A preserved relative URL follows whichever LAN host/port served the UI.
+    const lanOrigin = 'http://192.168.1.25:49173';
+    expect(new URL(router.resolve(path), lanOrigin).href).toBe(`${lanOrigin}${path}`);
+    const absoluteSameOrigin = `${window.location.origin}${path}`;
+    expect(router.resolve(absoluteSameOrigin)).toBe(absoluteSameOrigin);
+    expect(router.resolve('/api/chat/sessions')).toBe('/api/chat/sessions');
+  });
+
+  it('still routes other personas and longest-prefix overrides from the chat UI', async () => {
+    router = new ServiceEndpointRouter(client, 'chat');
+    await load({
+      ...endpoints,
+      routes: {
+        ...endpoints.routes,
+        '/api/models': 'chat',
+        '/api/models/active-context': 'admin'
+      }
+    });
+
+    expect(router.resolve('/api/models/catalog')).toBe('/api/models/catalog');
+    expect(router.resolve('/api/models/active-context?refresh=true'))
+      .toBe('http://localhost:9380/api/models/active-context?refresh=true');
+    expect(router.resolve('/api/cross-index/status/1'))
+      .toBe('http://localhost:9382/api/cross-index/status/1');
+    expect(router.resolve('https://example.com/api/chat/sessions'))
+      .toBe('https://example.com/api/chat/sessions');
+    expect(router.resolve('https://example.com/api/cross-index/status/1'))
+      .toBe('https://example.com/api/cross-index/status/1');
+  });
+
   it('uses longest-prefix ownership and preserves shared same-origin APIs', async () => {
     await load({
       ...endpoints,

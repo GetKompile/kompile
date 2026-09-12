@@ -673,7 +673,7 @@ promote_update_payload() {
     collect_manifest_paths "${new_manifest}" "${new_paths}" true || return 1
     LC_ALL=C sort -u -o "${old_paths}" "${old_paths}" || return 1
     LC_ALL=C sort -u -o "${new_paths}" "${new_paths}" || return 1
-    comm -13 "${old_paths}" "${new_paths}" > "${new_only_paths}" || return 1
+    LC_ALL=C comm -13 "${old_paths}" "${new_paths}" > "${new_only_paths}" || return 1
 
     # A managed or state-seed path may not escape through a pre-existing
     # symlinked parent in the live installation.

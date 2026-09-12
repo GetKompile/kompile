@@ -9,6 +9,8 @@ import ai.kompile.app.services.scheduler.ResourceSchedulerConfigService;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -35,6 +37,7 @@ import java.util.Set;
 
 /** Authenticated, fixed-target gateway from distributed crawl workers to the crawl manager graph child. */
 @RestController
+@ConditionalOnBean(DistributedCrawlCoordinator.class)
 @RequestMapping("/api/internal/distributed-graph")
 public class DistributedGraphAuthorityController {
 
@@ -63,6 +66,7 @@ public class DistributedGraphAuthorityController {
     private final ObjectMapper mapper;
     private final HttpClient httpClient;
 
+    @Autowired
     public DistributedGraphAuthorityController(
             DistributedCrawlCoordinator coordinator,
             GraphMatrixSubprocessLauncher graphLauncher,

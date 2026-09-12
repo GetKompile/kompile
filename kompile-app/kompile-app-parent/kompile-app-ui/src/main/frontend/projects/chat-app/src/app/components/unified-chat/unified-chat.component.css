@@ -2585,47 +2585,50 @@
   line-height: 1.6;
 }
 
-.md-rendered p {
+/* innerHTML nodes have no Emulated content attribute. Pierce only within this
+   component's markdown containers, never disable encapsulation globally. */
+
+:host ::ng-deep .md-rendered p {
   margin: 0 0 12px 0;
 }
 
-.md-rendered p:last-child {
+:host ::ng-deep .md-rendered p:last-child {
   margin-bottom: 0;
 }
 
-.md-rendered h1, .md-rendered h2, .md-rendered h3,
-.md-rendered h4, .md-rendered h5, .md-rendered h6 {
+:host ::ng-deep .md-rendered h1, :host ::ng-deep .md-rendered h2, :host ::ng-deep .md-rendered h3,
+:host ::ng-deep .md-rendered h4, :host ::ng-deep .md-rendered h5, :host ::ng-deep .md-rendered h6 {
   margin: 16px 0 8px 0;
   font-weight: 600;
   line-height: 1.3;
 }
 
-.md-rendered h1 { font-size: 1.4em; }
-.md-rendered h2 { font-size: 1.2em; }
-.md-rendered h3 { font-size: 1.1em; }
+:host ::ng-deep .md-rendered h1 { font-size: 1.4em; }
+:host ::ng-deep .md-rendered h2 { font-size: 1.2em; }
+:host ::ng-deep .md-rendered h3 { font-size: 1.1em; }
 
-.md-rendered ul, .md-rendered ol {
+:host ::ng-deep .md-rendered ul, :host ::ng-deep .md-rendered ol {
   margin: 8px 0;
   padding-left: 24px;
 }
 
-.md-rendered li {
+:host ::ng-deep .md-rendered li {
   margin-bottom: 4px;
 }
 
-.md-rendered li > ul, .md-rendered li > ol {
+:host ::ng-deep .md-rendered li > ul, :host ::ng-deep .md-rendered li > ol {
   margin: 4px 0;
 }
 
-.md-rendered strong {
+:host ::ng-deep .md-rendered strong {
   font-weight: 600;
 }
 
-.md-rendered em {
+:host ::ng-deep .md-rendered em {
   font-style: italic;
 }
 
-.md-rendered hr {
+:host ::ng-deep .md-rendered hr {
   border: none;
   border-top: 1px solid var(--border-color);
   margin: 16px 0;
@@ -3705,6 +3708,50 @@
 .staging-link {
   margin-top: 4px;
   text-align: right;
+}
+
+/* ── CLI /model picker: inline action area under a command outcome ─────── */
+.model-menu {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-menu-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.8em;
+}
+
+.model-menu-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.model-menu-provider {
+  color: var(--text-secondary);
+}
+
+.model-menu-note {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 0.9em;
+}
+
+/* Reuses .select-input sizing; menu lists can get long. */
+.model-menu-select {
+  max-width: 420px;
+}
+
+.model-menu-select:disabled {
+  background-color: var(--bg-body);
+  color: var(--text-tertiary);
 }
 
 /* ── Task 4b: Stopped badge ─────────────────────────────────────────────── */

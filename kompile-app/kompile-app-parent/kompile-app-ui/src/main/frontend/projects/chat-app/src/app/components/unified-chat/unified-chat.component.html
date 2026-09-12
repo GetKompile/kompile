@@ -372,7 +372,8 @@
 
         <div class="agent-counts">
           <span *ngIf="agentsLoading">Loading harness...</span>
-          <span *ngIf="!agentsLoading">{{ getAvailableAgentCount() }} of {{ agents.length }} personas ready</span>
+          <span *ngIf="!agentsLoading && !agentsError">{{ getAvailableAgentCount() }} of {{ agents.length }} personas ready</span>
+          <span *ngIf="!agentsLoading && agentsError" role="alert">{{ agentsError }}</span>
         </div>
 
         <!-- Selected Agent Details -->
@@ -486,7 +487,7 @@
       <div class="settings-section" *ngIf="selectedAgent">
         <h4>Harness Turn</h4>
 
-        <p class="setting-hint">Harness execution is local-only unless the caller supplies the HTTPS integration-admin control headers.</p>
+        <p class="setting-hint">Harness access is controlled by the server's network and authentication policy.</p>
 
         <div class="setting-row">
           <label>Response Timeout</label>
@@ -972,7 +973,7 @@
           The <strong>{{ selectedAgent.displayName }}</strong> persona is running through the Kompile CLI harness.
           Type a message below to start chatting.
         </p>
-        <p *ngIf="!selectedAgent">
+        <p *ngIf="!selectedAgent && !agentsLoading && !agentsError && getAvailableAgentCount() > 0">
           Select a harness persona from the settings to get started.
         </p>
 
@@ -991,11 +992,14 @@
           </div>
         </div>
 
-        <div class="no-agents-warning" *ngIf="getAvailableAgentCount() === 0" data-testid="no-agents-warning">
+        <p *ngIf="agentsLoading" role="status" data-testid="agents-loading">Loading harness capabilities...</p>
+        <div class="no-agents-warning" *ngIf="!agentsLoading && (agentsError || getAvailableAgentCount() === 0)" data-testid="no-agents-warning">
           <span class="warning-icon">⚠</span>
           <div>
-            <strong>Kompile CLI harness unavailable</strong>
-            <p>Install the Kompile CLI and configure standard chat with <code>kompile chat --setup</code>.</p>
+            <strong>{{ agentsError ? 'Unable to load harness capabilities' : 'No harness personas available' }}</strong>
+            <p *ngIf="agentsError" role="alert">{{ agentsError }}</p>
+            <p *ngIf="!agentsError">The harness reported no available personas. Check the server's chat configuration and retry.</p>
+            <button type="button" class="refresh-btn" (click)="refreshAgents()" data-testid="agents-retry">Retry</button>
           </div>
         </div>
       </div>
@@ -1078,7 +1082,7 @@
           <div class="message-content markdown-body" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
             <!-- Assistant messages: render markdown with segment support -->
             <ng-container *ngIf="message.role === 'assistant'">
-              <ng-container *ngFor="let segment of getMessageSegments(message); let si = index">
+              <ng-container *ngFor="let segment of getMessageSegments(message); trackBy: trackBySegment; let si = index">
                 <!-- Text segments: rendered as markdown -->
                 <div *ngIf="segment.type === 'text'" class="md-rendered"
                   [innerHTML]="segment.renderedContent"></div>
@@ -1143,6 +1147,29 @@
 
             <!-- System/other messages: plain text fallback -->
             <pre *ngIf="message.role !== 'assistant' && message.role !== 'user'">{{ message.content }}</pre>
+
+            <!-- CLI /model menu: an inline picker attached to its command outcome.
+                 Selecting an entry sends the raw "/model <id>" text through the
+                 normal send path; the CLI resolves, validates, and persists it. -->
+            <div *ngIf="message.role === 'system' && message.commandOutcome?.data?.menu === 'model'"
+              class="model-menu" data-testid="model-menu">
+              <div class="model-menu-header">
+                <span class="model-menu-title">Model</span>
+                <span class="model-menu-provider" *ngIf="$any(message.commandOutcome?.data).provider">{{ $any(message.commandOutcome?.data).provider }}</span>
+                <span class="model-menu-note" *ngIf="$any(message.commandOutcome?.data).note">{{ $any(message.commandOutcome?.data).note }}</span>
+              </div>
+              <select class="model-menu-select select-input"
+                [disabled]="isStreaming || isLoading"
+                (change)="selectModel($any($event.target).value)">
+                <option value="" disabled>
+                  {{ isStreaming ? 'Working…' : 'Select a model…' }}
+                </option>
+                <option *ngFor="let m of $any(message.commandOutcome?.data).models" [value]="m.id"
+                  [selected]="m.id === $any(message.commandOutcome?.data).currentModel">
+                  {{ modelMenuLabel(m) }}{{ m.contextLimit ? ' — context ' + m.contextLimit : '' }}{{ m.current ? ' (current)' : '' }}
+                </option>
+              </select>
+            </div>
 
             <span class="streaming-cursor" *ngIf="message.isStreaming" data-testid="streaming-cursor">▌</span>
           </div>

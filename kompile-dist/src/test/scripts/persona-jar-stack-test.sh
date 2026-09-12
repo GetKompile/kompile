@@ -42,6 +42,33 @@ for required in \
     }
 done
 
+# Boot 3.2's default loader fails on CUDA JARs above 2 GiB (spring-boot#42012).
+# Check the packaged loader even on smaller CPU fixtures, before starting any JVM.
+python3 - "${DIST_ROOT}" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+for name in ("kompile-server", "kompile-chat", "kompile-crawl-manager"):
+    path = pathlib.Path(sys.argv[1]) / "lib" / (name + ".jar")
+    with zipfile.ZipFile(path) as jar:
+        manifest = jar.read("META-INF/MANIFEST.MF").decode("utf-8")
+        manifest = manifest.replace("\r\n", "\n").replace("\n ", "")
+        attributes = dict(line.split(": ", 1) for line in manifest.splitlines() if ": " in line)
+        # Boot 3.2 CLASSIC also ships a .launch.JarLauncher compatibility entry
+        # point, so the manifest alone cannot distinguish the implementations.
+        launchers = ("org.springframework.boot.loader.JarLauncher",
+                     "org.springframework.boot.loader.launch.JarLauncher")
+        launcher = attributes.get("Main-Class")
+        names = set(jar.namelist())
+        if launcher not in launchers or launcher.replace(".", "/") + ".class" not in names:
+            raise SystemExit(f"ERROR: {name} is missing its Boot launcher entry point")
+        if ("org/springframework/boot/loader/jar/JarFileEntries.class" not in names
+                or "org/springframework/boot/loader/zip/ZipContent.class" in names):
+            raise SystemExit(f"ERROR: {name} must use the classic Boot ZIP implementation for large JARs")
+    print(f"{name}: classic Boot loader verified")
+PY
+
 # Keep this smoke self-contained. The graph subprocess is a separate child per persona and is
 # qualified in its own lifecycle test; disabling it here avoids three large native children while
 # still exercising all Spring/MVC/JPA wiring in the packaged applications.

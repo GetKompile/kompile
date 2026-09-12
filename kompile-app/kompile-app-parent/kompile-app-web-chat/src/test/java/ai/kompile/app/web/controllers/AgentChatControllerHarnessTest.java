@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
@@ -75,7 +74,7 @@ class AgentChatControllerHarnessTest {
     }
 
     @Test
-    void unauthenticatedRemoteHarnessTurnAndCancellationAreForbidden() {
+    void ordinaryLanHarnessUsesTheSameCapabilitiesTurnsAndControlsAsLocalhost() {
         AgentChatRequest request = new AgentChatRequest();
         request.setMessage("run a tool");
         request.setAgentName("coder");
@@ -83,22 +82,32 @@ class AgentChatControllerHarnessTest {
         remote.setRemoteAddr("203.0.113.10");
         remote.setServerName("chat.example.test");
 
-        ResponseStatusException turn = assertThrows(ResponseStatusException.class,
-                () -> controller.streamChat(request, remote));
-        ResponseStatusException cancel = assertThrows(ResponseStatusException.class,
-                () -> controller.cancelChat("harness-remote", remote));
-        ResponseStatusException capabilities = assertThrows(ResponseStatusException.class,
-                () -> controller.capabilities(null, true, remote));
-        ResponseStatusException context = assertThrows(ResponseStatusException.class,
-                () -> controller.contextBudget("coder", null, remote));
+        var capability = new ObjectMapper().createObjectNode().put("available", true);
+        when(harness.capabilities(null, true)).thenReturn(capability);
+        when(harness.cancel("harness-remote")).thenReturn(true);
+        when(harness.contextBudget("coder", null)).thenReturn(Map.of("source", "kompile-cli-main"));
 
-        assertEquals(HttpStatus.FORBIDDEN, turn.getStatusCode());
-        assertEquals(HttpStatus.FORBIDDEN, cancel.getStatusCode());
-        assertEquals(HttpStatus.FORBIDDEN, capabilities.getStatusCode());
-        assertEquals(HttpStatus.FORBIDDEN, context.getStatusCode());
+        var emitter = controller.streamChat(request, remote);
+        assertEquals(true, controller.cancelChat("harness-remote", remote).getBody().get("cancelled"));
+        assertSame(capability, controller.capabilities(null, true, remote).getBody());
+        assertEquals("kompile-cli-main", controller.contextBudget("coder", null, remote).getBody().get("source"));
+        verify(harness).executeChat(same(request), same(emitter));
+        verify(legacyChat, never()).executeChat(any(), any());
+    }
+
+    @Test
+    void provisionedAgentStillRequiresIntegrationCredentials() {
+        var request = new AgentChatRequest();
+        request.setProvisionedAgentId("managed-agent");
+        request.setMessage("hello");
+        var remote = new MockHttpServletRequest();
+        remote.setRemoteAddr("192.168.1.10");
+        remote.setServerName("chat.example.test");
+        var denied = assertThrows(ResponseStatusException.class,
+                () -> controller.streamChat(request, remote));
+        assertEquals(HttpStatus.UNAUTHORIZED, denied.getStatusCode());
         verify(harness, never()).executeChat(any(), any());
-        verify(harness, never()).cancel(any());
-        verify(harness, never()).capabilities(any(), anyBoolean());
+        verify(legacyChat, never()).executeChat(any(), any());
     }
 
     @Test

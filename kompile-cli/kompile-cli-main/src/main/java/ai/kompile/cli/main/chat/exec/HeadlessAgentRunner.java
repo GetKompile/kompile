@@ -120,10 +120,64 @@ public final class HeadlessAgentRunner {
             boolean memoryEnabled,
             String roleName,
             boolean autoApproveTools,
-            List<DirectLlmClient.AttachmentInput> attachments) {
+            List<DirectLlmClient.AttachmentInput> attachments,
+            WebChatInput webInput,
+            ChatSessionStateStore sessionStateStore) {
 
         public Options {
             attachments = attachments == null ? List.of() : List.copyOf(attachments);
+        }
+
+        /**
+         * Session state root used for durable web selections; {@code null} uses the
+         * Kompile-home default, matching pre-injection behavior.
+         */
+        public ChatSessionStateStore sessionStateStoreOrDefault() {
+            return sessionStateStore != null ? sessionStateStore : new ChatSessionStateStore();
+        }
+
+        /** Test/injection seam: run with an explicit session state root. */
+        public Options withSessionStateStore(ChatSessionStateStore store) {
+            return new Options(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl, runController,
+                    eventSink, chatConfig, serverBaseUrl, ragEnabled, memoryEnabled, roleName,
+                    autoApproveTools, attachments, webInput, store);
+        }
+
+        public Options withWebInput(WebChatInput input) {
+            return new Options(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl, runController,
+                    eventSink, chatConfig, serverBaseUrl, ragEnabled, memoryEnabled, roleName,
+                    autoApproveTools, attachments, input, sessionStateStore);
+        }
+
+        /** Compatibility constructor for the pre-store (attachments, webInput) shape. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage, String crawlBaseUrl,
+                       AgentRunController runController, HeadlessRunEventSink eventSink,
+                       ChatConfig chatConfig, String serverBaseUrl, boolean ragEnabled,
+                       boolean memoryEnabled, String roleName, boolean autoApproveTools,
+                       List<DirectLlmClient.AttachmentInput> attachments,
+                       WebChatInput webInput) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
+                    runController, eventSink, chatConfig, serverBaseUrl, ragEnabled,
+                    memoryEnabled, roleName, autoApproveTools, attachments, webInput, null);
+        }
+
+        /** Existing exec callers retain plain prompt semantics. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage, String crawlBaseUrl,
+                       AgentRunController runController, HeadlessRunEventSink eventSink,
+                       ChatConfig chatConfig, String serverBaseUrl, boolean ragEnabled,
+                       boolean memoryEnabled, String roleName, boolean autoApproveTools,
+                       List<DirectLlmClient.AttachmentInput> attachments) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
+                    runController, eventSink, chatConfig, serverBaseUrl, ragEnabled,
+                    memoryEnabled, roleName, autoApproveTools, attachments, null, null);
         }
 
         /** Compatibility constructor for callers compiled against the pre-attachment shape. */
@@ -217,6 +271,27 @@ public final class HeadlessAgentRunner {
 
     private Result runInternal(Options opts, PrintStream realOut, PrintStream realErr,
                                ObjectMapper mapper, EventPublisher events) {
+        // Explicit web input only: commands cannot fall through into an LLM, even
+        // without provider configuration. Do not load memory/project instructions first.
+        WebCommandResolver.Resolution webResolution = opts.webInput() == null ? null
+                : WebCommandResolver.resolve(opts.webInput(), opts.workingDirectory(),
+                        opts.sessionStateStoreOrDefault(), opts.chatConfig());
+        if (webResolution != null && webResolution.isCommandOutcome()) {
+            events.publish(HeadlessRunEvent.started(opts.sessionId(), null,
+                    opts.workingDirectory().toString(), Map.of("mode", "command")));
+            events.publish(HeadlessRunEvent.commandOutcome(opts.sessionId(), webResolution));
+            events.publishTerminal(HeadlessRunEvent.completed(opts.sessionId(),
+                    webResolution.text(), webResolution.exitCode(), 0));
+            if (opts.outputMode() != OutputMode.JSON) realOut.println(webResolution.text());
+            if (opts.outputLastMessage() != null) {
+                try {
+                    Files.writeString(opts.outputLastMessage(), webResolution.text(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    realErr.println("Warning: could not write --output-last-message: " + e.getMessage());
+                }
+            }
+            return new Result(webResolution.exitCode(), webResolution.text(), opts.sessionId());
+        }
         boolean serverMode = opts.serverBaseUrl() != null && !opts.serverBaseUrl().isBlank();
 
         // ── Resolve the same project-scoped config used by interactive chat ──
@@ -232,6 +307,20 @@ public final class HeadlessAgentRunner {
                 realErr.println(msg);
             }
             return new Result(1, "", opts.sessionId());
+        }
+        // A durable explicit web /model selection overrides the configured and persona
+        // default model. The persona selector itself is untouched. Applied BEFORE any
+        // provider/client construction and reflected in the RUN_STARTED event.
+        if (opts.webInput() != null && !serverMode
+                && (opts.modelOverride() == null || opts.modelOverride().isBlank())) {
+            String persisted = opts.sessionStateStoreOrDefault()
+                    .loadModel(opts.webInput().sessionId() != null
+                                    && !opts.webInput().sessionId().isBlank()
+                            ? opts.webInput().sessionId() : opts.sessionId(),
+                            opts.workingDirectory());
+            if (persisted != null) {
+                config.setModel(persisted);
+            }
         }
         if (opts.modelOverride() != null) {
             config.setModel(opts.modelOverride());
@@ -411,7 +500,8 @@ public final class HeadlessAgentRunner {
         } catch (Exception ignored) {
             // Transcript persistence is best-effort; never block the run on it.
         }
-        String resolvedPrompt = projectContext.skillRegistry().resolveInvocation(opts.prompt())
+        String resolvedPrompt = webResolution != null ? webResolution.modelPrompt()
+                : projectContext.skillRegistry().resolveInvocation(opts.prompt())
                 .map(SkillRegistry.SkillInvocation::prompt)
                 .orElse(opts.prompt());
         ChatMemory chatMemory = new ChatMemory(

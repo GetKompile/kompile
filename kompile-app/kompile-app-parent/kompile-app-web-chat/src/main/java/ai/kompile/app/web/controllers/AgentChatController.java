@@ -110,7 +110,6 @@ public class AgentChatController {
             @RequestBody AgentChatRequest request,
             HttpServletRequest servletRequest) {
         requireProvisionedAccess(request, servletRequest);
-        requireHarnessAccess(request, servletRequest);
         log.info("Received chat request for agent: {}, RAG enabled: {}, timeout: {}s, message length: {}",
                 sanitizeForLog(request.getAgentName()),
                 request.isEnableRag(),
@@ -203,29 +202,9 @@ public class AgentChatController {
                 && !request.getProvisionedAgentId().isBlank();
     }
 
-    private void requireHarnessAccess(
-            AgentChatRequest request,
-            HttpServletRequest servletRequest) {
-        if (harnessClient == null || isProvisioned(request)) return;
-        requireHarnessControlAccess(servletRequest);
-    }
-
-    private void requireHarnessControlAccess(HttpServletRequest servletRequest) {
-        if (isLoopback(servletRequest.getRemoteAddr())
-                && isLoopback(servletRequest.getServerName())) {
-            return;
-        }
-        boolean authenticated = servletRequest.isSecure()
-                && integrationCredentials != null
-                && integrationCredentials.matches(
-                servletRequest.getHeader(ChannelControlHeaders.TOKEN_HEADER))
-                && "1".equals(servletRequest.getHeader(ChannelControlHeaders.REQUEST_HEADER));
-        if (!authenticated) {
-            throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "Remote Kompile CLI harness access requires HTTPS and a valid integration admin token");
-        }
-    }
+    // Ordinary web chat follows the operator's bind/proxy/access policy, just like
+    // the browser UI and session APIs. Integration credentials protect provisioned
+    // agents, not normal browser capabilities, turns, cancellation or context budgets.
 
     private static boolean isLoopback(String host) {
         if (host == null) return false;
@@ -246,7 +225,6 @@ public class AgentChatController {
         log.info("Cancelling chat process: {}", sanitizeForLog(processId));
 
         boolean harnessProcess = harnessClient != null && processId.startsWith("harness-");
-        if (harnessProcess) requireHarnessControlAccess(servletRequest);
         boolean cancelled = harnessProcess
                 ? harnessClient.cancel(processId) : chatService.cancelProcess(processId);
 
@@ -278,7 +256,6 @@ public class AgentChatController {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
         }
-        requireHarnessControlAccess(servletRequest);
         return ResponseEntity.ok(harnessClient.capabilities(workingDirectory, refresh));
     }
 
@@ -294,7 +271,6 @@ public class AgentChatController {
             @RequestParam(required = false) String workingDirectory,
             HttpServletRequest servletRequest) {
         if (harnessClient != null) {
-            requireHarnessControlAccess(servletRequest);
             return ResponseEntity.ok(harnessClient.contextBudget(agentName, workingDirectory));
         }
         Optional<AgentProvider> agent = agentRegistryService.getAgent(agentName);

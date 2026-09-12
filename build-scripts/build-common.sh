@@ -336,6 +336,8 @@ KOMPILE_PLATFORMS=(
   "linux-x86_64-cuda-12.9"
   "linux-x86_64-cuda-12.9-cudnn"
   "linux-x86_64-cuda-12.9-compile"
+  "linux-x86_64-cuda-13.1"
+  "linux-arm64-cuda-13.1"
   "windows-x86_64-cuda-12.6"
   "windows-x86_64-cuda-12.6-cudnn"
   "windows-x86_64-cuda-12.6-compile"
@@ -428,6 +430,7 @@ _resolve_backend_from_platform() {
     *cuda-12.9-cudnn)  backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-cudnn" ;;
     *cuda-12.9-compile) backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-compile" ;;
     *cuda-12.9)        backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9" ;;
+    *cuda-13.1)        backend_type="cuda"; cuda_version="13.1"; backend_profile="cuda-13.1" ;;
     *cuda-12.6-cudnn)  backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6-cudnn" ;;
     *cuda-12.6-compile) backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6-compile" ;;
     *cuda-12.6)        backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6" ;;
@@ -616,6 +619,9 @@ kompile_collect_sdx_bindings() {
     *cuda-12.6*)
       sdk_artifact_ids=(nd4j-cuda-12.6 nd4j-cuda-12.6-preset nd4j-cuda-12.6-platform)
       ;;
+    *cuda-13.1)
+      sdk_artifact_ids=(nd4j-cuda-13.1 nd4j-cuda-13.1-preset nd4j-cuda-13.1-platform)
+      ;;
     *cuda*)
       sdk_artifact_ids=(nd4j-cuda-12.9 nd4j-cuda-12.9-preset nd4j-cuda-12.9-platform)
       ;;
@@ -633,10 +639,11 @@ kompile_collect_sdx_bindings() {
   esac
   local namespace artifact_id artifact_dir f
   local -a sdk_namespaces=(org/eclipse/deeplearning4j org/nd4j)
-  # Version-qualified ZLUDA coordinates exist only in the current DL4J group.
+  # Version-qualified ZLUDA and CUDA 13.1 use the current DL4J group.
   # Never let a stale legacy org/nd4j jar overwrite the hydrated current jar.
   case "${platform}" in
     *zluda-rocm-*) sdk_namespaces=(org/eclipse/deeplearning4j) ;;
+    *cuda-13.1) sdk_namespaces=(org/eclipse/deeplearning4j) ;;
   esac
   for namespace in "${sdk_namespaces[@]}"; do
     for artifact_id in "${sdk_artifact_ids[@]}"; do
@@ -668,6 +675,7 @@ kompile_collect_sdx_bindings() {
     cpu*) backend_artifact=nd4j-native ;;
     cuda-12.6*) backend_artifact=nd4j-cuda-12.6 ;;
     cuda-12.9*) backend_artifact=nd4j-cuda-12.9 ;;
+    cuda-13.1) backend_artifact=nd4j-cuda-13.1 ;;
     zluda) backend_artifact=nd4j-zluda ;;
     zluda-rocm-*) backend_artifact=nd4j-zluda-12.9 ;;
     vulkan*) backend_artifact=nd4j-vulkan ;;
@@ -1628,6 +1636,7 @@ kompile_assemble_dist() {
   case "${platform}" in
     *cuda-12.6*) args+=(--cuda-version 12.6) ;;
     *cuda-12.9*) args+=(--cuda-version 12.9) ;;
+    *cuda-13.1) args+=(--cuda-version 13.1) ;;
   esac
   log "Assembling canonical ${distribution_classifier} distribution archives"
   (

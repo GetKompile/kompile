@@ -152,10 +152,16 @@ export class AgentService extends BaseService {
   getChatHarnessAgents(refresh: boolean = false,
                        workingDirectory?: string): Observable<AgentProvider[]> {
     this.loadingSubject.next(true);
+    this.errorSubject.next(null);
     const params: { [key: string]: string } = { refresh: String(refresh) };
     if (workingDirectory) params['workingDirectory'] = workingDirectory;
     return this.http.get<ChatHarnessCapabilities>(
       `${this.backendUrl}/agents/chat/capabilities`, { params }).pipe(
+      tap(capabilities => {
+        if (!capabilities.available) {
+          throw new Error(capabilities.status || 'Kompile chat harness is unavailable');
+        }
+      }),
       map(capabilities => (capabilities.personas || []).map(persona => ({
         name: persona.name,
         displayName: persona.displayName,
@@ -187,8 +193,14 @@ export class AgentService extends BaseService {
       }),
       catchError(err => {
         this.loadingSubject.next(false);
-        this.errorSubject.next(err.message || 'Failed to load Kompile chat harness');
-        throw err;
+        const message = [err.error?.message, err.error?.detail, err.error, err.message]
+          .find(value => typeof value === 'string' && value.trim())
+          || 'Failed to load Kompile chat harness';
+        this.agentsSubject.next([]);
+        this.selectedAgentSubject.next(null);
+        this.errorSubject.next(message);
+        // Give subscribers the backend reason, not Angular's generic HTTP failure text.
+        throw Object.assign(new Error(message), { status: err.status, cause: err });
       })
     );
   }

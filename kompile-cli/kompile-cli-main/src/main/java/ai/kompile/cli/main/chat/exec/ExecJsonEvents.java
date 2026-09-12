@@ -148,6 +148,19 @@ public final class ExecJsonEvents {
                 putLong(n, "cache_read_tokens", event.metadata().get("cache_read_tokens"));
                 putLong(n, "cache_creation_tokens", event.metadata().get("cache_creation_tokens"));
             }
+            case COMMAND_OUTCOME -> {
+                n.put("type", "command");
+                n.put("session_id", event.sessionId());
+                n.put("protocol_version", parseInt(event.metadata().get("protocol_version")));
+                n.put("command", event.metadata().get("command"));
+                n.put("status", event.metadata().get("status"));
+                n.put("text", event.text());
+                n.put("ok", event.ok());
+                n.put("exit", event.exitCode());
+                if (event.data() != null) {
+                    n.set("data", event.data());
+                }
+            }
             case RUN_COMPLETED -> {
                 n.put("type", "result");
                 n.put("text", event.text());

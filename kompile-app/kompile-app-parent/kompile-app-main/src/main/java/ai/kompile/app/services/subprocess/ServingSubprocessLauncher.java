@@ -447,7 +447,13 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 // switch for decoder DSP compilation in the isolated serving process.
                 !Boolean.TRUE.equals(nd4jConfig.dspNoNativeDecode()),
                 nd4jConfig.optimizerEnabled(),
-                nd4jConfig.optimizerFp16()
+                nd4jConfig.optimizerFp16(),
+                // No request-specific generation overrides in the managed web launcher:
+                // retain model-owned chat/KV/prefill/continuation and prefix-cache defaults.
+                null, null, null, null, null, null,
+                null, null, null,
+                // Existing device limits continue through ND4J config and placement.
+                null
         );
 
         Path argsFileTmp = Files.createTempFile("serving-subprocess-args-", ".json");

@@ -229,6 +229,70 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
   // 1. RAG SERVICE STATUS
   // ─────────────────────────────────────────────────────────────────────────────
 
+  describe('Harness capability feedback', () => {
+    it('shows loading without an unavailable or installation warning', () => {
+      spies.agentServiceSpy.getChatHarnessAgents.and.returnValue(new Subject<AgentProvider[]>());
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('[data-testid="agents-loading"]')).toBeTruthy();
+      expect(fixture.nativeElement.querySelector('[data-testid="no-agents-warning"]')).toBeNull();
+    });
+
+    it('restores the session nondefault persona and refreshes capabilities after a failed refresh', () => {
+      fixture.detectChanges();
+      spyOn<any>(component, 'refreshContextBudget');
+      const loadCapabilities = spyOn<any>(component, 'loadAgentCapabilities').and.callThrough();
+      const persona = mockAgent({
+        name: 'reviewer', isDefault: false, agentType: 'HARNESS', supportsVision: false
+      });
+      component.currentSession = {
+        id: 'retry-session', name: 'Review', messages: [], agentName: persona.name,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      } as any;
+      component.selectedAgent = persona;
+      component.agentSupportsVision = false;
+      spies.agentServiceSpy.refreshChatHarnessAgents.and.returnValue(
+        throwError(() => new Error('Harness temporarily unavailable'))
+      );
+
+      component.refreshAgents();
+      expect(component.selectedAgent).toBeNull();
+      expect(component.currentSession?.agentName).toBe('reviewer');
+      expect(loadCapabilities).not.toHaveBeenCalled();
+
+      const recoveredPersona = { ...persona, supportsVision: true };
+      spies.agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([
+        mockAgent({ agentType: 'HARNESS', supportsVision: false }), recoveredPersona
+      ]));
+      fixture.nativeElement.querySelector('[data-testid="agents-retry"]').click();
+      fixture.detectChanges();
+
+      expect(component.agentsError).toBeNull();
+      expect(component.selectedAgent).toBe(recoveredPersona);
+      expect(loadCapabilities).toHaveBeenCalledOnceWith(recoveredPersona);
+      expect(component.agentSupportsVision).toBeTrue();
+    });
+
+    it('shows the capability reason and retries into an empty-persona state', () => {
+      spies.agentServiceSpy.getChatHarnessAgents.and.returnValue(
+        throwError(() => new Error('Harness access denied by server policy'))
+      );
+      fixture.detectChanges();
+      let warning = fixture.nativeElement.querySelector('[data-testid="no-agents-warning"]');
+      expect(warning.textContent).toContain('Harness access denied by server policy');
+      expect(warning.textContent).not.toContain('Install the Kompile CLI');
+      expect(component.selectedAgent).toBeNull();
+
+      spies.agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
+      warning.querySelector('[data-testid="agents-retry"]').click();
+      fixture.detectChanges();
+      expect(spies.agentServiceSpy.refreshChatHarnessAgents).toHaveBeenCalled();
+      expect(component.agentsError).toBeNull();
+      warning = fixture.nativeElement.querySelector('[data-testid="no-agents-warning"]');
+      expect(warning.textContent).toContain('No harness personas available');
+      expect(warning.textContent).not.toContain('access denied');
+    });
+  });
+
   describe('RAG service status', () => {
     it('should mark service available on successful status check', () => {
       spies.ragServiceSpy.getStatus.and.returnValue(
@@ -731,11 +795,12 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
       expect(component.messages[0].content).toBe('What is machine learning?');
     });
 
-    it('should trim whitespace from user input', () => {
+    it('should preserve leading and trailing whitespace in raw user input', () => {
       component.userInput = '  What is ML?  ';
       component.sendMessage();
 
-      expect(component.messages[0].content).toBe('What is ML?');
+      expect(component.messages[0].content).toBe('  What is ML?  ');
+      expect(spies.agentChatServiceSpy.sendMessage.calls.mostRecent().args[1]).toBe('  What is ML?  ');
     });
 
     it('should create a session if none exists', () => {

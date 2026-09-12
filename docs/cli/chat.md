@@ -2,6 +2,18 @@
 
 Kompile supports first-party local model chat, external/direct model chat, an installed chat subprocess, server-connected RAG, and agent passthrough.
 
+## Web chat
+
+Run `kompile chat --web` (add `--open-browser` to open it locally). The installed
+CHAT service listens on all interfaces by default, including for published distributions.
+The CLI prints the selected port and a local URL; from another machine use
+`http://<server-hostname-or-LAN-IP>:<port>/`. Both `/` and `/chat` open the UI;
+`/chat` and `/chat/` redirect to the browser's `/#/chat` route automatically.
+
+Operators control network access and security. To opt into local-only access, use
+`KOMPILE_CHAT_ADDRESS=127.0.0.1 kompile chat --web` (Spring's `SERVER_ADDRESS`
+is also honored). The CLI no longer overrides the service's bind configuration.
+
 ## Setup wizard and standard chat
 
 Bare chat preserves the normal interactive setup flow:

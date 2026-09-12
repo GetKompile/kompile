@@ -183,6 +183,51 @@ public class SetupWizard {
     }
 
     public static ChatConfig run(ChatConfig.Scope scope, Path projectRoot) {
+        SetupResult result = run(scope, projectRoot, false, false);
+        return result == null ? null : result.config();
+    }
+
+    /** Web handoff requires a persisted standard config, never an in-memory fallback/action. */
+    public static ChatConfig runForWeb(ChatConfig.Scope scope, Path projectRoot) {
+        SetupResult result = run(scope, projectRoot, true, false);
+        return result == null ? null : result.config();
+    }
+
+    public enum Destination { TERMINAL, BROWSER }
+
+    /** Invocation-only routing; never part of a profile, credential, or session config. */
+    public record SetupResult(ChatConfig config, Destination destination) {}
+
+    public static SetupResult runWithDestination(ChatConfig.Scope scope, Path projectRoot) {
+        return run(scope, projectRoot, false, true);
+    }
+
+    static Destination selectDestination(LineReader reader, ChatConfig config,
+                                         boolean explicitWeb, boolean offerChoice) {
+        boolean supported = config != null && "standard".equalsIgnoreCase(config.getChatMode())
+                && !config.isKompileServer() && config.isValid();
+        if (explicitWeb) return supported ? Destination.BROWSER : null;
+        if (!offerChoice || !supported) return Destination.TERMINAL;
+        int choice = selectNumbered(reader, "Where would you like to continue?",
+                List.of("Continue in terminal", "Start web UI (print localhost URL)"));
+        return choice < 0 ? null : choice == 0 ? Destination.TERMINAL : Destination.BROWSER;
+    }
+
+    static boolean saveConfiguration(ChatConfig config, Destination destination,
+                                     ChatConfig.Scope scope, Path projectRoot) throws IOException {
+        try {
+            config.save(scope, projectRoot);
+            return true;
+        } catch (IOException e) {
+            System.err.println("Warning: Could not save config: " + e.getMessage());
+            if (destination == Destination.BROWSER) throw e;
+            System.err.println("Proceeding with in-memory configuration.");
+            return false;
+        }
+    }
+
+    private static SetupResult run(ChatConfig.Scope scope, Path projectRoot,
+                                   boolean webHandoff, boolean offerDestination) {
         ChatConfig.Scope targetScope = scope != null ? scope : ChatConfig.Scope.PROJECT;
         Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
         ChatConfig existingConfig = targetScope == ChatConfig.Scope.GLOBAL
@@ -205,6 +250,10 @@ public class SetupWizard {
             // Step 1: Select chat mode — ALWAYS first
             String chatMode = selectChatMode(reader);
             if (chatMode == null) return null;
+            if (webHandoff && !"standard".equals(chatMode)) {
+                System.err.println("Web handoff requires Standard Chat; no resume or passthrough action was started.");
+                return null;
+            }
 
             // Handle resume actions - close our terminal first so the selected
             // resume surface (or newly launched terminals) owns the TTY.
@@ -253,16 +302,18 @@ public class SetupWizard {
 
                 ChatConfig completedAction = new ChatConfig(null, null, null, null);
                 completedAction.setChatMode("resume");
-                return completedAction;
+                return new SetupResult(completedAction, Destination.TERMINAL);
             }
 
             ProfileSelection profile = selectProjectProfile(reader, projectRoot, chatMode);
             if (profile.cancelled()) return null;
             if (profile.config() != null) {
                 ChatConfig selected = profile.config();
+                Destination destination = selectDestination(reader, selected, webHandoff, offerDestination);
+                if (destination == null) return null;
                 JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
                 selected.save(targetScope, projectRoot);
-                return selected;
+                return new SetupResult(selected, destination);
             }
 
             // Step 2: Select the passthrough style and agent when no profile was chosen.
@@ -372,11 +423,13 @@ public class SetupWizard {
             }
             config.setPassthroughManaged(passthroughManaged);
             if ("passthrough".equals(chatMode) && !configurePassthroughModel(reader, config)) return null;
+            Destination destination = selectDestination(reader, config, webHandoff, offerDestination);
+            if (destination == null) return null;
             if (!saveProjectProfile(reader, projectRoot, config)) return null;
             JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, config);
 
-            try {
-                config.save(targetScope, projectRoot);
+            SetupResult result = new SetupResult(config, destination);
+            if (saveConfiguration(config, destination, targetScope, projectRoot)) {
                 System.out.println();
                 System.out.println(GREEN + "  ✓ Configuration saved!" + RESET);
                 System.out.println();
@@ -412,12 +465,9 @@ public class SetupWizard {
                 System.out.println();
                 System.out.println(DIM + "  You can reconfigure anytime with: /setup" + RESET);
                 System.out.println();
-            } catch (IOException e) {
-                System.err.println("Warning: Could not save config: " + e.getMessage());
-                System.err.println("Proceeding with in-memory configuration.");
             }
 
-            return config;
+            return result;
 
         } catch (Exception e) {
             System.err.println("Setup wizard error: " + e.getMessage());
