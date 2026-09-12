@@ -8,6 +8,7 @@ import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -158,5 +159,64 @@ class OpenCodeServeClientTest {
                 "start:call-1:bash",
                 "complete:call-1:tool output",
                 "usage:12:3:4"), activity);
+    }
+
+    @Test
+    void sessionCreateFailureFailsAsTurnNotStarted() throws Exception {
+        // The regression: a pre-turn transport failure (deadline exceeded, server
+        // unreachable) must surface as TurnNotStartedException so the caller can
+        // distinguish it from a turn that already mutated the native session.
+        // Connection-refused is the deterministic, fast form of that failure.
+        java.net.ServerSocket occupied;
+        try {
+            occupied = new java.net.ServerSocket(0);
+        } catch (java.io.IOException e) {
+            return; // no loopback available in this environment
+        }
+        int deadPort = occupied.getLocalPort();
+        occupied.close();
+
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + deadPort, null)) {
+            OpenCodeServeClient.TurnNotStartedException failure =
+                    assertThrows(OpenCodeServeClient.TurnNotStartedException.class,
+                            () -> client.send("opencode-go/deepseek-v4-pro", null,
+                                    null, "hello", ignored -> { }));
+            assertTrue(failure.getMessage().contains("session creation failed"));
+        }
+    }
+
+    @Test
+    void sendsTurnsAgainstAnAttachedServerWithoutSpawningItsOwn() throws Exception {
+        AtomicReference<String> seenSessionPath = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/global/health", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            exchange.close();
+        });
+        server.createContext("/session", exchange -> {
+            seenSessionPath.set(exchange.getRequestURI().getPath());
+            exchange.getRequestBody().readAllBytes();
+            byte[] body = "{\"id\":\"attach-session\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), null)) {
+                java.lang.reflect.Method ensureServer = OpenCodeServeClient.class
+                        .getDeclaredMethod("ensureServer");
+                ensureServer.setAccessible(true);
+                ensureServer.invoke(client);
+                assertEquals(null, seenSessionPath.get(),
+                        "ensureServer must not create a session");
+            }
+        } finally {
+            server.stop(0);
+        }
     }
 }

@@ -227,13 +227,18 @@ class SessionRegistryTrackingTest {
     }
 
     private void registerPickerEntries() {
+        // Timestamps are relative to now so the rows sit inside the default
+        // 30-minute activity window that a plain `resume-all` invocation uses;
+        // the first entry must still sort above the second.
+        Instant now = Instant.now();
         SessionRegistry registry = SessionRegistry.load();
         for (SessionEntry entry : pickerEntries()) {
             registry.register(entry.getKompileSessionId(), "kompile", tempDir.toString(), "local", 0L);
             registry.markExited(entry.getKompileSessionId());
             SessionEntry stored = registry.get(entry.getKompileSessionId()).orElseThrow();
-            stored.setStartedAt(entry.getStartedAt());
-            stored.setEndedAt(entry.getEndedAt());
+            stored.setStartedAt(now.minus(Duration.ofMinutes(10)).toString());
+            stored.setEndedAt(entry.getEndedAt() == null || entry.getEndedAt().isBlank()
+                    ? "" : now.minus(Duration.ofMinutes(5)).toString());
             stored.setTitle(entry.getTitle());
             registry.save();
         }
@@ -549,6 +554,79 @@ class SessionRegistryTrackingTest {
                 ResumeAllCommand.executeInline("--dry-run --active-within 30 --recent 2")));
         assertTrue(capped.contains("Dry run — 2 sessions would be resumed"),
                 "an explicit recent count may cap activity-window matches");
+    }
+
+    /**
+     * A plain `kompile resume-all` invocation means "everything recently
+     * active": the default 30-minute last-activity window applies, the
+     * configured recent-session count does not cap it, and the batch orders by
+     * last activity rather than start time.
+     */
+    @Test
+    void defaultInvocationResumesOnlyRecentlyActiveSessionsOrderedByLastActivity() throws Exception {
+        SessionRegistry registry = SessionRegistry.load();
+        ResumeConfig config = ResumeConfig.load();
+        config.setRecentSessions(1);
+        assertTrue(config.save(), "precondition: a tiny configured count must not cap the default window");
+
+        Instant now = Instant.now();
+        // register/markExited persist through the locked update path, so all
+        // rows must exist before any timestamp mutation — otherwise each new
+        // registration reloads disk and discards the in-memory edits. IDs stay
+        // ≤12 chars so --list shows them without column truncation.
+        registry.register("ended-now", "kompile", tempDir.toString(), "local", 0L);
+        registry.markExited("ended-now");
+        registry.register("idle-recent", "kompile", tempDir.toString(), "local", 0L);
+        registry.markExited("idle-recent");
+        registry.register("stale-old", "kompile", tempDir.toString(), "local", 0L);
+        registry.markExited("stale-old");
+
+        // Started long ago but was still active five minutes ago.
+        SessionEntry endedRecently = registry.get("ended-now").orElseThrow();
+        endedRecently.setStartedAt(now.minus(Duration.ofHours(20)).toString());
+        endedRecently.setEndedAt(now.minus(Duration.ofMinutes(5)).toString());
+        // Started recently but has been idle ever since.
+        SessionEntry startedRecently = registry.get("idle-recent").orElseThrow();
+        startedRecently.setStartedAt(now.minus(Duration.ofMinutes(10)).toString());
+        startedRecently.setEndedAt(now.minus(Duration.ofMinutes(9)).toString());
+        // Active two hours ago — outside the default window entirely.
+        SessionEntry stale = registry.get("stale-old").orElseThrow();
+        stale.setStartedAt(now.minus(Duration.ofHours(3)).toString());
+        stale.setEndedAt(now.minus(Duration.ofHours(2)).toString());
+        registry.save();
+
+        String dryRun = captureStdout(() -> assertEquals(0,
+                ResumeAllCommand.executeInline("--dry-run")));
+
+        assertTrue(dryRun.contains("ended-now"),
+                "recent last-activity must qualify even when the session started long ago");
+        assertTrue(dryRun.contains("idle-recent"));
+        assertFalse(dryRun.contains("stale-old"),
+                "the default window must exclude sessions idle beyond 30 minutes");
+        assertTrue(dryRun.contains("Dry run — 2 sessions would be resumed"),
+                "the configured recent count must not cap the default activity window");
+        int endedRecentlyIndex = dryRun.indexOf("ended-now");
+        int startedRecentlyIndex = dryRun.indexOf("idle-recent");
+        assertTrue(endedRecentlyIndex >= 0 && endedRecentlyIndex < startedRecentlyIndex,
+                "the batch must order by last activity, not by start time");
+
+        String listing = captureStdout(() -> assertEquals(0,
+                ResumeAllCommand.executeInline("--list")));
+        assertTrue(listing.contains("ended-now"));
+        assertFalse(listing.contains("stale-old"),
+                "--list must preview the same default-window batch");
+
+        // A tiny explicit window excludes every planted row, printing the empty
+        // message with that window's label; the default window must name 30
+        // minutes, not print null.
+        String emptyTiny = captureStdout(() -> assertEquals(0,
+                ResumeAllCommand.executeInline("--dry-run --active-within 1")));
+        String emptyDefaultWindow = captureStdout(() -> assertEquals(0,
+                ResumeAllCommand.executeInline("--agent no-such-agent --dry-run")));
+        assertTrue(emptyDefaultWindow.contains("active in the last 30 minutes"),
+                "the default-window empty message must name the window, not print null: "
+                        + emptyDefaultWindow);
+        assertTrue(emptyTiny.contains("active in the last 1 minutes"));
     }
 
     @Test

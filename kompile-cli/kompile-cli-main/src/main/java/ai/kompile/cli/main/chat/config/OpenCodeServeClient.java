@@ -51,8 +51,26 @@ final class OpenCodeServeClient implements AutoCloseable {
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
     }
 
+    /**
+     * The turn failed before any provider interaction began — server boot, session
+     * creation or turn-process spawn. No provider-side session history was touched,
+     * so the caller may safely replay the turn (after discarding this transport's
+     * server, session and any dead turn process).
+     */
+    static final class TurnNotStartedException extends IllegalStateException {
+        TurnNotStartedException(String message) {
+            super(message);
+        }
+
+        TurnNotStartedException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(30);
+    /** Session creation runs right after server boot; give it boot-scale patience. */
+    private static final Duration SESSION_CREATE_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration TURN_TIMEOUT = Duration.ofMinutes(30);
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
@@ -97,9 +115,17 @@ final class OpenCodeServeClient implements AutoCloseable {
                               String userMessage, Consumer<String> output,
                               ActivityListener activityListener) throws Exception {
         if (closed) {
-            throw new IllegalStateException("OpenCode chat transport is closed");
+            throw new TurnNotStartedException("OpenCode chat transport is closed");
         }
-        ensureSession();
+        try {
+            ensureSession();
+        } catch (java.net.http.HttpTimeoutException e) {
+            throw new TurnNotStartedException(
+                    "OpenCode session creation timed out: " + e.getMessage(), e);
+        } catch (IOException e) {
+            throw new TurnNotStartedException(
+                    "OpenCode session creation failed: " + e.getMessage(), e);
+        }
         ModelReference modelReference = parseModelReference(model);
 
         List<String> command = new ArrayList<>();
@@ -126,7 +152,13 @@ final class OpenCodeServeClient implements AutoCloseable {
         if (definition != null) {
             builder.environment().putAll(definition.safeEnvironment());
         }
-        Process turn = builder.start();
+        Process turn;
+        try {
+            turn = builder.start();
+        } catch (IOException e) {
+            throw new TurnNotStartedException(
+                "OpenCode turn process could not start: " + e.getMessage(), e);
+        }
         activeTurnProcess = turn;
         StringBuilder rawOutput = new StringBuilder();
         StringBuilder assistantText = new StringBuilder();
@@ -387,24 +419,29 @@ final class OpenCodeServeClient implements AutoCloseable {
             body.put("title", "kompile-chat");
             HttpResponse<String> response = httpClient.send(
                     HttpRequest.newBuilder(URI.create(baseUrl + "/session"))
-                            .timeout(Duration.ofSeconds(10))
+                            .timeout(SESSION_CREATE_TIMEOUT)
                             .header("content-type", "application/json")
                             .POST(HttpRequest.BodyPublishers.ofString(
                                     objectMapper.writeValueAsString(body)))
                             .build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() / 100 != 2) {
-                throw new IllegalStateException("OpenCode session creation failed ("
+                throw new TurnNotStartedException("OpenCode session creation failed ("
                         + response.statusCode() + "): " + trimForError(response.body()));
             }
             sessionId = objectMapper.readTree(response.body()).path("id").asText(null);
             if (sessionId == null || sessionId.isBlank()) {
-                throw new IllegalStateException("OpenCode session creation returned no id");
+                throw new TurnNotStartedException("OpenCode session creation returned no id");
             }
         }
     }
 
     private void ensureServer() throws Exception {
         if (serverProcess != null && serverProcess.isAlive() && baseUrl != null) {
+            return;
+        }
+        if (baseUrl != null) {
+            // An externally supplied URL (tests, remote attach) must never spawn a
+            // second local server process.
             return;
         }
         AgentProvider definition = opencodeDefinition();
@@ -425,7 +462,7 @@ final class OpenCodeServeClient implements AutoCloseable {
         while (System.nanoTime() < deadline) {
             if (!serverProcess.isAlive()) {
                 outputReader.join(500);
-                throw new IllegalStateException("OpenCode server exited: "
+                throw new TurnNotStartedException("OpenCode server exited: "
                         + trimForError(serverOutput.toString()));
             }
             try {
@@ -442,7 +479,7 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
             Thread.sleep(100);
         }
-        throw new IllegalStateException("Timed out waiting for OpenCode server: "
+        throw new TurnNotStartedException("Timed out waiting for OpenCode server: "
                 + trimForError(serverOutput.toString()));
     }
 

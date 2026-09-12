@@ -149,6 +149,17 @@ public class ChatHistory {
             } else {
                 writer.println();
                 writer.println("[resumed " + TIMESTAMP_FMT.format(Instant.now()) + "]");
+                // Record the CURRENT agent on resume. Header readers treat every
+                // "Agent:" line after a "[resumed ...]" marker as authoritative
+                // (last-wins), so the resume listing and --agent auto resolution
+                // track the vendor the transcript is actually continued with
+                // instead of freezing on the vendor that created it.
+                if (pendingAgentName != null && !pendingAgentName.isBlank()) {
+                    String currentRecorded = readRecordedAgent();
+                    if (!pendingAgentName.equals(currentRecorded)) {
+                        writer.println("Agent:   " + pendingAgentName);
+                    }
+                }
                 if (pendingWorkingDirectory != null) {
                     writer.println("CWD:     " + pendingWorkingDirectory);
                 }
@@ -610,6 +621,79 @@ public class ChatHistory {
             return trimmed.length() > 20 ? trimmed.substring(20) : trimmed;
         }
         return harvestedId;
+    }
+
+    /**
+     * Returns the agent currently recorded in this transcript's header (last
+     * "Agent:" line). Mirrors the last-wins semantics of the resume listing.
+     */
+    private String readRecordedAgent() {
+        String agent = "";
+        try (BufferedReader reader = new BufferedReader(
+                new FileReader(transcriptFile.toFile(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("Agent:")) {
+                    agent = line.substring("Agent:".length()).trim();
+                }
+            }
+        } catch (IOException e) {
+            return "";
+        }
+        return agent;
+    }
+
+    /**
+     * Records the agent currently running a session so resume (especially
+     * {@code --agent auto}) continues with the latest vendor rather than the
+     * one that created the transcript. Also refreshes the listable
+     * {@code index.properties} agent entry without resetting its creation time.
+     * Best effort: transcript persistence must never block a resume.
+     *
+     * @param sessionId the Kompile transcript id to update
+     * @param agentName the current agent name (wrapper decorations preserved)
+     */
+    public static synchronized void recordAgent(String sessionId, String agentName) {
+        if (sessionId == null || sessionId.isBlank()
+                || agentName == null || agentName.isBlank()) {
+            return;
+        }
+        try {
+            Path file = KompileHome.homeDirectory().toPath()
+                    .resolve("conversations").resolve(sessionId + ".txt");
+            if (Files.exists(file)) {
+                String existing = Files.readString(file, StandardCharsets.UTF_8);
+                String lastRecorded = "";
+                for (String line : existing.lines().toList()) {
+                    if (line.startsWith("Agent:")) {
+                        lastRecorded = line.substring("Agent:".length()).trim();
+                    }
+                }
+                if (!agentName.equals(lastRecorded)) {
+                    // The "[resumed ...]" marker re-opens the header metadata window,
+                    // so the appended "Agent:" line is honored by every reader even
+                    // though it lands after the transcript's last turn.
+                    String prefix = existing.endsWith("\n") ? "" : "\n";
+                    String resumeMarker = "[resumed " + TIMESTAMP_FMT.format(Instant.now()) + "]";
+                    Files.writeString(file, prefix + resumeMarker + "\nAgent:   " + agentName + "\n",
+                            StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+                }
+            }
+            Path indexFile = KompileHome.homeDirectory().toPath()
+                    .resolve("conversations").resolve("index.properties");
+            if (Files.exists(indexFile)) {
+                java.util.Properties props = new java.util.Properties();
+                try (Reader r = new FileReader(indexFile.toFile(), StandardCharsets.UTF_8)) {
+                    props.load(r);
+                }
+                props.setProperty(sessionId + ".agent", agentName);
+                try (Writer w = new FileWriter(indexFile.toFile(), StandardCharsets.UTF_8)) {
+                    props.store(w, "Kompile chat conversation index");
+                }
+            }
+        } catch (IOException e) {
+            // Best effort — a failed agent annotation must never break the resume.
+        }
     }
 
     private void updateIndex(String sessionId, String serverUrl, String agentName) {

@@ -334,7 +334,7 @@ class ChatCompleterTest {
     void resumeAllSubArgsExposeEverySupportedControl() {
         Set<String> values = candidateValues(complete("/resume-all "));
         assertEquals(Set.of(
-                "--dry-run", "--list", "--recent", "--all", "--agent", "--project",
+                "--dry-run", "--list", "--active-within", "--recent", "--all", "--agent", "--project",
                 "--status", "--terminal", "--set-recent", "--set-terminal",
                 "--set-terminal-args", "--prune"), values);
     }

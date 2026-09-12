@@ -339,6 +339,75 @@ class CodexAdapterTest {
         assertFalse(params.containsKey("cwd"));
     }
 
+    /**
+     * Resume listing must prefer the direct indexed state-DB read over spawning
+     * `codex app-server`. The app-server path is a cold node subprocess whose
+     * full thread/list pagination cost seconds per resume on large stores, even
+     * though the DB projection is identical. When the DB is readable, the
+     * subprocess must never be attempted.
+     */
+    @Test
+    void indexedThreadsAreReadBeforeAttemptingTheAppServerSubprocess() throws Exception {
+        Class.forName("org.sqlite.JDBC");
+        Path database = tempDir.resolve("state_5.sqlite");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.toAbsolutePath());
+             Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE threads (
+                        id TEXT PRIMARY KEY,
+                        title TEXT,
+                        first_user_message TEXT,
+                        preview TEXT,
+                        cwd TEXT,
+                        source TEXT,
+                        thread_source TEXT,
+                        updated_at_ms INTEGER,
+                        updated_at INTEGER,
+                        created_at_ms INTEGER,
+                        created_at INTEGER,
+                        archived INTEGER,
+                        rollout_path TEXT
+                    )
+                    """);
+            insertIndexedThread(connection, "indexed-first", "Indexed listing", "/work/project",
+                    "cli", "user", 9_000L, null);
+        }
+
+        RecordingAdapter adapter = new RecordingAdapter(tempDir);
+        List<ChatSessionSummary> summaries = adapter.list();
+
+        assertEquals(List.of("indexed-first"), summaries.stream()
+                .map(ChatSessionSummary::sessionId).toList());
+        assertFalse(adapter.appServerAttempted,
+                "a readable state DB must answer the listing without spawning codex app-server");
+    }
+
+    private static final class RecordingAdapter extends CodexAdapter {
+        private final Path root;
+        private boolean appServerAttempted;
+
+        private RecordingAdapter(Path root) {
+            this.root = root;
+        }
+
+        @Override
+        protected Path codexHome() {
+            return root;
+        }
+
+        @Override
+        protected Optional<List<ChatSessionSummary>> listAppServerThreads(Path workingDirectory) {
+            appServerAttempted = true;
+            return Optional.empty();
+        }
+
+        @Override
+        protected Optional<List<ChatSessionSummary>> listAuthoritativeAppServerThreads() {
+            appServerAttempted = true;
+            return Optional.empty();
+        }
+    }
+
     @Test
     void rolloutFallbackDisplaysOnlyNativeConversationMessages() throws Exception {
         Path sessions = tempDir.resolve("sessions").resolve("2026").resolve("07").resolve("30");

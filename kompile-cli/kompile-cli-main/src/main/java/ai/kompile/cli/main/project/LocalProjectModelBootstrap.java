@@ -378,6 +378,55 @@ public final class LocalProjectModelBootstrap {
         }
     }
 
+    /**
+     * Resolve one registered project chat model to its runtime artifact without
+     * touching subprocesses or mutating the manifest. Returns {@code null} when
+     * no project registry matches the selection, so chat callers can fall back
+     * to the installed-model scan.
+     */
+    public static Path projectModelArtifact(String selection) {
+        if (selection == null || selection.isBlank()) {
+            return null;
+        }
+        Path working = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+        KompileProjectStore store = new KompileProjectStore();
+        Path root = store.findProjectRoot(working).orElse(null);
+        if (root == null || !Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
+            return null;
+        }
+        KompileProjectManifest manifest;
+        try {
+            manifest = store.load(root);
+        } catch (RuntimeException e) {
+            // A corrupt manifest must not break chat startup; fall back to scan.
+            return null;
+        }
+        KompileProjectModel model = null;
+        for (KompileProjectModel candidate : manifest.getModels()) {
+            if (matchesSelection(candidate, selection.trim())) {
+                model = candidate;
+                break;
+            }
+        }
+        if (model == null) {
+            return null;
+        }
+        if ("SOURCE".equalsIgnoreCase(model.getMetadata().get("artifact.stage"))) {
+            return null;
+        }
+        try {
+            return resolveManifestArtifact(root, model);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static boolean matchesSelection(KompileProjectModel model, String requested) {
+        return requested.equals(model.getId())
+                || requested.equals(model.getModelId())
+                || requested.equals(model.getRegistryModelId());
+    }
+
     private static LauncherArtifact resolveModelCliLauncher(Map<String, Object> options)
             throws IOException {
         String explicitExecutable = firstNonBlank(

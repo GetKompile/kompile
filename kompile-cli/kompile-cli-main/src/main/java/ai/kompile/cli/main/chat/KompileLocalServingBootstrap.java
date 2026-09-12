@@ -23,9 +23,12 @@ import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.KompileLocalModels;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
+import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import ai.kompile.cli.main.project.LocalSubprocessWatchdog;
 import ai.kompile.cli.main.util.OSResolver;
+import ai.kompile.modelmanager.KompileModelManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -1177,6 +1180,15 @@ public final class KompileLocalServingBootstrap {
         String requested = selection == null || selection.isBlank()
                 ? DEFAULT_MODEL : selection.trim();
         Path requestedPath = expandPath(requested);
+        // HuggingFace repo ids (owner/model) contain a separator but are never
+        // filesystem paths; they download into the shared cache on first use.
+        // An existing local path always wins, so a repo named like a relative
+        // directory still resolves from disk.
+        if (looksLikePath(requested) && !Files.exists(requestedPath)
+                && KompileLocalModels.isHuggingFaceRepoId(requested)) {
+            return resolveHuggingFaceModel(
+                    requested, installHome, kompileHome, environment);
+        }
         if (looksLikePath(requested)) {
             if (!Files.exists(requestedPath)) {
                 throw new IOException("Configured Kompile local model does not exist: "
@@ -1196,6 +1208,23 @@ public final class KompileLocalServingBootstrap {
                     path, requested, installHome, kompileHome, environment);
         }
 
+        // A configured project-registered chat model wins over the loose filesystem
+        // scan: the project registry is the deliberate selection, and its staged
+        // artifact and tokenizer were validated by model_runtime acquisition.
+        Path projectArtifact = LocalProjectModelBootstrap.projectModelArtifact(requested);
+        if (projectArtifact != null) {
+            return resolveLocalModel(
+                    projectArtifact, requested, installHome, kompileHome, environment);
+        }
+
+        // HuggingFace repo ids (owner/model) are downloaded once into the shared
+        // pipeline cache and then resolved from it. Project artifacts and local
+        // paths above always win, keeping a deliberate on-disk selection sticky.
+        if (KompileLocalModels.isHuggingFaceRepoId(requested)) {
+            return resolveHuggingFaceModel(
+                    requested, installHome, kompileHome, environment);
+        }
+
         Set<Path> roots = new LinkedHashSet<>();
         if (installHome != null) {
             roots.add(installHome.resolve("models").resolve("chat"));
@@ -1204,8 +1233,12 @@ public final class KompileLocalServingBootstrap {
         if (kompileHome != null) {
             roots.add(kompileHome.resolve("models").resolve("chat"));
         }
+        roots.add((kompileHome != null ? kompileHome
+                : Path.of(System.getProperty("user.home", ".")).resolve(".kompile"))
+                .resolve("models"));
         Path userHome = Path.of(System.getProperty("user.home", "."));
         roots.add(userHome.resolve(".cache").resolve("dl4j-llm-models"));
+        roots.add(userHome.resolve(".cache").resolve("kompile").resolve("models").resolve("pipelines"));
 
         String normalizedRequest = normalizeName(requested);
         List<Path> matches = new ArrayList<>();
@@ -1225,12 +1258,62 @@ public final class KompileLocalServingBootstrap {
 
         if (matches.isEmpty()) {
             throw new IOException("No installed Kompile chat model matches '" + requested
-                    + "'. Put a .gguf or .sdz model under ~/.kompile/models/chat, "
-                    + "set " + MODEL_ENV + ", or choose Custom in 'kompile chat --setup'.");
+                    + "'. Put a .gguf or .sdz model under ~/.kompile/models, register one "
+                    + "in the current project (model_runtime), set " + MODEL_ENV + ", "
+                    + "or use a HuggingFace id like Qwen/Qwen2.5-0.5B-Instruct-GGUF.");
         }
         return resolveLocalModel(
                 matches.get(0), requested, installHome, kompileHome, environment);
     }
+
+    /**
+     * Resolve a HuggingFace {@code owner/model} selection through the shared
+     * pipeline cache, downloading the repository on first use. The preferred
+     * model file inside the downloaded directory follows the same GGUF/SDZ
+     * priority rules as installed models.
+     */
+    private static ResolvedModel resolveHuggingFaceModel(
+            String repository,
+            Path installHome,
+            Path kompileHome,
+            Map<String, String> environment) throws IOException {
+        return resolveHuggingFaceModel(
+                repository, installHome, kompileHome, environment, new KompileModelManager());
+    }
+
+    /** Overload injecting the model manager so tests can pin a temp cache root. */
+    static ResolvedModel resolveHuggingFaceModel(
+            String repository,
+            Path installHome,
+            Path kompileHome,
+            Map<String, String> environment,
+            KompileModelManager manager) throws IOException {
+        String effectiveToken = firstNonBlank(
+                environment == null ? null : environment.get("HF_TOKEN"),
+                environment == null ? null : environment.get("HUGGING_FACE_HUB_TOKEN"));
+        if (effectiveToken == null) {
+            effectiveToken = firstNonBlank(
+                    System.getenv("HF_TOKEN"), System.getenv("HUGGING_FACE_HUB_TOKEN"));
+        }
+        if (!manager.isPipelineModelCached(repository)) {
+            System.err.println("  Downloading " + repository + " from HuggingFace…");
+            manager.downloadPipelineModel(repository, null, effectiveToken,
+                    message -> System.err.println("  " + message));
+        }
+        Path directory = manager.getPipelineModelDirectory(repository);
+        ResolvedModel resolved = resolveLocalModel(
+                directory, repository, installHome, kompileHome, environment);
+        System.err.println("  Using HuggingFace model: " + resolved.modelPath());
+        return resolved;
+    }
+
+    /**
+     * Model-manager source for the automatic HuggingFace path. Tests swap this
+     * to pin a temporary cache root; production always constructs a manager on
+     * the real cache directory.
+     */
+    static volatile java.util.function.Supplier<KompileModelManager> modelManagerSupplier =
+            KompileModelManager::new;
 
     static ResolvedModel resolveLocalModel(Path candidate, String modelId)
             throws IOException {
@@ -1248,18 +1331,19 @@ public final class KompileLocalServingBootstrap {
         if (Files.isDirectory(normalized)) {
             try (var files = Files.list(normalized)) {
                 model = files.filter(Files::isRegularFile)
-                        .filter(KompileLocalServingBootstrap::isSupportedModelFile)
+                        .filter(KompileLocalServingBootstrap::isConvertibleSourceFile)
                         .sorted(Comparator
                                 .comparingInt(KompileLocalServingBootstrap::modelPriority)
                                 .thenComparing(path -> path.getFileName().toString()))
                         .findFirst()
                         .orElseThrow(() -> new IOException(
-                                "No .gguf or .sdz model found in " + normalized));
+                                "No runnable (.gguf/.sdz) or convertible (.safetensors/.onnx/…) "
+                                        + "model found in " + normalized));
             }
-        } else if (!isSupportedModelFile(normalized)) {
+        } else if (!isConvertibleSourceFile(normalized)) {
             throw new IOException(
-                    "Kompile's serving subprocess requires a .gguf or .sdz model: "
-                            + normalized);
+                    "Kompile's serving subprocess requires a .gguf, .sdz, or convertible "
+                            + "source (.safetensors/.onnx/.pb/.h5/.keras): " + normalized);
         }
 
         String identity = modelId == null || modelId.isBlank()
@@ -1367,6 +1451,19 @@ public final class KompileLocalServingBootstrap {
     private static boolean isSupportedModelFile(Path path) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".gguf") || name.endsWith(".sdz");
+    }
+
+    /**
+     * Runnable archives plus every source format the one-shot stager converts
+     * (see StagedConvertMain): GGUF/GGML, safetensors, ONNX, TensorFlow/Keras.
+     * Directory scans prefer runnable files first via {@link #modelPriority}.
+     */
+    static boolean isConvertibleSourceFile(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".gguf") || name.endsWith(".ggml")
+                || name.endsWith(".sdz") || name.endsWith(".safetensors")
+                || name.endsWith(".onnx") || name.endsWith(".pb")
+                || name.endsWith(".h5") || name.endsWith(".keras");
     }
 
     private static boolean isRunnable(Path path) {

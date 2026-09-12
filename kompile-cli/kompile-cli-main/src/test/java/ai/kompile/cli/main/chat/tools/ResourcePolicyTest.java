@@ -95,15 +95,29 @@ class ResourcePolicyTest {
         assertEquals("a\\b", ResourcePolicy.shell("mvn \"a\\b\"").get(0).get(1));
     }
 
-    @Test void routineDiagnosticsAreLowButBuildsAndUnknownScriptsStayGuarded() {
+    @Test void admissionIsOffByDefaultAndOptInRestoresGuarding() throws Exception {
         var defaults = ResourcePolicy.defaults();
         for (String command : new String[]{"free -m", "df -h", "nvidia-smi", "uname -a",
-                "printf 'status'", "ps -ef && date"}) assertFalse(decide(defaults, command).high(), command);
-        for (String command : new String[]{"mvn test", "ninja", "python job.py", "./build.sh",
-                "free -m && mvn package", "bash -c 'free -m'"}) assertTrue(decide(defaults, command).high(), command);
+                "printf 'status'", "ps -ef && date", "mvn test", "ninja", "python job.py",
+                "./build.sh", "ssh host 'mvn test'", "bash -c 'free -m'"})
+            assertFalse(decide(defaults, command).high(), command);
+        var unmatchedTool = JsonUtils.standardMapper().createObjectNode().put("action", "train");
+        assertFalse(ResourcePolicy.classify(defaults, "graph_embeddings", unmatchedTool).high());
+
+        // Opt-in per command:
+        assertTrue(ResourcePolicy.command(root, "rule builds high mvn").contains("saved"));
+        assertTrue(decide(ResourcePolicy.load(root), "mvn test").high());
+        assertFalse(decide(ResourcePolicy.load(root), "ssh host 'mvn test'").high());
+
+        // Opt-in for everything unmatched:
+        assertTrue(ResourcePolicy.command(root, "default high").contains("saved"));
+        assertTrue(decide(ResourcePolicy.load(root), "ssh host 'mvn test'").high());
+        assertTrue(ResourcePolicy.command(root, "unknown-shell high").contains("saved"));
+        assertTrue(decide(ResourcePolicy.load(root), "bash -c 'free -m'").high());
     }
 
     @Test void plainTextRulesApplyToBothLaunchSurfacesAndCanBeRemoved() throws Exception {
+        assertTrue(ResourcePolicy.command(root, "default high").contains("saved"));
         assertTrue(ResourcePolicy.command(root, "rule version low java -version").contains("saved"));
         assertTrue(ResourcePolicy.command(root, "check java -version").contains("resourceClass=low"));
         assertTrue(ResourcePolicy.command(root, "check java -jar app.jar").contains("resourceClass=high"));

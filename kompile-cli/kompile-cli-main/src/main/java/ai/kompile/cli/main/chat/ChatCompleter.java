@@ -199,6 +199,7 @@ public class ChatCompleter implements Completer {
         SUB_ARGS.put("/resume-all", List.of(
                 new String[]{"--dry-run", "Preview commands without launching"},
                 new String[]{"--list", "List the resumable batch"},
+                new String[]{"--active-within", "Window in minutes (default 30)"},
                 new String[]{"--recent", "Override the recent-session limit"},
                 new String[]{"--all", "Restore every resumable tracked chat"},
                 new String[]{"--agent", "Filter by recorded agent"},

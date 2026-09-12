@@ -27,10 +27,17 @@ final class ProviderModelDiscoveryStrategies {
     }
 
     static ModelDiscovery.Strategy kompileLocal() {
-        return context -> ModelDiscovery.Result.failure(
-                ModelDiscovery.Status.UNSUPPORTED,
-                "Kompile local model inventory depends on the installed runtime; enter a model id manually",
-                List.of("local:kompile-local"));
+        return context -> {
+            List<LiveModelDiscovery.Model> models = KompileLocalModels.discover();
+            if (models.isEmpty()) {
+                return ModelDiscovery.Result.failure(
+                        ModelDiscovery.Status.SUCCESS_EMPTY,
+                        "No installed Kompile chat models found yet — choose Download from "
+                                + "HuggingFace or a local path below",
+                        List.of("local:kompile-local"));
+            }
+            return ModelDiscovery.Result.success(models, List.of("local:kompile-local"));
+        };
     }
 
     static ModelDiscovery.Strategy anthropic() {

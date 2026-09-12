@@ -750,10 +750,13 @@ public class DirectLlmClient implements AutoCloseable {
                         + "[Portable conversation context restored by Kompile]\n"
                         + portableHistoryText();
             }
-            // OpenCode owns a durable native session. Even a rejected turn may have
-            // mutated that provider-side history, so Kompile must not replay it as if
-            // this were a stateless HTTP request.
-            result.providerSideEffectsObserved = true;
+            // OpenCode owns a durable native session. A turn that actually ran may
+            // have mutated that provider-side history even when it failed, so such
+            // results must not be replayed as if this were a stateless HTTP request.
+            // Failures before the turn begins (server boot, session creation, turn
+            // spawn) surface as TurnNotStartedException instead: the provider never
+            // saw the prompt, so the connectivity retry loop may replay it against
+            // the fresh transport installed by resetOpenCodeClient().
             String text = client.send(effectiveModel, config.getThinking(),
                     effectiveSystemPrompt, userMessage,
                     chunk -> {
@@ -800,7 +803,14 @@ public class DirectLlmClient implements AutoCloseable {
             }
             appendOpenCodeHistory(userMessage, text);
             openCodeNeedsSeed = false;
+        } catch (OpenCodeServeClient.TurnNotStartedException e) {
+            // The turn never reached the provider: no native session history was
+            // touched, so replay-safe stays true and the retry loop can reconnect.
+            recordStreamFailure(result, e, "[Error: ");
         } catch (Exception e) {
+            // The turn ran, so the native session may hold partial provider-side
+            // state; keep the result non-replayable.
+            result.providerSideEffectsObserved = true;
             if (streamed.length() > 0) result.text = streamed.toString();
             recordStreamFailure(result, e, "[Error: ");
         }
@@ -3923,6 +3933,16 @@ public class DirectLlmClient implements AutoCloseable {
         }
         if (failure instanceof ChatConfig.AuthenticationException credentialFailure) {
             finishCredentialFailure(result, credentialFailure);
+            return;
+        }
+        if (failure instanceof OpenCodeServeClient.TurnNotStartedException turnNotStarted) {
+            // Pre-turn transport failure: the provider never received the prompt and
+            // its session holds no new state, so the connectivity loop may replay it.
+            result.failed = true;
+            result.retryableConnectivityFailure = true;
+            result.failureKind = FailureKind.PROVIDER_ERROR;
+            result.connectivityFailure = formatExceptionMessage(turnNotStarted);
+            result.connectivityFinalMessage = prefix + result.connectivityFailure + "]";
             return;
         }
         if (connectivityPolicy.isRetryableFailure(failure)) {

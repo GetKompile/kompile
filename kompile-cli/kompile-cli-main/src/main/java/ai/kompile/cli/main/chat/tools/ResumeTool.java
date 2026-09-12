@@ -2879,6 +2879,20 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
             terminal.writer().flush();
 
+            // Track the CURRENT vendor on the source Kompile transcript: the next
+            // resume (especially --agent auto) must land on the vendor the
+            // conversation now lives in, not the one that created it.
+            if ("kompile".equalsIgnoreCase(conversation.source())
+                    && ChatHistory.exists(conversation.sessionId())) {
+                try {
+                    ChatHistory.recordAgent(conversation.sessionId(), agent);
+                    ChatHistory.recordNativeSessionId(conversation.sessionId(), exportResult.getSessionId());
+                } catch (Exception e) {
+                    terminal.writer().println(YELLOW + "Warning: Could not record resumed agent: "
+                            + e.getMessage() + RESET);
+                }
+            }
+
             // Inject MCP tools before launching. Codex uses stdio config here;
             // probing the HTTP app only slows the resume path and reports the wrong mode.
             Path agentWorkingDir = exportResult.getWorkingDirectory() != null
@@ -3957,8 +3971,8 @@ public class ResumeTool implements CliTool {
         terminal.writer().println("  " + GREEN + "migrate <session-id>" + RESET + "          Migrate conversation to different format");
         terminal.writer().println("  " + GREEN + "resume <session-id>" + RESET + "           Resume conversation with designated agent");
         terminal.writer().println("  " + GREEN + "resume <session-id> <uuid>" + RESET + "    Resume with a specific target session UUID");
-        terminal.writer().println("  " + GREEN + "resume-all [options]" + RESET + "          Restore recent exited/crashed chats in new terminals");
-        terminal.writer().println("                                   Options: --dry-run, --recent N, --all, --yes, --list, --unlock-all");
+        terminal.writer().println("  " + GREEN + "resume-all [options]" + RESET + "          Restore recently active exited/crashed chats in new terminals");
+        terminal.writer().println("                                   Options: --active-within MINUTES (default 30), --dry-run, --recent N, --all, --yes, --list, --unlock-all");
         terminal.writer().println("  " + GREEN + "all" + RESET + "                           Load conversations from ALL projects");
         terminal.writer().println("  " + GREEN + "local" + RESET + "                         Show only current directory's conversations");
         terminal.writer().println("  " + GREEN + "next" + RESET + "                          Next page of conversations");

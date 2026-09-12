@@ -41,6 +41,14 @@ public class ResumeConfig {
 
     public static final int DEFAULT_RECENT_SESSIONS = 10;
 
+    /**
+     * Default recent-activity window (minutes) used by {@code kompile resume-all}
+     * when no {@code --recent}/{@code --all} override is given: sessions that were
+     * last active within this window are resumed. Shared with the setup wizard so
+     * the "Resume All" surface and the CLI agree on one default.
+     */
+    public static final int DEFAULT_ACTIVE_WINDOW_MINUTES = 30;
+
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper()
             .enable(SerializationFeature.INDENT_OUTPUT);
 

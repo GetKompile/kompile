@@ -65,8 +65,9 @@ import java.util.stream.Collectors;
 @CommandLine.Command(
         name = "resume-all",
         description = "Resume recently tracked agent sessions in new terminal windows " +
-                "(defaults to the " + ResumeConfig.DEFAULT_RECENT_SESSIONS + " most recent; " +
-                "use --all for every resumable session)",
+                "(defaults to every session active in the last " + ResumeConfig.DEFAULT_ACTIVE_WINDOW_MINUTES +
+                " minutes; " +
+                "use --recent N for the N most recent, --all for every resumable session)",
         mixinStandardHelpOptions = true
 )
 public class ResumeAllCommand implements Callable<Integer> {
@@ -107,7 +108,8 @@ public class ResumeAllCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--active-within"}, paramLabel = "MINUTES",
             description = "Resume sessions active within the last N minutes; ignores the configured " +
-                    "recent limit; combine with --recent to cap matching sessions")
+                    "recent limit; combine with --recent to cap matching sessions " +
+                    "(default " + ResumeConfig.DEFAULT_ACTIVE_WINDOW_MINUTES + " when no --recent/--all is given)")
     private Integer activeWithinMinutes;
 
     @CommandLine.Option(names = {"--set-recent"}, description = "Persist the default number of recent sessions " +
@@ -239,6 +241,10 @@ public class ResumeAllCommand implements Callable<Integer> {
 
         if (activeWithinMinutes != null) {
             activeCutoff = Instant.now().minus(Duration.ofMinutes(activeWithinMinutes));
+        } else if (!resumeAll && recentCount == null) {
+            // Plain `kompile resume-all` means "everything recently active": the
+            // last-activity window replaces the old count-of-start-times default.
+            activeCutoff = Instant.now().minus(Duration.ofMinutes(ResumeConfig.DEFAULT_ACTIVE_WINDOW_MINUTES));
         }
 
         // Load registry. Selection paths refresh status before applying filters;
@@ -447,8 +453,12 @@ public class ResumeAllCommand implements Callable<Integer> {
             System.out.println(DIM + "No resumable sessions found" +
                     (filterAgent != null ? " for agent '" + filterAgent + "'" : "") +
                     (filterProject != null ? " in project '" + filterProject + "'" : "") +
+                    (activeCutoff != null ? " active in the last " + activeWindowLabel() : "") +
                     RESET);
             System.out.println(DIM + "  Start a session with: kompile chat" + RESET);
+            if (activeCutoff != null && activeWithinMinutes == null && !resumeAll && recentCount == null) {
+                System.out.println(DIM + "  Widen the window with: kompile resume-all --active-within 120 (2 hours)" + RESET);
+            }
             return 0;
         }
 
@@ -631,6 +641,14 @@ public class ResumeAllCommand implements Callable<Integer> {
         return value.trim().equalsIgnoreCase("q") || value.trim().equalsIgnoreCase("cancel");
     }
 
+    /** Human-readable form of the active window (used in empty-result hints). */
+    private String activeWindowLabel() {
+        int minutes = activeWithinMinutes != null
+                ? activeWithinMinutes
+                : ResumeConfig.DEFAULT_ACTIVE_WINDOW_MINUTES;
+        return minutes + " minutes";
+    }
+
     private static String sessionUuid(SessionEntry entry) {
         return entry.getKompileSessionId() != null && !entry.getKompileSessionId().isBlank()
                 ? entry.getKompileSessionId() : entry.getConversationId();
@@ -705,8 +723,9 @@ public class ResumeAllCommand implements Callable<Integer> {
     }
 
     /**
-     * A session was active in the window when its recorded end falls inside it.
-     * Legacy/crash rows without a usable end timestamp fall back to their start.
+     * A session was active in the window when its last recorded activity falls
+     * inside it: the end timestamp for finished sessions, the start timestamp for
+     * legacy/crash rows without one.
      */
     static boolean wasActiveAtOrAfter(SessionEntry entry, Instant cutoff) {
         if (entry == null || cutoff == null) return false;
@@ -725,16 +744,22 @@ public class ResumeAllCommand implements Callable<Integer> {
         }
     }
 
-    private static Comparator<SessionEntry> newestFirst() {
-        return Comparator.comparing(ResumeAllCommand::startedAtSortKey).reversed();
+    /**
+     * Newest-first ordering by last activity (end time, falling back to start
+     * time), so the batch always surfaces the conversations the user touched
+     * most recently rather than the ones that were merely started first.
+     * Unparsable timestamps sort last.
+     */
+    static Comparator<SessionEntry> newestFirst() {
+        return Comparator.comparing(ResumeAllCommand::lastActiveSortKey).reversed();
     }
 
-    private static Instant startedAtSortKey(SessionEntry entry) {
-        try {
-            return Instant.parse(entry.getStartedAt());
-        } catch (Exception ignored) {
-            return Instant.EPOCH;
+    private static Instant lastActiveSortKey(SessionEntry entry) {
+        Instant lastActive = parseInstant(entry.getEndedAt());
+        if (lastActive == null) {
+            lastActive = parseInstant(entry.getStartedAt());
         }
+        return lastActive == null ? Instant.EPOCH : lastActive;
     }
 
     private static String displayAgent(SessionEntry entry) {
@@ -755,11 +780,12 @@ public class ResumeAllCommand implements Callable<Integer> {
     }
 
     /**
-     * An activity window replaces the configured default count. Callers may still
-     * combine it with an explicit --recent cap; --all and --recent are rejected.
+     * Only an explicit --recent caps the batch. The activity window — explicit
+     * --active-within or the default — replaces the configured default count
+     * entirely; --all also bypasses any cap and --all + --recent is rejected.
      */
     private boolean hasCountLimit() {
-        return !resumeAll && (activeWithinMinutes == null || recentCount != null);
+        return !resumeAll && recentCount != null;
     }
 
     // ── Kompile binary resolution ───────────────────────────────────────────

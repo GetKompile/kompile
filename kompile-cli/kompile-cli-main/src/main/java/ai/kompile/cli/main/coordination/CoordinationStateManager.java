@@ -219,11 +219,14 @@ public class CoordinationStateManager {
                 List<EditLockEntry> existing = readEditLocks();
                 for (EditLockEntry entry : existing) {
                     if (entry.getAbsolutePath().equals(filePath)
-                            && !entry.getSessionId().equals(sessionId)
-                            && !entry.isStale()) {
-                        String msg = entry.getAbsolutePath() + " is actively being edited by "
-                                + entry.getAgentName() + " (session " + entry.getSessionId() + ")";
-                        return EditLockResult.conflict(entry, msg);
+                            && !entry.getSessionId().equals(sessionId)) {
+                        if (!entry.isStale() && !holderIsDead(entry)) {
+                            String msg = entry.getAbsolutePath() + " is actively being edited by "
+                                    + entry.getAgentName() + " (session " + entry.getSessionId() + ")";
+                            return EditLockResult.conflict(entry, msg);
+                        }
+                        // TTL-expired or provably dead holder: clear it instead of conflict.
+                        Files.deleteIfExists(editsDir.resolve(entry.getLockId() + ".lock.json"));
                     }
                 }
 
@@ -288,10 +291,12 @@ public class CoordinationStateManager {
                 for (String path : paths) {
                     for (EditLockEntry entry : existing) {
                         if (entry.getAbsolutePath().equals(path)
-                                && !entry.getSessionId().equals(sessionId)
-                                && !entry.isStale()) {
-                            conflicts.put(path, entry);
-                            break;
+                                && !entry.getSessionId().equals(sessionId)) {
+                            if (!entry.isStale() && !holderIsDead(entry)) {
+                                conflicts.put(path, entry);
+                                break;
+                            }
+                            Files.deleteIfExists(editsDir.resolve(entry.getLockId() + ".lock.json"));
                         }
                     }
                 }
@@ -367,6 +372,14 @@ public class CoordinationStateManager {
             if (entry.getAbsolutePath().equals(absolutePath)
                     && !entry.getSessionId().equals(sessionId)
                     && !entry.isStale()) {
+                if (holderIsDead(entry)) {
+                    try {
+                        Files.deleteIfExists(editsDir.resolve(entry.getLockId() + ".lock.json"));
+                    } catch (IOException ignored) {
+                        // The next coordination pass retries the eviction.
+                    }
+                    continue;
+                }
                 return entry;
             }
         }
@@ -399,6 +412,45 @@ public class CoordinationStateManager {
     }
 
     /**
+     * Release every active edit lock regardless of owner. CLI escape hatch for
+     * wedged coordination state; advisory locks only, so this is always safe.
+     *
+     * @return number of lock files removed
+     */
+    public int forceReleaseAllLocks() {
+        int released = 0;
+        for (EditLockEntry lock : queryEdits()) {
+            try {
+                if (Files.deleteIfExists(editsDir.resolve(lock.getLockId() + ".lock.json"))) released++;
+            } catch (IOException e) {
+                notifyWarning("[Coordination] Warning: Could not release lock "
+                        + lock.getLockId() + ": " + e.getMessage());
+            }
+        }
+        return released;
+    }
+
+    /**
+     * Positive-evidence orphan check for a foreign edit lock. A lock is orphaned
+     * when its holder's presence file is TTL-stale or its recorded PID is
+     * provably dead. Missing presence is inconclusive (a holder may never have
+     * registered) and keeps the lock; TTL eviction still applies.
+     */
+    private boolean holderIsDead(EditLockEntry entry) {
+        if (entry == null || entry.getSessionId() == null
+                || entry.getSessionId().equals(sessionId)) return false;
+        Path agentFile = agentsDir.resolve(entry.getSessionId() + ".agent.json");
+        if (!Files.isRegularFile(agentFile, LinkOption.NOFOLLOW_LINKS)) return false;
+        try {
+            AgentEntry holder = mapper.readValue(agentFile.toFile(), AgentEntry.class);
+            if (holder.isStale()) return true;
+            return holder.getPid() > 0 && !isProcessAlive(holder.getPid());
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /**
      * Query all active (non-stale) edit locks, evicting stale ones.
      */
     public List<EditLockEntry> queryEdits() {
@@ -407,7 +459,7 @@ public class CoordinationStateManager {
                 List<EditLockEntry> all = readEditLocks();
                 List<EditLockEntry> active = new ArrayList<>();
                 for (EditLockEntry entry : all) {
-                    if (entry.isStale()) {
+                    if (entry.isStale() || holderIsDead(entry)) {
                         Path lockPath = editsDir.resolve(entry.getLockId() + ".lock.json");
                         Files.deleteIfExists(lockPath);
                     } else {
@@ -814,7 +866,7 @@ public class CoordinationStateManager {
             count += withCoordinatorLock(() -> {
                 int evicted = 0;
                 for (EditLockEntry e : readEditLocks()) {
-                    if (e.isStale()) {
+                    if (e.isStale() || holderIsDead(e)) {
                         Files.deleteIfExists(editsDir.resolve(e.getLockId() + ".lock.json"));
                         evicted++;
                     }

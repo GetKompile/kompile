@@ -1292,6 +1292,19 @@ class ModelToCrawlJvmIT {
             putRuntimeBoundOverride(modelOptions, "maxKvCacheLength", MAX_KV_CACHE_LENGTH_PROPERTY);
             putRuntimeBooleanOverride(modelOptions, "graphOptimizerEnabled", OPTIMIZER_ENABLED_PROPERTY);
             putRuntimeBooleanOverride(modelOptions, "optimizerFp16", OPTIMIZER_FP16_PROPERTY);
+            // SDZ-converted models lose the chat template embedded in GGUF metadata;
+            // the native tokenizer parser can't handle Jinja2 macro blocks in its
+            // tokenizer.json either. Read from a file if the pipeline property points
+            // at one so the SDZ conversion path works identically to the GGUF path.
+            String chatTemplateFile = System.getProperty("kompile.model.runtime.it.chatTemplateFile");
+            if (chatTemplateFile != null && !chatTemplateFile.isBlank()) {
+                try {
+                    modelOptions.put("chatTemplate",
+                            java.nio.file.Files.readString(java.nio.file.Path.of(chatTemplateFile.trim())));
+                } catch (Exception e) {
+                    throw new IllegalStateException("Failed to read chat template file: " + chatTemplateFile, e);
+                }
+            }
             List<Long> deviceMemoryLimitsBytes = requestedDeviceMemoryLimits();
             Map<String, Object> samplingOverrides = new LinkedHashMap<>();
             putDoubleOverride(samplingOverrides, "repetitionPenalty", REPETITION_PENALTY_PROPERTY);

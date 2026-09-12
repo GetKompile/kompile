@@ -581,6 +581,21 @@ public class ResumeCommand implements Callable<Integer> {
                     ai.kompile.cli.main.chat.format.ConversationExporter.exportToAgent(
                             compaction.turns(), agent, targetSessionId, source, workingDirectory);
 
+            // Track the CURRENT vendor on the source transcript: the next
+            // `resume --session-id <id>` (especially --agent auto) must land on
+            // the vendor the conversation now lives in, not the original one.
+            if ("kompile".equalsIgnoreCase(source) && ChatHistory.exists(sessionId)
+                    && !NativeResumeCoordinator.normalizeAgent(recordedAgent)
+                            .equals(NativeResumeCoordinator.normalizeAgent(agent))) {
+                try {
+                    ChatHistory.recordAgent(sessionId, agent);
+                    ChatHistory.recordNativeSessionId(sessionId, exportResult.getSessionId());
+                } catch (IOException e) {
+                    System.err.println(YELLOW + "Warning: Could not record resumed agent: "
+                            + e.getMessage() + RESET);
+                }
+            }
+
             System.out.println();
             System.out.println("✓ Exported to " + agent + " native format");
             System.out.println("  Session ID: " + exportResult.getSessionId());

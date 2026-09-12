@@ -85,7 +85,9 @@ public final class TranscriptActivityReader implements ActivityEvidenceReader {
                     startedText = line.substring("Started:".length()).strip();
                     continue;
                 }
-                if (line.startsWith("Agent:") && agent.isBlank()) {
+                if (line.startsWith("Agent:")) {
+                    // Last-wins: resumed transcripts append a fresh "Agent:" line
+                    // after a "[resumed ...]" marker; the current vendor matters.
                     agent = line.substring("Agent:".length()).strip();
                     continue;
                 }

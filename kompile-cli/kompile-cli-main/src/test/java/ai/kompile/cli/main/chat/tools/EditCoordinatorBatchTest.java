@@ -16,8 +16,11 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.coordination.AgentEntry;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
+import ai.kompile.cli.main.coordination.EditLockResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -28,6 +31,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -175,5 +179,68 @@ class EditCoordinatorBatchTest {
         assertEquals("changed\n", Files.readString(locked));
         assertTrue(result.getOutput().contains("WARNING"));
         assertTrue(result.getOutput().contains("other-agent"));
+    }
+
+    @Test
+    void lockFromDeadHolderIsEvictedWithoutMcpCoordination() throws Exception {
+        // Beyond every kernel pid_max bound, so isProcessAlive is deterministically false.
+        long neverAlivePid = Integer.MAX_VALUE;
+        other.registerAgent("finished task", null, "other-agent", 0, neverAlivePid);
+        String path = tempDir.resolve("orphan.txt").toAbsolutePath().toString();
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+
+        // mine never messages other: the dead holder is detected from presence alone.
+        EditLockResult acquired = mine.tryAcquireEditLock(path, "edit", "mine-agent");
+        assertTrue(acquired.isAcquired(), "a lock whose holder PID is dead must not conflict");
+        assertTrue(other.queryEdits().stream()
+                        .noneMatch(lock -> lock.getSessionId().equals("session-other")),
+                "orphaned lock must be evicted");
+
+        // Batch acquisition clears orphans the same way.
+        mine.releaseEditLock(acquired.getLockId());
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+        ToolResult batch = tool.execute(registerEdits(false, "orphan.txt"), context);
+        assertFalse(batch.isError(), batch::getOutput);
+        assertTrue(other.queryEdits().stream()
+                        .noneMatch(lock -> lock.getSessionId().equals("session-other")),
+                "batch acquire must evict the dead-holder lock");
+        // The read-only conflict probe used by edit/edit_batch also self-heals.
+        mine.queryEdits().forEach(lock -> mine.releaseEditLock(lock.getLockId()));
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+        assertNull(mine.findConflictingLock(path), "conflict probe must evict and skip the orphan");
+    }
+
+    @Test
+    void lockWithExpiredHolderPresenceIsEvicted() throws Exception {
+        other.registerAgent("long gone", null, "other-agent", 0, ProcessHandle.current().pid());
+        String path = tempDir.resolve("stale-presence.txt").toAbsolutePath().toString();
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+
+        Path agentFile = tempDir.resolve(".kompile/coordination/agents/session-other.agent.json");
+        ObjectMapper timeAware = JsonUtils.standardMapper();
+        AgentEntry presence = timeAware.readValue(agentFile.toFile(), AgentEntry.class);
+        presence.setLastHeartbeat(Instant.now().minusSeconds(1_000));
+        timeAware.writeValue(agentFile.toFile(), presence);
+
+        assertFalse(mine.queryEdits().stream()
+                .anyMatch(lock -> lock.getAbsolutePath().equals(path)),
+                "queryEdits must evict locks with expired holder presence");
+    }
+
+    @Test
+    void lockWithoutPresenceIsInconclusiveUntilTtl() throws Exception {
+        // other never registered agent presence: death cannot be proven, so the
+        // advisory lock survives until its TTL expires (existing behavior).
+        String path = tempDir.resolve("no-presence.txt").toAbsolutePath().toString();
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+        assertNotNull(mine.findConflictingLock(path));
+    }
+
+    @Test
+    void releaseAllClearsForeignLocksWithoutAnySession() throws Exception {
+        String path = tempDir.resolve("all.txt").toAbsolutePath().toString();
+        assertTrue(other.tryAcquireEditLock(path, "edit", "other-agent").isAcquired());
+        assertEquals(1, mine.forceReleaseAllLocks());
+        assertTrue(other.queryEdits().isEmpty());
     }
 }

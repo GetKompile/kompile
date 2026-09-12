@@ -17,6 +17,7 @@
 package ai.kompile.cli.model;
 
 import ai.kompile.cli.common.util.GitRunner;
+import ai.kompile.cli.common.util.LfsPointerFiles;
 
 import picocli.CommandLine;
 
@@ -105,6 +106,13 @@ public class ModelCloneCommand implements Callable<Integer> {
         if (exitCode != 0) {
             System.err.println("Clone failed with exit code " + exitCode);
             return exitCode;
+        }
+
+        // A shallow clone without lfs/xet filters leaves ASCII pointer stubs
+        // where the weights belong; catch that now with an actionable message.
+        String pointerProblem = LfsPointerFiles.describeProblem(targetDir);
+        if (pointerProblem != null) {
+            System.err.println("Warning: " + pointerProblem);
         }
 
         // Install git-xet in the cloned repo

@@ -19,12 +19,12 @@ kompile chat --resume <id>
 # Browse and pick a session to resume
 kompile resume
 
-# Restore exited or crash-detected chats in new terminal windows
-kompile resume-all                                # Configured recent limit (default: 10)
+# Restore recently active exited or crash-detected chats in new terminal windows
+kompile resume-all                                # Sessions active in the last 30 minutes (default)
 kompile resume-all --list                         # Exact sessions the batch would launch
 kompile resume-all --dry-run                      # Preview commands without launching
-kompile resume-all --recent 5                     # One-off limit
-kompile resume-all --active-within 30             # All sessions active in the last 30 minutes
+kompile resume-all --active-within 60             # All sessions active in the last 60 minutes
+kompile resume-all --recent 5                     # Only the 5 most recently active
 kompile resume-all --all                          # Every resumable tracked chat
 kompile resume-all --set-recent 20                # Persist a new default limit
 kompile resume-all --prune 30                     # Remove entries older than 30 days
@@ -32,7 +32,7 @@ kompile resume-all --status                       # Show registry and terminal s
 
 # The same batch action is visible inside standard chat
 /resume-all --dry-run
-/resume-all --recent 5
+/resume-all --active-within 60
 
 # Or open /resume and enter `resume-all --dry-run` in the resume browser.
 # Running chats are excluded; dead-PID entries become resumable automatically.

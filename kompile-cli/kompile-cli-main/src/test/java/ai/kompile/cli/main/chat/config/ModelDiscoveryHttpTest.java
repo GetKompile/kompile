@@ -578,7 +578,11 @@ class ModelDiscoveryHttpTest {
         assertFalse(local.modelDiscoveryRequiresBaseUrl());
         ModelDiscovery.Result inventory = local.modelDiscoveryStrategy().discover(
                 new ModelDiscovery.Context("kompile-local", null, null, null, null, Duration.ofSeconds(1)));
-        assertEquals(ModelDiscovery.Status.UNSUPPORTED, inventory.status());
-        assertTrue(inventory.models().isEmpty());
+        // The local inventory is computed from the machine's model cache and
+        // installed/user/project model directories; the environment may be
+        // empty (SUCCESS_EMPTY) or populated (SUCCESS), never a failure status.
+        assertTrue(inventory.status() == ModelDiscovery.Status.SUCCESS
+                        || inventory.status() == ModelDiscovery.Status.SUCCESS_EMPTY,
+                "local inventory must resolve locally, got " + inventory.status());
     }
 }

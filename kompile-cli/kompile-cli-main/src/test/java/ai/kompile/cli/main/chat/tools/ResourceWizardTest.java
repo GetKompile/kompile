@@ -21,6 +21,7 @@ class ResourceWizardTest {
     }
 
     @Test void addWizardSavesOnlyAfterConfirmation() throws Exception {
+        assertTrue(ResourcePolicy.command(root, "default high").contains("saved"));
         assertTrue(run("add", "project", "version", "java", "-version", "low", "yes").contains("saved"));
         assertTrue(ResourcePolicy.command(root, "check java -version", root.resolve("user.json")).contains("resourceClass=low"));
         assertTrue(ResourcePolicy.command(root, "check java -jar app.jar", root.resolve("user.json")).contains("resourceClass=high"));

@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayDeque;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -17,6 +18,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SetupWizardRuntimeTest {
 
+    private static org.jline.reader.LineReader reader(String... answers) {
+        ArrayDeque<String> input = new ArrayDeque<>(List.of(answers));
+        return (org.jline.reader.LineReader) java.lang.reflect.Proxy.newProxyInstance(
+                org.jline.reader.LineReader.class.getClassLoader(),
+                new Class<?>[]{org.jline.reader.LineReader.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("readLine")) {
+                        if (input.isEmpty()) throw new org.jline.reader.EndOfFileException();
+                        return input.removeFirst();
+                    }
+                    throw new AssertionError("Unexpected reader call: " + method);
+                });
+    }
+
     @Test
     void chatModeMenuOffersSingleAndBatchResumeActions() {
         List<String> options = SetupWizard.chatModeOptions();
@@ -24,10 +39,31 @@ class SetupWizardRuntimeTest {
         assertEquals(4, options.size());
         assertTrue(options.get(2).contains("Resume Previous"));
         assertTrue(options.get(3).contains("Resume All"));
-        assertTrue(options.get(3).contains("last 30 minutes"));
         assertEquals("--active-within 30", SetupWizard.resumeAllArguments());
         assertEquals(List.of("standard", "passthrough", "resume", "resume-all"),
                 SetupWizard.chatModeValues());
+    }
+
+    @Test
+    void resumeAllWizardOffersTheFixedIntervalLadderAndMapsItToMinutes() {
+        assertEquals(List.of("30 minutes", "1 hour", "2 hours", "4 hours", "8 hours", "24 hours"),
+                SetupWizard.RESUME_ALL_INTERVAL_LABELS);
+        assertEquals(List.of(30, 60, 120, 240, 480, 1440),
+                SetupWizard.RESUME_ALL_INTERVAL_MINUTES);
+
+        // Selection 1 = 30 minutes, selection 6 = 24 hours; cancel returns null
+        // so nothing is launched.
+        assertEquals(30, SetupWizard.selectResumeAllWindow(reader("1")));
+        assertEquals(60, SetupWizard.selectResumeAllWindow(reader("2")));
+        assertEquals(120, SetupWizard.selectResumeAllWindow(reader("3")));
+        assertEquals(240, SetupWizard.selectResumeAllWindow(reader("4")));
+        assertEquals(480, SetupWizard.selectResumeAllWindow(reader("5")));
+        assertEquals(1440, SetupWizard.selectResumeAllWindow(reader("6")));
+        assertNull(SetupWizard.selectResumeAllWindow(reader("cancel")));
+        assertEquals("--active-within 480", SetupWizard.resumeAllArguments(480));
+        assertEquals("30 minutes", SetupWizard.describeResumeAllWindow(30));
+        assertEquals("2 hours", SetupWizard.describeResumeAllWindow(120));
+        assertEquals("24 hours", SetupWizard.describeResumeAllWindow(1440));
     }
 
     @Test

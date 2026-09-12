@@ -160,10 +160,18 @@ public final class NativeResumeCoordinator {
         if (agent == null) {
             return "";
         }
-        return switch (agent.trim().toLowerCase(Locale.ROOT)) {
+        // Managed/standard transcripts record decorated names such as
+        // "claude (emulated)" or "codex (enforcer)"; strip the decoration so
+        // vendor resolution (including resume --agent auto) reaches the real CLI.
+        String trimmed = agent.trim();
+        int decoration = trimmed.indexOf(" (");
+        if (decoration > 0 && trimmed.endsWith(")")) {
+            trimmed = trimmed.substring(0, decoration).trim();
+        }
+        return switch (trimmed.toLowerCase(Locale.ROOT)) {
             case "claude-code", "claude" -> "claude";
             case "pi-cli", "pi" -> "pi";
-            default -> agent.trim().toLowerCase(Locale.ROOT);
+            default -> trimmed.toLowerCase(Locale.ROOT);
         };
     }
 

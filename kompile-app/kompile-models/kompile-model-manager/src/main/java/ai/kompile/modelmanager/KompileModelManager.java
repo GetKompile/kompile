@@ -1463,7 +1463,11 @@ public class KompileModelManager {
             "tokenizer.json",
             "tokenizer_config.json",
             "special_tokens_map.json",
+            "added_tokens.json",
+            "chat_template.jinja",
+            "generation_config.json",
             "model.safetensors",
+            "model.safetensors.index.json",
             "pytorch_model.bin",
             "model.gguf",
             "model.onnx"
@@ -1520,10 +1524,113 @@ public class KompileModelManager {
                     + ". Check the model ID and ensure the model exists on HuggingFace Hub.");
         }
 
+        // Sharded safetensors repositories split weights across
+        // model-XXXXX-of-XXXXX.safetensors files listed in the index shard map.
+        // The fixed candidate list cannot name those files, so resolve them from
+        // the downloaded index; a repo without the index is untouched.
+        anyDownloaded |= downloadShardedWeights(
+                modelDir.resolve("model.safetensors.index.json"),
+                baseUrl, modelDir, httpClient, hfToken, progressConsumer);
+
         if (progressConsumer != null) {
             progressConsumer.accept("Model saved to: " + modelDir);
         }
         return modelDir;
+    }
+
+    /**
+     * Download every unique shard named in a safetensors index weight map.
+     * Returns whether at least one shard was fetched or already cached.
+     */
+    private boolean downloadShardedWeights(
+            Path indexPath,
+            String baseUrl,
+            Path modelDir,
+            HttpClient httpClient,
+            String hfToken,
+            Consumer<String> progressConsumer) throws IOException {
+        if (!Files.isRegularFile(indexPath)) {
+            return false;
+        }
+        java.util.Set<String> shards;
+        try {
+            JsonNode weightMap = objectMapper.readTree(indexPath.toFile())
+                    .path("weight_map");
+            if (!weightMap.isObject()) {
+                LOGGER.warn("Safetensors index {} has no weight_map; skipping shard download",
+                        indexPath);
+                return false;
+            }
+            shards = new java.util.LinkedHashSet<>();
+            weightMap.forEach(node -> {
+                if (node.isTextual() && !node.asText().isBlank()) {
+                    shards.add(node.asText());
+                }
+            });
+        } catch (IOException e) {
+            throw new IOException("Could not parse safetensors index " + indexPath
+                    + ": " + e.getMessage(), e);
+        }
+        if (shards.isEmpty()) {
+            return false;
+        }
+        if (progressConsumer != null) {
+            progressConsumer.accept("Fetching " + shards.size() + " sharded weight file(s)…");
+        }
+        boolean any = false;
+        for (String shard : shards) {
+            // Shard names come from the trusted index file; reject anything that
+            // is not a plain file name so ../ traversal cannot escape modelDir.
+            if (shard.contains("/") || shard.contains("\\") || shard.contains("..")) {
+                throw new IOException("Safetensors index names an unsafe shard path: " + shard);
+            }
+            Path destination = modelDir.resolve(shard);
+            if (Files.exists(destination)) {
+                if (progressConsumer != null) progressConsumer.accept("Cached: " + shard);
+                any = true;
+                continue;
+            }
+            any |= downloadSingleFile(
+                    baseUrl + "/" + shard, destination, httpClient, hfToken, progressConsumer);
+        }
+        return any;
+    }
+
+    /** Download one URL to one destination file; false when the server says it does not exist. */
+    private boolean downloadSingleFile(
+            String fileUrl,
+            Path destPath,
+            HttpClient httpClient,
+            String hfToken,
+            Consumer<String> progressConsumer) throws IOException {
+        try {
+            var requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(fileUrl))
+                    .timeout(Duration.ofMinutes(30))
+                    .GET();
+            if (hfToken != null && !hfToken.isBlank()) {
+                requestBuilder.header("Authorization", "Bearer " + hfToken);
+            }
+            var response = httpClient.send(requestBuilder.build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() != 200) {
+                return false;
+            }
+            if (progressConsumer != null) progressConsumer.accept("Downloading: " + destPath.getFileName());
+            try (var in = response.body()) {
+                Files.copy(in, destPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+            if (progressConsumer != null) progressConsumer.accept("Downloaded: " + destPath.getFileName());
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Download interrupted", e);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            LOGGER.debug("Could not download {}: {}", fileUrl, e.getMessage());
+            return false;
+        }
     }
 
     /**

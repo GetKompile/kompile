@@ -394,7 +394,8 @@ class HighMemoryToolCallGuardTest {
         ((ObjectNode) policy.path("rules").get(0)).put("tool", "process");
         assertTrue(ResourcePolicy.command(mine.getProjectRoot(), "set " + policy).contains("saved"));
         mine.publishProcess("small", "mvn test -Dtest=SmallTest", "small tests", ProcessHandle.current().pid(), "RUNNING", null, "mine");
-        assertTrue(ResourcePolicy.command(mine.getProjectRoot(), "set " + ResourcePolicy.defaults()).contains("saved"));
+        assertTrue(ResourcePolicy.command(mine.getProjectRoot(),
+                "set {\"defaultClass\":\"high\",\"unknownShellClass\":\"high\",\"rules\":[]}").contains("saved"));
         assertEquals("low", mine.queryProcesses().get(0).getResourceClass());
         ToolResult result = guard(mine, admittedCapacity()).wrap(tool("bash", ignored -> ToolResult.success("ran")))
                 .execute(mapper.createObjectNode().put("command", "mvn package"), context(mine));
@@ -410,7 +411,7 @@ class HighMemoryToolCallGuardTest {
         var args = mapper.createObjectNode().put("command", "mvn test -Dtest=SmallTest");
         assertTrue(guard.inspectToolCall("bash", args, context(mine)).isError());
         var wait = guard.watchToolCall("bash", args, context(mine));
-        ResourcePolicy.command(mine.getProjectRoot(), "set " + ResourcePolicyTest.smallTestPolicy());
+        assertTrue(ResourcePolicy.command(mine.getProjectRoot(), "set " + ResourcePolicyTest.smallTestPolicy()).contains("saved"));
         assertFalse(guard.inspectToolCall("bash", args, context(mine)).isError());
         var ready = mine.activityWaits().await(mine.getSessionId(), wait.waitId(), 5_000L, () -> false);
         assertEquals(ai.kompile.cli.main.coordination.ActivityWaitRegistry.State.READY, ready.state());
@@ -418,6 +419,12 @@ class HighMemoryToolCallGuardTest {
 
     private CoordinationStateManager manager(String session, Path project) throws Exception {
         Files.createDirectories(project);
+        // The built-in policy keeps admission off; these tests exercise the guarded
+        // lane, so opt this test project in explicitly.
+        Path policyDir = project.resolve(".kompile");
+        Files.createDirectories(policyDir);
+        Files.writeString(policyDir.resolve("resource-policy.json"),
+                "{\"defaultClass\":\"high\",\"unknownShellClass\":\"high\"}");
         CoordinationStateManager manager = new CoordinationStateManager(
                 project, session, mapper, tempDir.resolve("system-state"));
         managers.add(manager);

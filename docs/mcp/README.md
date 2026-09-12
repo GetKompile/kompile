@@ -225,10 +225,13 @@ Any tool can run asynchronously with `_background: true` -- returns a task ID im
 
 ### Pause a resource-blocked agent
 
-High-memory tool launches (including builds and tests) install a one-shot resource watch when
-blocked. The response includes `resourceWaitId` and `wakeSupported`. Nothing is launched or
-reserved while the agent is waiting. The host checks every five seconds for the user-wide
-activity lane, project peer processes, and configured RAM/GPU admission to clear.
+Resource admission is **opt-in**. With the default policy nothing is classified high, so
+launches never block, reserve, or install watches. Once a policy marks specific commands
+`high` (user or project `resource-policy.json`), affected tool launches install a one-shot
+resource watch when blocked. The response includes `resourceWaitId` and `wakeSupported`.
+Nothing is launched or reserved while the agent is waiting. The host checks every five
+seconds for the user-wide activity lane, project peer processes, and configured RAM/GPU
+admission to clear.
 
 - **Interactive Standard Chat:** with `wakeSupported=true`, the agent may end its current turn.
   A system event starts the next agent turn (or queues behind an active turn), even with ordinary

@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.common.util.LfsPointerFiles;
 import ai.kompile.project.KompileProjectLifecycleState;
 import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectModel;
@@ -265,6 +266,13 @@ public class ProjectModelCommand implements Callable<Integer> {
             if (exitCode != 0) {
                 System.err.println("Clone failed with exit code " + exitCode);
                 return exitCode;
+            }
+
+            // A shallow clone without lfs/xet filters leaves ASCII pointer stubs
+            // where the weights belong; catch that now with an actionable message.
+            String pointerProblem = LfsPointerFiles.describeProblem(targetDir);
+            if (pointerProblem != null) {
+                System.err.println("Warning: " + pointerProblem);
             }
 
             if (useXet) {

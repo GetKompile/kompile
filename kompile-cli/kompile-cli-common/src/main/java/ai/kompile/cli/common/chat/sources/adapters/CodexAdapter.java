@@ -164,14 +164,20 @@ public class CodexAdapter implements ChatSourceAdapter {
     }
 
     private List<ChatSessionSummary> listInternal(Path workingDirectory) throws IOException {
-        Optional<List<ChatSessionSummary>> nativeThreads = listAppServerThreads(workingDirectory);
-        if (nativeThreads.isPresent()) {
-            return nativeThreads.get();
-        }
-
+        // The indexed state DB is the same projection the app-server reads, and
+        // real stores hold thousands of threads (this machine: 1.1 GB). Spawning
+        // `codex app-server` cold for every resume listing costs seconds of
+        // paginated subprocess round-trips, so read the indexed threads first
+        // and keep the app-server spawn as the fallback for Codex installs
+        // without (or with an unreadable) state DB.
         Optional<List<ChatSessionSummary>> indexed = listIndexedThreads(workingDirectory);
         if (indexed.isPresent()) {
             return indexed.get();
+        }
+
+        Optional<List<ChatSessionSummary>> nativeThreads = listAppServerThreads(workingDirectory);
+        if (nativeThreads.isPresent()) {
+            return nativeThreads.get();
         }
 
         // history.jsonl has no working-directory field. For project-scoped resume loading,

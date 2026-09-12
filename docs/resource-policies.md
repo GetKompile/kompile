@@ -5,6 +5,25 @@ policy summary with configuration paths and the source of each setting; JSON is
 an advanced format, not required for routine configuration. Settings are read on
 each launch/watch poll. Permissions and subprocess memory limits remain independent.
 
+## Admission is opt-in
+
+With the built-in defaults (`defaultClass: low`, `unknownShellClass: low`, the
+rule list limited to cheap diagnostics), **no command is classified high**. Nothing
+is serialized through the exclusive activity lane, no RAM/GPU capacity probe runs,
+and no launch is ever blocked. This is deliberate: a command like `ssh host 'mvn test'`
+consumes resources on a remote machine, and no policy can see that cost — so
+admission only engages where it can be measured: commands you explicitly configure.
+
+To enable serialization for chosen work:
+
+- `/resources default high` — every unmatched launch takes the lane again;
+- `/resources unknown-shell high` — unparsed syntax is treated as heavy;
+- `/resources rule builds high mvn` — only Maven (optionally with argument prefixes)
+  is high; everything else stays low.
+
+Commands running on remote machines (`ssh`, remote shells) are never classified by
+this host; configure rules on the machine that actually runs them.
+
 ## Configuration sources
 
 Precedence, lowest to highest:
@@ -57,11 +76,11 @@ or EOF discards the operation. Invalid menu choices are re-prompted.
 
 `low` does not enter the exclusive high-resource lane or its RAM/GPU capacity probe.
 `high` uses existing lane/capacity checks and watches. Async crawls retain their inner
-capacity admission. Unknown work defaults high; editable low defaults cover literal
-diagnostics such as `free`, `df`, `uname`, `nvidia-smi`, `date`, and `printf`, alongside
-`git`, `ps`, `pwd`, `cd`, and `sleep`. Builds, tests, model work, crawls and unknown
-scripts still default high. A lightweight command followed by a build remains high.
-Invalid policy files fail conservatively high; help and explicit `set` repair remain usable.
+capacity admission. With the defaults, everything — including builds, tests, model
+work, crawls and unknown scripts — launches low; explicit rules or a raised default
+re-enable guarding. A lightweight command followed by a build remains low unless a
+rule marks the build high. Invalid policy files fail conservatively high; help and
+explicit `set` repair remain usable.
 
 For example (no JSON):
 
@@ -128,6 +147,11 @@ are not revoked by configuration changes.
 
 Blocked tool-call watches reevaluate their tool/arguments against current policy.
 Reclassifying waiting work as low makes it eligible to wake, without auto-execution.
+
+Edit locks are advisory and self-healing: a lock whose holder has expired presence or
+a provably dead PID is evicted by the next coordination read — no MCP `release_edit`
+round-trip is needed. `kompile edit-coordinator release --all` clears every lock
+without any agent session.
 
 Explicit `edit_coordinator` checks accept `action: "preflight_activity"` or
 `"watch_activity"`, `tool_name: "bash"`, and `tool_arguments: {"command": "..."}`.

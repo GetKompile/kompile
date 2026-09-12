@@ -1066,9 +1066,9 @@ public final class WorkflowController {
         }
         prompt.append("- Use dedicated Kompile tools for file I/O, search, web access, and result retrieval; ")
                 .append("Bash substitutes are rejected in enforced mode.\n")
-                .append("- Process launches are host-backgrounded and receive a host-enforced completion monitor. High-memory builds, tests, crawls, model work, and indexing are serialized by the user-wide activity lane; only lightweight independent processes may overlap. Do not use shell sleep or polling loops.\n")
+                .append("- Process launches are host-backgrounded and receive a host-enforced completion monitor. Only explicitly configured high-resource commands are serialized by the user-wide activity lane (admission is off by default; opt in via /resources). Do not use shell sleep or polling loops.\n")
                 .append("- Start production crawls and pipelines asynchronously and retain their job/run IDs.\n")
-                .append("- edit_coordinator is the agent message bus: inspect active/conflicting work before artifact mutation, communicate overlap, and release every acquired lock before finishing or waiting. The harness automatically preflights RAM/GPU and peer activity before high-memory tools.\n")
+                .append("- edit_coordinator is the agent message bus: inspect active/conflicting work before artifact mutation, communicate overlap, and release every acquired lock before finishing or waiting. Locks held by dead sessions are evicted automatically. RAM/GPU preflight only applies to explicitly configured high-resource commands.\n")
                 .append("- Keep the code index current and prefer indexed symbols/signatures/LSP for code navigation; treat implausibly empty or huge results as degraded and use a narrower fallback.\n")
                 .append("- Prefer graph query/reasoning tools for relationships, provenance, paths, and factual verification.\n")
                 .append("- Parallelize only independent work, background eligible long work, and audit delegated results before integration.\n")

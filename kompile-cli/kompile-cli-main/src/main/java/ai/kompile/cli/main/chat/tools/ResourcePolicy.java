@@ -30,8 +30,11 @@ public final class ResourcePolicy {
 
     public static ObjectNode defaults() {
         ObjectNode config = JsonUtils.standardMapper().createObjectNode();
-        config.put("defaultClass", "high");
-        config.put("unknownShellClass", "high");
+        // Admission is opt-in: nothing is serialized by default. Set defaultClass
+        // (and optionally unknownShellClass) to "high", or add explicit rules, to
+        // re-enable the exclusive lane and capacity checks for chosen commands.
+        config.put("defaultClass", "low");
+        config.put("unknownShellClass", "low");
         var rules = config.putArray("rules");
         // Editable defaults, not special cases in the evaluator.
         for (String tool : List.of("bash", "process")) {
@@ -314,7 +317,8 @@ public final class ResourcePolicy {
                     .append(field.equals("rules") ? config.path(field).size() + " ordered rules" : config.path(field).asText())
                     .append(" (from ").append(source).append(")");
         }
-        result.append("\nRoutine diagnostics are low by default; unknown launches stay guarded.\n");
+        result.append("\nResource admission is off until configured: unmatched and unparsed launches run low. ")
+                .append("Opt in with /resources default high, /resources unknown-shell high, or explicit rules.");
         return result.append("low = no exclusive lane; high = exclusive lane + capacity check. Permissions still apply.\n")
                 .append("RAM/GPU thresholds and child RSS limits are separate: subprocess_watchdog config_get.\n")
                 .append("Use /resources rules to list rules, /resources help to edit, /resources json to export.").toString();
@@ -437,13 +441,16 @@ public final class ResourcePolicy {
                     + "  /resources check <shell command>   Preview only; never executes\n"
                     + "  /resources rule <id> low|high <executable> [argument prefix...]\n"
                     + "  /resources remove <id>             Remove a rule (both launch surfaces)\n"
-                    + "  /resources default low|high        Unmatched launches (default: high)\n"
-                    + "  /resources unknown-shell low|high  Unparsed shell syntax (default: high)\n"
+                    + "  /resources default low|high        Unmatched launches (default: low — admission off)\n"
+                    + "  /resources unknown-shell low|high  Unparsed shell syntax (default: low)\n"
                     + "  /resources inherit default|unknown-shell|rules   Clear that override\n"
                     + "  /resources global <command>        Edit user defaults instead of this project\n"
                     + "Example: /resources rule java-version low java -version\n"
                     + "Omitting the argument prefix matches ALL invocations of that executable.\n"
-                    + "Builds, unknown scripts, model work and crawls remain high by default.\n"
+                    + "Admission is OFF by default: commands run without the lane or capacity checks.\n"
+                    + "Opt in: /resources default high, /resources unknown-shell high,\n"
+                    + "or /resources rule builds high mvn for specific commands (remote/SSH commands are\n"
+                    + "never classified on this host — configure host-local rules where they run).\n"
                     + "Sources: built-in < ~/.kompile/resource-policy.json < project .kompile/resource-policy.json.\n"
                     + "Fields inherit independently; an explicit rules list replaces the inherited list.\n"
                     + "Advanced: json | add <rule JSON> | set <policy JSON> | preview <tool> <arguments JSON>\n"

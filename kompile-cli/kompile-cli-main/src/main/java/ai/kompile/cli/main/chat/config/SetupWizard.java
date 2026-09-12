@@ -50,6 +50,16 @@ import java.util.List;
 public class SetupWizard {
 
     private static final int RESUME_ALL_ACTIVE_WINDOW_MINUTES = 30;
+
+    /**
+     * Activity-window choices offered when the user picks "Resume All" in the
+     * wizard. Labels are user-facing; values are minutes passed to
+     * {@code resume-all --active-within}. Ordered shortest to longest.
+     */
+    static final List<String> RESUME_ALL_INTERVAL_LABELS = List.of(
+            "30 minutes", "1 hour", "2 hours", "4 hours", "8 hours", "24 hours");
+    static final List<Integer> RESUME_ALL_INTERVAL_MINUTES = List.of(30, 60, 120, 240, 480, 1440);
+
     private static final List<String> OPENAI_DOCUMENTED_MODELS = List.of(
             "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna");
     private static final List<String> OPENAI_CODEX_DOCUMENTED_MODELS = List.of(
@@ -149,8 +159,7 @@ public class SetupWizard {
             "Standard Chat — REPL with RAG, memory, and tools",
             "Passthrough — delegate to Claude Code, Codex, Gemini, etc.",
             "Resume Previous Conversation",
-            "Resume All — launch sessions active in the last "
-                    + RESUME_ALL_ACTIVE_WINDOW_MINUTES + " minutes in new terminals"
+            "Resume All — launch recently active sessions in new terminals"
     );
 
     private static final List<String> CHAT_MODE_VALUES = List.of(
@@ -200,6 +209,20 @@ public class SetupWizard {
             // Handle resume actions - close our terminal first so the selected
             // resume surface (or newly launched terminals) owns the TTY.
             if ("resume".equals(chatMode) || "resume-all".equals(chatMode)) {
+                // Pick the activity window while our terminal still owns stdin —
+                // it closes right after so the launched surfaces own the TTY.
+                Integer activeWindow = null;
+                if ("resume-all".equals(chatMode)) {
+                    activeWindow = selectResumeAllWindow(reader);
+                    if (activeWindow == null) {
+                        try {
+                            terminal.close();
+                        } catch (Exception e) {
+                            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                        }
+                        return null;
+                    }
+                }
                 try {
                     terminal.close();
                 } catch (Exception e) {
@@ -210,9 +233,9 @@ public class SetupWizard {
                 if ("resume-all".equals(chatMode)) {
                     System.out.println();
                     System.out.println(GREEN + "  Resuming sessions active in the last "
-                            + RESUME_ALL_ACTIVE_WINDOW_MINUTES + " minutes..." + RESET);
+                            + describeResumeAllWindow(activeWindow) + "..." + RESET);
                     System.out.println();
-                    if (ResumeAllCommand.executeInline(resumeAllArguments()) != 0) {
+                    if (ResumeAllCommand.executeInline(resumeAllArguments(activeWindow)) != 0) {
                         return null;
                     }
                 } else {
@@ -591,7 +614,29 @@ public class SetupWizard {
     }
 
     static String resumeAllArguments() {
-        return "--active-within " + RESUME_ALL_ACTIVE_WINDOW_MINUTES;
+        return resumeAllArguments(RESUME_ALL_ACTIVE_WINDOW_MINUTES);
+    }
+
+    static String resumeAllArguments(int activeWindowMinutes) {
+        return "--active-within " + activeWindowMinutes;
+    }
+
+    /**
+     * Ask the user how far back "recently active" should reach before the
+     * Resume All batch launches. Returns the chosen window in minutes, or null
+     * on cancellation.
+     */
+    static Integer selectResumeAllWindow(LineReader reader) {
+        int selected = selectNumbered(reader, "Resume sessions last active within:",
+                RESUME_ALL_INTERVAL_LABELS);
+        return selected < 0 ? null : RESUME_ALL_INTERVAL_MINUTES.get(selected);
+    }
+
+    /** Human-readable form of an activity window for status lines and tests. */
+    static String describeResumeAllWindow(int activeWindowMinutes) {
+        return activeWindowMinutes >= 60 && activeWindowMinutes % 60 == 0
+                ? (activeWindowMinutes / 60) + " hours"
+                : activeWindowMinutes + " minutes";
     }
 
     private static String selectChatMode(LineReader reader) {
@@ -1233,12 +1278,20 @@ public class SetupWizard {
                 }
             }
 
+            if ("kompile-local".equals(provider)) {
+                return selectKompileLocalModelAction(reader, discovery);
+            }
+
             String manual = promptManual(reader, "  Enter model id manually (blank to cancel): ");
             if (manual != null) {
                 System.out.println("  → " + GREEN + manual + RESET);
                 System.out.println();
             }
             return new ModelSelection(manual, discovery);
+        }
+
+        if ("kompile-local".equals(provider)) {
+            return selectKompileLocalModel(reader, discovery, models);
         }
 
         int selected = selectNumbered(reader, "Select Model:", models);
@@ -1248,6 +1301,84 @@ public class SetupWizard {
         System.out.println("  → " + GREEN + model + RESET);
         System.out.println();
         return new ModelSelection(model, discovery);
+    }
+
+    /**
+     * kompile-local picker: the installed inventory plus the same acquisition
+     * options the kompile-chat-local clients expose — download from HuggingFace
+     * or point at a local model file/directory.
+     */
+    private static ModelSelection selectKompileLocalModel(
+            LineReader reader, ModelDiscovery.Result discovery, List<String> models) {
+        List<String> options = new java.util.ArrayList<>(models);
+        options.add(KompileLocalModels.DOWNLOAD_ACTION);
+        options.add(KompileLocalModels.LOCAL_PATH_ACTION);
+        int selected = selectNumbered(reader, "Select Model:", options);
+        if (selected < 0) return null;
+        if (selected >= models.size()) {
+            return selected == models.size()
+                    ? downloadKompileLocalModel(reader, discovery)
+                    : localPathKompileLocalModel(reader, discovery);
+        }
+        String model = models.get(selected);
+        System.out.println("  → " + GREEN + model + RESET);
+        System.out.println();
+        return new ModelSelection(model, discovery);
+    }
+
+    /** Empty-inventory path: same two acquisition options, no installed list. */
+    private static ModelSelection selectKompileLocalModelAction(
+            LineReader reader, ModelDiscovery.Result discovery) {
+        List<String> options = List.of(
+                KompileLocalModels.DOWNLOAD_ACTION,
+                KompileLocalModels.LOCAL_PATH_ACTION);
+        int selected = selectNumbered(reader, "Select Model:", options);
+        if (selected < 0) return null;
+        return selected == 0
+                ? downloadKompileLocalModel(reader, discovery)
+                : localPathKompileLocalModel(reader, discovery);
+    }
+
+    private static ModelSelection downloadKompileLocalModel(
+            LineReader reader, ModelDiscovery.Result discovery) {
+        String repository = promptManual(reader,
+                "  HuggingFace repository (owner/model, blank to cancel): ");
+        if (repository == null) return null;
+        if (!KompileLocalModels.isHuggingFaceRepoId(repository)) {
+            System.err.println("  Not a HuggingFace repository id: " + repository);
+            return null;
+        }
+        String revision = promptManual(reader, "  Revision (Enter for main): ");
+        try {
+            KompileLocalModels.downloadFromHuggingFace(repository, revision, null,
+                    message -> System.err.println("  " + message));
+        } catch (Exception e) {
+            System.err.println("  Download failed: " + e.getMessage());
+            return null;
+        }
+        System.out.println("  → " + GREEN + repository + RESET);
+        System.out.println();
+        return new ModelSelection(repository, discovery);
+    }
+
+    private static ModelSelection localPathKompileLocalModel(
+            LineReader reader, ModelDiscovery.Result discovery) {
+        String path = promptManual(reader,
+                "  Model file or directory (blank to cancel): ");
+        if (path == null) return null;
+        java.nio.file.Path expanded = java.nio.file.Path.of(
+                path.startsWith("~")
+                        ? System.getProperty("user.home") + path.substring(1)
+                        : path).toAbsolutePath().normalize();
+        if (!java.nio.file.Files.exists(expanded)) {
+            System.err.println("  Model path does not exist: " + expanded);
+            return null;
+        }
+        // The absolute path is the selection: resolveModel treats values
+        // containing a separator as filesystem paths and stages GGUF sources.
+        System.out.println("  → " + GREEN + expanded + RESET);
+        System.out.println();
+        return new ModelSelection(expanded.toString(), discovery);
     }
 
     // ── Manual text prompt ──────────────────────────────────────────────────

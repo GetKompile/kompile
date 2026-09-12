@@ -39,9 +39,10 @@ import java.util.concurrent.Callable;
  * kompile edit-coordinator edits [--file path]        # list edit locks
  * kompile edit-coordinator agents                     # list active agents
  * kompile edit-coordinator processes                  # list active processes
- * kompile edit-coordinator release --lock-id id       # force-release a lock
- * kompile edit-coordinator release --file path        # force-release by file
- * kompile edit-coordinator clean                      # evict stale entries
+     * kompile edit-coordinator release --lock-id id       # force-release a lock
+     * kompile edit-coordinator release --file path        # force-release by file
+     * kompile edit-coordinator release --all              # release every lock
+     * kompile edit-coordinator clean                      # evict stale entries
  * </pre>
  */
 @Command(
@@ -258,7 +259,7 @@ public class EditCoordinatorCommand implements Callable<Integer> {
 
     // ── release ───────────────────────────────────────────────────────────
 
-    @Command(name = "release", description = "Force-release an edit lock by ID or file path",
+    @Command(name = "release", description = "Force-release edit locks by ID, file path, or all",
             mixinStandardHelpOptions = true)
     static class ReleaseCmd implements Callable<Integer> {
 
@@ -271,10 +272,13 @@ public class EditCoordinatorCommand implements Callable<Integer> {
         @Option(names = {"--file"}, description = "File path to release all locks on")
         private String file;
 
+        @Option(names = {"--all"}, description = "Release every active edit lock regardless of owner")
+        private boolean all;
+
         @Override
         public Integer call() {
-            if (lockId == null && file == null) {
-                System.err.println("Either --lock-id or --file is required");
+            if (lockId == null && file == null && !all) {
+                System.err.println("Either --all, --lock-id or --file is required");
                 return 1;
             }
 
@@ -282,7 +286,10 @@ public class EditCoordinatorCommand implements Callable<Integer> {
                     : Paths.get(System.getProperty("user.dir"));
             CoordinationStateManager mgr = CoordinationStateManager.forCli(wd);
             try {
-                if (lockId != null) {
+                if (all) {
+                    int released = mgr.forceReleaseAllLocks();
+                    System.out.println("Released " + released + " active edit lock(s).");
+                } else if (lockId != null) {
                     boolean released = mgr.releaseEditLock(lockId);
                     System.out.println(released ? "Lock " + lockId + " released."
                             : "Lock " + lockId + " not found.");
