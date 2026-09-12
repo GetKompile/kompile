@@ -95,6 +95,69 @@ describe('LocalAgentChatService harness transport', () => {
     expect(storage.updateSession).toHaveBeenCalled();
   });
 
+  it('displays CLI command outcomes without model attribution or replaying commands in history', async () => {
+    const response = (events: string) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Exercise framing across arbitrary network chunks.
+        const bytes = new TextEncoder().encode(events);
+        controller.enqueue(bytes.slice(0, 37));
+        controller.enqueue(bytes.slice(37));
+        controller.close();
+      }
+    }), { status: 200 });
+    const event = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+    const session = service.createSession('commands');
+    const agent = { name: 'coder', displayName: 'Coder' } as AgentProvider;
+    const fetchSpy = spyOn(window, 'fetch');
+    const errors: string[] = [];
+    service.getStreamingError().subscribe(error => errors.push(error));
+    for (const status of ['COMPLETED', 'UNKNOWN_COMMAND', 'TERMINAL_REQUIRED', 'LIVE_SESSION_REQUIRED', 'NOT_YET_SUPPORTED']) {
+      const outcome = { command: '/example', status, text: `Outcome ${status}`, ok: status === 'COMPLETED', exit: status === 'COMPLETED' ? 0 : 2 };
+      fetchSpy.and.resolveTo(response(event('command', outcome)
+        + event('complete', { content: outcome.text, commandOutcome: outcome })));
+      await service.sendMessage(session, '/example raw args', agent);
+      const displayed = session.messages[session.messages.length - 1];
+      expect(displayed.role).toBe('SYSTEM');
+      expect(displayed.agent).toBeUndefined();
+      expect(displayed.content).toBe(outcome.text);
+      expect(displayed.streaming).toBeFalse();
+    }
+    // Structured /model payloads ride along on the outcome verbatim (no Spring-
+    // or browser-side reinterpretation) and still stay out of model history.
+    const menuOutcome = {
+      command: '/model', status: 'INTERACTION_REQUIRED', text: 'Menu text',
+      ok: true, exit: 0,
+      data: {
+        menu: 'model' as const, provider: 'custom', currentModel: 'm-large',
+        models: [{ id: 'm-large', contextLimit: 32768, current: true }]
+      }
+    };
+    fetchSpy.and.resolveTo(response(event('command', menuOutcome)
+      + event('complete', { content: menuOutcome.text, commandOutcome: menuOutcome })));
+    await service.sendMessage(session, '/model', agent);
+    const menuDisplayed = session.messages[session.messages.length - 1];
+    expect(menuDisplayed.role).toBe('SYSTEM');
+    expect(menuDisplayed.commandOutcome?.data).toEqual(menuOutcome.data);
+    const restoredMenu = JSON.parse(JSON.stringify(session)) as LocalAgentSession;
+    expect(restoredMenu.messages[restoredMenu.messages.length - 1].commandOutcome?.data)
+      .toEqual(menuOutcome.data);
+    expect(errors).toEqual([]);
+    // Markers survive normal JSON session persistence, not just an in-memory set.
+    const restored = JSON.parse(JSON.stringify(session)) as LocalAgentSession;
+    fetchSpy.and.resolveTo(response(event('complete', { content: 'model answer' })));
+    await service.sendMessage(restored, '/custom-skill only raw args', agent);
+    let request = JSON.parse(String((fetchSpy.calls.mostRecent().args[1] as RequestInit).body));
+    expect(request.message).toBe('/custom-skill only raw args');
+    expect(request.chatHistory).toEqual([]);
+    fetchSpy.and.resolveTo(response(event('complete', { content: 'next answer' })));
+    await service.sendMessage(restored, 'follow up', agent);
+    request = JSON.parse(String((fetchSpy.calls.mostRecent().args[1] as RequestInit).body));
+    expect(request.chatHistory).toEqual([
+      { role: 'USER', content: '/custom-skill only raw args' },
+      { role: 'ASSISTANT', content: 'model answer' }
+    ]);
+  });
+
   it('reports an abrupt SSE close as an error instead of a successful response', async () => {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({

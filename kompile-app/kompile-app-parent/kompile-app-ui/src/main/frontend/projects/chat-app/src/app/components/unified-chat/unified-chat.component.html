@@ -1082,7 +1082,7 @@
           <div class="message-content markdown-body" data-testid="message-content" [class.large-message]="isLargeMessage(message)">
             <!-- Assistant messages: render markdown with segment support -->
             <ng-container *ngIf="message.role === 'assistant'">
-              <ng-container *ngFor="let segment of getMessageSegments(message); let si = index">
+              <ng-container *ngFor="let segment of getMessageSegments(message); trackBy: trackBySegment; let si = index">
                 <!-- Text segments: rendered as markdown -->
                 <div *ngIf="segment.type === 'text'" class="md-rendered"
                   [innerHTML]="segment.renderedContent"></div>
@@ -1147,6 +1147,29 @@
 
             <!-- System/other messages: plain text fallback -->
             <pre *ngIf="message.role !== 'assistant' && message.role !== 'user'">{{ message.content }}</pre>
+
+            <!-- CLI /model menu: an inline picker attached to its command outcome.
+                 Selecting an entry sends the raw "/model <id>" text through the
+                 normal send path; the CLI resolves, validates, and persists it. -->
+            <div *ngIf="message.role === 'system' && message.commandOutcome?.data?.menu === 'model'"
+              class="model-menu" data-testid="model-menu">
+              <div class="model-menu-header">
+                <span class="model-menu-title">Model</span>
+                <span class="model-menu-provider" *ngIf="$any(message.commandOutcome?.data).provider">{{ $any(message.commandOutcome?.data).provider }}</span>
+                <span class="model-menu-note" *ngIf="$any(message.commandOutcome?.data).note">{{ $any(message.commandOutcome?.data).note }}</span>
+              </div>
+              <select class="model-menu-select select-input"
+                [disabled]="isStreaming || isLoading"
+                (change)="selectModel($any($event.target).value)">
+                <option value="" disabled>
+                  {{ isStreaming ? 'Working…' : 'Select a model…' }}
+                </option>
+                <option *ngFor="let m of $any(message.commandOutcome?.data).models" [value]="m.id"
+                  [selected]="m.id === $any(message.commandOutcome?.data).currentModel">
+                  {{ modelMenuLabel(m) }}{{ m.contextLimit ? ' — context ' + m.contextLimit : '' }}{{ m.current ? ' (current)' : '' }}
+                </option>
+              </select>
+            </div>
 
             <span class="streaming-cursor" *ngIf="message.isStreaming" data-testid="streaming-cursor">▌</span>
           </div>

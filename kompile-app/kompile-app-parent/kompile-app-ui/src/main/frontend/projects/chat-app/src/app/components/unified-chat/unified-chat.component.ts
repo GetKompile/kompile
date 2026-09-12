@@ -55,6 +55,9 @@ import {
   AgentProvider,
   ApiAgentConfigRequest,
   LocalAgentSession,
+  CommandMessageMetadata,
+  CommandEventData,
+  CommandModelEntry,
   RagServiceStatus,
   ChatFolder,
   ActiveModelContext,
@@ -63,7 +66,7 @@ import {
 import { ReasoningTrailDto } from '@shared/services/kb-grounding.service';
 
 // Unified message interface
-interface UnifiedMessage {
+interface UnifiedMessage extends CommandMessageMetadata {
   id: string;                      // Client-side ID for React-style tracking
   dbId?: number;                   // Database ID for backend operations (0 or undefined = not saved)
   role: 'user' | 'assistant' | 'system';
@@ -1205,7 +1208,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   sendMessage(): void {
     if (!this.userInput.trim() || this.isLoading || this.isStreaming) return;
 
-    const content = this.userInput.trim();
+    const content = this.userInput;
     this.userInput = '';
 
     // Capture and clear pending attachments
@@ -1296,13 +1299,34 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       const lastMsg = this.messages[this.messages.length - 1];
       if (lastMsg && lastMsg.role === 'assistant') {
         lastMsg.content = msg.content;
+        lastMsg.role = msg.role === 'SYSTEM' ? 'system' : 'assistant';
+        lastMsg.commandOnly = msg.commandOnly;
+        lastMsg.commandOutcome = msg.commandOutcome;
+        if (msg.role === 'SYSTEM') {
+          lastMsg.kind = 'notice';
+          lastMsg.agent = undefined;
+          lastMsg.tokenMetrics = undefined;
+          lastMsg.tokenCount = undefined;
+        }
+        if (msg.commandOnly) {
+          const input = this.messages[this.messages.length - 2];
+          if (input?.role === 'user') {
+            input.commandOnly = true;
+            input.commandOutcome = msg.commandOutcome;
+          }
+        }
+        // A persisted /model selection means the CLI now runs this browser
+        // session on the given model — refresh the existing header label.
+        if (msg.commandOutcome?.data?.state?.model) {
+          this.applySessionModel(msg.commandOutcome.data.state.model);
+        }
         lastMsg.isStreaming = false;
         lastMsg.latencyMs = msg.latencyMs || (Date.now() - startTime);
         lastMsg.sources = msg.sources;
         if (msg.reasoningTrails && msg.reasoningTrails.length > 0) {
           lastMsg.reasoningTrails = msg.reasoningTrails;
         }
-        if (msg.tokenMetrics) {
+        if (msg.role !== 'SYSTEM' && msg.tokenMetrics) {
           lastMsg.tokenMetrics = msg.tokenMetrics;
         }
         if (msg.ragMetrics) {
@@ -1941,7 +1965,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     const msgs = this.agentSession?.messages ?? [];
     let chars = 0;
     for (const m of msgs) {
-      chars += (m.content || '').length;
+      if (!m.commandOnly) chars += (m.content || '').length;
     }
     return Math.round(chars / 4);
   }
@@ -1991,7 +2015,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     }
 
     const history = session.messages
-      .filter(m => (m.role === 'USER' || m.role === 'ASSISTANT') && (m.content || '').trim().length > 0)
+      .filter(m => !m.commandOnly && (m.role === 'USER' || m.role === 'ASSISTANT') && (m.content || '').trim().length > 0)
       .map(m => ({ role: m.role, content: m.content }));
     if (history.length === 0) {
       if (manual) {
@@ -2440,8 +2464,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     // Save current messages to backend first, then export
     this.chatHistoryService.createSession(this.currentSession.name || 'Exported Chat').subscribe({
       next: (created) => {
-        // Add all messages
-        const addMessages = this.messages.map(msg =>
+        // The export API has no command metadata; omit command-only entries so
+        // reimporting this transcript cannot turn command text into model context.
+        const addMessages = this.messages.filter(msg => !msg.commandOnly).map(msg =>
           this.chatHistoryService.addMessage(created.sessionId, {
             role: msg.role === 'user' ? 'USER' : msg.role === 'assistant' ? 'ASSISTANT' : 'SYSTEM',
             content: msg.content
@@ -2861,61 +2886,53 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   // MARKDOWN RENDERING
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private renderedMarkdownCache = new Map<string, SafeHtml>();
-  private segmentCache = new Map<string, MessageSegment[]>();
+  // Keep only the latest content per message, including during streaming.
+  private renderedMarkdownCache = new Map<string, { content: string; html: SafeHtml }>();
+  private segmentCache = new Map<string, { content: string; isStreaming: boolean; segments: MessageSegment[] }>();
 
   getRenderedMarkdown(message: UnifiedMessage): SafeHtml {
-    if (!message.content) {
-      return this.markdownRenderer.sanitizeAndTrust('');
-    }
-
-    // Don't cache streaming messages — content changes every chunk
-    if (message.isStreaming) {
-      return this.markdownRenderer.renderMarkdownSafe(message.content);
-    }
-
-    const cacheKey = message.id + ':' + message.content.length;
-    let cached = this.renderedMarkdownCache.get(cacheKey);
-    if (!cached) {
-      cached = this.markdownRenderer.renderMarkdownSafe(message.content);
-      this.renderedMarkdownCache.set(cacheKey, cached);
-      // Keep cache bounded
-      if (this.renderedMarkdownCache.size > 500) {
-        const firstKey = this.renderedMarkdownCache.keys().next().value;
-        if (firstKey !== undefined) {
-          this.renderedMarkdownCache.delete(firstKey);
-        }
-      }
-    }
-    return cached;
+    const content = message.content || '';
+    const cached = this.renderedMarkdownCache.get(message.id);
+    // Plain markdown rendering does not depend on stream state.
+    if (cached?.content === content) return cached.html;
+    const html = this.markdownRenderer.renderMarkdownSafe(content);
+    this.cacheLatest(this.renderedMarkdownCache, message.id, { content, html });
+    return html;
   }
 
   getMessageSegments(message: UnifiedMessage): MessageSegment[] {
-    if (!message.content) return [];
+    const content = message.content || '';
+    const isStreaming = !!message.isStreaming;
+    const cached = this.segmentCache.get(message.id);
+    if (cached?.content === content && cached.isStreaming === isStreaming) return cached.segments;
 
-    if (message.isStreaming) {
-      // Streaming content changes every chunk, so it can't be cached — but we
-      // still pre-render each segment here so the template binds to a value
-      // instead of invoking the renderer on every change-detection pass.
-      const live = this.markdownRenderer.parseMessageSegments(message.content, true);
-      this.renderSegments(live);
-      return live;
-    }
-
-    const cacheKey = message.id + ':' + message.content.length;
-    let cached = this.segmentCache.get(cacheKey);
-    if (!cached) {
-      cached = this.markdownRenderer.parseMessageSegments(message.content, false);
-      this.renderSegments(cached);
-      this.segmentCache.set(cacheKey, cached);
-      if (this.segmentCache.size > 500) {
-        const firstKey = this.segmentCache.keys().next().value;
-        if (firstKey !== undefined) {
-          this.segmentCache.delete(firstKey);
-        }
+    const segments = this.markdownRenderer.parseMessageSegments(content, isStreaming);
+    // Appending a chunk need not re-render earlier text/thinking blocks. Reuse
+    // their SafeHtml too, so Angular does not replace unchanged innerHTML nodes.
+    segments.forEach((segment, index) => {
+      const previous = cached?.segments[index];
+      if (previous?.type === segment.type && previous.content === segment.content) {
+        segment.renderedContent = previous.renderedContent;
       }
+    });
+    this.renderSegments(segments);
+    this.cacheLatest(this.segmentCache, message.id, { content, isStreaming, segments });
+    return segments;
+  }
+
+  private cacheLatest<T>(cache: Map<string, T>, id: string, value: T): void {
+    cache.delete(id);
+    cache.set(id, value);
+    if (cache.size > 500) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
     }
-    return cached;
+  }
+
+  // Segment positions/types stay stable as a stream grows. Content is not an
+  // identity: using it would recreate the view on every token.
+  trackBySegment(index: number, segment: MessageSegment): string {
+    return `${index}:${segment.type}`;
   }
 
   /**
@@ -2940,6 +2957,56 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    */
   trackByMessageId(_index: number, message: UnifiedMessage): string {
     return message.id;
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // CLI /model picker
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * The model menu of the most recent command outcome, or null. Only the exact
+   * CLI payload shape (data.menu === 'model') opens a picker; unknown menus and
+   * invalid selections keep rendering as plain status text.
+   */
+  get modelMenu(): CommandEventData | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const outcome = this.messages[i].commandOutcome;
+      if (outcome?.data?.menu === 'model') return outcome.data;
+    }
+    return null;
+  }
+
+  /** Menu label: friendly display name when present, otherwise the raw id. */
+  modelMenuLabel(model: CommandModelEntry): string {
+    return model.display || model.id;
+  }
+
+  /** Safe iteration source for the template (strictTemplates-friendly). */
+  menuModels(): CommandModelEntry[] {
+    return this.modelMenu?.models ?? [];
+  }
+
+  /**
+   * Menu selection sends the raw CLI form through the SAME sendMessage path —
+   * no separate command channel, no client-side parsing. The CLI re-resolves,
+   * validates, and persists the id; the resulting command outcome renders in
+   * place of the picker.
+   */
+  selectModel(modelId: string): void {
+    if (!modelId || this.isStreaming || this.isLoading) return;
+    this.userInput = '/model ' + modelId;
+    this.sendMessage();
+  }
+
+  /**
+   * Reflect an applied CLI /model selection in the existing current-model
+   * display (the header context-usage tooltip shows the budget's model).
+   * Window/token numbers stay as last fetched until the next budget refresh.
+   */
+  private applySessionModel(model: string): void {
+    if (!model || !this.contextBudget || this.contextBudget.model === model) return;
+    this.contextBudget = { ...this.contextBudget, model };
+    this.cdr.markForCheck();
   }
 
   handleKeydown(event: KeyboardEvent): void {
@@ -3182,7 +3249,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     const editedMessage: UnifiedMessage = {
       id: this.generateId(),
       role: 'user',
-      content: newContent.trim(),
+      content: newContent,
       timestamp: new Date()
     };
 
@@ -3191,7 +3258,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.shouldScrollToBottom = true;
 
     // Send to get new response
-    this.sendAgentMessage(newContent.trim());
+    this.sendAgentMessage(newContent);
   }
 
   /**

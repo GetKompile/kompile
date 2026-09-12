@@ -25,6 +25,7 @@ import {
   AgentProvider,
   LocalAgentSession,
   LocalAgentMessage,
+  CommandOutcome,
   LocalAgentChatRequest,
   ChatTabState,
   ToolUseEvent,
@@ -316,7 +317,9 @@ export class LocalAgentChatService extends BaseService {
     // Exclude the current turn — the user message just pushed plus the streaming
     // assistant placeholder. The current message travels in request.message; keeping
     // it here would send it to the model twice.
-    const messages = session.messages.slice(0, -2).slice(-maxMessages);
+    const messages = session.messages.slice(0, -2)
+      .filter(m => !m.commandOnly)
+      .slice(-maxMessages);
     return messages
       .filter(m => m.role === 'USER' || m.role === 'ASSISTANT')
       .map(m => ({
@@ -426,6 +429,11 @@ export class LocalAgentChatService extends BaseService {
                   this.currentProcessId = parsed.processId;
                   console.debug('[LocalAgentChat] Process started:', this.currentProcessId);
                 }
+                break;
+
+              case 'command':
+                // Only the CLI resolves commands. Persist their display separately from model history.
+                this.handleCommandOutcome(session, parsed);
                 break;
 
               case 'chunk':
@@ -606,6 +614,7 @@ export class LocalAgentChatService extends BaseService {
    * Handle stream completion.
    */
   private handleStreamComplete(session: LocalAgentSession, data: any): void {
+    if (data.commandOutcome) this.handleCommandOutcome(session, data.commandOutcome);
     if (this.currentStreamingMessage) {
       this.currentStreamingMessage.streaming = false;
       this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
@@ -623,6 +632,29 @@ export class LocalAgentChatService extends BaseService {
 
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
+  }
+
+  private handleCommandOutcome(session: LocalAgentSession, outcome: CommandOutcome): void {
+    const message = this.currentStreamingMessage;
+    if (!message) return;
+    const index = session.messages.indexOf(message);
+    const user = index > 0 ? session.messages[index - 1] : undefined;
+    if (user?.role === 'USER') {
+      user.commandOnly = true;
+      user.commandOutcome = outcome;
+    }
+    // Use the existing system-message display, never attribute command text to the model.
+    message.role = 'SYSTEM';
+    message.agent = undefined;
+    message.tokenMetrics = undefined;
+    message.tokenCount = undefined;
+    message.commandOnly = true;
+    message.commandOutcome = outcome;
+    message.content = typeof outcome.text === 'string' ? outcome.text : '';
+    this.resetContentBuffer();
+    this.accumulateContent(message.content);
+    this.streamingContent$.next(message.content);
+    this.storageService.updateSession(session);
   }
 
   /**
@@ -989,7 +1021,7 @@ export class LocalAgentChatService extends BaseService {
     lines.push('');
 
     for (const msg of session.messages) {
-      const role = msg.role === 'USER' ? 'You' : (msg.agent?.displayName || 'Assistant');
+      const role = msg.role === 'USER' ? 'You' : msg.role === 'SYSTEM' ? 'System' : (msg.agent?.displayName || 'Assistant');
       const time = new Date(msg.timestamp).toLocaleTimeString();
       lines.push(`## ${role} (${time})`);
       lines.push('');
@@ -1017,7 +1049,7 @@ export class LocalAgentChatService extends BaseService {
    */
   formatMessageAsText(message: LocalAgentMessage): string {
     const lines: string[] = [];
-    const role = message.role === 'USER' ? 'You' : (message.agent?.displayName || 'Assistant');
+    const role = message.role === 'USER' ? 'You' : message.role === 'SYSTEM' ? 'System' : (message.agent?.displayName || 'Assistant');
     const time = new Date(message.timestamp).toLocaleTimeString();
 
     lines.push(`**${role}** (${time})`);

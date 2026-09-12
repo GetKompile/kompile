@@ -795,11 +795,12 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
       expect(component.messages[0].content).toBe('What is machine learning?');
     });
 
-    it('should trim whitespace from user input', () => {
+    it('should preserve leading and trailing whitespace in raw user input', () => {
       component.userInput = '  What is ML?  ';
       component.sendMessage();
 
-      expect(component.messages[0].content).toBe('What is ML?');
+      expect(component.messages[0].content).toBe('  What is ML?  ');
+      expect(spies.agentChatServiceSpy.sendMessage.calls.mostRecent().args[1]).toBe('  What is ML?  ');
     });
 
     it('should create a session if none exists', () => {

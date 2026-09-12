@@ -9,6 +9,85 @@
 
 import { test, expect, StreamController, triggerAngularCD } from '../fixtures/kompile.fixture';
 
+test.describe('Chat Streaming — Markdown layout regressions', () => {
+  // Drive individual rendering ticks through the same debug API as
+  // triggerAngularCD; buffered mock SSE responses cannot hold a live frame.
+  async function setMessage(page: import('@playwright/test').Page, content: string, isStreaming: boolean) {
+    await page.evaluate(({ content, isStreaming }) => {
+      const ng = (window as any).ng;
+      const component = ng.getComponent(document.querySelector('app-unified-chat'));
+      component.messages = [{ id: 'layout-regression', role: 'assistant', content,
+        timestamp: new Date(), isStreaming }];
+      component.cdr.detectChanges();
+    }, { content, isStreaming });
+  }
+
+  test.beforeEach(async ({ api, page }) => {
+    await api.setupAll();
+    await page.goto('/');
+    await expect(page.getByTestId('chat-input')).toBeVisible();
+  });
+
+  test('uses compact injected typography in live and completed frames', async ({ page }) => {
+    const content = '# Heading\n\nParagraph one.\n\nParagraph two.\n\n## Second\n\n### Third\n\n- First\n- Second\n\n1. Ordered\n2. List\n\nFinal paragraph.';
+    await setMessage(page, content, true);
+    const markdown = page.locator('.bot-message .md-rendered');
+    const measure = () => markdown.evaluate(element => {
+      const style = (selector: string) => getComputedStyle(element.querySelector(selector)!);
+      return {
+        fontSize: parseFloat(getComputedStyle(element).fontSize),
+        h1: parseFloat(style('h1').fontSize), h2: parseFloat(style('h2').fontSize),
+        h3: parseFloat(style('h3').fontSize), headingMargin: style('h1').marginTop,
+        paragraphTop: style('p').marginTop, paragraphBottom: style('p').marginBottom,
+        lastParagraphBottom: style('p:last-child').marginBottom,
+        ulPadding: style('ul').paddingLeft, olPadding: style('ol').paddingLeft,
+        liMargin: style('li').marginBottom,
+        width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height
+      };
+    });
+    const live = await measure();
+    expect(live.h1).toBeCloseTo(live.fontSize * 1.4, 1);
+    expect(live.h2).toBeCloseTo(live.fontSize * 1.2, 1);
+    expect(live.h3).toBeCloseTo(live.fontSize * 1.1, 1);
+    expect(live.headingMargin).toBe('16px');
+    expect(live.paragraphTop).toBe('0px');
+    expect(live.paragraphBottom).toBe('12px');
+    expect(live.lastParagraphBottom).toBe('0px');
+    expect(live.ulPadding).toBe('24px');
+    expect(live.olPadding).toBe('24px');
+    expect(live.liMargin).toBe('4px');
+    await setMessage(page, content, false);
+    expect(await measure()).toEqual(live);
+  });
+
+  test('keeps unchanged segment DOM and updates equal-length content', async ({ page }) => {
+    const prefix = 'Intro\n\n<thinking>Done</thinking>\n\n';
+    await setMessage(page, prefix + 'Hello', true);
+    await page.evaluate(() => {
+      const root = document.querySelector('.bot-message')!;
+      (window as any).__segmentNodes = {
+        intro: root.querySelector('.md-rendered p'),
+        thinking: root.querySelector('.thinking-content p'),
+        tail: root.querySelectorAll('.md-rendered')[1]
+      };
+    });
+    await triggerAngularCD(page);
+    await setMessage(page, prefix + 'Hello world', true);
+    await setMessage(page, prefix + 'Other words', true); // same length
+    await expect(page.locator('.bot-message .md-rendered').last()).toHaveText('Other words');
+    await setMessage(page, prefix + 'Other words', false);
+    await setMessage(page, prefix + 'Final words', false); // completed cache too
+    await expect(page.locator('.bot-message .md-rendered').last()).toHaveText('Final words');
+    expect(await page.evaluate(() => {
+      const root = document.querySelector('.bot-message')!;
+      const before = (window as any).__segmentNodes;
+      return before.intro === root.querySelector('.md-rendered p') &&
+        before.thinking === root.querySelector('.thinking-content p') &&
+        before.tail === root.querySelectorAll('.md-rendered')[1];
+    })).toBe(true);
+  });
+});
+
 /**
  * Helper: select an agent (if not auto-selected), type a message, and send it.
  * Returns after the send button is clicked.
