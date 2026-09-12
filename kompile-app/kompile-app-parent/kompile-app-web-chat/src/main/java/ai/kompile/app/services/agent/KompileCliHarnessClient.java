@@ -276,8 +276,16 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
 
             prepared = materializeAttachments(request.getAttachments());
             boolean resume = transcriptExists(harnessSessionId);
-            String prompt = withAttachmentReferences(
-                    buildPrompt(request, resume), prepared.paths);
+            ObjectNode input = mapper.createObjectNode();
+            input.put("version", 1);
+            input.put("rawInput", request.getMessage());
+            // Stable per-browser-session identity. The CLI persists /model
+            // selections (and future session-scoped commands) under this id and
+            // re-applies the stored model to MODEL_INPUT turns, so every turn of
+            // a browser session must carry the same value.
+            input.put("sessionId", harnessSessionId);
+            input.put("supplementalContext", withAttachmentReferences(
+                    buildSupplementalContext(request, resume), prepared.paths));
             int timeoutSeconds = effectiveTimeoutSeconds(request.getTimeoutSeconds());
             List<String> command = buildCommand(
                     launcherResolver.resolve(), request, workDir, harnessSessionId,
@@ -308,7 +316,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                     "graphRagEnabled", request.isEnableGraphRag()));
 
             try (var stdin = process.getOutputStream()) {
-                stdin.write(prompt.getBytes(StandardCharsets.UTF_8));
+                stdin.write(mapper.writeValueAsBytes(input));
                 stdin.write('\n');
                 stdin.flush();
             }
@@ -420,13 +428,23 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             }
             case "sources" -> { run.sink.send("sources", event.get("sources")); yield false; }
             case "stats" -> { run.sink.send("stats", event.get("stats")); yield false; }
+            case "command" -> {
+                run.commandOutcome = event.deepCopy();
+                run.sink.send("command", event);
+                yield false;
+            }
             case "result" -> {
                 int exit = event.path("exit").asInt(0);
-                if (exit == 0) {
+                if (exit == 0 || run.commandOutcome != null) {
                     Map<String, Object> completed = new LinkedHashMap<>();
                     completed.put("processId", run.runId);
                     completed.put("sessionId", run.sessionId);
                     completed.put("content", event.path("text").asText(""));
+                    if (run.commandOutcome != null) {
+                        // A rejected command is a useful outcome, not a failed model turn.
+                        completed.put("commandOutcome", run.commandOutcome);
+                        completed.put("content", run.commandOutcome.path("text").asText(""));
+                    }
                     completed.put("tools", event.path("tools").asInt(0));
                     completed.put("modifiedFiles", List.of());
                     completed.put("engine", "kompile-cli-main");
@@ -478,6 +496,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         if (WebChatContext.globalConfig()) command.add("--global-config");
         command.add("--output-format");
         command.add("stream-json");
+        command.add("--input-format");
+        command.add("web-json");
         command.add("--local");
         command.add("--working-dir");
         command.add(workDir.toString());
@@ -506,7 +526,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return List.copyOf(command);
     }
 
-    String buildPrompt(AgentChatRequest request, boolean resume) {
+    String buildSupplementalContext(AgentChatRequest request, boolean resume) {
         StringBuilder prompt = new StringBuilder();
         if (request.getSystemPromptOverride() != null
                 && !request.getSystemPromptOverride().isBlank()) {
@@ -584,7 +604,6 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 || request.getFactSheetId() != null) {
             prompt.append('\n');
         }
-        prompt.append(request.getMessage().strip());
         return prompt.toString();
     }
 
@@ -1183,6 +1202,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         private volatile Process process;
         private volatile Runnable queuedTask;
         private volatile ScheduledFuture<?> timeoutTask;
+        private JsonNode commandOutcome;
         private final HarnessEventSink sink;
         private final AtomicBoolean cancelled = new AtomicBoolean();
         private final AtomicBoolean timedOut = new AtomicBoolean();

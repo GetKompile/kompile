@@ -81,7 +81,7 @@ class KompileCliHarnessClientTest {
 
         assertEquals("/opt/kompile/bin/kompile", command.get(0));
         assertTrue(command.containsAll(List.of(
-                "chat", "--output-format", "stream-json", "--local",
+                "chat", "--output-format", "stream-json", "--input-format", "web-json", "--local",
                 "--session-id", "web-session", "--role", "reviewer",
                 "--agent", "coder", "--rag", "--no-memory",
                 "--dangerously-skip-permissions", "--attachment")), command.toString());
@@ -347,15 +347,16 @@ class KompileCliHarnessClientTest {
                 new AgentChatRequest.ChatHistoryEntry("USER", "old question"),
                 new AgentChatRequest.ChatHistoryEntry("ASSISTANT", "old answer")));
 
-        String first = client.buildPrompt(request, false);
-        String resumed = client.buildPrompt(request, true);
+        String first = client.buildSupplementalContext(request, false);
+        String resumed = client.buildSupplementalContext(request, true);
 
         assertTrue(first.contains("<prior_browser_history>"), first);
         assertTrue(first.contains("graph_reasoning_query"), first);
         assertTrue(first.contains("folder-1"), first);
         assertTrue(first.contains("fact sheet id 42"), first);
         assertFalse(resumed.contains("old question"), resumed);
-        assertTrue(resumed.endsWith("new question"), resumed);
+        assertFalse(resumed.contains("new question"), resumed);
+        assertFalse(first.contains("new question"), first);
     }
 
     @Test
@@ -376,7 +377,7 @@ class KompileCliHarnessClientTest {
         request.setGraphRagMaxResults(3);
         request.setFolderId("folder-1");
 
-        String prompt = client.buildPrompt(request, false);
+        String prompt = client.buildSupplementalContext(request, false);
 
         assertTrue(prompt.contains("at most 7 results"), prompt);
         assertTrue(prompt.contains("Prefer HYBRID search"), prompt);
@@ -413,6 +414,135 @@ class KompileCliHarnessClientTest {
             if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
             if (oldScope == null) System.clearProperty(scopeKey); else System.setProperty(scopeKey, oldScope);
         }
+    }
+
+    @Test
+    void webJsonKeepsRawSkillArgumentsSeparateFromAllBrowserContext() throws Exception {
+        FakeProcess fake = new FakeProcess(
+                "{\"seq\":1,\"type\":\"result\",\"text\":\"done\",\"exit\":0}\n", "", 0);
+        client = clientWith(fake);
+        String raw = "  /review original \"args\"\nonly  ";
+        AgentChatRequest request = request(raw);
+        request.setSystemPromptOverride("system-context");
+        request.setEnableRag(true);
+        request.setEnableGraphRag(true);
+        request.setFolderId("folder-context");
+        request.setFactSheetId(42L);
+        request.setChatHistory(List.of(new AgentChatRequest.ChatHistoryEntry("USER", "history-context")));
+        request.setAttachments(List.of(new AgentChatRequest.MessageAttachment(
+                "context.txt", "text/plain", null, "attachment-context", false)));
+
+        client.runTurn("json-input", request, new RecordingSink());
+
+        var input = new ObjectMapper().readTree(fake.stdin.toByteArray());
+        assertEquals(1, input.path("version").asInt());
+        assertEquals(raw, input.path("rawInput").asText());
+        // The stable per-browser harness session id rides on every turn so CLI
+        // /model persistence and MODEL_INPUT application share one state file.
+        assertEquals(4, input.size());
+        assertTrue(input.path("sessionId").isTextual());
+        assertTrue(input.path("sessionId").asText().matches("web-[0-9a-f]{40}"),
+                input.path("sessionId").asText());
+        String context = input.path("supplementalContext").asText();
+        for (String expected : List.of("system-context", "history-context", "knowledge_search",
+                "graph_reasoning_query", "folder-context", "fact sheet id 42", "<browser_attachment_files>", "context.txt")) {
+            assertTrue(context.contains(expected), context);
+        }
+        assertFalse(context.contains(raw));
+        assertFalse(capturedCommand.get().contains(raw));
+        assertEquals("web-json", capturedCommand.get().get(capturedCommand.get().indexOf("--input-format") + 1));
+    }
+
+    @Test
+    void commandOutcomesCompleteWithoutAssistantChunksOrDuplicateExitErrors() throws Exception {
+        for (String status : List.of("COMPLETED", "UNKNOWN_COMMAND", "TERMINAL_REQUIRED",
+                "LIVE_SESSION_REQUIRED", "NOT_YET_SUPPORTED")) {
+            int exit = status.equals("COMPLETED") ? 0 : 2;
+            String outcome = "{\"seq\":2,\"type\":\"command\",\"command\":\"/example\",\"status\":\""
+                    + status + "\",\"text\":\"Useful command outcome\",\"ok\":" + (exit == 0) + ",\"exit\":" + exit + "}";
+            FakeProcess fake = new FakeProcess("{\"seq\":1,\"type\":\"session\",\"session_id\":\"s\"}\n"
+                    + outcome + "\n{\"seq\":3,\"type\":\"result\",\"text\":\"\",\"exit\":" + exit + "}\n", "", exit);
+            if (client == null) client = clientWith(fake);
+            else process.set(fake);
+            RecordingSink sink = new RecordingSink();
+            client.runTurn("command-" + status, request("/example"), sink);
+            assertEquals(List.of("start", "harness_session", "command", "complete"), sink.names());
+            var completed = new ObjectMapper().valueToTree(sink.events.get(3).data);
+            assertEquals("Useful command outcome", completed.path("content").asText());
+            assertEquals(status, completed.path("commandOutcome").path("status").asText());
+            assertEquals(exit, completed.path("commandOutcome").path("exit").asInt());
+            assertTrue(sink.completed);
+        }
+    }
+
+    @Test
+    void modelMenuDataReachesTheBrowserAndInvalidSelectionsStayRejected() {
+        // Bare /model: the structured menu payload must survive the adapter verbatim.
+        String menuData = "{\"menu\":\"model\",\"provider\":\"custom\","
+                + "\"currentModel\":\"m-large\",\"liveListingAvailable\":true,"
+                + "\"note\":\"offline\",\"models\":["
+                + "{\"id\":\"m-small\",\"display\":\"Small\",\"contextLimit\":8192},"
+                + "{\"id\":\"m-large\",\"contextLimit\":32768,\"current\":true}]}";
+        client = clientWith(new FakeProcess("{\"seq\":1,\"type\":\"session\",\"session_id\":\"s\"}\n"
+                + "{\"seq\":2,\"type\":\"command\",\"command\":\"/model\"," 
+                + "\"status\":\"INTERACTION_REQUIRED\",\"text\":\"Available models\","
+                + "\"ok\":true,\"exit\":0,\"data\":" + menuData + "}\n"
+                + "{\"seq\":3,\"type\":\"result\",\"text\":\"Available models\",\"exit\":0}\n", "", 0));
+        RecordingSink menuSink = new RecordingSink();
+        client.runTurn("model-menu", request("/model"), menuSink);
+
+        assertEquals(List.of("start", "harness_session", "command", "complete"), menuSink.names());
+        var commandEvent = new ObjectMapper().valueToTree(menuSink.events.get(2).data);
+        assertEquals("model", commandEvent.path("data").path("menu").asText());
+        assertEquals("custom", commandEvent.path("data").path("provider").asText());
+        assertEquals("m-large", commandEvent.path("data").path("currentModel").asText());
+        assertEquals(2, commandEvent.path("data").path("models").size());
+        assertEquals("Small", commandEvent.path("data").path("models").get(0).path("display").asText());
+        assertEquals(8192, commandEvent.path("data").path("models").get(0).path("contextLimit").asInt());
+        assertTrue(commandEvent.path("data").path("models").get(1).path("current").asBoolean());
+        var menuCompleted = new ObjectMapper().valueToTree(menuSink.events.get(3).data);
+        assertEquals("model", menuCompleted.path("commandOutcome").path("data").path("menu").asText());
+        assertTrue(menuSink.completed);
+
+        // /model <valid>: the applied state payload passes through unchanged.
+        process.set(new FakeProcess("{\"seq\":1,\"type\":\"session\",\"session_id\":\"s\"}\n"
+                + "{\"seq\":2,\"type\":\"command\",\"command\":\"/model\"," 
+                + "\"status\":\"INTERACTION_REQUIRED\",\"text\":\"Model selection saved\","
+                + "\"ok\":true,\"exit\":0,\"data\":{\"state\":{\"sessionId\":\"web-abc\"," 
+                + "\"workingDirectory\":\"/project\",\"model\":\"m-small\"}}}\n"
+                + "{\"seq\":3,\"type\":\"result\",\"text\":\"Model selection saved\",\"exit\":0}\n", "", 0));
+        RecordingSink stateSink = new RecordingSink();
+        client.runTurn("model-applied", request("/model m-small"), stateSink);
+        var stateEvent = new ObjectMapper().valueToTree(stateSink.events.get(2).data);
+        assertEquals("m-small", stateEvent.path("data").path("state").path("model").asText());
+        assertEquals("web-abc", stateEvent.path("data").path("state").path("sessionId").asText());
+        assertEquals("m-small", new ObjectMapper().valueToTree(stateSink.events.get(3).data)
+                .path("commandOutcome").path("data").path("state").path("model").asText());
+
+        // /model <invalid>: INVALID with exit 2 and no data payload, still a completion.
+        process.set(new FakeProcess("{\"seq\":1,\"type\":\"session\",\"session_id\":\"s\"}\n"
+                + "{\"seq\":2,\"type\":\"command\",\"command\":\"/model\",\"status\":\"INVALID\"," 
+                + "\"text\":\"Unknown model\",\"ok\":false,\"exit\":2}\n"
+                + "{\"seq\":3,\"type\":\"result\",\"text\":\"Unknown model\",\"exit\":2}\n", "", 2));
+        RecordingSink invalidSink = new RecordingSink();
+        client.runTurn("model-invalid", request("/model nope"), invalidSink);
+        assertEquals(List.of("start", "harness_session", "command", "complete"), invalidSink.names());
+        var invalidCompleted = new ObjectMapper().valueToTree(invalidSink.events.get(3).data);
+        assertEquals("INVALID", invalidCompleted.path("commandOutcome").path("status").asText());
+        assertEquals(2, invalidCompleted.path("commandOutcome").path("exit").asInt());
+        assertTrue(invalidCompleted.path("commandOutcome").path("data").isMissingNode());
+        assertTrue(invalidSink.completed);
+
+        // /help stays a plain outcome: the command event carries no data field.
+        process.set(new FakeProcess("{\"seq\":1,\"type\":\"session\",\"session_id\":\"s\"}\n"
+                + "{\"seq\":2,\"type\":\"command\",\"command\":\"/help\",\"status\":\"COMPLETED\"," 
+                + "\"text\":\"Commands\",\"ok\":true,\"exit\":0}\n"
+                + "{\"seq\":3,\"type\":\"result\",\"text\":\"Commands\",\"exit\":0}\n", "", 0));
+        RecordingSink helpSink = new RecordingSink();
+        client.runTurn("help", request("/help"), helpSink);
+        var helpEvent = new ObjectMapper().valueToTree(helpSink.events.get(2).data);
+        assertEquals("COMPLETED", helpEvent.path("status").asText());
+        assertTrue(helpEvent.path("data").isMissingNode());
     }
 
     private KompileCliHarnessClient clientWith(FakeProcess fake) {
