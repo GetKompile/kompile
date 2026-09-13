@@ -291,4 +291,91 @@ class CorpusSchemaResponseParserTest {
         assertNull(result.schema());
         assertTrue(result.errors().get(0).startsWith("[SCHEMA_JSON]"));
     }
+
+    private static final java.util.Set<String> TRUSTED =
+            new java.util.HashSet<>(java.util.Set.of("PERSON", "ORGANIZATION", "CONCEPT"));
+
+    @Test
+    void parsesValidEntityClassificationSampleAndCanonicalizesFields() {
+        var result = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", List.of(
+                        Map.of("name", "Helios Dynamics", "category", "company",
+                                "parentType", "organization"),
+                        Map.of("name", "jordan lee", "category", "PERSON", "parentType", "PERSON"))),
+                TRUSTED);
+        assertTrue(result.parseErrors().isEmpty(), result.parseErrors().toString());
+        assertEquals(2, result.classifications().size());
+        assertEquals(new CorpusSchemaResponseParser.EntityClassification(
+                        "Helios Dynamics", "COMPANY", "ORGANIZATION"),
+                result.classifications().get(0));
+        assertEquals(new CorpusSchemaResponseParser.EntityClassification(
+                        "jordan lee", "PERSON", "PERSON"),
+                result.classifications().get(1));
+    }
+
+    @Test
+    void classificationWithUnknownParentTypeIsDroppedNotFatal() {
+        var result = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", List.of(
+                        Map.of("name", "Helios Dynamics", "category", "COMPANY",
+                                "parentType", "CORPORATION"),
+                        Map.of("name", "Jordan Lee", "category", "PERSON",
+                                "parentType", "PERSON"))),
+                TRUSTED);
+        assertEquals(1, result.classifications().size());
+        assertEquals("Jordan Lee", result.classifications().get(0).name());
+        assertEquals(1, result.parseErrors().size());
+        assertTrue(result.parseErrors().get(0).contains("trusted baseline types"),
+                result.parseErrors().toString());
+    }
+
+    @Test
+    void classificationWithMalformedNameOrCategoryIsDroppedNotFatal() {
+        var result = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", List.of(
+                        Map.of("name", " ", "category", "PERSON", "parentType", "PERSON"),
+                        Map.of("name", "x".repeat(33), "category", "PERSON",
+                                "parentType", "PERSON"),
+                        Map.of("name", "Helios Dynamics", "category", "1234",
+                                "parentType", "ORGANIZATION"),
+                        Map.of("name", "Helios Dynamics", "category", "COMPANY",
+                                "parentType", ""),
+                        "not-an-object",
+                        Map.of("name", "Jordan Lee", "category", "PERSON",
+                                "parentType", "PERSON"))),
+                TRUSTED);
+        assertEquals(1, result.classifications().size());
+        assertEquals("Jordan Lee", result.classifications().get(0).name());
+        assertEquals(5, result.parseErrors().size());
+        assertTrue(result.parseErrors().stream().allMatch(error ->
+                        error.startsWith("[SCHEMA_ENTITY_CLASSIFICATION]")),
+                result.parseErrors().toString());
+    }
+
+    @Test
+    void classificationDuplicateNamesAreDedupedAndCallShapeIsEnforced() {
+        var row = Map.of("name", "Helios Dynamics", "category", "COMPANY",
+                "parentType", "ORGANIZATION");
+        var result = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", List.of(row, row)), TRUSTED);
+        assertTrue(result.parseErrors().isEmpty(), result.parseErrors().toString());
+        assertEquals(1, result.classifications().size());
+        // Exact duplicate rows dedupe silently, matching discovery evidence conventions.
+
+        var missingField = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", List.of(
+                        Map.of("name", "Helios Dynamics", "category", "COMPANY"))), TRUSTED);
+        assertTrue(missingField.classifications().isEmpty());
+        assertFalse(missingField.parseErrors().isEmpty());
+
+        var oversized = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("classifications", java.util.Collections.nCopies(9, row)), TRUSTED);
+        assertTrue(oversized.classifications().isEmpty());
+        assertTrue(oversized.parseErrors().get(0).contains("at most 8"));
+
+        var wrongShape = CorpusSchemaResponseParser.parseEntityClassifications(
+                Map.of("nodeTypes", List.of()), TRUSTED);
+        assertTrue(wrongShape.classifications().isEmpty());
+        assertTrue(wrongShape.parseErrors().get(0).contains("classifications must be the only field"));
+    }
 }

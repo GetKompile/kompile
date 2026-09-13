@@ -108,9 +108,10 @@ class CorpusSchemaPrepassIntegrationTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scope =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
-        verify(orchestrator.llmDispatcher, times(3)).promptStructuredWithCapacityFallback(
+        verify(orchestrator.llmDispatcher, times(4)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job), scope.capture());
         assertEquals(List.of(
+                        CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
@@ -119,20 +120,21 @@ class CorpusSchemaPrepassIntegrationTest {
         assertTrue(scope.getAllValues().stream().allMatch(
                 value -> "SCHEMA_PREPASS".equals(value.phase())));
         assertEquals(List.of(
-                        "node-types-1", "node-types-consolidation", "relationship-types-1"),
+                        "entity-classifications-1", "node-types-1", "node-types-consolidation", "relationship-types-1"),
                 scope.getAllValues().stream().map(
                         CrawlLlmDispatcher.LlmCallScope::passId).toList());
         assertTrue(request.getAllValues().stream().allMatch(value -> {
             String prompt = value.messages().get(1).content();
-            return prompt.contains("SEEDED_DOCUMENT")
+            return value.tools().get(0).name().equals(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME)
+                    || (prompt.contains("SEEDED_DOCUMENT")
                     && prompt.contains("EXTRACTOR_MESSAGE")
-                    && prompt.contains("APPROVAL_ROLE");
+                    && prompt.contains("APPROVAL_ROLE"));
         }));
-        assertTrue(request.getAllValues().get(0).messages().get(1).content().contains(
+        assertTrue(request.getAllValues().get(1).messages().get(1).content().contains(
+                "monthly forecast"));
+        assertTrue(request.getAllValues().get(3).messages().get(1).content().contains(
                 "monthly forecast"));
         assertTrue(request.getAllValues().get(2).messages().get(1).content().contains(
-                "monthly forecast"));
-        assertTrue(request.getAllValues().get(1).messages().get(1).content().contains(
                 "FORECAST"));
     }
 
@@ -149,6 +151,15 @@ class CorpusSchemaPrepassIntegrationTest {
                 any(CrawlLlmDispatcher.LlmCallScope.class))).thenAnswer(invocation -> {
             StructuredChatLanguageModel.Request request = invocation.getArgument(0);
             String tool = request.tools().get(0).name();
+            if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                return new StructuredChatLanguageModel.Response(
+                        "<native-tool-call>", "",
+                        List.of(new StructuredChatLanguageModel.ToolCall(
+                                "schema-call",
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()))),
+                        List.of());
+            }
             String json = CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)
                     ? MAPPER.writeValueAsString(CorpusSchemaUnifierTest.withDiscoveryEvidence(
                             request, nodeResponse(List.of("FORECAST"))).toolCalls().get(0).arguments())
@@ -213,10 +224,11 @@ class CorpusSchemaPrepassIntegrationTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(orchestrator.llmDispatcher, times(4)).promptStructuredWithCapacityFallback(
+        verify(orchestrator.llmDispatcher, times(5)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
         assertEquals(List.of(
+                        CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
@@ -225,6 +237,8 @@ class CorpusSchemaPrepassIntegrationTest {
                         .map(value -> value.tools().get(0).name()).toList());
         assertTrue(request.getAllValues().stream()
                 .filter(value -> !CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(
+                        value.tools().get(0).name()))
+                .filter(value -> !CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
                         value.tools().get(0).name()))
                 .allMatch(value -> value.messages().get(0).content().contains(
                         "Do not extract entities or relations")));
@@ -437,6 +451,15 @@ class CorpusSchemaPrepassIntegrationTest {
                     String tool = request.tools().get(0).name();
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return CorpusSchemaUnifierTest.withDiscoveryEvidence(request, nodeResponse);
+                    }
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return new StructuredChatLanguageModel.Response(
+                                "<native-tool-call>", "",
+                                List.of(new StructuredChatLanguageModel.ToolCall(
+                                        "schema-call",
+                                        CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                        Map.of("classifications", List.of()))),
+                                List.of());
                     }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipResponse;

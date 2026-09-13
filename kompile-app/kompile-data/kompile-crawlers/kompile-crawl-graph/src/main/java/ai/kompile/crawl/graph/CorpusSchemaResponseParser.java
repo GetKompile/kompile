@@ -33,6 +33,9 @@ final class CorpusSchemaResponseParser {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
+    private static final int MAX_ENTITY_CLASSIFICATIONS = 8;
+    private static final int MAX_ENTITY_NAME_CHARS = 32;
+
     private CorpusSchemaResponseParser() {
     }
 
@@ -130,6 +133,97 @@ final class CorpusSchemaResponseParser {
                             ? conciseErrorMessage(invalid)
                             : "[SCHEMA_NODE_EVIDENCE] " + conciseErrorMessage(invalid))), Map.of());
         }
+    }
+
+    /**
+     * One extraction-side entity classification from the bounded classification-sample pass.
+     * The name is the exact named-entity span copied from a submitted window; the category is the
+     * model's own general noun for what that entity is; the parent is the trusted baseline parent
+     * it falls under. This is extraction data, not schema design, so nothing here claims truth.
+     */
+    record EntityClassification(String name, String category, String parentType) {}
+
+    /** Parsed classification sample: valid rows plus non-fatal drop reasons for malformed ones. */
+    record EntityClassificationResult(List<EntityClassification> classifications,
+            List<String> parseErrors) {
+        EntityClassificationResult {
+            classifications = classifications == null
+                    ? List.of() : List.copyOf(classifications);
+            parseErrors = parseErrors == null ? List.of() : List.copyOf(parseErrors);
+        }
+    }
+
+    /**
+     * Parses the {@code submit_entity_classifications} tool call. Unknown, malformed, or duplicate
+     * rows are dropped individually with a parse error instead of failing the whole sample; the
+     * classification pass is extraction-side and must never break schema discovery on one bad row.
+     */
+    static EntityClassificationResult parseEntityClassifications(
+            Map<String, Object> arguments,
+            java.util.Set<String> trustedParentTypes) {
+        List<EntityClassification> accepted = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        try {
+            if (arguments == null
+                    || !arguments.keySet().equals(java.util.Set.of("classifications"))
+                    || !(arguments.get("classifications") instanceof List<?> rows)) {
+                throw new IllegalArgumentException(
+                        "classifications must be the only field and an array");
+            }
+            if (rows.size() > MAX_ENTITY_CLASSIFICATIONS) {
+                throw new IllegalArgumentException(
+                        "classifications must contain at most " + MAX_ENTITY_CLASSIFICATIONS
+                                + " objects");
+            }
+            java.util.Set<String> seenNames = new java.util.LinkedHashSet<>();
+            for (Object row : rows) {
+                try {
+                    if (!(row instanceof Map<?, ?> fields)) {
+                        throw new IllegalArgumentException(
+                                "classifications entries must be objects");
+                    }
+                    if (!fields.keySet().equals(java.util.Set.of("name", "category", "parentType"))) {
+                        throw new IllegalArgumentException(
+                                "classifications entries must contain exactly name, category and parentType");
+                    }
+                    if (!(fields.get("name") instanceof String name) || name.isBlank()) {
+                        throw new IllegalArgumentException("name must be a nonblank string");
+                    }
+                    if (name.length() > MAX_ENTITY_NAME_CHARS) {
+                        throw new IllegalArgumentException("name must be at most "
+                                + MAX_ENTITY_NAME_CHARS + " characters");
+                    }
+                    if (!(fields.get("category") instanceof String category)
+                            || category.isBlank()
+                            || !canonicalSchemaName(category).matches("^[A-Z][A-Z0-9_]*$")) {
+                        throw new IllegalArgumentException(
+                                "category must be a general UPPER_SNAKE_CASE noun");
+                    }
+                    if (!(fields.get("parentType") instanceof String parentRaw) || parentRaw.isBlank()) {
+                        throw new IllegalArgumentException("parentType must be a nonblank string");
+                    }
+                    String parent = canonicalSchemaName(parentRaw);
+                    if (!trustedParentTypes.contains(parent)) {
+                        throw new IllegalArgumentException(
+                                "parentType must be one of the trusted baseline types: " + parent);
+                    }
+                    String trimmedName = name.trim();
+                    if (!seenNames.add(trimmedName)) {
+                        // Duplicate names contribute no new extraction facts; silently dedupe.
+                        continue;
+                    }
+                    accepted.add(new EntityClassification(
+                            trimmedName, canonicalSchemaName(category), parent));
+                } catch (IllegalArgumentException invalidRow) {
+                    errors.add("[SCHEMA_ENTITY_CLASSIFICATION] "
+                            + conciseErrorMessage(invalidRow));
+                }
+            }
+        } catch (IllegalArgumentException invalidCall) {
+            // Whole-call malformation still yields the rows parsed so far plus one reason.
+            errors.add("[SCHEMA_ENTITY_CLASSIFICATION] " + conciseErrorMessage(invalidCall));
+        }
+        return new EntityClassificationResult(accepted, errors);
     }
 
     static ParseResult parse(String rawResponse) {

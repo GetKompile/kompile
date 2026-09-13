@@ -89,13 +89,14 @@ class CorpusSchemaUnifierTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
                 request.capture(),
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
         List<StructuredChatLanguageModel.Request> typeRequests = request.getAllValues();
         assertEquals(List.of(
+                        CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
@@ -105,7 +106,7 @@ class CorpusSchemaUnifierTest {
         assertTrue(typeRequests.stream().allMatch(value ->
                 value.toolChoice() == StructuredChatLanguageModel.ToolChoice.REQUIRED));
         Map<String, Object> topProperties = asMap(
-                typeRequests.get(0).tools().get(0).parameters().get("properties"));
+                typeRequests.get(1).tools().get(0).parameters().get("properties"));
         Map<String, Object> nodeType = asMap(
                 asMap(topProperties.get("nodeTypes")).get("items"));
         assertEquals("object", nodeType.get("type"));
@@ -119,9 +120,9 @@ class CorpusSchemaUnifierTest {
         assertEquals(List.of("s1", "s2"), asMap(evidenceFields.get("sourceId")).get("enum"));
         assertEquals(1024, asMap(evidenceFields.get("quote")).get("maxLength"));
         Map<String, Object> consolidationNode = asMap(asMap(asMap(
-                typeRequests.get(1).tools().get(0).parameters().get("properties")).get("nodeTypes")).get("items"));
+                typeRequests.get(2).tools().get(0).parameters().get("properties")).get("nodeTypes")).get("items"));
         assertEquals(Set.of("label", "parentType"), asMap(consolidationNode.get("properties")).keySet());
-        assertFalse(typeRequests.get(0).tools().get(0).description().contains("triples, ids"));
+        assertFalse(typeRequests.get(1).tools().get(0).description().contains("triples, ids"));
         assertEquals("^[A-Z][A-Z0-9_]*$", asMap(nodeFields.get("label")).get("pattern"));
         assertEquals(48, asMap(nodeFields.get("label")).get("maxLength"));
         assertEquals(SchemaHierarchyVocabulary.BASE_ENTITY_TYPES,
@@ -130,7 +131,7 @@ class CorpusSchemaUnifierTest {
         assertEquals(32, asMap(topProperties.get("nodeTypes")).get("maxItems"));
         assertEquals(java.util.Set.of("nodeTypes"), topProperties.keySet());
         Map<String, Object> relationshipProperties = asMap(
-                typeRequests.get(2).tools().get(0).parameters().get("properties"));
+                typeRequests.get(3).tools().get(0).parameters().get("properties"));
         Map<String, Object> relationshipType = asMap(
                 asMap(relationshipProperties.get("relationshipTypes")).get("items"));
         assertEquals("object", relationshipType.get("type"));
@@ -140,11 +141,11 @@ class CorpusSchemaUnifierTest {
         assertEquals(SchemaHierarchyVocabulary.CONNECTION_FAMILIES,
                 asMap(relationFields.get("connectionFamily")).get("enum"));
         assertEquals(java.util.Set.of("relationshipTypes"), relationshipProperties.keySet());
-        assertTrue(typeRequests.get(0).messages().get(1).content().contains("publication-window"));
-        assertTrue(typeRequests.get(2).messages().get(1).content().contains("archive-window"));
-        assertTrue(typeRequests.get(1).messages().get(1).content().contains(
+        assertTrue(typeRequests.get(1).messages().get(1).content().contains("publication-window"));
+        assertTrue(typeRequests.get(3).messages().get(1).content().contains("archive-window"));
+        assertTrue(typeRequests.get(2).messages().get(1).content().contains(
                 "UNTRUSTED BATCH PROPOSALS"));
-        assertTrue(typeRequests.get(3).messages().get(1).content().contains(
+        assertTrue(typeRequests.get(4).messages().get(1).content().contains(
                 "UNTRUSTED BATCH PROPOSALS"));
     }
 
@@ -157,6 +158,8 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
         when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
                 .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(
                         Map.of("label", "OBSERVATION", "parentType", "ACTIVITY", "evidence",
                                 List.of(Map.of("sourceId", "s1", "quote", "fabricated evidence")))))))
@@ -167,11 +170,11 @@ class CorpusSchemaUnifierTest {
                 new CorpusSchemaCandidates.Inventory(List.of(), List.of()), null, job, "repair-evidence", dispatcher);
         assertEquals("ACTIVITY", frozen.getNodeTypeMap().get("OBSERVATION").getParentType());
         ArgumentCaptor<StructuredChatLanguageModel.Request> requests = ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(requests.capture(), eq("llm"), same(job),
+        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(requests.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertTrue(requests.getAllValues().get(1).messages().get(1).content().contains("SCHEMA_NODE_EVIDENCE"));
-        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains("UNTRUSTED BATCH PROPOSALS"));
-        assertTrue(requests.getAllValues().get(3).messages().get(1).content().contains("OBSERVATION"));
+        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains("SCHEMA_NODE_EVIDENCE"));
+        assertTrue(requests.getAllValues().get(3).messages().get(1).content().contains("UNTRUSTED BATCH PROPOSALS"));
+        assertTrue(requests.getAllValues().get(4).messages().get(1).content().contains("OBSERVATION"));
     }
 
     @Test
@@ -220,7 +223,7 @@ class CorpusSchemaUnifierTest {
                     new CorpusSchemaCandidates.Inventory(List.of(), List.of()), configured, null, topics, job, "duplicates", dispatcher);
             assertEquals(supported, frozen.getAllNodeLabels().contains("OBSERVATION"));
             assertEquals(Set.of("ARCHIVE"), configured.getAllNodeLabels());
-            verify(dispatcher, times(topicException ? 4 : supported ? 3 : 2)).promptStructuredWithCapacityFallback(
+            verify(dispatcher, times(topicException ? 5 : supported ? 4 : 3)).promptStructuredWithCapacityFallback(
                     any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
         }
     }
@@ -240,6 +243,8 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), repeatedBaseline))
                 .thenReturn(nodeTypes("OBSERVATION"))
                 .thenReturn(relationshipTypes());
@@ -252,7 +257,7 @@ class CorpusSchemaUnifierTest {
         assertEquals("ACTIVITY", schema.getNodeTypeMap().get("OBSERVATION").getParentType());
         assertEquals(null, schema.getNodeTypeMap().get("PERSON").getParentType());
         assertEquals(null, schema.getNodeTypeMap().get("EVENT").getParentType());
-        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
     }
@@ -296,6 +301,8 @@ class CorpusSchemaUnifierTest {
         var calls = when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0),
                         structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                                 Map.of("nodeTypes", responseTypes))));
@@ -345,10 +352,11 @@ class CorpusSchemaUnifierTest {
             assertTrue(diagnostic.contains("snapshot=snapshot-outcome"), diagnostic);
             assertTrue(diagnostic.contains("batch=1 attempt=1 outcome=" + outcome + " "), diagnostic);
             assertTrue(diagnostic.contains("returned=" + responseTypes.size()
-                    + " repeatedAuthoritative=" + repeated + " novelCandidates=" + novel), diagnostic);
+                    + " repeatedAuthoritative=" + repeated + " novelCandidates=" + novel
+                    + " bootstrapCandidates="), diagnostic);
             assertEquals(!outcome.equals("INVALID"), diagnostic.endsWith("validationErrors=[]"));
-            verify(dispatcher, times(outcome.equals("INVALID") ? 1
-                    : outcome.equals("MIXED_PROPOSALS") ? 3 : 2))
+            verify(dispatcher, times(outcome.equals("INVALID") ? 2
+                    : outcome.equals("MIXED_PROPOSALS") ? 4 : 3))
                     .promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
                             eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
         } finally {
@@ -374,6 +382,8 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
                 .thenReturn(nodeTypes())
                 .thenReturn(repeatedFamily)
                 .thenReturn(relationshipTypes("USES_INSTRUMENT"))
@@ -388,10 +398,10 @@ class CorpusSchemaUnifierTest {
         assertEquals(java.util.Set.of("USES_INSTRUMENT"), schema.getAllRelationshipTypes());
         ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertTrue(requests.getAllValues().get(2).messages().get(1).content()
+        assertTrue(requests.getAllValues().get(3).messages().get(1).content()
                 .contains("SCHEMA_CONNECTION_PREDICATE"));
     }
 
@@ -472,6 +482,16 @@ class CorpusSchemaUnifierTest {
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return withDiscoveryEvidence(request, nodeTypes("KEYWORD"));
+                })
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes("KEYWORD")))
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes("PUBLICATION", "PERSON")))
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes("PUBLICATION", "PERSON")))
@@ -495,21 +515,21 @@ class CorpusSchemaUnifierTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scopes =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
-        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(7)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job), scopes.capture());
         assertEquals(List.of(
-                        "node-types-1", "node-types-1", "node-types-consolidation",
+                        "entity-classifications-1", "node-types-1", "node-types-1", "node-types-consolidation",
                         "relationship-types-1", "relationship-types-consolidation",
                         "relationship-signatures-1"),
                 scopes.getAllValues().stream()
                 .map(CrawlLlmDispatcher.LlmCallScope::passId).toList());
-        assertEquals(List.of(1, 2, 1, 1, 1, 1), scopes.getAllValues().stream()
+        assertEquals(List.of(1, 1, 2, 1, 1, 1, 1), scopes.getAllValues().stream()
                 .map(CrawlLlmDispatcher.LlmCallScope::passInvocation).toList());
         assertEquals("job-schema-repair:corpus-schema:node-types:1",
-                scopes.getAllValues().get(0).taskId());
-        assertEquals("job-schema-repair:corpus-schema:node-types:1:attempt:2",
                 scopes.getAllValues().get(1).taskId());
-        String retryPrompt = requests.getAllValues().get(1).messages().get(1).content();
+        assertEquals("job-schema-repair:corpus-schema:node-types:1:attempt:2",
+                scopes.getAllValues().get(2).taskId());
+        String retryPrompt = requests.getAllValues().get(2).messages().get(1).content();
         assertTrue(retryPrompt.contains("TYPE-SCHEMA REPAIR REQUIRED (attempt 2 of 3)"));
         assertTrue(retryPrompt.contains("SCHEMA_GENERIC_TYPE"));
         assertTrue(retryPrompt.contains("KEYWORD"));
@@ -533,7 +553,16 @@ class CorpusSchemaUnifierTest {
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes("KEYWORD")));
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return withDiscoveryEvidence(request, nodeTypes("KEYWORD"));
+                });
 
         IllegalStateException failure = assertThrows(
                 IllegalStateException.class,
@@ -547,7 +576,8 @@ class CorpusSchemaUnifierTest {
 
         assertTrue(failure.getMessage().contains("SCHEMA_GENERIC_TYPE"));
         assertTrue(failure.getMessage().contains("KEYWORD"));
-        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
+        // classification sample + 3 discovery attempts (maxValidationRetries=2)
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"),
                 same(job),
@@ -566,6 +596,8 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
                 .thenReturn(nodeTypes())
                 .thenReturn(relationshipTypes("USES_INSTRUMENT"))
                 .thenReturn(relationshipTypes("INVENTED_ASSOCIATION"))
@@ -585,12 +617,12 @@ class CorpusSchemaUnifierTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(7)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertTrue(requests.getAllValues().get(3).messages().get(1).content()
-                .contains("SCHEMA_UNPROPOSED_TYPE"));
         assertTrue(requests.getAllValues().get(4).messages().get(1).content()
+                .contains("SCHEMA_UNPROPOSED_TYPE"));
+        assertTrue(requests.getAllValues().get(5).messages().get(1).content()
                 .contains("SCHEMA_UNPROPOSED_TYPE"));
     }
 
@@ -608,14 +640,33 @@ class CorpusSchemaUnifierTest {
                 List.of(new StructuredChatLanguageModel.ToolCall(
                         "wrong-call", "submit_graph_delta", Map.of())),
                 List.of());
+        // Calls: classification sample; node discovery; node consolidation; relationship
+        // discovery (valid); then 3 consolidation attempts (INVENTED, UNOBSERVED, wrong tool).
+        final java.util.List<StructuredChatLanguageModel.Response> relationshipQueue =
+                new java.util.ArrayList<>(List.of(
+                        relationshipTypes("USES_INSTRUMENT"),
+                        relationshipTypes("INVENTED_ASSOCIATION"),
+                        relationshipTypes("UNOBSERVED_LINK"),
+                        wrongTool));
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(nodeTypes())
-                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
-                .thenReturn(relationshipTypes("INVENTED_ASSOCIATION"))
-                .thenReturn(relationshipTypes("UNOBSERVED_LINK"))
-                .thenReturn(wrongTool);
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)
+                            && !request.messages().get(1).content()
+                            .contains("UNTRUSTED BATCH PROPOSALS")) {
+                        return nodeTypes();
+                    }
+                    return relationshipQueue.isEmpty()
+                            ? wrongTool : relationshipQueue.remove(0);
+                });
 
         IllegalStateException failure = assertThrows(
                 IllegalStateException.class,
@@ -625,7 +676,9 @@ class CorpusSchemaUnifierTest {
                         null, job, "snapshot-consolidation-malformed", dispatcher));
 
         assertTrue(failure.getMessage().contains("wrong tool"), failure.getMessage());
-        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(
+        // classification sample + node discovery (empty: no consolidation) + relationship
+        // discovery (valid) + 3 failing consolidation attempts (ends on the wrong tool).
+        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
     }
@@ -642,11 +695,19 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(nodeTypes())
-                .thenReturn(relationshipTypes("OBSERVATION"))
-                .thenReturn(relationshipTypes("INVENTED_ASSOCIATION"))
-                .thenReturn(relationshipTypes("UNOBSERVED_LINK"))
-                .thenReturn(relationshipTypes("HALLUCINATED_RELATION"));
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return nodeTypes();
+                    }
+                    return relationshipTypes("OBSERVATION");
+                });
         GraphSchema configured = new GraphSchema(
                 List.of(new NodeType("OBSERVATION", "A frozen observation type.", null)),
                 null, null);
@@ -660,7 +721,7 @@ class CorpusSchemaUnifierTest {
         assertTrue(schema.getAllNodeLabels().containsAll(
                 SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
         assertTrue(schema.getAllRelationshipTypes().isEmpty());
-        verify(dispatcher, times(2)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
     }
@@ -715,15 +776,18 @@ class CorpusSchemaUnifierTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
         assertTrue(request.getAllValues().stream().allMatch(value ->
-                value.messages().get(1).content().contains("SEEDED_DOCUMENT")));
+                value.tools().get(0).name().equals(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME)
+                        || value.messages().get(1).content().contains("SEEDED_DOCUMENT")));
         assertTrue(request.getAllValues().stream().allMatch(value ->
-                value.messages().get(1).content().contains("EXTRACTOR_MESSAGE")));
+                value.tools().get(0).name().equals(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME)
+                        || value.messages().get(1).content().contains("EXTRACTOR_MESSAGE")));
         assertTrue(request.getAllValues().stream().allMatch(value ->
-                value.messages().get(1).content().contains("DETERMINISTIC_ACTOR")));
+                value.tools().get(0).name().equals(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME)
+                        || value.messages().get(1).content().contains("DETERMINISTIC_ACTOR")));
     }
 
     @Test
@@ -738,8 +802,28 @@ class CorpusSchemaUnifierTest {
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0),
-                        nodeTypes("ASTRONOMICAL_OBSERVATION_2024_FINAL", "OBSERVATION")))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return withDiscoveryEvidence(request,
+                            nodeTypes("ASTRONOMICAL_OBSERVATION_2024_FINAL", "OBSERVATION"));
+                })
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return withDiscoveryEvidence(request,
+                            nodeTypes("ASTRONOMICAL_OBSERVATION_2024_FINAL", "OBSERVATION"));
+                })
                 .thenReturn(nodeTypes("OBSERVATION"))
                 .thenReturn(relationshipTypes("OBSERVATION", "USES_INSTRUMENT"))
                 .thenReturn(relationshipTypes("OBSERVATION"))
@@ -760,23 +844,23 @@ class CorpusSchemaUnifierTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scopes =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
-        verify(dispatcher, times(6)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(7)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job), scopes.capture());
-        assertFalse(requests.getAllValues().get(1).messages().get(1).content().contains(
+        assertFalse(requests.getAllValues().get(2).messages().get(1).content().contains(
                 "ASTRONOMICAL_OBSERVATION_2024_FINAL"),
                 "partially grounded compound labels must be removed before consolidation");
-        assertTrue(requests.getAllValues().get(1).messages().get(1).content().contains(
+        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains(
                 "OBSERVATION"));
-        assertTrue(requests.getAllValues().get(1).messages().get(1).content().contains(
+        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains(
                 "untrusted suggestions"));
-        String relationshipRepair = requests.getAllValues().get(4).messages().get(1).content();
+        String relationshipRepair = requests.getAllValues().get(5).messages().get(1).content();
         assertTrue(relationshipRepair.contains("SCHEMA_TYPE_CATEGORY"));
         assertTrue(relationshipRepair.contains("OBSERVATION"));
         assertEquals("relationship-types-consolidation",
-                scopes.getAllValues().get(4).passId());
-        assertEquals(2, scopes.getAllValues().get(4).passInvocation());
+                scopes.getAllValues().get(5).passId());
+        assertEquals(2, scopes.getAllValues().get(5).passInvocation());
         assertEquals(CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME,
-                requests.getAllValues().get(5).tools().get(0).name());
+                requests.getAllValues().get(6).tools().get(0).name());
     }
 
     @Test
@@ -871,12 +955,21 @@ class CorpusSchemaUnifierTest {
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(new StructuredChatLanguageModel.Response(
-                        "<native-tool-call>",
-                        "",
-                        List.of(new StructuredChatLanguageModel.ToolCall(
-                                "wrong-call", "submit_graph_delta", Map.of())),
-                        List.of()));
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return new StructuredChatLanguageModel.Response(
+                            "<native-tool-call>",
+                            "",
+                            List.of(new StructuredChatLanguageModel.ToolCall(
+                                    "wrong-call", "submit_graph_delta", Map.of())),
+                            List.of());
+                });
 
         IllegalStateException wrongTool = assertThrows(
                 IllegalStateException.class,
@@ -894,11 +987,20 @@ class CorpusSchemaUnifierTest {
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(new StructuredChatLanguageModel.Response(
-                        "{\"nodeTypes\":[\"PERSON\"],\"relationshipTypes\":[],\"patterns\":[]}",
-                        "",
-                        List.of(),
-                        List.of()));
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
+                            request.tools().get(0).name())) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
+                    return new StructuredChatLanguageModel.Response(
+                            "{\"nodeTypes\":[\"PERSON\"],\"relationshipTypes\":[],\"patterns\":[]}",
+                            "",
+                            List.of(),
+                            List.of());
+                });
         IllegalStateException missingTool = assertThrows(
                 IllegalStateException.class,
                 () -> new CorpusSchemaUnifier().unify(
@@ -1148,6 +1250,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipTypes();
                     }
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
                     return structuredSchemaResponse(
                             CorpusSchemaUnifier.TOPIC_BINDING_TOOL_NAME,
                             Map.of("b", bindingOptionId(request, "nodeIds", "INSTRUMENT") + "|"
@@ -1194,6 +1301,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipTypes();
+                    }
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
                     }
                     return structuredSchemaResponse(
                             CorpusSchemaUnifier.TOPIC_BINDING_TOOL_NAME,
@@ -1311,6 +1423,9 @@ class CorpusSchemaUnifierTest {
                 .thenAnswer(invocation -> {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return classificationSampleResponse(request);
+                    }
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipTypes("WORKS_FOR");
@@ -1367,6 +1482,9 @@ class CorpusSchemaUnifierTest {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
                     String prompt = request.messages().get(request.messages().size() - 1).content();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return classificationSampleResponse(request);
+                    }
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return nodeTypes();
                     }
@@ -1449,6 +1567,9 @@ class CorpusSchemaUnifierTest {
                 .thenAnswer(invocation -> {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return classificationSampleResponse(request);
+                    }
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipTypes("WORKS_FOR");
@@ -1643,6 +1764,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return withDiscoveryEvidence(request, nodeResponse);
                     }
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of()));
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipResponse;
                     }
@@ -1749,5 +1875,263 @@ class CorpusSchemaUnifierTest {
         assertFalse(CorpusSchemaUnifier.isBindableSchemaLabel("the"));
         assertFalse(CorpusSchemaUnifier.isBindableSchemaLabel("OBSERVATORY-NAME"));
         assertFalse(CorpusSchemaUnifier.isBindableSchemaLabel(null));
+    }
+
+    /**
+     * Extraction-side classification sample fixture: derive a valid classification row from the
+     * entity marker in the request prompt, or answer with the caller's override response.
+     */
+    private static StructuredChatLanguageModel.Response classificationSampleResponse(
+            StructuredChatLanguageModel.Request request,
+            StructuredChatLanguageModel.Response... override) {
+        if (override.length > 0) return override[0];
+        String prompt = request.messages().get(request.messages().size() - 1).content();
+        if (prompt.contains("Helios Dynamics")) {
+            return structuredSchemaResponse(
+                    CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                    Map.of("classifications", List.of(
+                            Map.of("name", "Helios Dynamics", "category", "Company",
+                                    "parentType", "ORGANIZATION"),
+                            Map.of("name", "Jordan Lee", "category", "Person",
+                                    "parentType", "PERSON"))));
+        }
+        return structuredSchemaResponse(
+                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                Map.of("classifications", List.of()));
+    }
+
+    @Test
+    void classificationSampleProducesBootstrapCandidateThatSurvivesToConsolidation() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-bootstrap-company");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder()
+                .maxValidationRetries(1).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        // The discovery call returns only baseline self-parents (the Gemma failure mode), so the
+        // COMPANY bootstrap candidate must be the only source of the novel proposal.
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return classificationSampleResponse(request);
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return withDiscoveryEvidence(request, nodeTypes("PERSON"));
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipTypes();
+                    }
+                    throw new AssertionError("Unexpected schema tool: " + tool);
+                });
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CorpusSchemaUnifier.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        try {
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("window", "Helios Dynamics is a company founded by Jordan Lee."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "snapshot-bootstrap-company", dispatcher);
+
+            // Consolidation INPUT contains the bootstrap proposal pair (spec test a); the frozen
+            // OUTPUT assertion lives in test (d).
+            assertTrue(schema.getAllNodeLabels().containsAll(
+                    SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
+            // PERSON was a baseline duplicate and must be deduped, not proposed.
+            assertEquals(null, schema.getNodeTypeMap().get("PERSON").getParentType());
+
+            List<String> diagnostics = appender.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("[SCHEMA_DISCOVERY_OUTCOME]"))
+                    .filter(message -> message.contains("pass=NODE_TYPES"))
+                    .toList();
+            assertEquals(1, diagnostics.size());
+            assertTrue(diagnostics.get(0).contains("bootstrapCandidates=1"),
+                    diagnostics.get(0));
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+    }
+
+    @Test
+    void classificationSampleFailureFallsBackToDiscoveryOnlyPath() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-bootstrap-failure");
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        throw new IllegalStateException(
+                                "classification sample backend timed out");
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return withDiscoveryEvidence(request, nodeTypes("OBSERVATION"));
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipTypes();
+                    }
+                    throw new AssertionError("Unexpected schema tool: " + tool);
+                });
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CorpusSchemaUnifier.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            GraphSchema schema = new CorpusSchemaUnifier().unify(
+                    Map.of("window", "An observation was recorded by an astronomer."),
+                    new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                    null, job, "snapshot-bootstrap-failure", dispatcher);
+
+            // Discovery-only path unchanged: OBSERVATION still freezes normally.
+            assertEquals("ACTIVITY", schema.getNodeTypeMap().get("OBSERVATION").getParentType());
+            assertTrue(appender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .anyMatch(message -> message.contains("continuing with schema discovery only")),
+                    "the non-fatal classification failure must be logged");
+            verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
+                    any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                    any(CrawlLlmDispatcher.LlmCallScope.class));
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+    }
+
+    @Test
+    void classificationSampleWithOnlyBaselineNounsProducesNoBootstrapCandidates() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-bootstrap-baseline-only");
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return structuredSchemaResponse(
+                                CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                                Map.of("classifications", List.of(
+                                        Map.of("name", "Jordan Lee", "category", "PERSON",
+                                                "parentType", "PERSON"),
+                                        Map.of("name", "Acme", "category", "ORGANIZATION",
+                                                "parentType", "ORGANIZATION"))));
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return withDiscoveryEvidence(request, nodeTypes("OBSERVATION"));
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipTypes();
+                    }
+                    throw new AssertionError("Unexpected schema tool: " + tool);
+                });
+
+        Logger logger = (Logger) LoggerFactory.getLogger(CorpusSchemaUnifier.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        try {
+            GraphSchema schema = new CorpusSchemaUnifier().unify(
+                    Map.of("window", "Jordan Lee works at Acme recording an observation."),
+                    new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                    null, job, "snapshot-bootstrap-baseline-only", dispatcher);
+
+            Set<String> expected = new java.util.LinkedHashSet<>(
+                    SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
+            expected.add("OBSERVATION");
+            assertEquals(expected, schema.getAllNodeLabels());
+            List<String> diagnostics = appender.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("[SCHEMA_DISCOVERY_OUTCOME]"))
+                    .toList();
+            assertTrue(diagnostics.stream().allMatch(message ->
+                            message.contains("bootstrapCandidates=0")),
+                    diagnostics.toString());
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+    }
+
+    @Test
+    void consolidationReceivesBootstrapProposalAlongsideDiscoveryProposals() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-bootstrap-consolidation");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder()
+                .maxValidationRetries(1).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
+                        return classificationSampleResponse(request);
+                    }
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        String prompt = request.messages().get(1).content();
+                        if (prompt.contains("UNTRUSTED BATCH PROPOSALS")) {
+                            // Consolidation copies the exact proposal pair the batches supplied.
+                            return structuredSchemaResponse(
+                                    CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                                    Map.of("nodeTypes", List.of(
+                                            Map.of("label", "COMPANY",
+                                                    "parentType", "ORGANIZATION"))));
+                        }
+                        // Batch discovery abstains (the Gemma failure mode).
+                        return withDiscoveryEvidence(request, nodeTypes());
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipTypes();
+                    }
+                    throw new AssertionError("Unexpected schema tool: " + tool);
+                });
+
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("window", "Helios Dynamics is a company founded by Jordan Lee."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "snapshot-bootstrap-consolidation", dispatcher);
+
+        // Consolidation copied the proposal pair exactly, so COMPANY/ORGANIZATION freezes.
+        assertEquals("ORGANIZATION", schema.getNodeTypeMap().get("COMPANY").getParentType());
+
+        ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
+                requests.capture(), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+        List<StructuredChatLanguageModel.Request> consolidation = requests.getAllValues().stream()
+                .filter(request -> request.messages().get(1).content()
+                        .contains("UNTRUSTED BATCH PROPOSALS"))
+                .toList();
+        assertEquals(1, consolidation.size());
+        String consolidationPrompt = consolidation.get(0).messages().get(1).content();
+        assertTrue(consolidationPrompt.contains("COMPANY"),
+                "consolidation input must contain the bootstrap COMPANY proposal: "
+                        + consolidationPrompt);
+        assertTrue(consolidationPrompt.contains("ORGANIZATION"));
     }
 }

@@ -56,6 +56,9 @@ final class CorpusSchemaUnifier {
     static final String RELATIONSHIP_TYPE_TOOL_NAME = "submit_relationship_types";
     static final String TOPIC_BINDING_TOOL_NAME = "bind_topics_to_schema";
     static final String ENDPOINT_SIGNATURE_TOOL_NAME = "bind_relationship_signatures";
+    static final String ENTITY_CLASSIFICATION_TOOL_NAME = "submit_entity_classifications";
+    private static final int MAX_ENTITY_CLASSIFICATIONS_PER_CALL = 8;
+    private static final int MAX_ENTITY_NAME_CHARS = 32;
     private static final String TASK_TYPE = "llm";
     private static final int MAX_SCHEMA_NAME_CHARS = 48;
     private static final String SCHEMA_NAME_PATTERN = "^[A-Z][A-Z0-9_]*$";
@@ -1389,6 +1392,18 @@ final class CorpusSchemaUnifier {
                     Map<String, String> windows = pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES
                             ? CorpusSchemaPromptBuilder.nodeDiscoveryWindows(batches.get(batchIndex)) : Map.of();
                     Map<TypeProposal, List<CorpusSchemaResponseParser.NodeEvidence>> batchEvidence = new LinkedHashMap<>();
+                    int bootstrapCandidates = 0;
+                    if (pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES && attempt == 1
+                            && !windows.isEmpty()) {
+                        // Extraction-first bootstrap: one bounded classification sample per
+                        // discovery batch, before schema framing enters the conversation. Its
+                        // proposals flow into the same evidence/support structures, so
+                        // consolidation, support counting, and freeze treat both sources
+                        // identically. Failure here is non-fatal for the whole crawl.
+                        bootstrapCandidates = classificationSampleProposals(
+                                windows, ontology.snapshot(), batchEvidence, proposalSupport,
+                                job, corpusSnapshotId, batchIndex + 1, dispatcher);
+                    }
                     CorpusSchemaResponseParser.ParseResult parsed = parseStructured(
                             dispatcher.promptStructuredWithCapacityFallback(
                                     structuredRequest(prompt, pass, false, ontology.snapshot(), windows.keySet()), TASK_TYPE, job, scope),
@@ -1409,7 +1424,8 @@ final class CorpusSchemaUnifier {
                         List<String> errors = typeResponseErrors(
                                 pass, novelTypes, ontology.snapshot(), false, Set.of());
                         logDiscoveryOutcome(pass, parsed.schema(), novelTypes, ontology.snapshot(),
-                                errors, job.getJobId(), corpusSnapshotId, batchIndex + 1, attempt);
+                                errors, job.getJobId(), corpusSnapshotId, batchIndex + 1, attempt,
+                                bootstrapCandidates);
                         if (errors.isEmpty()) {
                             // Evidence accompanies the proposal, never its support key. One batch
                             // contributes at most once regardless of repeated rows or evidence spans.
@@ -1462,6 +1478,160 @@ final class CorpusSchemaUnifier {
     }
 
     /**
+     * Runs the extraction-first classification sample for one discovery batch and derives
+     * candidate proposals host-side. A kept candidate's evidence is the exact window substring
+     * containing the classified name (validated by the same machinery discovery evidence uses),
+     * and its parent is the trusted parentType the model chose. Candidates whose category noun
+     * already equals an established type label dedupe away. Returns the number of kept bootstrap
+     * candidates. Any failure is non-fatal: the sample logs, marks the outcome, and returns 0.
+     */
+    private static int classificationSampleProposals(
+            Map<String, String> windows,
+            GraphSchema establishedSchema,
+            Map<TypeProposal, List<CorpusSchemaResponseParser.NodeEvidence>> batchEvidence,
+            Map<TypeProposal, Integer> proposalSupport,
+            UnifiedCrawlJob job,
+            String corpusSnapshotId,
+            int batchIndex,
+            CrawlLlmDispatcher dispatcher) {
+        try {
+            String prompt = CorpusSchemaPromptBuilder.buildEntityClassificationSample(
+                    windows, SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
+            CrawlLlmDispatcher.LlmCallScope scope = classificationSampleScope(
+                    job, corpusSnapshotId, batchIndex, 1);
+            StructuredChatLanguageModel.Response response =
+                    dispatcher.promptStructuredWithCapacityFallback(
+                            entityClassificationRequest(prompt), TASK_TYPE, job, scope);
+            CorpusSchemaResponseParser.EntityClassificationResult classification =
+                    CorpusSchemaResponseParser.parseEntityClassifications(
+                            responseArguments(response, ENTITY_CLASSIFICATION_TOOL_NAME),
+                            new java.util.HashSet<>(SchemaHierarchyVocabulary.BASE_ENTITY_TYPES));
+            int kept = 0;
+            Set<String> authoritative = typeNames(
+                    CorpusSchemaPromptBuilder.TypePass.NODE_TYPES, establishedSchema);
+            for (CorpusSchemaResponseParser.EntityClassification item : classification.classifications()) {
+                String label = canonicalSchemaCategory(item.category());
+                if (authoritative.contains(label)) {
+                    // The category's UPPER_SNAKE form equals an existing type's exact label.
+                    continue;
+                }
+                TypeProposal proposal = new TypeProposal(label, item.parentType());
+                String quote = null;
+                String sourceId = null;
+                for (Map.Entry<String, String> window : windows.entrySet()) {
+                    int index = window.getValue().indexOf(item.name());
+                    if (index < 0) continue;
+                    sourceId = window.getKey();
+                    quote = boundedQuote(window.getValue(), index, item.name().length());
+                    break;
+                }
+                if (quote == null) continue;
+                List<CorpusSchemaResponseParser.NodeEvidence> spans =
+                        batchEvidence.computeIfAbsent(proposal, ignored -> new ArrayList<>());
+                CorpusSchemaResponseParser.NodeEvidence span =
+                        new CorpusSchemaResponseParser.NodeEvidence(sourceId, quote);
+                if (!spans.contains(span) && spans.size() < 2) {
+                    spans.add(span);
+                }
+                proposalSupport.merge(proposal, 1, Integer::sum);
+                kept++;
+            }
+            if (!classification.parseErrors().isEmpty()) {
+                log.warn("[Job {}] Entity classification sample dropped malformed rows for "
+                                + "snapshot {} batch {}: {}",
+                        job == null || job.getJobId() == null ? "crawl" : job.getJobId(),
+                        corpusSnapshotId, batchIndex, classification.parseErrors());
+            }
+            logClassificationOutcome(job, corpusSnapshotId, batchIndex,
+                    classification.classifications().size(), kept,
+                    classification.parseErrors(), null);
+            return kept;
+        } catch (RuntimeException classificationFailure) {
+            log.warn("[Job {}] Entity classification sample failed for snapshot {} batch {}; "
+                            + "continuing with schema discovery only: {}",
+                    job == null || job.getJobId() == null ? "crawl" : job.getJobId(),
+                    corpusSnapshotId, batchIndex, conciseMessage(classificationFailure));
+            logClassificationOutcome(job, corpusSnapshotId, batchIndex, 0, 0,
+                    List.of(), conciseMessage(classificationFailure));
+            return 0;
+        }
+    }
+
+    /** A quote is a bounded exact window substring containing the classified name. */
+    private static String boundedQuote(String content, int index, int nameLength) {
+        int start = Math.max(0, index - 256);
+        int end = Math.min(content.length(),
+                Math.max(index + nameLength + 256, start + 1));
+        if (end - start > 1_024) {
+            end = start + 1_024;
+        }
+        return content.substring(start, end);
+    }
+
+    private static String canonicalSchemaCategory(String category) {
+        return category.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]+", "_")
+                .replaceAll("^_+|_+$", "")
+                .replaceAll("_+", "_");
+    }
+
+    private static StructuredChatLanguageModel.Request entityClassificationRequest(String prompt) {
+        Map<String, Object> item = objectSchema(Map.of(
+                "name", Map.of("type", "string", "minLength", 1, "maxLength",
+                        MAX_ENTITY_NAME_CHARS,
+                        "description", "Exact named-entity span copied from the passage text."),
+                "category", schemaNameSchema(
+                        "One general UPPER_SNAKE_CASE noun for what this entity is, "
+                                + "never an instance name."),
+                "parentType", Map.of("type", "string", "enum",
+                        SchemaHierarchyVocabulary.BASE_ENTITY_TYPES,
+                        "description", "The broadest trusted baseline parent this entity "
+                                + "falls under.")),
+                List.of("name", "category", "parentType"));
+        return new StructuredChatLanguageModel.Request(
+                List.of(
+                        new StructuredChatLanguageModel.Message("system",
+                                "Classify named entities found in the passage. "
+                                        + "Call the required tool exactly once without prose."),
+                        new StructuredChatLanguageModel.Message("user", prompt)),
+                List.of(new StructuredChatLanguageModel.Tool(
+                        ENTITY_CLASSIFICATION_TOOL_NAME,
+                        "List each distinct named entity with one general category noun and the "
+                                + "broadest trusted parent it falls under. Never invent entities.",
+                        objectSchema(Map.of("classifications", Map.of(
+                                "type", "array",
+                                "items", item,
+                                "uniqueItems", true,
+                                "maxItems", MAX_ENTITY_CLASSIFICATIONS_PER_CALL)),
+                                List.of("classifications")))),
+                true,
+                StructuredChatLanguageModel.ToolDefinitionFormat.STANDARD,
+                StructuredChatLanguageModel.ToolCallFormat.MODEL,
+                StructuredChatLanguageModel.ToolChoice.REQUIRED);
+    }
+
+    private static CrawlLlmDispatcher.LlmCallScope classificationSampleScope(
+            UnifiedCrawlJob job, String corpusSnapshotId, int batchIndex, int attempt) {
+        String jobId = hasText(job == null ? null : job.getJobId()) ? job.getJobId() : "crawl";
+        return new CrawlLlmDispatcher.LlmCallScope(
+                "SCHEMA_PREPASS", "entity-classifications-" + batchIndex, attempt,
+                jobId + ":corpus-schema:entity-classifications:" + batchIndex
+                        + (attempt > 1 ? ":attempt:" + attempt : ""),
+                null, null, corpusSnapshotId, null, 0, 0);
+    }
+
+    private static void logClassificationOutcome(
+            UnifiedCrawlJob job, String corpusSnapshotId, int batch,
+            int returned, int kept, List<String> errors, String failure) {
+        log.info("[SCHEMA_ENTITY_CLASSIFICATION_OUTCOME] job={} snapshot={} batch={} "
+                        + "outcome={} returned={} keptCandidates={} parseErrors={} failure={}",
+                job == null || job.getJobId() == null ? "crawl" : job.getJobId(),
+                corpusSnapshotId, batch,
+                failure != null ? "FAILED_NONFATAL" : kept > 0 ? "BOOTSTRAP_CANDIDATES" : "BASELINE_ONLY",
+                returned, kept, errors, failure);
+    }
+
+    /**
      * Report the response before filtering erases the distinction between abstention and repetition.
      * These are discovery candidates, not grounded/consolidated additions to the final schema.
      * Repetition remains non-fatal for compatibility and never triggers an additional model call.
@@ -1475,7 +1645,8 @@ final class CorpusSchemaUnifier {
             String jobId,
             String corpusSnapshotId,
             int batch,
-            int attempt) {
+            int attempt,
+            int bootstrapCandidates) {
         List<String> returned = typeLabels(pass, response);
         Set<String> authoritative = typeNames(pass, establishedSchema);
         long repeated = returned.stream().map(CorpusSchemaUnifier::canonicalName)
@@ -1487,9 +1658,10 @@ final class CorpusSchemaUnifier {
                 : novel == 0 ? "FILTERED_ONLY"
                 : repeated > 0 ? "MIXED_PROPOSALS" : "NOVEL_PROPOSALS";
         log.info("[SCHEMA_DISCOVERY_OUTCOME] job={} snapshot={} pass={} batch={} attempt={} "
-                        + "outcome={} returned={} repeatedAuthoritative={} novelCandidates={} validationErrors={}",
+                        + "outcome={} returned={} repeatedAuthoritative={} novelCandidates={} "
+                        + "bootstrapCandidates={} validationErrors={}",
                 jobId, corpusSnapshotId, pass, batch, attempt, outcome,
-                returned.size(), repeated, novel, errors);
+                returned.size(), repeated, novel, bootstrapCandidates, errors);
     }
 
     private static GraphSchema consolidateTypeProposals(
