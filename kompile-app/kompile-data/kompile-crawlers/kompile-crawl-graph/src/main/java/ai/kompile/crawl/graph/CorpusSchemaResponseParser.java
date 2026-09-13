@@ -51,6 +51,87 @@ final class CorpusSchemaResponseParser {
         }
     }
 
+    record NodeEvidence(String sourceId, String quote) {}
+
+    /** Evidence is retained separately from proposal identity and is not a semantic truth verdict. */
+    record NodeDiscoveryResult(ParseResult parsed,
+            Map<CorpusSchemaUnifier.TypeProposal, List<NodeEvidence>> evidence) {
+        NodeDiscoveryResult {
+            Map<CorpusSchemaUnifier.TypeProposal, List<NodeEvidence>> copy = new LinkedHashMap<>();
+            evidence.forEach((proposal, spans) -> copy.put(proposal, List.copyOf(spans)));
+            evidence = java.util.Collections.unmodifiableMap(copy);
+        }
+    }
+
+    static NodeDiscoveryResult parseNodeDiscovery(Map<String, Object> arguments,
+            Map<String, String> submittedWindows, java.util.Set<String> authoritativeLabels) {
+        try {
+            if (arguments == null || !arguments.keySet().equals(java.util.Set.of("nodeTypes"))
+                    || !(arguments.get("nodeTypes") instanceof List<?> rows) || rows.size() > 32) {
+                throw new IllegalArgumentException("nodeTypes must be the only field, an array of at most 32 objects");
+            }
+            List<Map<String, String>> definitions = new ArrayList<>();
+            Map<CorpusSchemaUnifier.TypeProposal, List<NodeEvidence>> evidence = new LinkedHashMap<>();
+            for (Object row : rows) {
+                if (!(row instanceof Map<?, ?> fields)
+                        || !(fields.get("label") instanceof String label) || label.isBlank()
+                        || !(fields.get("parentType") instanceof String parent) || parent.isBlank()) {
+                    throw new IllegalArgumentException("[SCHEMA_TYPE_ONLY] nodeTypes entries must contain exactly label and parentType strings, plus evidence for novel proposals");
+                }
+                boolean authoritative = authoritativeLabels.contains(canonicalSchemaName(label));
+                boolean legacy = fields.keySet().equals(java.util.Set.of("label", "parentType"));
+                if (!(fields.keySet().equals(java.util.Set.of("label", "parentType", "evidence"))
+                        || (authoritative && legacy))) {
+                    throw new IllegalArgumentException("novel nodeTypes entries require exactly label, parentType and evidence");
+                }
+                if (!legacy) {
+                    if (!(fields.get("evidence") instanceof List<?> spans) || spans.isEmpty() || spans.size() > 2) {
+                        throw new IllegalArgumentException("evidence must contain 1 or 2 sourceId/quote objects");
+                    }
+                    List<NodeEvidence> validated = new ArrayList<>();
+                    for (Object span : spans) {
+                        if (!(span instanceof Map<?, ?> item)
+                                || !item.keySet().equals(java.util.Set.of("sourceId", "quote"))
+                                || !(item.get("sourceId") instanceof String sourceId)
+                                || !(item.get("quote") instanceof String quote)
+                                || quote.isBlank() || quote.length() > 1024
+                                || !submittedWindows.containsKey(sourceId)
+                                || !submittedWindows.get(sourceId).contains(quote)) {
+                            throw new IllegalArgumentException("evidence requires a known sourceId and exact nonblank bounded quote from its submitted window; no offsets");
+                        }
+                        NodeEvidence checked = new NodeEvidence(sourceId, quote);
+                        if (!validated.contains(checked)) validated.add(checked);
+                    }
+                    if (!authoritative) {
+                        var proposal = new CorpusSchemaUnifier.TypeProposal(
+                                canonicalSchemaName(label), canonicalSchemaName(parent));
+                        List<NodeEvidence> retained = evidence.computeIfAbsent(proposal, ignored -> new ArrayList<>());
+                        for (NodeEvidence span : validated) {
+                            if (!retained.contains(span)) {
+                                if (retained.size() == 2) {
+                                    throw new IllegalArgumentException("a proposal may cite at most 2 distinct evidence spans, including duplicate rows");
+                                }
+                                retained.add(span);
+                            }
+                        }
+                    }
+                }
+                // Authoritative metadata is ignored later; repeated legacy labels cannot conflict
+                // with one another and thereby erase a valid novel proposal in the same response.
+                if (!authoritative || definitions.stream().noneMatch(definition ->
+                        canonicalSchemaName(definition.get("label")).equals(canonicalSchemaName(label)))) {
+                    definitions.add(Map.of("label", label, "parentType", parent));
+                }
+            }
+            return new NodeDiscoveryResult(parse(Map.of("nodeTypes", definitions)), evidence);
+        } catch (IllegalArgumentException invalid) {
+            return new NodeDiscoveryResult(new ParseResult(null,
+                    List.of(invalid.getMessage().startsWith("[SCHEMA_TYPE_ONLY]")
+                            ? conciseErrorMessage(invalid)
+                            : "[SCHEMA_NODE_EVIDENCE] " + conciseErrorMessage(invalid))), Map.of());
+        }
+    }
+
     static ParseResult parse(String rawResponse) {
         if (rawResponse == null || rawResponse.isBlank()) {
             return new ParseResult(null, List.of("[SCHEMA_RESPONSE] Model response was blank"));

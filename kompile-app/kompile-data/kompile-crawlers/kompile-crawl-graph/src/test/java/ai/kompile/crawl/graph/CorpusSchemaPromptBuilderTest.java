@@ -34,6 +34,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CorpusSchemaPromptBuilderTest {
 
     @Test
+    void nodeDiscoveryRequiresEvidenceWithoutConflictingProhibitions() {
+        String prompt = CorpusSchemaPromptBuilder.build(Map.of("window", "A researcher catalogued a specimen."),
+                null, CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);
+        assertTrue(prompt.contains("sourceId"));
+        assertTrue(prompt.contains("quote"));
+        assertTrue(prompt.contains("negation"));
+        assertTrue(prompt.contains("hypothetical"));
+        assertTrue(prompt.contains("provenance"));
+        assertFalse(prompt.contains("triples, evidence, ids"));
+        assertFalse(prompt.contains("Never return descriptions, instance names, values, sentences"));
+    }
+
+    @Test
+    void discoverySourceIdsMapToExactSubmittedWindowsWithoutTruncatedIdCollisions() throws Exception {
+        Map<String, String> passages = new LinkedHashMap<>();
+        passages.put("same-prefix".repeat(20) + "a", "x".repeat(1024) + "excluded");
+        passages.put("same-prefix".repeat(20) + "b", "second window");
+        var windows = CorpusSchemaPromptBuilder.nodeDiscoveryWindows(passages);
+        assertEquals(List.of("s1", "s2"), List.copyOf(windows.keySet()));
+        assertEquals("x".repeat(1024), windows.get("s1"));
+        assertEquals("second window", windows.get("s2"));
+        String prompt = CorpusSchemaPromptBuilder.build(passages, null, CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);
+        String json = prompt.substring(prompt.indexOf("UNTRUSTED_CORPUS_PASSAGES_JSON=")
+                + "UNTRUSTED_CORPUS_PASSAGES_JSON=".length()).trim();
+        var rows = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        for (var row : rows) assertEquals(windows.get(row.get("sourceId").asText()), row.get("content").asText());
+        assertFalse(prompt.contains("excluded"));
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(Map.of(
+                "label", "CATEGORY", "parentType", "CONCEPT", "evidence", List.of(Map.of("sourceId", "s1", "quote", "excluded"))))), windows, java.util.Set.of());
+        assertFalse(result.parsed().valid());
+    }
+
+    @Test
     void preservesPassageOrderAndRendersOutputContract() {
         Map<String, String> passages = new LinkedHashMap<>();
         passages.put("chunk-b", "Second passage");
@@ -57,6 +90,42 @@ class CorpusSchemaPromptBuilderTest {
         assertFalse(prompt.contains("\"patterns\""));
         assertFalse(prompt.contains("sourceType"));
         assertFalse(prompt.contains("targetType"));
+    }
+
+    @Test
+    void discoveryDoesNotInjectAnUnsupportedExamplePredicate() {
+        String corpus = "A researcher catalogued a specimen.";
+        GraphSchema baseline = ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary
+                .baselineSchema();
+        String nodePrompt = CorpusSchemaPromptBuilder.build(
+                Map.of("observation", corpus), baseline,
+                CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);
+        String relationshipPrompt = CorpusSchemaPromptBuilder.build(
+                Map.of("observation", corpus), baseline,
+                CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES);
+
+        assertTrue(relationshipPrompt.contains("Derive each predicate from an action or relationship stated in the corpus"));
+        assertFalse(relationshipPrompt.contains("EMAILED"),
+                "Instructions must not introduce a predicate absent from the corpus and schema");
+        for (String prompt : List.of(nodePrompt, relationshipPrompt)) {
+            assertTrue(prompt.contains("\"content\":\"" + corpus + "\""),
+                    "Both discovery passes must retain the complete source passage");
+        }
+    }
+
+    @Test
+    void nodeDiscoveryPreservesSpecificCorpusCategoriesWithoutRepeatingParents() {
+        String prompt = CorpusSchemaPromptBuilder.build(
+                Map.of("observation", "A researcher catalogued a specimen."),
+                ai.kompile.core.graphrag.model.schema.SchemaHierarchyVocabulary.baselineSchema(),
+                CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);
+
+        assertTrue(prompt.contains("Preserve a stated domain category as a new subtype"));
+        assertTrue(prompt.contains("different from its label"));
+        assertTrue(prompt.contains("omit it rather than returning it again"));
+        assertFalse(prompt.contains("Use a baseline type itself"));
+        assertFalse(prompt.contains("COMPANY"));
+        assertFalse(prompt.contains("FOUNDED"));
     }
 
     @Test
@@ -356,7 +425,9 @@ class CorpusSchemaPromptBuilderTest {
         assertTrue(prompt.contains("bind_relationship_signatures"));
         assertTrue(prompt.contains("RELATIONSHIP_ID|SOURCE_ID|TARGET_ID|EVIDENCE_ID"));
         assertTrue(prompt.contains("1-based position in the corresponding exact option array"));
-        assertTrue(prompt.contains("Format example only (not a fact or type answer): s=1|2|3|4"));
+        assertFalse(prompt.contains("s=1|2|3|4"), "Do not seed an answer-shaped signature unrelated to the corpus");
+        assertTrue(prompt.contains("SOURCE_ID and TARGET_ID both index endpointIds"));
+        assertTrue(prompt.contains("look up each category's 1-based endpointIds position independently"));
         assertTrue(prompt.contains("SPECIAL_PERSON"));
         assertTrue(prompt.contains("Multiple valid signatures"));
         assertFalse(prompt.contains("submit_graph_delta"));

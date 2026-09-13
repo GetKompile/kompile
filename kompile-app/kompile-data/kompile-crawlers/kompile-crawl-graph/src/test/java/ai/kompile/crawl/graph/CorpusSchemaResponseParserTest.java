@@ -30,6 +30,94 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CorpusSchemaResponseParserTest {
 
     @Test
+    void discoveryPreservesAndDeduplicatesExactEvidenceAlongsideProposal() {
+        var span = Map.of("sourceId", "s1", "quote", "a specimen");
+        var row = Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY", "evidence", List.of(span, span));
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(row, row)),
+                Map.of("s1", "A researcher catalogued a specimen."), java.util.Set.of());
+        assertTrue(result.parsed().valid(), result.parsed().errors().toString());
+        assertEquals(1, result.parsed().schema().getNodeTypes().size());
+        assertEquals(1, result.evidence().size());
+        assertEquals(1, result.evidence().values().iterator().next().size());
+        assertEquals("a specimen", result.evidence().values().iterator().next().get(0).quote());
+    }
+
+    @Test
+    void evidenceUsesTheSameCanonicalProposalIdentityAsTheSchema() {
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(Map.of(
+                "label", "research-record", "parentType", "document", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", "research record"))))),
+                Map.of("s1", "research record"), java.util.Set.of());
+        assertTrue(result.parsed().valid());
+        var node = result.parsed().schema().getNodeTypes().get(0);
+        assertTrue(result.evidence().containsKey(new CorpusSchemaUnifier.TypeProposal(node.getLabel(), node.getParentType())));
+    }
+
+    @Test
+    void duplicateRowsCannotSilentlyDiscardEvidenceBeyondTheProposalBound() {
+        var rows = List.of(
+                Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY", "evidence", List.of(
+                        Map.of("sourceId", "s1", "quote", "one"), Map.of("sourceId", "s1", "quote", "two"))),
+                Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY", "evidence", List.of(
+                        Map.of("sourceId", "s1", "quote", "three"))));
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", rows),
+                Map.of("s1", "one two three"), java.util.Set.of());
+        assertFalse(result.parsed().valid());
+        assertTrue(result.parsed().errors().toString().contains("at most 2 distinct evidence spans"));
+    }
+
+    @Test
+    void discoveryRejectsMissingMalformedFabricatedAndOutOfWindowEvidence() {
+        List<Object> badEvidence = List.of(List.of(), "text", List.of(Map.of("sourceId", "unknown", "quote", "specimen")),
+                List.of(Map.of("sourceId", "s1", "quote", "fabricated")),
+                List.of(Map.of("sourceId", "s1", "quote", " ")),
+                List.of(Map.of("sourceId", "s1", "quote", "x".repeat(1025))),
+                List.of(Map.of("sourceId", "s1", "quote", "specimen", "offset", 0)),
+                List.of(Map.of("sourceId", "s1", "quote", "specimen"), Map.of("sourceId", "s1", "quote", "specimen"), Map.of("sourceId", "s1", "quote", "specimen")));
+        for (Object evidence : badEvidence) {
+            var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(
+                    Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY", "evidence", evidence))),
+                    Map.of("s1", "specimen"), java.util.Set.of());
+            assertFalse(result.parsed().valid(), evidence.toString());
+            assertTrue(result.parsed().errors().toString().contains("SCHEMA_NODE_EVIDENCE"));
+        }
+        assertFalse(CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(
+                Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY"))),
+                Map.of("s1", "specimen"), java.util.Set.of()).parsed().valid());
+    }
+
+    @Test
+    void quoteValidationIsProvenanceNotSemanticTruthOrANegationHeuristic() {
+        String quote = "The subject is not a researcher; a hypothetical researcher was mentioned.";
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(Map.of(
+                "label", "RESEARCHER", "parentType", "PERSON", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", quote))))), Map.of("s1", quote), java.util.Set.of());
+        assertTrue(result.parsed().valid(), "The host verifies quotation provenance, not classification entailment");
+        assertEquals(quote, result.evidence().values().iterator().next().get(0).quote());
+        assertTrue(result.parsed().schema().getPatterns() == null || result.parsed().schema().getPatterns().isEmpty());
+    }
+
+    @Test
+    void discoveryKeepsLegacyAuthoritativeRepetitionsAndExplicitEmptyNonfatal() {
+        var baseline = Map.of("label", "PERSON", "parentType", "PERSON");
+        var novel = Map.of("label", "RESEARCHER", "parentType", "PERSON", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", "researcher")));
+        for (List<?> rows : List.of(List.of(), List.of(baseline), List.of(baseline, novel))) {
+            var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", rows),
+                    Map.of("s1", "researcher"), java.util.Set.of("PERSON"));
+            assertTrue(result.parsed().valid(), result.parsed().errors().toString());
+            assertEquals(rows.size(), result.parsed().schema().getNodeTypes().size());
+            assertEquals(rows.contains(novel) ? 1 : 0, result.evidence().size());
+        }
+        assertFalse(CorpusSchemaResponseParser.parseNodeDiscovery(Map.of(), Map.of("s1", "text"),
+                java.util.Set.of()).parsed().valid());
+        assertFalse(CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", java.util.Collections.nCopies(33, novel)),
+                Map.of("s1", "researcher"), java.util.Set.of()).parsed().valid());
+        // The existing generic path remains a two-field contract (consolidation).
+        assertTrue(CorpusSchemaResponseParser.parse(Map.of("nodeTypes", List.of(baseline))).valid());
+    }
+
+    @Test
     void parsesPlainGraphSchemaJson() {
         String rawJson = """
                 {

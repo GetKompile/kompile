@@ -1492,7 +1492,7 @@ class ModelToCrawlJvmIT {
                         "MODEL_TO_CRAWL_SCHEMA_REQUEST call=%d tools=%s messages=%s%n",
                         call,
                         request.tools().stream().map(StructuredChatLanguageModel.Tool::name).toList(),
-                        bounded(request.messages().toString()));
+                        request.messages());
             }
             if (foundingDocument) {
                 StructuredChatLanguageModel.Tool submit = request.tools().stream()
@@ -1558,7 +1558,7 @@ class ModelToCrawlJvmIT {
                     System.err.printf("MODEL_TO_CRAWL_SCHEMA_RESPONSE call=%d tools=%s response=%s%n",
                             call, request.tools().stream()
                                     .map(StructuredChatLanguageModel.Tool::name).toList(),
-                            bounded(response.toString()));
+                            response);
                 }
                 lastResponseSummary = "raw=" + bounded(response.rawText())
                         + ", content=" + bounded(response.content())

@@ -150,7 +150,8 @@ class CorpusSchemaPrepassIntegrationTest {
             StructuredChatLanguageModel.Request request = invocation.getArgument(0);
             String tool = request.tools().get(0).name();
             String json = CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)
-                    ? "{\"nodeTypes\":[{\"label\":\"FORECAST\",\"parentType\":\"CONCEPT\"}]}"
+                    ? MAPPER.writeValueAsString(CorpusSchemaUnifierTest.withDiscoveryEvidence(
+                            request, nodeResponse(List.of("FORECAST"))).toolCalls().get(0).arguments())
                     : "{\"relationshipTypes\":[]}";
             return new StructuredChatLanguageModel.Response(json, json, List.of(), List.of());
         });
@@ -435,7 +436,7 @@ class CorpusSchemaPrepassIntegrationTest {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
-                        return nodeResponse;
+                        return CorpusSchemaUnifierTest.withDiscoveryEvidence(request, nodeResponse);
                     }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return relationshipResponse;

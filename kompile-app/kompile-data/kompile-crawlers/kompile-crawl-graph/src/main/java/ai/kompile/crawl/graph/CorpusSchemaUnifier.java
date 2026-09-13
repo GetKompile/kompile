@@ -1386,10 +1386,21 @@ final class CorpusSchemaUnifier {
                                     attempt, maxValidationRetries + 1);
                     CrawlLlmDispatcher.LlmCallScope scope = schemaScope(
                             job, corpusSnapshotId, pass, batchIndex + 1, attempt);
+                    Map<String, String> windows = pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES
+                            ? CorpusSchemaPromptBuilder.nodeDiscoveryWindows(batches.get(batchIndex)) : Map.of();
+                    Map<TypeProposal, List<CorpusSchemaResponseParser.NodeEvidence>> batchEvidence = new LinkedHashMap<>();
                     CorpusSchemaResponseParser.ParseResult parsed = parseStructured(
                             dispatcher.promptStructuredWithCapacityFallback(
-                                    structuredRequest(prompt, pass, false, ontology.snapshot()), TASK_TYPE, job, scope),
-                            pass);
+                                    structuredRequest(prompt, pass, false, ontology.snapshot(), windows.keySet()), TASK_TYPE, job, scope),
+                            pass, arguments -> {
+                                if (pass != CorpusSchemaPromptBuilder.TypePass.NODE_TYPES) {
+                                    return parseTypeArguments(arguments, pass);
+                                }
+                                var discovery = CorpusSchemaResponseParser.parseNodeDiscovery(
+                                        arguments, windows, typeNames(pass, ontology.snapshot()));
+                                batchEvidence.putAll(discovery.evidence());
+                                return discovery.parsed();
+                            });
                     if (!parsed.valid()) {
                         validationErrors = conciseValidationErrors(parsed.errors());
                     } else {
@@ -1397,9 +1408,21 @@ final class CorpusSchemaUnifier {
                                 pass, parsed.schema(), ontology.snapshot());
                         List<String> errors = typeResponseErrors(
                                 pass, novelTypes, ontology.snapshot(), false, Set.of());
+                        logDiscoveryOutcome(pass, parsed.schema(), novelTypes, ontology.snapshot(),
+                                errors, job.getJobId(), corpusSnapshotId, batchIndex + 1, attempt);
                         if (errors.isEmpty()) {
-                            addProposalSupport(
-                                    pass, novelTypes, ontology.snapshot(), proposalSupport);
+                            // Evidence accompanies the proposal, never its support key. One batch
+                            // contributes at most once regardless of repeated rows or evidence spans.
+                            if (pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES) {
+                                for (TypeProposal proposal : new LinkedHashSet<>(typeProposals(pass, novelTypes))) {
+                                    if (!batchEvidence.containsKey(proposal)) {
+                                        throw new IllegalStateException("[SCHEMA_NODE_EVIDENCE] Missing validated evidence for " + proposal);
+                                    }
+                                    proposalSupport.merge(proposal, 1, Integer::sum);
+                                }
+                            } else {
+                                addProposalSupport(pass, novelTypes, ontology.snapshot(), proposalSupport);
+                            }
                             batchSucceeded = true;
                             break;
                         }
@@ -1436,6 +1459,37 @@ final class CorpusSchemaUnifier {
         }
         return java.util.Collections.unmodifiableMap(
                 new LinkedHashMap<>(proposalSupport));
+    }
+
+    /**
+     * Report the response before filtering erases the distinction between abstention and repetition.
+     * These are discovery candidates, not grounded/consolidated additions to the final schema.
+     * Repetition remains non-fatal for compatibility and never triggers an additional model call.
+     */
+    private static void logDiscoveryOutcome(
+            CorpusSchemaPromptBuilder.TypePass pass,
+            GraphSchema response,
+            GraphSchema novelTypes,
+            GraphSchema establishedSchema,
+            List<String> errors,
+            String jobId,
+            String corpusSnapshotId,
+            int batch,
+            int attempt) {
+        List<String> returned = typeLabels(pass, response);
+        Set<String> authoritative = typeNames(pass, establishedSchema);
+        long repeated = returned.stream().map(CorpusSchemaUnifier::canonicalName)
+                .filter(authoritative::contains).count();
+        int novel = typeLabels(pass, novelTypes).size();
+        String outcome = !errors.isEmpty() ? "INVALID"
+                : returned.isEmpty() ? "EXPLICIT_EMPTY"
+                : repeated == returned.size() ? "AUTHORITATIVE_ONLY"
+                : novel == 0 ? "FILTERED_ONLY"
+                : repeated > 0 ? "MIXED_PROPOSALS" : "NOVEL_PROPOSALS";
+        log.info("[SCHEMA_DISCOVERY_OUTCOME] job={} snapshot={} pass={} batch={} attempt={} "
+                        + "outcome={} returned={} repeatedAuthoritative={} novelCandidates={} validationErrors={}",
+                jobId, corpusSnapshotId, pass, batch, attempt, outcome,
+                returned.size(), repeated, novel, errors);
     }
 
     private static GraphSchema consolidateTypeProposals(
@@ -1590,6 +1644,12 @@ final class CorpusSchemaUnifier {
             CorpusSchemaPromptBuilder.TypePass pass,
             boolean consolidation,
             GraphSchema establishedSchema) {
+        return structuredRequest(prompt, pass, consolidation, establishedSchema, Set.of());
+    }
+
+    private static StructuredChatLanguageModel.Request structuredRequest(
+            String prompt, CorpusSchemaPromptBuilder.TypePass pass, boolean consolidation,
+            GraphSchema establishedSchema, Set<String> sourceIds) {
         String action = consolidation ? "Consolidate untrusted proposals into" : "Define";
         String systemPrompt = pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES
                 ? action + " reusable node schema types only. Do not extract entities or relations. "
@@ -1608,6 +1668,11 @@ final class CorpusSchemaUnifier {
                         allowedParentTypes(establishedSchema, null, Map.of()),
                         "One reusable node category in UPPER_SNAKE_CASE; never an instance name or value.")
                 : RELATIONSHIP_TYPE_TOOL_PARAMETERS;
+        if (!consolidation && pass == CorpusSchemaPromptBuilder.TypePass.NODE_TYPES) {
+            description = "Submit missing reusable node types with parentType and exact sourceId/quote evidence. "
+                    + "Evidence proves provenance only, not semantic truth. Never extract instances, triples or endpoint patterns.";
+            parameters = nodeDiscoveryToolParameters(establishedSchema, sourceIds);
+        }
         return new StructuredChatLanguageModel.Request(
                 List.of(
                         new StructuredChatLanguageModel.Message("system", systemPrompt),
@@ -1623,6 +1688,13 @@ final class CorpusSchemaUnifier {
     private static CorpusSchemaResponseParser.ParseResult parseStructured(
             StructuredChatLanguageModel.Response response,
             CorpusSchemaPromptBuilder.TypePass pass) {
+        return parseStructured(response, pass, arguments -> parseTypeArguments(arguments, pass));
+    }
+
+    private static CorpusSchemaResponseParser.ParseResult parseStructured(
+            StructuredChatLanguageModel.Response response,
+            CorpusSchemaPromptBuilder.TypePass pass,
+            java.util.function.Function<Map<String, Object>, CorpusSchemaResponseParser.ParseResult> parser) {
         if (response == null) {
             return new CorpusSchemaResponseParser.ParseResult(
                     null, List.of("[SCHEMA_RESPONSE] Structured model response was null"));
@@ -1631,7 +1703,7 @@ final class CorpusSchemaUnifier {
         List<StructuredChatLanguageModel.ToolCall> calls = response.toolCalls().stream()
                 .filter(java.util.Objects::nonNull).toList();
         if (calls.size() == 1 && expectedTool.equals(calls.get(0).name())) {
-            return parseTypeArguments(calls.get(0).arguments(), pass);
+            return parser.apply(calls.get(0).arguments());
         }
         if (calls.isEmpty() && response.content() != null && !response.content().isBlank()) {
             try {
@@ -1643,7 +1715,7 @@ final class CorpusSchemaUnifier {
                     }
                     arguments.put(key, entry.getValue());
                 }
-                return parseTypeArguments(arguments, pass);
+                return parser.apply(arguments);
             } catch (Exception invalidJson) {
                 return new CorpusSchemaResponseParser.ParseResult(
                         null, List.of("[SCHEMA_JSON] Native schema response was not a valid "
@@ -2090,6 +2162,20 @@ final class CorpusSchemaUnifier {
             end--;
         }
         return end;
+    }
+
+    private static Map<String, Object> nodeDiscoveryToolParameters(
+            GraphSchema establishedSchema, Set<String> sourceIds) {
+        Map<String, Object> span = objectSchema(Map.of(
+                "sourceId", Map.of("type", "string", "enum", List.copyOf(sourceIds)),
+                "quote", Map.of("type", "string", "minLength", 1, "maxLength", 1024)),
+                List.of("sourceId", "quote"));
+        Map<String, Object> item = objectSchema(Map.of(
+                "label", schemaNameSchema("A reusable corpus-derived category, never an instance."),
+                "parentType", Map.of("type", "string", "enum", allowedParentTypes(establishedSchema, null, Map.of())),
+                "evidence", Map.of("type", "array", "minItems", 1, "maxItems", 2,
+                        "uniqueItems", true, "items", span)), List.of("label", "parentType", "evidence"));
+        return objectSchema(Map.of("nodeTypes", uniqueTypeArraySchema(item)), List.of("nodeTypes"));
     }
 
     private static Map<String, Object> classifiedTypeToolParameters(
