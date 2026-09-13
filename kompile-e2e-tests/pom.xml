@@ -18,6 +18,12 @@
     <surefire.excludedGroups>integration,e2e,subprocess,pipeline</surefire.excludedGroups>
     <!-- Test-only backend selector; distribution builds keep their existing backend wiring. -->
     <backend.artifactId>${nd4j.backend}</backend.artifactId>
+    <!-- Pinned-host failover budget (MB) for CudaMemoryPool; the 4,799-token
+         crawl_documents prefill exhausts the 24 GiB card at its 23,000 MiB cap
+         and spills ~14.5 GB of live intermediates to host. 32 GB (validated
+         proc-268: matrix 32/32) covers the tail; 16 GB (proc-267) died at slot
+         3751. Overridable via -Dsd.cuda.pinnedHostLimit=... -->
+    <sd.cuda.pinnedHostLimit>32768</sd.cuda.pinnedHostLimit>
   </properties>
 
   <dependencyManagement>
@@ -456,6 +462,18 @@
                IT with cold Triton compile + full retry cycle runs ~50-60 min,
                so 60 min is the working bound; kill anything beyond that. -->
           <forkedProcessTimeoutInSeconds>3600</forkedProcessTimeoutInSeconds>
+          <!-- Pinned-host failover budget for CudaMemoryPool (MB). The 4,799-token
+               crawl_documents prefill needs ~14.5 GB of simultaneously-live
+               intermediates on top of the ~8 GB model; the 24 GiB GPU card under
+               its 23,000 MiB cap exhausts and this spill budget completes the
+               call (validated: 32 GB passes, 16 GB dies at slot 3751). Spill
+               counts against JavaCPP physical bytes — run this module with
+               -Dorg.bytedeco.javacpp.maxphysicalbytes=128g or equivalent.
+               Mirrors platform-tests' sd.cuda.pinnedHostLimit wiring. Override
+               via -Dsd.cuda.pinnedHostLimit. -->
+          <environmentVariables>
+            <SD_CUDA_PINNED_HOST_LIMIT>${sd.cuda.pinnedHostLimit}</SD_CUDA_PINNED_HOST_LIMIT>
+          </environmentVariables>
         </configuration>
         <executions>
           <execution>
