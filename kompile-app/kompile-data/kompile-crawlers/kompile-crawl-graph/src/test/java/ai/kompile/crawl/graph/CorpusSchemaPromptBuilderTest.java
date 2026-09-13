@@ -122,7 +122,7 @@ class CorpusSchemaPromptBuilderTest {
 
         assertTrue(prompt.contains("Preserve a stated domain category as a new subtype"));
         assertTrue(prompt.contains("different from its label"));
-        assertTrue(prompt.contains("omit it rather than returning it again"));
+        assertTrue(prompt.contains("only when its exact label is the most specific supported category"));
         assertFalse(prompt.contains("Use a baseline type itself"));
         assertFalse(prompt.contains("COMPANY"));
         assertFalse(prompt.contains("FOUNDED"));
