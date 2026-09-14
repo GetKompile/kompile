@@ -236,6 +236,7 @@ final class CorpusSchemaUnifier {
                 .map(CorpusTopicEvidence.TopicBinding::topicId)
                 .distinct().count() == topicEvidence.topics().size();
         List<Map<String, String>> signatureBatches = modelPassageBatches(passageTexts);
+        Map<String, String> observedEntityTypes = new LinkedHashMap<>();
         if (!allTopicsBound) {
             // Topic binding is a precision improvement, not a reason to drop text. When only some
             // topics bind, run the existing type passes over the unbound topic passages. A fully bound
@@ -255,7 +256,7 @@ final class CorpusSchemaUnifier {
             runTypePass(
                     CorpusSchemaPromptBuilder.TypePass.NODE_TYPES,
                     batches, ontology, boundTopicEvidence, job, corpusSnapshotId,
-                    dispatcher, maxValidationRetries);
+                    dispatcher, maxValidationRetries, observedEntityTypes);
             runTypePass(
                     CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
                     batches, ontology, boundTopicEvidence, job, corpusSnapshotId,
@@ -264,7 +265,7 @@ final class CorpusSchemaUnifier {
 
         addMissingRelationshipSignatures(
                 ontology, establishedSchema, signatureBatches, job,
-                corpusSnapshotId, dispatcher, maxValidationRetries);
+                corpusSnapshotId, dispatcher, maxValidationRetries, observedEntityTypes);
 
         // Preserve an explicit empty relationship vocabulary as closed. Null means unspecified/open;
         // an empty list means the prepass found no allowed predicates and later extraction must abstain.
@@ -285,11 +286,28 @@ final class CorpusSchemaUnifier {
             String corpusSnapshotId,
             CrawlLlmDispatcher dispatcher,
             int maxValidationRetries) {
+        runTypePass(pass, batches, ontology, topicEvidence, job, corpusSnapshotId,
+                dispatcher, maxValidationRetries, new LinkedHashMap<>());
+    }
+
+    private static void runTypePass(
+            CorpusSchemaPromptBuilder.TypePass pass,
+            List<Map<String, String>> batches,
+            CrawlOntology ontology,
+            CorpusTopicEvidence topicEvidence,
+            UnifiedCrawlJob job,
+            String corpusSnapshotId,
+            CrawlLlmDispatcher dispatcher,
+            int maxValidationRetries,
+            Map<String, String> observedEntityTypes) {
         Map<TypeProposal, Integer> proposalSupport = discoverTypeProposals(
                 pass, batches, ontology, topicEvidence, job, corpusSnapshotId,
-                dispatcher, maxValidationRetries);
+                dispatcher, maxValidationRetries, observedEntityTypes);
         proposalSupport = evidenceGroundedProposals(
                 proposalSupport, batches, topicEvidence);
+        if (pass == CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES) {
+            proposalSupport = normalizeVerbVariants(proposalSupport);
+        }
         if (proposalSupport.isEmpty()) {
             return;
         }
@@ -431,7 +449,8 @@ final class CorpusSchemaUnifier {
             UnifiedCrawlJob job,
             String corpusSnapshotId,
             CrawlLlmDispatcher dispatcher,
-            int maxValidationRetries) {
+            int maxValidationRetries,
+            Map<String, String> observedEntityTypes) {
         GraphSchema frozen = ontology.snapshot();
         Set<String> authoritativeRelations = typeNames(
                 CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES, authoritativeSchema);
@@ -445,12 +464,22 @@ final class CorpusSchemaUnifier {
                 .toList();
         if (relationCandidates.isEmpty()) return;
 
+        // Prioritize endpoint options by classification-observed types. The signature pass's
+        // role framing makes the model draw unrelated types (observed: EVENT, CONCEPT) from a
+        // full-vocabulary table; evidence-anchored ordering keeps the types the corpus actually
+        // classified in the same options table, without removing any trusted type.
         List<String> endpointValues = typeLabels(
                 CorpusSchemaPromptBuilder.TypePass.NODE_TYPES, frozen).stream()
                 .map(CorpusSchemaUnifier::canonicalName)
                 .distinct()
                 .sorted()
                 .toList();
+        Set<String> observedLabels = new LinkedHashSet<>();
+        for (String label : observedEntityTypes.values()) {
+            if (hasText(label)) observedLabels.add(label);
+        }
+        List<String> orderedEndpoints = new ArrayList<>(observedLabels);
+        endpointValues.stream().filter(v -> !observedLabels.contains(v)).forEach(orderedEndpoints::add);
         List<String> evidenceValues = endpointEvidenceValues(batches);
         if (endpointValues.isEmpty() || evidenceValues.isEmpty()) {
             log.warn("Abstaining newly discovered relationships without grounded endpoint evidence: {}",
@@ -458,18 +487,33 @@ final class CorpusSchemaUnifier {
             return;
         }
 
+        // Deterministic host-side derivation first: when the classification sample observed
+        // exactly two typed entities whose surface forms co-occur with the relation verb in one
+        // passage (name before verb = source, name after = target), the signature follows from
+        // the same evidence the model call would use — without exposing an option table the
+        // model can misread. Predicates this derivation cannot ground fall through to the
+        // bounded model fallback below.
+        Set<String> acceptedPatterns = new LinkedHashSet<>();
+        List<String> failures = new ArrayList<>();
+        List<String> modelPredicates = new ArrayList<>();
+        for (String relation : relationCandidates) {
+            String derived = derivedSignatureFromObservedEntities(
+                    relation, batches, observedEntityTypes, frozen);
+            if (hasText(derived)) {
+                acceptedPatterns.add(derived);
+            } else {
+                modelPredicates.add(relation);
+            }
+        }
         List<EndpointSignatureOptions> optionBatches = endpointSignatureOptionBatches(
-                relationCandidates, endpointValues, evidenceValues);
+                modelPredicates, orderedEndpoints, evidenceValues);
         if (optionBatches.size() > MAX_ENDPOINT_SIGNATURE_BATCHES) {
             throw new IllegalStateException("Endpoint signature batch budget exceeded: "
                     + optionBatches.size() + " > " + MAX_ENDPOINT_SIGNATURE_BATCHES
-                    + " (predicates=" + relationCandidates.size()
+                    + " (predicates=" + modelPredicates.size()
                     + ", endpointTypes=" + endpointValues.size()
                     + ", evidence=" + evidenceValues.size() + ")");
         }
-
-        Set<String> acceptedPatterns = new LinkedHashSet<>();
-        List<String> failures = new ArrayList<>();
         for (int batchIndex = 0; batchIndex < optionBatches.size(); batchIndex++) {
             EndpointSignatureOptions options = optionBatches.get(batchIndex);
             String basePrompt = CorpusSchemaPromptBuilder.buildEndpointSignatureBinding(
@@ -790,6 +834,59 @@ final class CorpusSchemaUnifier {
             }
         }
         return List.copyOf(values);
+    }
+
+    /**
+     * Derives a directed endpoint signature host-side when the classification sample observed
+     * exactly two typed entities whose surface forms and the relation verb co-occur in one
+     * passage: the name before the verb is the source, the name after it the target. Returns
+     * null when the corpus does not support this derivation — the bounded model fallback then
+     * handles the predicate.
+     */
+    private static String derivedSignatureFromObservedEntities(
+            String relation,
+            List<Map<String, String>> batches,
+            Map<String, String> observedEntityTypes,
+            GraphSchema frozen) {
+        if (observedEntityTypes.size() != 2 || !hasText(relation)) {
+            return null;
+        }
+        String verbStem = relation.toLowerCase(Locale.ROOT).replace('_', ' ').trim();
+        if (!hasText(verbStem)) return null;
+        java.util.Iterator<Map.Entry<String, String>> it =
+                observedEntityTypes.entrySet().iterator();
+        Map.Entry<String, String> first = it.next();
+        Map.Entry<String, String> second = it.next();
+        String nameA = first.getKey();
+        String nameB = second.getKey();
+        String typeA = canonicalName(first.getValue());
+        String typeB = canonicalName(second.getValue());
+        if (!hasText(typeA) || !hasText(typeB)) return null;
+        Set<String> frozenLabels = typeLabels(
+                CorpusSchemaPromptBuilder.TypePass.NODE_TYPES, frozen).stream()
+                .map(CorpusSchemaUnifier::canonicalName)
+                .collect(Collectors.toSet());
+        if (!frozenLabels.contains(typeA) || !frozenLabels.contains(typeB)) return null;
+        for (Map<String, String> batch : batches) {
+            if (batch == null) continue;
+            for (String passage : batch.values()) {
+                if (!hasText(passage)) continue;
+                String lower = passage.toLowerCase(Locale.ROOT);
+                // The clause containing the verb is what expresses the relation: names recur
+                // across a multi-sentence passage, so use the occurrence nearest the verb —
+                // lastIndexOf for the source candidate (before the verb) and the first target
+                // occurrence after the verb for the target candidate.
+                int posVerb = lower.indexOf(verbStem);
+                if (posVerb < 0) continue;
+                int posA = lower.lastIndexOf(nameA.toLowerCase(Locale.ROOT), posVerb);
+                int posB = lower.indexOf(nameB.toLowerCase(Locale.ROOT), posVerb);
+                if (posA < 0 || posB < 0) continue;
+                String sourceType = typeA;
+                String targetType = typeB;
+                return "(" + sourceType + ")-[:" + relation + "]->(" + targetType + ")";
+            }
+        }
+        return null;
     }
 
     private static boolean evidenceGroundedInBatches(
@@ -1372,7 +1469,8 @@ final class CorpusSchemaUnifier {
             UnifiedCrawlJob job,
             String corpusSnapshotId,
             CrawlLlmDispatcher dispatcher,
-            int maxValidationRetries) {
+            int maxValidationRetries,
+            Map<String, String> observedEntityTypes) {
         List<String> failures = new ArrayList<>();
         Map<TypeProposal, Integer> proposalSupport = new LinkedHashMap<>();
         for (int batchIndex = 0; batchIndex < batches.size(); batchIndex++) {
@@ -1402,7 +1500,8 @@ final class CorpusSchemaUnifier {
                         // identically. Failure here is non-fatal for the whole crawl.
                         bootstrapCandidates = classificationSampleProposals(
                                 windows, ontology.snapshot(), batchEvidence, proposalSupport,
-                                job, corpusSnapshotId, batchIndex + 1, dispatcher);
+                                job, corpusSnapshotId, batchIndex + 1, dispatcher,
+                                observedEntityTypes);
                     }
                     CorpusSchemaResponseParser.ParseResult parsed = parseStructured(
                             dispatcher.promptStructuredWithCapacityFallback(
@@ -1493,7 +1592,8 @@ final class CorpusSchemaUnifier {
             UnifiedCrawlJob job,
             String corpusSnapshotId,
             int batchIndex,
-            CrawlLlmDispatcher dispatcher) {
+            CrawlLlmDispatcher dispatcher,
+            Map<String, String> observedEntityTypes) {
         try {
             String prompt = CorpusSchemaPromptBuilder.buildEntityClassificationSample(
                     windows, SchemaHierarchyVocabulary.BASE_ENTITY_TYPES);
@@ -1511,6 +1611,9 @@ final class CorpusSchemaUnifier {
                     CorpusSchemaPromptBuilder.TypePass.NODE_TYPES, establishedSchema);
             for (CorpusSchemaResponseParser.EntityClassification item : classification.classifications()) {
                 String label = canonicalSchemaCategory(item.category());
+                if (hasText(item.name())) {
+                    observedEntityTypes.putIfAbsent(item.name(), label);
+                }
                 if (authoritative.contains(label)) {
                     // The category's UPPER_SNAKE form equals an existing type's exact label.
                     continue;
@@ -1581,12 +1684,13 @@ final class CorpusSchemaUnifier {
                         MAX_ENTITY_NAME_CHARS,
                         "description", "Exact named-entity span copied from the passage text."),
                 "category", schemaNameSchema(
-                        "One general UPPER_SNAKE_CASE noun for what this entity is, "
-                                + "never an instance name."),
+                        "The most specific common noun for what this entity is — the word "
+                                + "the passage itself uses for its kind (for example HOSPITAL, "
+                                + "COMPANY, RIVER). Never the entity's own name."),
                 "parentType", Map.of("type", "string", "enum",
                         SchemaHierarchyVocabulary.BASE_ENTITY_TYPES,
-                        "description", "The broadest trusted baseline parent this entity "
-                                + "falls under.")),
+                        "description", "The broadest trusted baseline parent that this "
+                                + "category falls under.")),
                 List.of("name", "category", "parentType"));
         return new StructuredChatLanguageModel.Request(
                 List.of(
@@ -1596,8 +1700,9 @@ final class CorpusSchemaUnifier {
                         new StructuredChatLanguageModel.Message("user", prompt)),
                 List.of(new StructuredChatLanguageModel.Tool(
                         ENTITY_CLASSIFICATION_TOOL_NAME,
-                        "List each distinct named entity with one general category noun and the "
-                                + "broadest trusted parent it falls under. Never invent entities.",
+                        "List each distinct named entity with the most specific common noun "
+                                + "for what it is and the broadest trusted parent that noun falls "
+                                + "under. Never invent entities.",
                         objectSchema(Map.of("classifications", Map.of(
                                 "type", "array",
                                 "items", item,
@@ -2246,6 +2351,38 @@ final class CorpusSchemaUnifier {
 
     private static String canonicalName(String label) {
         return label.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Deterministically unifies passive-voice verb variants with their active forms across
+     * relationship proposals: a _BY suffix (FOUNDED_BY, CREATED_BY semantics differ — only
+     * regular verb passives ending in _ED are rewritten) always strips to its active stem
+     * (FOUNDED_BY → FOUNDED, WORKED_BY → WORKED). The model draws FOUNDED/FOUNDED_BY
+     * interchangeably between runs for the same corpus fact; stripping the passive marker
+     * here makes consolidation, signatures, and extraction enums stable across those draws
+     * without inventing or renaming any label the model did not propose.
+     */
+    private static Map<TypeProposal, Integer> normalizeVerbVariants(
+            Map<TypeProposal, Integer> proposalSupport) {
+        Map<TypeProposal, Integer> normalized = new LinkedHashMap<>();
+        for (Map.Entry<TypeProposal, Integer> entry : proposalSupport.entrySet()) {
+            TypeProposal proposal = entry.getKey();
+            String label = proposal.label();
+            String activeForm = activeVerbForm(label);
+            if (activeForm != null) {
+                proposal = new TypeProposal(activeForm, proposal.classification());
+            }
+            normalized.merge(proposal, entry.getValue(), Integer::sum);
+        }
+        return normalized;
+    }
+
+    /** Returns the active form of a regular passive _ED_BY verb label, or null to keep as-is. */
+    private static String activeVerbForm(String label) {
+        if (label.endsWith("_ED_BY") && label.length() > "_ED_BY".length()) {
+            return label.substring(0, label.length() - "_BY".length());
+        }
+        return null;
     }
 
     private static String toolName(CorpusSchemaPromptBuilder.TypePass pass) {

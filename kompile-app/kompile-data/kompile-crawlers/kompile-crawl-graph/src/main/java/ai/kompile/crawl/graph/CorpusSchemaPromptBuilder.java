@@ -162,14 +162,16 @@ final class CorpusSchemaPromptBuilder {
             throw new IllegalArgumentException("trustedParentTypes must not be null or empty");
         }
         StringBuilder prompt = new StringBuilder();
-        prompt.append("Read the passage. List each distinct named entity and classify what it is ")
-                .append("with one general category noun and the broadest trusted parent it falls ")
-                .append("under. Do not invent entities. Call submit_entity_classifications exactly ")
-                .append("once. Add no prose.\n");
-        prompt.append("The category is one general noun (for example a kind of organization, ")
-                .append("person, or thing), never the entity's own name and never a specific ")
-                .append("instance label. Copy each name exactly from the passage text. Do not ")
-                .append("return relationship types or infer relations between named subjects.\n");
+        prompt.append("Read the passage. List each distinct named entity and classify what it ")
+                .append("is with the most specific common category noun the passage supports — ")
+                .append("the word the passage itself uses for what the entity is — and the broadest ")
+                .append("trusted parent that category falls under. Do not invent entities. Call ")
+                .append("submit_entity_classifications exactly once. Add no prose.\n");
+        prompt.append("The category is a common noun for the kind of thing the entity is (a ")
+                .append("hospital, a river, a policy) — not a broad class when the passage names a ")
+                .append("narrower kind, and never the entity's own name. Copy each name exactly ")
+                .append("from the passage text. Do not return relationship types or infer relations ")
+                .append("between named subjects.\n");
         prompt.append("The broadest trusted parent is one value from TRUSTED_PARENT_TYPES below. ")
                 .append("All categories must be UPPER_SNAKE_CASE nouns matching ")
                 .append("[A-Z][A-Z0-9_]*.\n");

@@ -14,6 +14,7 @@ import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstructor.ConceptHint;
 import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
@@ -1257,6 +1258,45 @@ class CrawlExtractionToolBackendTest {
                 backend.acceptedResult().orElseThrow().entities().stream()
                         .map(ExtractedEntity::type).toList(),
                 "a later contradicted row must not overwrite a retained source-assertion-clean row");
+    }
+
+    @Test
+    void titleCaseModelTypesAreNormalizedToUpperSnakeBeforeValidationAndAdmission()
+            throws Exception {
+        // Gemma-class models emit vocabulary labels in varying casing (Person, Company,
+        // FOUNDED). The frozen schema and every downstream check are UPPER_SNAKE, so admission
+        // must normalize before validation — the same rule normalizeType applies elsewhere.
+        GraphSchema schema = SchemaHierarchyVocabulary.withBaseline(new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "FOUNDED", "A person founded a company", null)),
+                List.of("(PERSON)-[:FOUNDED]->(COMPANY)")));
+        CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph(), schema);
+        String source = "Alex Rivera founded Acme Robotics.";
+
+        JsonNode accepted = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA, """
+                {"entities":[
+                  {"id":"alex","name":"Alex Rivera","type":"Person",
+                   "description":"An individual noted in the source"},
+                  {"id":"acme","name":"Acme Robotics","type":"Company",
+                   "description":"An enterprise noted in the source"}
+                ],"relations":[
+                  {"source":"alex","target":"acme","type":"Founded",
+                   "description":"Alex Rivera founded Acme Robotics", "confidence":0.9}
+                ]}
+                """);
+
+        assertTrue(accepted.path("ok").asBoolean(), accepted.toString());
+        assertTrue(accepted.path("accepted").asBoolean(), accepted.toString());
+        ExtractionResult retained = backend.acceptedResult().orElseThrow();
+        assertEquals(List.of("PERSON", "COMPANY"),
+                retained.entities().stream().map(ExtractedEntity::type).toList(),
+                "stored entity types must match the frozen schema casing");
+        assertEquals("FOUNDED",
+                retained.relations().get(0).type(),
+                "stored relation types must match the frozen schema casing");
     }
 
     @Test

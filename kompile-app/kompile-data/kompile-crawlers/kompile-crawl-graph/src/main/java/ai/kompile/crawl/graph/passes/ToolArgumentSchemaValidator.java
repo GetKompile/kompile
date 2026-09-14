@@ -344,6 +344,13 @@ final class ToolArgumentSchemaValidator {
                 return false;
             }
         }
+        if (expected.isTextual() && actual.isTextual()) {
+            // Enum and const labels on this path are UPPER_SNAKE schema vocabulary; models emit
+            // the same noun in varying casing (Person vs PERSON). Match text case-insensitively
+            // so a valid classification is not rejected as an enum violation before the
+            // production validator can normalize it.
+            return expected.textValue().trim().equalsIgnoreCase(actual.textValue().trim());
+        }
         return expected.equals(actual);
     }
 

@@ -1480,6 +1480,58 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 ? null : value.trim().toUpperCase(Locale.ROOT);
     }
 
+    /**
+     * Rewrites model-submitted entity/relation types to UPPER_SNAKE before validation and
+     * admission. Vocabulary comparisons, endpoint signatures, and the frozen schema are all
+     * case-canonical; only raw TYPE_NAME_FORMAT sees the submitted string, so a title-case
+     * draw (Person) would otherwise fail a check the same pipeline treats as valid when
+     * normalized. Text-only fields (names, descriptions) are preserved verbatim. The result
+     * always carries the supplied engine-owned metadata — model deltas never submit metadata.
+     */
+    private static ExtractionResult normalizeDeltaTypes(
+            ExtractionResult parsed, ExtractionMetadata metadata) {
+        if (parsed == null) {
+            return new ExtractionResult(
+                    GraphExtractionSchema.SCHEMA_VERSION, List.of(), List.of(), metadata);
+        }
+        boolean changed = false;
+        List<ExtractedEntity> entities = new ArrayList<>(parsed.entities().size());
+        for (ExtractedEntity entity : parsed.entities()) {
+            if (entity == null) {
+                continue;
+            }
+            String normalized = normalizedType(entity.type());
+            if (normalized != null && !normalized.equals(entity.type())) {
+                entity = new ExtractedEntity(entity.id(), entity.name(), normalized,
+                        entity.aliases(), entity.description(), entity.confidence(),
+                        entity.properties());
+                changed = true;
+            }
+            entities.add(entity);
+        }
+        List<ExtractedRelation> relations = new ArrayList<>(parsed.relations().size());
+        for (ExtractedRelation relation : parsed.relations()) {
+            if (relation == null) {
+                continue;
+            }
+            String normalized = normalizedType(relation.type());
+            if (normalized != null && !normalized.equals(relation.type())) {
+                relation = new ExtractedRelation(relation.source(), relation.target(), normalized,
+                        relation.description(), relation.confidence(), relation.properties(),
+                        relation.occurredAt());
+                changed = true;
+            }
+            relations.add(relation);
+        }
+        return changed
+                ? new ExtractionResult(
+                        GraphExtractionSchema.SCHEMA_VERSION, List.copyOf(entities),
+                        List.copyOf(relations), metadata)
+                : new ExtractionResult(
+                        GraphExtractionSchema.SCHEMA_VERSION,
+                        parsed.entities(), parsed.relations(), metadata);
+    }
+
     private List<Map<String, Object>> entityDefinitions(
             DecomposedPromptTier tier, int limit, Set<String> includedTypes) {
         GraphSchema currentSchema = schema();
@@ -2364,14 +2416,12 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         } catch (Exception e) {
             return invalidSubmission("invalid_graph_delta_json", message(e), delta);
         }
-
-        ExtractionMetadata metadata = ExtractionMetadata.forChunkInGraph(
-                chunkId, documentId, model, graphId, parentGraphId);
-        ExtractionResult staged = new ExtractionResult(
-                GraphExtractionSchema.SCHEMA_VERSION,
-                parsed.entities(),
-                parsed.relations(),
-                metadata);
+        // Small models emit vocabulary labels in varying casing (Person, Organization, Company)
+        // while every downstream validator, signature check, and the frozen schema use
+        // UPPER_SNAKE. Normalize at admission so a valid classification is never rejected on
+        // raw-string casing — the same rule normalizeType applies everywhere else.
+        ExtractionResult staged = normalizeDeltaTypes(parsed, ExtractionMetadata.forChunkInGraph(
+                chunkId, documentId, model, graphId, parentGraphId));
         ValidationResult validation = GraphExtractionValidator.validate(
                 staged, policy, schema(), knownEntityTypes());
         List<String> errors = new ArrayList<>(validation.errors());
