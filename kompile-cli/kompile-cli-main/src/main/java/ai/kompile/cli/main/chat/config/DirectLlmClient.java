@@ -103,6 +103,7 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile OpenCodeServeClient openCodeServeClient;
     private volatile int nativeCompactionTriggerTokens;
     private volatile int wireMaxOutputTokens;
+    private volatile int contextWindowTokens;
     private volatile String promptCacheSessionId;
     private volatile JsonOutputSpec requestedJsonOutput;
     private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
@@ -467,12 +468,42 @@ public class DirectLlmClient implements AutoCloseable {
 
     /**
      * Output ceiling carried as {@code max_tokens} on OpenAI-compatible chat requests.
-     * Derived from the active model's real context window and output limit (see
+     * Derived from the active model's real output limit (see
      * {@code CompactionService#wireMaxOutputTokens}); zero leaves the request without
      * an explicit cap, as before.
      */
     public void setWireMaxOutputTokens(int tokens) {
         wireMaxOutputTokens = Math.max(0, tokens);
+    }
+
+    /**
+     * Active model's context window; lets the request size {@code max_tokens} against
+     * the input actually being sent (reasoning tokens bill against that cap on GLM-class
+     * models, so a static slice of the window truncates thinking turns). Zero leaves
+     * the ceiling unscaled by the window.
+     */
+    public void setContextWindowTokens(int tokens) {
+        contextWindowTokens = Math.max(0, tokens);
+    }
+
+    /**
+     * Per-request {@code max_tokens}: the output ceiling while the window has room,
+     * shrinking to what fits only as the input approaches the window. The 1% margin
+     * (floored at 1,024) absorbs the chars/4 input estimate's error.
+     */
+    static int wireMaxTokens(int outputCeiling, int contextWindow, long estimatedInputTokens) {
+        if (outputCeiling <= 0) return 0;
+        if (contextWindow <= 0) return outputCeiling;
+        long byWindow = (long) contextWindow - estimatedInputTokens
+                - Math.max(1_024L, contextWindow / 100);
+        return (int) Math.max(1_024L, Math.min(outputCeiling, byWindow));
+    }
+
+    /** chars/4 estimate over the exact payload riding as input (messages + tool schemas). */
+    private static long estimateRequestInputTokens(ArrayNode messages, ArrayNode toolDefs) {
+        long chars = messages.toString().length();
+        if (toolDefs != null) chars += toolDefs.toString().length();
+        return chars / 4;
     }
 
     /** Attempt an explicit provider-native compaction without generic fallback. */
@@ -2966,7 +2997,9 @@ public class DirectLlmClient implements AutoCloseable {
             applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
             applyChatCompletionsJsonOutput(request);
             if (wireMaxOutputTokens > 0 && acceptsMaxTokens(effectiveModel)) {
-                request.put("max_tokens", wireMaxOutputTokens);
+                request.put("max_tokens", wireMaxTokens(
+                        wireMaxOutputTokens, contextWindowTokens,
+                        estimateRequestInputTokens(messages, toolDefs)));
             }
 
             // Request token usage in streamed response

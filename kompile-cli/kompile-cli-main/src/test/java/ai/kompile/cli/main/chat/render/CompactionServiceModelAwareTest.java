@@ -101,8 +101,8 @@ class CompactionServiceModelAwareTest {
                 "reserve defaults to the model's real output ceiling — the same value the wire sends");
         assertEquals(360_000, service.triggerTokens(),
                 "without an explicit reserve the trigger is the pure ratio line");
-        assertEquals(40_000, service.wireMaxOutputTokens(),
-                "wire max_tokens is capped at what remains between trigger and window");
+        assertEquals(128_000, service.wireMaxOutputTokens(),
+                "wire ceiling is the model's full output capacity — reasoning tokens bill against max_tokens");
         assertTrue(service.needsCompaction(360_000));
     }
 
@@ -132,18 +132,24 @@ class CompactionServiceModelAwareTest {
         service.configure(true, 0.85d, 131_072, 0);
 
         assertEquals(174_080, service.triggerTokens(), "pure 85% of the window");
-        assertEquals(30_720, service.wireMaxOutputTokens(),
-                "window minus trigger, capped by the provider output ceiling");
+        assertEquals(131_072, service.wireMaxOutputTokens(),
+                "GLM thinking bills reasoning against max_tokens — the ceiling must stay whole");
+        // A small request rides the full ceiling; only near the window does it shrink.
+        assertEquals(131_072, service.wireMaxOutputTokens(40_000));
+        assertEquals(59_752, service.wireMaxOutputTokens(143_000),
+                "as the input approaches the window the request budget tightens to what fits");
         assertFalse(service.needsCompaction(174_079));
         assertTrue(service.needsCompaction(174_080));
     }
 
     @Test
-    void wireBudgetFloorsAtUsableMinimumOnTinyWindows() {
+    void wireBudgetScalesPerRequestAndFloorsAtUsableMinimumOnTinyWindows() {
         CompactionService service = new CompactionService(mapper, 4_096);
         service.configure(true, 0.85d, 4_096, 0);
-        assertTrue(service.wireMaxOutputTokens() >= 1_024,
+        assertTrue(service.wireMaxOutputTokens(0) >= 1_024,
                 "tiny windows still get a workable response budget");
+        assertTrue(service.wireMaxOutputTokens(4_000) >= 1_024,
+                "the floor holds even when the estimate exceeds the window");
     }
 
     @Test
@@ -155,8 +161,8 @@ class CompactionServiceModelAwareTest {
                     "retain the advertised capability");
             assertEquals(892_500, service.triggerTokens(),
                     "the automatic reserve never caps the ratio trigger");
-            assertEquals(157_500, service.wireMaxOutputTokens(),
-                    "wire budget is bounded by the window remainder, not the catalog ceiling");
+            assertEquals(1_048_976, service.wireMaxOutputTokens(),
+                    "ceiling is bounded only by the window (minus its 1K floor), never the trigger");
             assertFalse(service.needsCompaction(42_000));
         }
     }
@@ -183,7 +189,9 @@ class CompactionServiceModelAwareTest {
         assertEquals(150_000, service.triggerTokens(),
                 "an explicitly configured reserve still caps the trigger");
         assertEquals(900_000, service.wireMaxOutputTokens(),
-                "window minus explicit-reserve trigger leaves exactly the reserve");
+                "an explicit reserve remains the wire ceiling");
+        assertEquals(139_500, service.wireMaxOutputTokens(900_000),
+                "…tightening per request once the input consumes the window it reserved");
     }
 
     @Test

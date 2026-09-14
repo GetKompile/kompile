@@ -127,17 +127,29 @@ public class CompactionService {
     }
 
     /**
-     * Output budget the wire request should carry as {@code max_tokens}: the model's
-     * real output ceiling, capped at what remains between the compaction trigger and
-     * the context window. Sending this turns the reserve from a speculation into a
-     * contract — the provider can never emit more than fits, so the trigger no longer
-     * needs to discount the window for imagined output. Floored at 1,024 like the
-     * trigger so tiny windows still get a workable response budget.
+     * Output ceiling the wire request should carry as {@code max_tokens}: the model's
+     * real output capacity. Reasoning tokens are billed against {@code max_tokens} on
+     * reasoning models (Z.AI GLM emits {@code reasoning_content} under the same cap,
+     * with {@code reasoning_effort} defaulting to {@code max}), so this must be the
+     * full ceiling — a static slice of the window starves thinking models into
+     * {@code finish_reason:length} truncations. Window-relative tightening happens
+     * per request in {@link #wireMaxOutputTokens(long)}.
      */
     public int wireMaxOutputTokens() {
-        long byWindow = (long) maxTokens - triggerTokens();
-        long budget = Math.min(effectiveReserveTokens(), byWindow);
-        return (int) Math.max(1_024L, budget);
+        return (int) Math.max(1_024L, effectiveReserveTokens());
+    }
+
+    /**
+     * {@code max_tokens} for one request whose input is estimated at
+     * {@code estimatedInputTokens}: the model's full output ceiling while the window
+     * has room, shrinking to what actually fits only as the input approaches the
+     * window. A 1% margin (floored at 1,024) absorbs the chars/4 estimate's error,
+     * and the floor keeps tiny windows workable.
+     */
+    public int wireMaxOutputTokens(long estimatedInputTokens) {
+        long byWindow = (long) maxTokens - estimatedInputTokens
+                - Math.max(1_024L, maxTokens / 100);
+        return (int) Math.max(1_024L, Math.min(effectiveReserveTokens(), byWindow));
     }
 
     /**

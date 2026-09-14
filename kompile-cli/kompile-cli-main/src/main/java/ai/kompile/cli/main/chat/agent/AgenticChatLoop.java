@@ -1460,6 +1460,7 @@ public class AgenticChatLoop {
                     chatConfig.getAutoCompactThreshold(),
                     limits.maxOutputTokens(),
                     chatConfig.getCompactionReserveTokens());
+            directLlmClient.setContextWindowTokens(limits.contextWindow());
             directLlmClient.setWireMaxOutputTokens(compactionService.wireMaxOutputTokens());
             refreshNativeCompactionTrigger();
         } catch (Exception e) {

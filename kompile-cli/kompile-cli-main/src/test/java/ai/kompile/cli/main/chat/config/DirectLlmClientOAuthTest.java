@@ -99,6 +99,74 @@ class DirectLlmClientOAuthTest {
         }
     }
 
+    /**
+     * The z.ai truncated-output regression: reasoning tokens bill against max_tokens,
+     * so the wire cap must be the model's whole output ceiling while the window has
+     * room (a static window-slice starved GLM thinking turns into finish_reason=length),
+     * tightening per request only as the actual input fills the window.
+     */
+    @Test
+    void zaiWireMaxTokensUsesFullCeilingThenTightensPerRequest() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, """
+                    data: {"choices":[{"delta":{"content":"ok"}}],"finish_reason":"stop"}
+
+                    data: [DONE]
+
+                    """);
+        });
+        try {
+            ChatConfig config = new ChatConfig("zai", "key", "glm-4.6", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(ignored -> { });
+                // glm-4.6: 200K window, 131K output (catalog values).
+                client.setContextWindowTokens(204_800);
+                client.setWireMaxOutputTokens(131_072);
+
+                // Small input rides the full ceiling — thinking can never truncate the reply.
+                client.streamChat("hi", "system", null, null);
+                assertEquals(131_072, requests.get(0).path("max_tokens").asInt());
+
+                // Near the window the budget shrinks to what actually fits.
+                client.streamChat("x".repeat(800_000), "system", null, null);
+                int tight = requests.get(1).path("max_tokens").asInt();
+                assertTrue(tight > 1_024 && tight <= 4_096,
+                        "expected a window-tightened budget, got " + tight);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void zaiFinishReasonLengthRecordsTruncatedFailure() throws Exception {
+        HttpServer server = server("/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange, """
+                    data: {"choices":[{"delta":{"reasoning_content":"long thought"}}]}
+
+                    data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}
+
+                    data: [DONE]
+
+                    """);
+        });
+        try {
+            ChatConfig config = new ChatConfig("zai", "key", "glm-4.6", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(ignored -> { });
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertTrue(result.failed);
+                assertEquals(DirectLlmClient.FailureKind.TRUNCATED, result.failureKind);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void openAiCompatReasoningContentStreamsToThinkingConsumer() throws Exception {
         HttpServer server = server("/chat/completions", exchange -> {
