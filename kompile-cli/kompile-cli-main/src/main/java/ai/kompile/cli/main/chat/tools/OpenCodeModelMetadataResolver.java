@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.common.util.NativeCliProcess;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -25,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,11 +67,13 @@ final class OpenCodeModelMetadataResolver {
         Path outputFile = null;
         try {
             outputFile = Files.createTempFile("kompile-opencode-models-", ".txt");
-            ProcessBuilder pb = new ProcessBuilder(
-                    opencodeExecutable(),
-                    "models",
-                    providerId,
-                    "--verbose");
+            ProcessBuilder pb = NativeCliProcess.processBuilder(
+                    List.of(
+                            opencodeExecutable(),
+                            "models",
+                            providerId,
+                            "--verbose"),
+                    null);
             pb.redirectErrorStream(true);
             pb.redirectOutput(outputFile.toFile());
 

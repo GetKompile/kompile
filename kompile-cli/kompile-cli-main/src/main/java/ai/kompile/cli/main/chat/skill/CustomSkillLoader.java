@@ -31,7 +31,10 @@ import java.util.stream.Stream;
  *
  * <h3>Search locations (in order, later overrides earlier):</h3>
  * <ol>
+ *   <li>{@code <install>/lib/skills/} — bundled first-party defaults</li>
+ *   <li>User provider skill directories — compatibility imports</li>
  *   <li>{@code ~/.kompile/skills/} — user-scoped skills</li>
+ *   <li>Project provider skill directories — compatibility imports</li>
  *   <li>{@code .kompile/skills/} — project-scoped skills (relative to working directory)</li>
  * </ol>
  *
@@ -69,6 +72,10 @@ public class CustomSkillLoader {
      */
     public Map<String, SkillConfig> loadAll() {
         Map<String, SkillConfig> skills = new LinkedHashMap<>();
+
+        // Ship defaults with the product, independently of any vendor installation.
+        // Explicit user/project definitions below retain override precedence.
+        loadFromDirectory(KompileHome.installDirectory().toPath().resolve("lib/skills"), skills, true);
 
         // Provider-shared skills are available to normal Kompile chat too. Explicit
         // Kompile definitions load later and retain override precedence.

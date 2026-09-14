@@ -179,6 +179,12 @@ public class BashTool implements CliTool {
         command.put("type", "string");
         command.put("description", "The bash command to execute");
 
+        props.putObject("background").put("type", "boolean").put("description",
+                "Detach this command so the parent continues immediately; the exit result arrives as a "
+                        + "system message on completion. Falls back to synchronous execution when the "
+                        + "running harness cannot background. For persistent processes prefer the process "
+                        + "tool, which adds monitoring and output capture. Default: false.");
+
         ObjectNode timeout = props.putObject("timeout");
         timeout.put("type", "integer");
         timeout.put("description", "Timeout in seconds (default: 120, max: 600)");
@@ -196,6 +202,9 @@ public class BashTool implements CliTool {
         // Base key — actual checks use the classified key
         return "bash";
     }
+
+    @Override
+    public boolean isBackgroundable() { return true; }
 
     @Override
     public McpToolAnnotations mcpAnnotations() { return McpToolAnnotations.DESTRUCTIVE; }
@@ -225,6 +234,14 @@ public class BashTool implements CliTool {
             permDesc = desc + " [" + risk.label + "]: " + command;
         }
         context.checkPermission(permKey, permDesc);
+
+        boolean requestedBackground = params.path("background").asBoolean(false);
+        if (requestedBackground && context.requestSelfBackground()) {
+            // The dispatch loop reroutes output and returns a placeholder to the
+            // model; this worker keeps streaming into the retained task until exit.
+            context.emitOutput("  [Command detached to background; its exit result "
+                    + "will be delivered as a system message]");
+        }
 
         Path workDir = context.getWorkingDirectory();
 

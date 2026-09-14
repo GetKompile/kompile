@@ -139,9 +139,18 @@ public class PassthroughStreamParser {
                     if (node.has("message") && node.get("message").has("content")) {
                         List<PassthroughEvent> events = new ArrayList<>();
                         StringBuilder text = new StringBuilder();
+                        StringBuilder thinking = new StringBuilder();
                         for (JsonNode block : node.get("message").get("content")) {
                             String blockType = block.has("type") ? block.get("type").asText() : "";
-                            if ("text".equals(blockType) && block.has("text")) {
+                            if ("thinking".equals(blockType) && block.has("thinking")) {
+                                // Claude extended-thinking block — stream it so reasoning is
+                                // visible in the transcript, separate from response text.
+                                if (text.length() > 0) {
+                                    events.add(new TextChunk(text.toString()));
+                                    text.setLength(0);
+                                }
+                                thinking.append(block.get("thinking").asText(""));
+                            } else if ("text".equals(blockType) && block.has("text")) {
                                 text.append(block.get("text").asText());
                             } else if ("tool_use".equals(blockType)) {
                                 // Flush accumulated text before the tool event
@@ -159,15 +168,53 @@ public class PassthroughStreamParser {
                                 }
                             }
                         }
+                        // Flush accumulated thinking before trailing text
+                        if (thinking.length() > 0) {
+                            events.add(new ThinkingChunk(thinking.toString()));
+                        }
                         // Flush any remaining text after all blocks
                         if (text.length() > 0) {
                             events.add(new TextChunk(text.toString()));
                         }
                         return events;
                     }
-                    // Incremental content_block_delta
+                    // Incremental content_block_delta (stream-json --include-partial-messages)
+                    JsonNode cbDelta = node.get("content_block_delta");
+                    if (cbDelta != null && cbDelta.isObject()) {
+                        JsonNode delta = cbDelta.get("delta");
+                        if (delta != null && delta.isObject()) {
+                            String deltaType = delta.has("type") ? delta.get("type").asText() : "";
+                            if ("thinking_delta".equals(deltaType) && delta.has("thinking")) {
+                                return List.of(new ThinkingChunk(delta.get("thinking").asText("")));
+                            }
+                            if ("text_delta".equals(deltaType) && delta.has("text")) {
+                                return List.of(new TextChunk(delta.get("text").asText("")));
+                            }
+                        }
+                    }
                     if (node.has("content_block") && node.get("content_block").has("text")) {
                         return List.of(new TextChunk(node.get("content_block").get("text").asText()));
+                    }
+                    return List.of();
+                }
+                case "stream_event" -> {
+                    // Claude Code --include-partial-messages wraps raw API events:
+                    // {"type":"stream_event","event":{"type":"content_block_delta","delta":{...}}}
+                    JsonNode event = node.get("event");
+                    if (event != null && event.isObject()) {
+                        String eventType = event.has("type") ? event.get("type").asText() : "";
+                        if ("content_block_delta".equals(eventType)) {
+                            JsonNode delta = event.get("delta");
+                            if (delta != null && delta.isObject()) {
+                                String deltaType = delta.has("type") ? delta.get("type").asText() : "";
+                                if ("thinking_delta".equals(deltaType) && delta.has("thinking")) {
+                                    return List.of(new ThinkingChunk(delta.get("thinking").asText("")));
+                                }
+                                if ("text_delta".equals(deltaType) && delta.has("text")) {
+                                    return List.of(new TextChunk(delta.get("text").asText("")));
+                                }
+                            }
+                        }
                     }
                     return List.of();
                 }
@@ -175,7 +222,23 @@ public class PassthroughStreamParser {
                     long duration = node.has("duration_ms") ? node.get("duration_ms").asLong() : 0;
                     double cost = node.has("cost_usd") ? node.get("cost_usd").asDouble() : 0.0;
                     int turns = node.has("num_turns") ? node.get("num_turns").asInt() : 0;
-                    return List.of(new TurnComplete(duration, cost, turns));
+                    // Final result events carry the turn's cumulative usage. Cache
+                    // tokens arrive inclusive of plain input — normalize to disjoint
+                    // so totals can safely add ordinary + cached input.
+                    long inputTokens = 0;
+                    long outputTokens = 0;
+                    long cacheRead = 0;
+                    long cacheCreation = 0;
+                    JsonNode usage = node.path("usage");
+                    if (!usage.isMissingNode() && usage.isObject()) {
+                        outputTokens = usage.path("output_tokens").asLong(0);
+                        cacheRead = usage.path("cache_read_input_tokens").asLong(0);
+                        cacheCreation = usage.path("cache_creation_input_tokens").asLong(0);
+                        long inclusiveInput = usage.path("input_tokens").asLong(0);
+                        inputTokens = Math.max(0, inclusiveInput - cacheRead - cacheCreation);
+                    }
+                    return List.of(new TurnComplete(duration, cost, turns,
+                            inputTokens, outputTokens, cacheRead, cacheCreation));
                 }
                 default -> {
                     if (node.has("content_block")) {
@@ -329,6 +392,12 @@ public class PassthroughStreamParser {
                     // Skip user messages and non-delta messages
                     return null;
                 }
+                case "thought" -> {
+                    // Gemini/Qwen stream-json reasoning event ({"type":"thought","thought":...})
+                    String thought = firstText(node, "thought", "content", "text");
+                    return thought != null && !thought.isEmpty()
+                            ? new ThinkingChunk(thought) : null;
+                }
                 case "tool_use" -> {
                     String toolName = node.has("tool_name") ? node.get("tool_name").asText() : "unknown";
                     String params = node.has("parameters") ? node.get("parameters").toString() : "";
@@ -347,7 +416,30 @@ public class PassthroughStreamParser {
                         if (stats.has("duration_ms")) durationMs = stats.get("duration_ms").asLong();
                         if (stats.has("tool_calls")) toolCallCount = stats.get("tool_calls").asInt();
                     }
-                    return new TurnComplete(durationMs, cost, toolCallCount > 0 ? 1 : 0);
+                    // Gemini/Qwen result events may carry usage with Google-style
+                    // field names. cached_content_token_count is a subset of
+                    // prompt_tokens — normalize to disjoint like the other lanes.
+                    long inputTokens = 0;
+                    long outputTokens = 0;
+                    long cacheReadTokens = 0;
+                    long cacheCreationTokens = 0;
+                    JsonNode usage = node.path("usage");
+                    if (usage.isMissingNode() || !usage.isObject()) {
+                        usage = node.path("stats").path("usage");
+                    }
+                    if (!usage.isMissingNode() && usage.isObject()) {
+                        long promptTokens = usage.has("prompt_tokens")
+                                ? usage.get("prompt_tokens").asLong()
+                                : usage.path("input_tokens").asLong(0);
+                        cacheReadTokens = usage.path("prompt_tokens_details")
+                                .path("cached_content_token_count").asLong(0);
+                        outputTokens = usage.has("candidates_tokens")
+                                ? usage.get("candidates_tokens").asLong()
+                                : usage.path("output_tokens").asLong(0);
+                        inputTokens = Math.max(0, promptTokens - cacheReadTokens);
+                    }
+                    return new TurnComplete(durationMs, cost, toolCallCount > 0 ? 1 : 0,
+                            inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens);
                 }
                 default -> {
                     return null;
@@ -416,6 +508,19 @@ public class PassthroughStreamParser {
                 case "message.delta", "agent_message_delta", "response.output_text.delta" -> {
                     String text = firstText(node, "delta", "text", "content");
                     return text != null && !text.isEmpty() ? new TextChunk(text) : null;
+                }
+                case "agent_reasoning_delta", "agent_reasoning_text.delta",
+                     "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
+                    // Codex reasoning stream (raw deltas from JSONL or Responses wire format)
+                    String text = firstText(node, "delta", "text");
+                    return text != null && !text.isEmpty() ? new ThinkingChunk(text) : null;
+                }
+                case "agent_reasoning", "agent_reasoning_raw_content",
+                     "response.reasoning_summary_part.done", "response.reasoning_text.done" -> {
+                    // Completed reasoning section — emit only the trailing delta so an
+                    // upstream summary snapshot is not rendered twice.
+                    String text = firstText(node, "text", "delta");
+                    return text != null && !text.isEmpty() ? new ThinkingChunk(text) : null;
                 }
                 case "message.completed", "agent_message", "response.output_text.done" -> {
                     String text = extractCodexText(node);
@@ -913,6 +1018,9 @@ public class PassthroughStreamParser {
                         String eventType = event.has("type") ? event.get("type").asText() : "";
                         if ("text_delta".equals(eventType) && event.has("delta")) {
                             return new TextChunk(event.get("delta").asText());
+                        }
+                        if ("thinking_delta".equals(eventType) && event.has("delta")) {
+                            return new ThinkingChunk(event.get("delta").asText());
                         }
                     }
                     return null;

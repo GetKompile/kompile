@@ -151,8 +151,14 @@ public class SkillManagerTool implements CliTool {
         // project_scope (for create)
         ObjectNode scopeNode = objectMapper.createObjectNode();
         scopeNode.put("type", "boolean");
-        scopeNode.put("description", "If true, create in project scope (.kompile/skills/) instead of user scope (~/.kompile/skills/). Default: false.");
+        scopeNode.put("description", "Select project .kompile/skills (true) or user ~/.kompile/skills (false). Create defaults to user; update/delete default to project first, then user, modifying only one scope.");
         properties.set("project_scope", scopeNode);
+
+        ObjectNode layoutNode = objectMapper.createObjectNode();
+        layoutNode.put("type", "string");
+        layoutNode.set("enum", objectMapper.createArrayNode().add("flat").add("package"));
+        layoutNode.put("description", "create_skill layout: flat (default) writes <name>.md; package writes <name>/SKILL.md. Updates preserve the existing layout; deleting a package removes its supporting files too.");
+        properties.set("layout", layoutNode);
 
         // args (for expand_template)
         ObjectNode argsNode = objectMapper.createObjectNode();
@@ -322,12 +328,18 @@ public class SkillManagerTool implements CliTool {
             targetDir = KompileHome.homeDirectory().toPath().resolve("skills");
         }
 
-        Path skillFile = SkillPathPolicy.resolve(targetDir, name);
-        Files.createDirectories(targetDir);
-
-        if (Files.exists(skillFile)) {
-            return errorResult("Skill file already exists: " + skillFile + ". Use update_skill to modify it, or delete_skill first.");
+        String layout = params.path("layout").asText("flat");
+        if (!layout.equals("flat") && !layout.equals("package")) {
+            return errorResult("layout must be flat or package");
         }
+        Path packaged = SkillPathPolicy.resolvePackage(targetDir, name);
+        if (SkillPathPolicy.existing(targetDir, name) != null
+                || Files.exists(packaged.getParent(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return errorResult("Skill file or package already exists: " + name + ". Use update_skill.");
+        }
+        Path skillFile = layout.equals("package") ? packaged : SkillPathPolicy.resolve(targetDir, name);
+        Files.createDirectories(targetDir);
+        if (layout.equals("package")) Files.createDirectory(packaged.getParent());
 
         StringBuilder content = new StringBuilder();
         content.append("---\n");
@@ -372,21 +384,10 @@ public class SkillManagerTool implements CliTool {
             return errorResult("Cannot update built-in skill: " + name);
         }
 
-        // Find existing file
-        Path projectFile = SkillPathPolicy.resolve(
-                workingDirectory.resolve(".kompile").resolve("skills"), name);
-        Path userFile = SkillPathPolicy.resolve(
-                KompileHome.homeDirectory().toPath().resolve("skills"), name);
-
-        Path existingFile = null;
-        if (Files.exists(projectFile)) {
-            existingFile = projectFile;
-        } else if (Files.exists(userFile)) {
-            existingFile = userFile;
-        }
-
+        Path existingFile = findMutableSkill(params, name);
         if (existingFile == null) {
-            return errorResult("Custom skill not found: " + name + ". Checked: " + projectFile + " and " + userFile);
+            return errorResult("Custom skill not found in selected .kompile scope: " + name
+                    + ". Bundled/provider skills are read-only; create a user or project override.");
         }
 
         // Load current skill to preserve fields not being updated
@@ -454,26 +455,37 @@ public class SkillManagerTool implements CliTool {
             return errorResult("Cannot delete built-in skill: " + name);
         }
 
-        Path projectFile = SkillPathPolicy.resolve(
-                workingDirectory.resolve(".kompile").resolve("skills"), name);
-        Path userFile = SkillPathPolicy.resolve(
-                KompileHome.homeDirectory().toPath().resolve("skills"), name);
-
-        List<String> deleted = new ArrayList<>();
-        if (Files.exists(projectFile)) {
-            Files.delete(projectFile);
-            deleted.add("project: " + projectFile);
+        Path entry = findMutableSkill(params, name);
+        if (entry == null) {
+            return errorResult("Custom skill not found in selected .kompile scope: " + name
+                    + ". Bundled/provider skills are read-only.");
         }
-        if (Files.exists(userFile)) {
-            Files.delete(userFile);
-            deleted.add("user: " + userFile);
+        Path target = entry.getFileName().toString().equals("SKILL.md")
+                && entry.getParent().getFileName().toString().equals(name) ? entry.getParent() : entry;
+        // Walk without following links; validate the entire package before deleting anything.
+        List<Path> paths;
+        try (Stream<Path> tree = Files.walk(target)) {
+            paths = tree.sorted(Comparator.reverseOrder()).toList();
         }
-
-        if (deleted.isEmpty()) {
-            return errorResult("Skill file not found: " + name + ". Checked: " + projectFile + " and " + userFile);
+        for (Path path : paths) {
+            if (SkillPathPolicy.hasSymlinkComponent(path)
+                    || (!Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    && !Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))) {
+                throw new IOException("Refusing to delete unsafe skill package path: " + path);
+            }
         }
+        for (Path path : paths) Files.delete(path);
+        return ToolResult.success("Skill deleted: /" + name + "\n  Removed: " + target);
+    }
 
-        return ToolResult.success("Skill deleted: /" + name + "\n  Removed: " + String.join(", ", deleted));
+    private Path findMutableSkill(JsonNode params, String name) throws IOException {
+        Path projectRoot = workingDirectory.resolve(".kompile/skills");
+        Path userRoot = KompileHome.homeDirectory().toPath().resolve("skills");
+        if (params.has("project_scope")) {
+            return SkillPathPolicy.existing(params.path("project_scope").asBoolean() ? projectRoot : userRoot, name);
+        }
+        Path project = SkillPathPolicy.existing(projectRoot, name);
+        return project != null ? project : SkillPathPolicy.existing(userRoot, name);
     }
 
     private ToolResult generateMarkdown(JsonNode params) {

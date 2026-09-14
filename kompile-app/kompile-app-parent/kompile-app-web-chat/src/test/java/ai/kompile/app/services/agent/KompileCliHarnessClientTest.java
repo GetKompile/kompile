@@ -545,6 +545,96 @@ class KompileCliHarnessClientTest {
         assertTrue(helpEvent.path("data").isMissingNode());
     }
 
+    @Test
+    void liveEventsKeepStreamOpenAndControlsFollowInitialInput() throws Exception {
+        FakeProcess fake = new FakeProcess("{\"seq\":1,\"type\":\"activity\",\"data\":{\"backgroundable\":true}}\n"
+                + "{\"seq\":2,\"type\":\"control\",\"data\":{\"requestId\":\"r1\",\"ok\":true}}\n"
+                + "{\"seq\":3,\"type\":\"turn_started\",\"data\":{\"turnId\":1,\"source\":\"initial\"}}\n"
+                + "{\"seq\":4,\"type\":\"turn_complete\",\"data\":{\"turnId\":1,\"text\":\"parent finished\"}}\n"
+                + "{\"seq\":5,\"type\":\"result\",\"text\":\"final\",\"exit\":0}\n", "", 0);
+        client = clientWith(fake);
+        var frame = new ObjectMapper().readTree("{\"version\":1,\"requestId\":\"r1\",\"action\":\"background\"}");
+        var names = new ArrayList<String>();
+        var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        client.runTurn("harness-live", request("initial"), new KompileCliHarnessClient.HarnessEventSink() {
+            public void send(String name, Object data) {
+                names.add(name);
+                if (name.equals("start")) assertFalse((Boolean) client.control("harness-live", frame).get("accepted"));
+                if (name.equals("activity")) {
+                    assertFalse(completed.get());
+                    assertTrue((Boolean) client.control("harness-live", frame).get("accepted"));
+                }
+                if (name.equals("turn_complete") || name.equals("control")) assertFalse(completed.get());
+            }
+            public void complete() { completed.set(true); }
+        });
+        assertEquals(List.of("start", "activity", "control", "turn_started", "turn_complete", "complete"), names);
+        assertTrue(completed.get());
+        assertTrue(capturedCommand.get().contains("--web-controls"));
+        String[] lines = fake.stdin.toString(StandardCharsets.UTF_8).split("\n");
+        assertEquals(2, lines.length);
+        assertEquals("initial", new ObjectMapper().readTree(lines[0]).path("rawInput").asText());
+        assertEquals(frame, new ObjectMapper().readTree(lines[1]));
+        assertFalse((Boolean) client.control("harness-live", frame).get("accepted"));
+    }
+
+    @Test
+    void malformedControlsCannotReachOwnedProcess() throws Exception {
+        var mapper = new ObjectMapper();
+        for (String frame : List.of("{}", "[]", "{\"version\":1,\"requestId\":\"r\",\"action\":\"launch\"}",
+                "{\"version\":1,\"requestId\":\"r\",\"action\":\"process_kill\"}",
+                "{\"version\":1,\"requestId\":\"r\",\"action\":\"background\",\"targetId\":\"pid\"}",
+                "{\"version\":1,\"requestId\":\"r\",\"action\":\"input\",\"text\":\" /model x\"}")) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> KompileCliHarnessClient.validateControl(mapper.readTree(frame)));
+        }
+    }
+
+    @Test
+    void browserDisconnectDoesNotCancelAndReconnectDoesNotStartAnotherProcess() throws Exception {
+        var starts = new AtomicInteger();
+        var fake = new FakeProcess("{\"seq\":1,\"type\":\"text\",\"text\":\"ok\"}\n"
+                + "{\"seq\":2,\"type\":\"result\",\"text\":\"ok\",\"exit\":0}\n", "", 0);
+        client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake"),
+                (command, directory) -> { starts.incrementAndGet(); return fake; }, executor, scheduler);
+        var disconnected = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter() {
+            @Override public void send(SseEventBuilder builder) throws java.io.IOException { throw new java.io.IOException("socket closed"); }
+        };
+        String runId = client.executeChat(request("initial"), disconnected);
+        executor.submit(() -> {}).get(3, TimeUnit.SECONDS); // the original turn has drained
+        var replayed = new ArrayList<String>();
+        var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        var replacement = new org.springframework.web.servlet.mvc.method.annotation.SseEmitter() {
+            @Override public void send(SseEventBuilder builder) {
+                builder.build().forEach(data -> replayed.add(String.valueOf(data.getData())));
+            }
+            @Override public void complete() { completed.set(true); }
+        };
+        client.reconnect(runId, 0, replacement);
+        assertEquals(1, starts.get());
+        assertTrue(completed.get());
+        assertTrue(replayed.stream().anyMatch(value -> value.contains("event:complete")), replayed.toString());
+        assertFalse(replayed.stream().anyMatch(value -> value.contains("event:cancelled")), replayed.toString());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> client.reconnect("harness-foreign", 0, replacement));
+    }
+
+    @Test
+    void childControlFramesRequireTargetAndNeverAcceptSlashCommands() throws Exception {
+        var mapper = new ObjectMapper();
+        var frame = mapper.createObjectNode().put("version", 1).put("requestId", "r")
+                .put("action", "subagent_input").put("targetId", "child").put("text", "follow up");
+        KompileCliHarnessClient.validateControl(frame);
+        frame.put("text", " /model x");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> KompileCliHarnessClient.validateControl(frame));
+        frame.remove("text"); frame.put("action", "subagent_cancel");
+        KompileCliHarnessClient.validateControl(frame);
+        frame.remove("targetId");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> KompileCliHarnessClient.validateControl(frame));
+    }
+
     private KompileCliHarnessClient clientWith(FakeProcess fake) {
         process.set(fake);
         return new KompileCliHarnessClient(

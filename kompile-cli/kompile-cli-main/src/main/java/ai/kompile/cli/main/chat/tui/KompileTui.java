@@ -2357,6 +2357,18 @@ public class KompileTui {
         if (started) redrawBars();
     }
 
+    /** Live token usage summary rendered on top-bar row 2 when idle. */
+    public void setTokenSummary(String summary) {
+        topBar.setTokenSummary(summary);
+        if (started) redrawBars();
+    }
+
+    /** Judge session summary (calls + tokens) rendered next to the token summary. */
+    public void setJudgeTokenSummary(String summary) {
+        topBar.setJudgeTokenSummary(summary);
+        if (started) redrawBars();
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────
 
     /** Keep TUI cursor controls and JLine input on one ordered terminal stream. */

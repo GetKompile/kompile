@@ -10,6 +10,7 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -94,6 +95,7 @@ class LocalProjectRagSearchTest {
                 .label("portable graph search")
                 .attribute("documentId", "service")
                 .attribute("chunkId", "service-1")
+                .attribute("pages", List.of(2, 4))
                 .attribute("content", "Imported service exposes portable graph search")
                 .build());
         graph.addRelation("has-chunk", "document:service", "chunk:service-1", "HAS_CHUNK", 1.0);
@@ -109,8 +111,51 @@ class LocalProjectRagSearchTest {
         assertFalse(result.isError(), result.getOutput());
         assertEquals("lexical-fallback", result.getMetadata().get("retrievalMode"));
         assertTrue(result.getOutput().contains("src/ImportedService.java"), result.getOutput());
+        assertTrue(result.getOutput().contains("Document: service | Chunk: service-1"));
+        JsonNode citations = mapper.valueToTree(result.getMetadata().get("evidence"));
+        assertEquals("service-1", citations.get(0).path("chunkId").asText());
+        assertEquals("src/ImportedService.java", citations.get(0).path("source").asText());
+        assertEquals("imported-kb", citations.get(0).path("knowledgeBase").asText());
+        assertEquals(mapper.readTree("[2,4]"), citations.get(0).path("pages"));
+        assertTrue(result.getOutput().contains("Pages: [2, 4]"));
         assertTrue(result.getOutput().contains("Imported service exposes portable graph search"),
                 result.getOutput());
+    }
+
+    @Test
+    void graphOnlyEvidenceIsScopedAndReflectsRemovedRelations() throws Exception {
+        Path selected = Files.createDirectories(projectRoot.resolve("data/crawls/selected"));
+        Path other = Files.createDirectories(projectRoot.resolve("data/crawls/other"));
+        UnifiedGraph graph = new UnifiedGraph().graphId("selected");
+        graph.addEntity(GraphEntity.builder("service").type("CLASS").label("AuthService").build());
+        graph.addEntity(GraphEntity.builder("cache").type("CLASS").label("TokenCache").build());
+        graph.addRelation("dependency", "service", "cache", "DEPENDS_ON", 0.8);
+        graph.saveCompact(selected.resolve("graph.kgraph"));
+        new UnifiedGraph().graphId("other").addEntity("secret", "CLASS", "AuthService secret")
+                .saveCompact(other.resolve("graph.kgraph"));
+        LocalProjectRagSearch search = new LocalProjectRagSearch(mapper,
+                (root, ignored) -> { throw new IllegalStateException("no encoder needed"); });
+        ToolResult first = search.search(projectRoot, List.of(selected), "AuthService", null, 5);
+        assertFalse(first.isError(), first.getOutput());
+        JsonNode evidence = mapper.valueToTree(first.getMetadata().get("graphEvidence"));
+        assertEquals(1, evidence.size());
+        assertEquals("selected", evidence.get(0).path("knowledgeBase").asText());
+        assertEquals("DEPENDS_ON", evidence.get(0).path("relations").get(0).path("type").asText());
+        assertFalse(evidence.get(0).path("verificationPerformed").asBoolean());
+        assertFalse(first.getOutput().contains("secret"));
+        Files.writeString(selected.resolve("chunks.jsonl"), """
+                {"documentId":"manual","chunkId":"manual-1","text":"AuthService manual passage","pages":[3]}
+                """);
+        ToolResult combined = search.search(projectRoot, List.of(selected), "AuthService", null, 5);
+        assertTrue(combined.getOutput().contains("AuthService manual passage"));
+        assertTrue(combined.getOutput().contains("DEPENDS_ON"));
+        JsonNode chunkEvidence = mapper.valueToTree(combined.getMetadata().get("evidence"));
+        assertEquals(3, chunkEvidence.get(0).path("pages").get(0).asInt());
+        graph.removeRelationById("dependency");
+        graph.saveCompact(selected.resolve("graph.kgraph"));
+        ToolResult second = search.search(projectRoot, List.of(selected), "AuthService", null, 5);
+        JsonNode updated = mapper.valueToTree(second.getMetadata().get("graphEvidence"));
+        assertTrue(updated.get(0).path("relations").isEmpty());
     }
 
     @Test

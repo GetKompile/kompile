@@ -41,6 +41,10 @@ public record HeadlessRunEvent(
         TOOL_COMPLETED,
         TOKEN_USAGE,
         COMMAND_OUTCOME,
+        CONTROL,
+        ACTIVITY,
+        TURN_STARTED,
+        TURN_COMPLETE,
         RUN_COMPLETED,
         RUN_FAILED,
         RUN_DETACHED

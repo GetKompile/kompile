@@ -95,29 +95,49 @@ public class CompactionService {
     }
 
     /**
-     * Effective headroom, derived from output capacity unless explicitly configured.
-     * Automatic output headroom is capped at half the window: some catalogs report
-     * output capacity equal to the whole context, which must not consume the input budget.
+     * Reserve headroom for the model's response.
+     *
+     * <p>Default (no explicit configuration): the model's real max output tokens — the
+     * same value the wire request sends as {@code max_tokens}, so the reserve is a fact,
+     * not a guess. An explicitly configured reserve always wins.</p>
      */
     public int effectiveReserveTokens() {
-        int reserve = explicitReserveTokens;
-        if (reserve <= 0) {
-            int safety = Math.max(256, Math.min(8_192, maxTokens / 20));
-            long automatic = (long) Math.min(maxOutputTokens, maxTokens / 2) + safety;
-            reserve = (int) Math.min(Integer.MAX_VALUE, automatic);
-        }
+        int reserve = explicitReserveTokens > 0 ? explicitReserveTokens : maxOutputTokens;
         return Math.min(reserve, Math.max(0, maxTokens - 1_024));
     }
 
-    /** Input-token ceiling at which auto-compaction begins. */
+    /**
+     * Input-token ceiling at which auto-compaction begins: the configured fraction of
+     * the real context window. The automatic output reserve does NOT constrain this —
+     * the wire request bounds output with {@code max_tokens = window − trigger}, so
+     * speculating about output capacity here would only compact early. An explicitly
+     * configured reserve still caps the trigger (it is a deliberate user choice).
+     */
     public int triggerTokens() {
         long ratioLimit = (long) Math.floor(maxTokens * triggerRatio);
-        long reserveLimit = (long) maxTokens - effectiveReserveTokens();
-        return (int) Math.max(1_024L, Math.min(ratioLimit, reserveLimit));
+        if (explicitReserveTokens > 0) {
+            long reserveLimit = (long) maxTokens - explicitReserveTokens;
+            ratioLimit = Math.min(ratioLimit, reserveLimit);
+        }
+        return (int) Math.max(1_024L, ratioLimit);
     }
 
     int compactionBuffer() {
         return maxTokens - triggerTokens();
+    }
+
+    /**
+     * Output budget the wire request should carry as {@code max_tokens}: the model's
+     * real output ceiling, capped at what remains between the compaction trigger and
+     * the context window. Sending this turns the reserve from a speculation into a
+     * contract — the provider can never emit more than fits, so the trigger no longer
+     * needs to discount the window for imagined output. Floored at 1,024 like the
+     * trigger so tiny windows still get a workable response budget.
+     */
+    public int wireMaxOutputTokens() {
+        long byWindow = (long) maxTokens - triggerTokens();
+        long budget = Math.min(effectiveReserveTokens(), byWindow);
+        return (int) Math.max(1_024L, budget);
     }
 
     /**

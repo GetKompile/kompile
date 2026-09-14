@@ -220,7 +220,6 @@ public final class LocalProjectGraphBackend {
   private static final Map<Path, ReentrantLock> GRAPH_WRITE_LOCKS = new ConcurrentHashMap<>();
   private static final Map<String, LocalProjectGraphBackend.LocalSubscription> LOCAL_SUBSCRIPTIONS =
       new ConcurrentHashMap<>();
-  private static final Map<String, ObjectNode> LOCAL_SIMULATION_RUNS = new ConcurrentHashMap<>();
 
   public LocalProjectGraphBackend(ObjectMapper mapper) {
     this(mapper, new ProjectLocalLearningSubprocessExecutor(mapper));
@@ -262,6 +261,9 @@ public final class LocalProjectGraphBackend {
     try (FileChannel channel =
             FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         FileLock ignored = channel.lock(); ) {
+      if (LocalCodeIndexer.isRemoved(codeProject.codeProjectId())) {
+        throw new IllegalStateException("Code index was removed; refusing graph projection: " + codeProject.codeProjectId());
+      }
       UnifiedGraph additions = new UnifiedGraph();
       additions
           .graphId("local:" + projectId + ":" + knowledgeBaseId)
@@ -2448,6 +2450,11 @@ public final class LocalProjectGraphBackend {
   }
 
   private ToolResult offlineRetract(JsonNode params, ToolContext context) throws Exception {
+    String mode = params.path("mode").asText("retract");
+    if (!"retract".equals(mode)) {
+      return ToolResult.error("Project-local retraction supports mode=retract only; "
+          + "dependent-fact revision is not supported. No facts were changed.");
+    }
     String atomText = this.firstNonBlank(this.text(params, "atomKey"), this.text(params, "atom"));
     if (atomText == null) {
       return ToolResult.error("atomKey is required");
@@ -2495,9 +2502,15 @@ public final class LocalProjectGraphBackend {
             result.put("status", removed == 0 ? "NOT_FOUND" : "RETRACTED");
             result.put("mode", params.path("mode").asText("retract"));
             result.put("removed", removed);
-            result.putArray("dependentAtomsUnsupported");
-            result.putArray("dependentAtomsWeakened");
-            result.put("cascadeTriggered", false);
+            result.putNull("dependentAtomsUnsupported");
+            result.putNull("dependentAtomsWeakened");
+            result.put("dependencyAnalysisPerformed", false);
+            result.put("caveat", "Exact facts were retracted and learned state invalidated; "
+                + "no dependency analysis or automatic re-reasoning cascade was performed.");
+              result.put("cascadeTriggered", false);
+              result.put("contradictionCheckPerformed", false);
+              result.put("caveat", "The fact was stored and learned state invalidated; "
+                  + "no contradiction check or automatic re-reasoning cascade was performed.");
             if (journalResult != null) {
               result.put("mutationJournalRecords", journalResult.recordCount());
               result.put("compactionRecommended", journalResult.compactionRecommended());
@@ -2751,13 +2764,16 @@ public final class LocalProjectGraphBackend {
                 answer.put(
                     "answer", this.firstNonBlank(entry.getKey().label(), entry.getKey().id()));
                 answer.put("entityId", entry.getKey().id());
-                answer.put("likelihood", entry.getValue());
-                answer.put("belief", entry.getKey().confidence());
-                answer.put("uncertainty", 1.0 - entry.getKey().confidence());
+                answer.put("retrievalScore", entry.getValue());
+                answer.put("recordedConfidence", entry.getKey().confidence());
               });
       ObjectNode result = this.localEnvelope(selection);
       result.set("answers", answers);
       result.put("answerCount", answers.size());
+      result.put("status", "RETRIEVAL_ONLY");
+      result.put("verificationPerformed", false);
+      result.put("caveat", "Candidates are lexical matches with recorded entity confidence, not verified answers. "
+          + "Use ask_graph_verify for a specific factual claim.");
       return this.jsonSuccess(
           "ask_graph_synthesize: " + query,
           result,
@@ -2776,29 +2792,21 @@ public final class LocalProjectGraphBackend {
     } else if (object == null) {
       return ToolResult.error("object is required");
     } else {
-      LocalProjectGraphBackend.GraphSelection selection = this.selectGraph(context, params);
-      LocalProjectGraphBackend.Atom claim =
-          new LocalProjectGraphBackend.Atom(predicate, List.of(subject, object));
-      List<GraphRelation> direct = this.matchingRelations(selection.graph(), claim, Map.of());
-      double score = direct.stream().mapToDouble(GraphRelation::confidence).max().orElse(0.0);
-      String verdict = direct.isEmpty() ? "UNCERTAIN" : (score <= 0.0 ? "REFUTED" : "SUPPORTED");
-      ObjectNode result = this.localEnvelope(selection);
-      result.put("verdict", verdict);
-      result.put("fusedScore", score);
-      result.put("claimAtom", subject + " " + predicate + " " + object);
-      ArrayNode supporting = result.putArray("supporting");
-      direct.forEach(
-          relation -> {
-            ObjectNode evidence = supporting.addObject();
-            evidence.put("signal", "direct-graph-edge");
-            evidence.put("description", this.relationAtom(relation));
-            evidence.put("probability", relation.confidence());
-          });
-      result.putArray("refuting");
+      ObjectNode verification = params.deepCopy();
+      verification.put("atom", predicate + "(" + subject + ", " + object + ")");
+      ToolResult verified = this.offlineVerify(verification, context);
+      if (verified.isError()) return verified;
+      ObjectNode result = (ObjectNode) this.mapper.readTree(verified.getOutput());
+      String verdict = result.path("verdict").asText("UNKNOWN");
+      result.put("claimAtom", verification.path("atom").asText());
+      result.putNull("fusedScore");
+      result.put("fusionPerformed", false);
+      result.put("caveat", "Project-local verification uses direct evidence and declared OWL entailment; "
+          + "no five-channel fusion was performed. Heuristic code calls are not verified facts.");
       return this.jsonSuccess(
           "ask_graph_claim: " + subject + " " + predicate + " " + object,
           result,
-          Map.of("backend", "project-local", "verdict", verdict, "fusedScore", score));
+          Map.of("backend", "project-local", "verdict", verdict, "fusionPerformed", false));
     }
   }
 
@@ -3217,83 +3225,10 @@ public final class LocalProjectGraphBackend {
     String action = params.path("action").asText("").toLowerCase(Locale.ROOT);
     if (action.isBlank()) {
       return ToolResult.error("action is required");
-    } else if ("scenarios".equals(action)) {
-      LocalProjectGraphBackend.GraphSelection selection = this.selectGraph(context, params);
-      ObjectNode result = this.localEnvelope(selection);
-      ArrayNode scenarios = result.putArray("scenarios");
-      ObjectNode scenario = scenarios.addObject();
-      scenario.put("id", selection.graph().graphId());
-      scenario.put("name", selection.graph().graphId());
-      scenario.put("nodeCount", selection.graph().entities().size());
-      return this.jsonSuccess(
-          "graph_simulate: scenarios",
-          result,
-          Map.of("backend", "project-local", "count", scenarios.size()));
-    } else if ("create_run".equals(action)) {
-      String scenarioId = this.text(params, "scenario_id");
-      if (scenarioId == null) {
-        return ToolResult.error("scenario_id is required for action=create_run");
-      } else {
-        String runId = UUID.randomUUID().toString();
-        ObjectNode run = this.mapper.createObjectNode();
-        run.put("runId", runId);
-        run.put("scenarioId", scenarioId);
-        run.put("status", "PAUSED");
-        run.put("step", 0);
-        run.put("backend", "project-local");
-        LOCAL_SIMULATION_RUNS.put(runId, run);
-        return this.jsonSuccess(
-            "graph_simulate: create_run", run, Map.of("backend", "project-local", "runId", runId));
-      }
-    } else if ("runs".equals(action)) {
-      ObjectNode result = this.mapper.createObjectNode();
-      result.put("backend", "project-local");
-      result.set("runs", this.mapper.valueToTree(LOCAL_SIMULATION_RUNS.values()));
-      return this.jsonSuccess(
-          "graph_simulate: runs",
-          result,
-          Map.of("backend", "project-local", "count", LOCAL_SIMULATION_RUNS.size()));
-    } else {
-      String runId = this.text(params, "run_id");
-      if (runId == null) {
-        return ToolResult.error("run_id is required for action=" + action);
-      } else {
-        ObjectNode run = LOCAL_SIMULATION_RUNS.get(runId);
-        if (run == null) {
-          return ToolResult.error("Project-local simulation run not found: " + runId);
-        } else {
-          switch (action) {
-            case "step":
-              run.put("step", run.path("step").asInt() + 1);
-              break;
-            case "play":
-            case "run":
-              run.put("status", "RUNNING");
-              break;
-            case "pause":
-              run.put("status", "PAUSED");
-              break;
-            case "promote":
-              run.put("status", "PROMOTED");
-              break;
-            case "delete":
-              LOCAL_SIMULATION_RUNS.remove(runId);
-              run.put("status", "DELETED");
-              break;
-            case "reason":
-              run.put("reasoning", "Project-local graph state is internally consistent.");
-              break;
-            case "ground_truth":
-              run.put("groundTruth", "Compared with current project-local graph archive.");
-          }
-
-          return this.jsonSuccess(
-              "graph_simulate: " + action,
-              run,
-              Map.of("backend", "project-local", "runId", runId, "action", action));
-        }
-      }
     }
+    return ToolResult.error("Project-local graph_simulate action '" + action
+        + "' is not supported: no sandbox simulation engine is available. "
+        + "No reasoning, ground-truth comparison, or promotion was performed.");
   }
 
   private ToolResult offlineProcessMining(JsonNode params, ToolContext context) throws Exception {
@@ -3317,38 +3252,9 @@ public final class LocalProjectGraphBackend {
       }
 
       if (!"config_get".equals(action) && !"config_update".equals(action)) {
-        LocalProjectGraphBackend.GraphSelection selection = this.selectGraph(context, params);
-        List<GraphRelation> flows =
-            selection.graph().relations().stream()
-                .filter(
-                    relation ->
-                        relation.type().equalsIgnoreCase("DIRECTLY_FOLLOWS")
-                            || relation.type().equalsIgnoreCase("NEXT_CHUNK"))
-                .toList();
-        ObjectNode result = this.localEnvelope(selection);
-        result.put("action", action);
-        result.put("processCount", flows.isEmpty() ? 0 : 1);
-        result.put("transitionCount", flows.size());
-        ArrayNode transitions = result.putArray("transitions");
-        flows.forEach(
-            relation -> {
-              ObjectNode row = transitions.addObject();
-              row.put("source", relation.sourceId());
-              row.put("target", relation.targetId());
-              row.put("type", relation.type());
-            });
-        if ("suggestions".equals(action)) {
-          result.putArray("suggestions");
-        }
-
-        if ("bpmn".equals(action)) {
-          result.put("bpmn", this.localBpmn(flows));
-        }
-
-        return this.jsonSuccess(
-            "process_mining: " + action,
-            result,
-            Map.of("backend", "project-local", "action", action, "transitionCount", flows.size()));
+        return ToolResult.error("Project-local process_mining action '" + action
+            + "' is not supported: no process-mining engine is available. "
+            + "Document chunk order is not a process event log.");
       } else {
         JsonNode config =
             (JsonNode)
@@ -3827,11 +3733,17 @@ public final class LocalProjectGraphBackend {
 
   private Map<String, GraphEntity> archiveEntities(Path path, List<String> requested)
       throws IOException {
+    try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(path)) {
+      return archiveEntities(archive, requested);
+    }
+  }
+
+  private Map<String, GraphEntity> archiveEntities(UnifiedGraphArchive archive, List<String> requested)
+      throws IOException {
     Map<String, GraphEntity> resolved = new LinkedHashMap<>();
     Map<String, Integer> rank = new HashMap<>();
     Set<String> ambiguous = new HashSet<>();
-    try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(path);
-        UnifiedGraphArchive.EntityCursor cursor = archive.openEntities()) {
+    try (UnifiedGraphArchive.EntityCursor cursor = archive.openEntities()) {
       GraphEntity entity;
       while ((entity = cursor.next()) != null) {
         for (String selector : requested) {
@@ -3998,25 +3910,6 @@ public final class LocalProjectGraphBackend {
       long matches = terms.stream().filter(term -> !term.isBlank() && text.contains(term)).count();
       return Math.min(1.0, (double) matches / Math.max(1, terms.size()));
     }
-  }
-
-  private String localBpmn(List<GraphRelation> flows) {
-    StringBuilder xml = new StringBuilder("<definitions><process id=\"project-local\">");
-    Set<String> ids = new LinkedHashSet<>();
-    flows.forEach(
-        flow -> {
-          ids.add(flow.sourceId());
-          ids.add(flow.targetId());
-        });
-    ids.forEach(id -> xml.append("<task id=\"").append(id.replace("\"", "&quot;")).append("\"/>"));
-    flows.forEach(
-        flow ->
-            xml.append("<sequenceFlow sourceRef=\"")
-                .append(flow.sourceId().replace("\"", "&quot;"))
-                .append("\" targetRef=\"")
-                .append(flow.targetId().replace("\"", "&quot;"))
-                .append("\"/>"));
-    return xml.append("</process></definitions>").toString();
   }
 
   private Map<String, String> addDocuments(
@@ -5075,6 +4968,40 @@ public final class LocalProjectGraphBackend {
     return id;
   }
 
+  /** Remove one projection slice; archive rewrite also drops incident links to removed endpoints. */
+  public boolean removeCodeProjection(Path graphPath, String codeProjectId) throws Exception {
+    return withGraphWriteLock(graphPath, () -> {
+      if (!Files.isRegularFile(graphPath)) return false;
+      GraphArchiveMigrator.migrateInPlace(graphPath);
+      boolean owned = false;
+      try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+        try (var cursor = archive.openEntities()) {
+          GraphEntity entity;
+          while ((entity = cursor.next()) != null) {
+            if (isCodeProjectionOwned(entity, codeProjectId)) { owned = true; break; }
+          }
+        }
+        if (!owned) {
+          try (var cursor = archive.openLinks()) {
+            UnifiedGraphArchive.Link link;
+            while ((link = cursor.next()) != null) {
+              if (isCodeProjectionOwned(link.attributes(), codeProjectId)) { owned = true; break; }
+            }
+          }
+        }
+      }
+      if (!owned) return false;
+      UnifiedGraphArchiveEditor.rewrite(graphPath, graphPath, new UnifiedGraph(),
+          record -> !isCodeProjectionOwned(record.entity(), codeProjectId),
+          link -> !isCodeProjectionOwned(link.attributes(), codeProjectId),
+          Map.of("phase.codeProjection." + codeProjectId, "REMOVED",
+              "codeIndexGeneration." + codeProjectId, "removed:" + UUID.randomUUID(),
+              "learning.reasoningStale", true, "learning.kgeStale", true));
+      LOCAL_KB_VERSION.incrementAndGet();
+      return true;
+    });
+  }
+
   private boolean isCodeProjectionOwned(GraphEntity entity, String codeProjectId) {
     if (!codeProjectId.equals(this.string(entity.attributes().get("codeProjectId")))) {
       return false;
@@ -5776,9 +5703,16 @@ public final class LocalProjectGraphBackend {
                 Math.max(1, Integer.getInteger("kompile.graph.query.maxMaterializedNodes", 10000));
             int maxEdges =
                 Math.max(1, Integer.getInteger("kompile.graph.query.maxMaterializedEdges", 50000));
+            // The archive traversal accepts exact ids, while the public query accepts names/FQNs.
+            // Resolve against this same archive (including its journal overlay), not a second snapshot.
+            Map<String, GraphEntity> resolvedSeeds = archiveEntities(archive, seeds);
+            List<String> exactSeeds = seeds.stream().map(seed -> resolvedSeeds.containsKey(seed)
+                ? resolvedSeeds.get(seed).id() : seed).toList();
+            String expansionSeed = resolvedSeeds.containsKey(query.entityId())
+                ? resolvedSeeds.get(query.entityId()).id() : query.entityId();
             UnifiedGraph graph =
                 archive.materializeNeighborhood(
-                    seeds, List.of(query.entityId()), direction, depth, maxNodes, maxEdges);
+                    exactSeeds, List.of(expansionSeed), direction, depth, maxNodes, maxEdges);
             var16 = new LocalProjectGraphBackend.GraphSelection(graph, path);
           } catch (Throwable var18) {
             if (archive != null) {

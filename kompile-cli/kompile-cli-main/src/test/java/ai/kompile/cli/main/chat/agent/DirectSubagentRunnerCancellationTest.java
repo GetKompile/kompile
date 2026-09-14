@@ -172,6 +172,8 @@ class DirectSubagentRunnerCancellationTest {
             releaseResponse.countDown();
             assertTrue(result.get(5, TimeUnit.SECONDS).contains("Subagent aborted"));
             assertFalse(runner.canCancel(id));
+            assertFalse(runner.canSendMessage(id));
+            assertFalse(runner.hasPendingWork(id));
             assertFalse(runner.cancel("missing"));
         } finally {
             releaseResponse.countDown();
@@ -214,6 +216,13 @@ class DirectSubagentRunnerCancellationTest {
                 Path.of("."), tools);
         AtomicReference<String> subagentId = new AtomicReference<>();
         CountDownLatch completedRuns = new CountDownLatch(2);
+        CountDownLatch completionDelivered = new CountDownLatch(1);
+        List<String> completions = new CopyOnWriteArrayList<>();
+        runner.setAsyncCompletionListener((id, result) -> {
+            assertTrue(runner.hasPendingWork(id), "completion must publish before child ownership is released");
+            completions.add(id + ": " + result);
+            completionDelivered.countDown();
+        });
         runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
             @Override
             public void onSubagentStart(String id, String type, String description) {
@@ -231,12 +240,18 @@ class DirectSubagentRunnerCancellationTest {
                     AgentConfig.builder("explore").systemPrompt("Explore").build(),
                     "inspect the crawl", parent);
             assertTrue(first.contains("initial child response"));
+            assertTrue(completions.isEmpty(), "synchronous TaskTool results must not wake twice");
             String id = subagentId.get();
             assertTrue(id != null && !id.isBlank());
+            assertTrue(runner.canSendMessage(id));
+            assertFalse(runner.hasPendingWork(id));
+            assertFalse(runner.canSendMessage("foreign"));
 
             assertTrue(runner.sendMessage(id, "continue the crawl"));
             assertTrue(secondRequest.await(5, TimeUnit.SECONDS));
             assertTrue(completedRuns.await(5, TimeUnit.SECONDS));
+            assertTrue(completionDelivered.await(5, TimeUnit.SECONDS));
+            assertEquals(List.of(id + ": continued child response"), completions);
             assertEquals(2, requests.size());
             assertTrue(requests.get(1).contains("continue the crawl"));
             assertTrue(requests.get(1).contains("initial child response"),

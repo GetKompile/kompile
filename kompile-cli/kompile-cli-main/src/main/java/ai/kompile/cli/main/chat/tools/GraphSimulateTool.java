@@ -57,7 +57,8 @@ public class GraphSimulateTool implements CliTool {
 
     @Override
     public String description() {
-        return "Sandbox graph scenarios: create isolated simulation runs, reason over them, " +
+        return "Local simulation is not supported and returns an error without changing graph state. " +
+                "Managed backends sandbox graph scenarios: create isolated simulation runs, reason over them, " +
                 "compare against ground truth, and promote the best results into the current folder's graph. " +
                 "Actions: " +
                 "'scenarios' (list available simulation scenarios with IDs and descriptions), " +
@@ -76,7 +77,7 @@ public class GraphSimulateTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Sandbox graph scenarios: list scenarios, then create_run {scenario_id}; " +
+        return "Local simulation is not supported. Managed backends sandbox graph scenarios: list scenarios, then create_run {scenario_id}; " +
                 "step/play/reason; compare ground_truth; promote to make it real or delete to discard. " +
                 "run_id comes from create_run or runs.";
     }

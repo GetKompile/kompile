@@ -234,6 +234,33 @@ public class AgentChatController {
         ));
     }
 
+    @GetMapping(value = "/events/{processId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter reconnectChat(@PathVariable String processId,
+                                   @RequestParam(defaultValue = "0") long after) {
+        if (harnessClient == null || !processId.startsWith("harness-"))
+            throw new ResponseStatusException(HttpStatus.GONE, "Run replay unavailable");
+        SseEmitter emitter = new SseEmitter(MAX_HARNESS_SSE_TIMEOUT);
+        try { harnessClient.reconnect(processId, after, emitter); }
+        catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage()); }
+        catch (IllegalStateException expired) { throw new ResponseStatusException(HttpStatus.GONE, expired.getMessage()); }
+        return emitter;
+    }
+
+    /** Controls are addressed to a server-owned live run, never a client-supplied PID. */
+    @PostMapping("/control/{processId}")
+    public ResponseEntity<Map<String, Object>> controlChat(
+            @PathVariable String processId, @RequestBody JsonNode frame) {
+        if (harnessClient == null || !processId.startsWith("harness-"))
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("accepted", false, "message", "Unknown harness run"));
+        try {
+            Map<String, Object> result = harnessClient.control(processId, frame);
+            return ResponseEntity.status(Boolean.TRUE.equals(result.get("accepted"))
+                    ? HttpStatus.ACCEPTED : HttpStatus.CONFLICT).body(result);
+        } catch (IllegalArgumentException invalid) {
+            return ResponseEntity.badRequest().body(Map.of("accepted", false, "message", invalid.getMessage()));
+        }
+    }
+
     /**
      * Health check for the chat endpoint.
      */

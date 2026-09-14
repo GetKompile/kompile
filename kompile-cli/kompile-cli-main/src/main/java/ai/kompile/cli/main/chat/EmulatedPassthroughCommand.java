@@ -40,6 +40,7 @@ import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.render.ThinkingStreamRenderer;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
@@ -169,6 +170,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private TerminalRenderer renderer;
     private AsciiRenderer ascii;
+    /** Line-buffered reasoning stream; flush at text/tool/turn boundaries. */
+    private ThinkingStreamRenderer thinkingStream;
     private KompileTui tui;
     private VirtualTerminal virtualTerminal;
 
@@ -5293,21 +5296,31 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         // Interactive events — flush text first so the dialog is visible, then queue
         if (event instanceof PassthroughStreamParser.InteractiveQuestion
                 || event instanceof PassthroughStreamParser.InteractiveApproval) {
+            flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
             interactiveQueue.offer(event);
             return;
         }
 
-        if (event instanceof PassthroughStreamParser.ThinkingChunk) {
-            // Model is reasoning — switch spinner to "Thinking..." phase
+        if (event instanceof PassthroughStreamParser.ThinkingChunk tc) {
+            // Model is reasoning — surface the reasoning text in the transcript in
+            // real time (line-buffered), while keeping the "Thinking" spinner phase.
             spinner.setPhase("Thinking");
             renderer.updateActivity("thinking");
+            if (tc.text() != null && !tc.text().isEmpty()) {
+                flushPendingText(pendingText, spinner, spinnerStopped);
+                if (spinnerStopped.compareAndSet(false, true)) {
+                    spinner.stop();
+                    safePrintln();
+                }
+                thinkingRenderer().accept(tc.text());
+            }
             return;
         }
-
         if (event instanceof PassthroughStreamParser.TextChunk tc) {
             String text = tc.text();
             if (text == null || text.isEmpty()) return;
+            flushThinkingBurst();
             if (spinnerStopped.compareAndSet(false, true)) {
                 spinner.stop();
                 safePrintln();
@@ -5316,6 +5329,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             trackAssistantLog(text);
             pendingText.append(text);
         } else if (event instanceof PassthroughStreamParser.ToolUse tu) {
+            flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
             if (spinnerStopped.compareAndSet(false, true)) {
                 spinner.stop();
@@ -5368,6 +5382,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         } else if (event instanceof PassthroughStreamParser.TokenUsage tu) {
             flushPendingText(pendingText, spinner, spinnerStopped);
+            if (metrics != null) {
+                metrics.recordTokenUsage(tu.inputTokens(), tu.outputTokens(),
+                        tu.cacheReadTokens(), tu.cacheCreationTokens());
+            }
+            refreshTuiTokenSummary();
             StringBuilder stats = new StringBuilder();
             stats.append(tu.inputTokens()).append(" in / ").append(tu.outputTokens()).append(" out");
             if (tu.cacheReadTokens() > 0 || tu.cacheCreationTokens() > 0) {
@@ -5377,13 +5396,33 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             safePrintln();
             safePrintln(renderer.dim("  [" + stats + "]"));
         } else if (event instanceof PassthroughStreamParser.TurnComplete tc) {
+            flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
+
+            boolean hasTokenUsage = tc.inputTokens() > 0 || tc.outputTokens() > 0
+                    || tc.cacheReadTokens() > 0 || tc.cacheCreationTokens() > 0;
+            if (hasTokenUsage && metrics != null) {
+                metrics.recordTokenUsage(tc.inputTokens(), tc.outputTokens(),
+                        tc.cacheReadTokens(), tc.cacheCreationTokens());
+            }
+            refreshTuiTokenSummary();
 
             StringBuilder stats = new StringBuilder();
             if (tc.durationMs() > 0) stats.append(FormatUtils.formatDuration(tc.durationMs()));
             if (tc.costUsd() > 0) {
                 if (stats.length() > 0) stats.append(" · ");
                 stats.append(String.format("$%.4f", tc.costUsd()));
+            }
+            if (hasTokenUsage) {
+                if (stats.length() > 0) stats.append(" · ");
+                stats.append(FormatUtils.formatNumber(tc.inputTokens())).append(" in / ")
+                     .append(FormatUtils.formatNumber(tc.outputTokens())).append(" out");
+                if (tc.cacheReadTokens() > 0) {
+                    stats.append(" · ").append(FormatUtils.formatNumber(tc.cacheReadTokens())).append(" cached");
+                }
+                if (tc.cacheCreationTokens() > 0) {
+                    stats.append(" · ").append(FormatUtils.formatNumber(tc.cacheCreationTokens())).append(" cache new");
+                }
             }
             if (tc.numTurns() > 0) {
                 if (stats.length() > 0) stats.append(" · ");
@@ -5394,6 +5433,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 safePrintln(renderer.dim("  [" + stats + "]"));
             }
         }
+    }
+
+    /** Push the current token summary into the TUI top bar (no-op without a TUI). */
+    private void refreshTuiTokenSummary() {
+        ChatSessionMetrics metricsNow = tuiMetrics;
+        if (tui == null || metricsNow == null) return;
+        tui.setTokenSummary(metricsNow.compactTokenSummary());
     }
 
     /**
@@ -5412,6 +5458,27 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         renderToScroll(pendingText.toString());
         pendingText.setLength(0);
+    }
+
+    /**
+     * Lazily built line-buffered reasoning renderer. Built after config wiring
+     * because {@code renderer} is not constructor-initialized in this command.
+     */
+    private ThinkingStreamRenderer thinkingRenderer() {
+        if (thinkingStream == null) {
+            thinkingStream = new ThinkingStreamRenderer(this::safePrintln, renderer);
+        }
+        return thinkingStream;
+    }
+
+    /**
+     * Closes the current reasoning burst before ordinary output resumes:
+     * emits any buffered partial line and clears the per-burst header.
+     */
+    private void flushThinkingBurst() {
+        if (thinkingStream != null) {
+            thinkingStream.flush();
+        }
     }
 
     // ── Interactive prompt handling ─────────────────────────────────────────

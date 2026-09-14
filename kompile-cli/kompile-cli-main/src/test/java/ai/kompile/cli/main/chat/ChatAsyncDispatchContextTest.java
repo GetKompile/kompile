@@ -295,7 +295,7 @@ class ChatAsyncDispatchContextTest {
                     completed.countDown();
                 });
             }
-            field(loop, "blockingSubagentInvocation", AtomicBoolean.class).set(true);
+            field(loop, "backgroundableToolPhase", AtomicBoolean.class).set(true);
             Method execute = AgenticChatLoop.class.getDeclaredMethod("executeToolInterruptibly",
                     CliTool.class, com.fasterxml.jackson.databind.JsonNode.class, ToolContext.class,
                     String.class, java.util.function.Function.class);

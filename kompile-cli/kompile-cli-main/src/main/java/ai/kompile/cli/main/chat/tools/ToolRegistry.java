@@ -34,6 +34,13 @@ public class ToolRegistry {
             "knowledge_status", "knowledge_search", "graph_reasoning_query",
             "ask_graph_assert", "ask_graph_retract", "activate_tools");
 
+    // Read-only evidence consumers are shared across specialist agents. Do not add mixed-action
+    // tools (knowledge_graph, code_graph, graph_embeddings): they can mutate or train models.
+    private static final Set<String> AGENT_GRAPH_EVIDENCE_TOOLS = Set.of(
+            "graph_search", "graph_reason", "ask_graph_query", "ask_graph_verify", "ask_graph_explain",
+            "ask_graph_explain_fused", "ask_graph_synthesize", "ask_graph_claim",
+            "graph_aggregate", "graph_centrality", "graph_forecast", "graph_bayes", "ask_graph_mebn");
+
     private final Map<String, CliTool> tools = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
     private final DynamicToolManager dynamicToolManager;
@@ -100,7 +107,8 @@ public class ToolRegistry {
         List<CliTool> result = new ArrayList<>();
         for (CliTool tool : tools.values()) {
             if (enabled.contains(tool.id())
-                    || AGENT_CRAWL_LIFECYCLE_TOOLS.contains(tool.id())) {
+                    || AGENT_CRAWL_LIFECYCLE_TOOLS.contains(tool.id())
+                    || AGENT_GRAPH_EVIDENCE_TOOLS.contains(tool.id())) {
                 result.add(tool);
             }
         }

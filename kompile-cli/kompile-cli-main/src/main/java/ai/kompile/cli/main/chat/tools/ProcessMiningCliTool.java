@@ -56,7 +56,8 @@ public class ProcessMiningCliTool implements CliTool {
     @Override
     public String description() {
         return "Process-mining engine: mine, inspect, and configure process models from knowledge graphs. " +
-                "Local stdio automatically initializes and uses the current folder's knowledge base; " +
+                "Local stdio supports configuration storage only; mining, conformance, entailment and BPMN actions are not supported. " +
+                "The following analyses require a managed process-mining backend; " +
                 "fact_sheet_id is only an explicit remote/legacy selector. " +
                 "Actions: " +
                 "'discover' (mine the selected graph via Inductive Miner), " +
@@ -73,7 +74,8 @@ public class ProcessMiningCliTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "process_mining: mine/inspect/configure process models. " +
+        return "process_mining: local mode supports config_get/config_update only, not process analysis. " +
+                "Managed backends mine/inspect/configure process models. " +
                 "Required: action=discover|discover_all|entailment|conformance|declare|bpmn|suggestions|suggestion|config_get|config_update. " +
                 "Local stdio defaults to the current folder; fact_sheet_id is a remote/legacy override. 'suggestion' needs suggestion_id. " +
                 "'config_update' needs config_json with mining* keys.";

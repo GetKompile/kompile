@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.common.util.NativeCliProcess;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -157,7 +158,8 @@ public final class LiveModelDiscovery {
         Future<String> outputTask = null;
         AtomicBoolean outputOverflow = new AtomicBoolean(false);
         try {
-            process = new ProcessBuilder(List.copyOf(agent.getModelListCommand()))
+            process = NativeCliProcess.processBuilder(
+                            List.copyOf(agent.getModelListCommand()), null)
                     .redirectErrorStream(true)
                     .start();
             Process running = process;

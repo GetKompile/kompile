@@ -22,6 +22,54 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SkillRuntimeContractTest {
 
     @Test
+    void firstPartyPackagesLoadWithoutVendorsAndAllowOverrides(@TempDir Path tempDir) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousInstall = System.getProperty("kompile.install.dir");
+        Path home = tempDir.resolve("home");
+        Path install = tempDir.resolve("distribution");
+        Path project = tempDir.resolve("project");
+        Files.createDirectories(project);
+        System.setProperty("user.home", home.toString());
+        System.setProperty("kompile.install.dir", install.toString());
+        try {
+            Path packaged = install.resolve("lib/skills/first-party-check/SKILL.md");
+            Files.createDirectories(packaged.getParent());
+            Files.writeString(packaged, "---\nname: first-party-check\n---\nBUNDLED {{args}}\n");
+            Path reference = packaged.getParent().resolve("references/guide.md");
+            Files.createDirectories(reference.getParent());
+            Files.writeString(reference, "Reference, not a separate skill");
+            var loaded = new CustomSkillLoader(project).loadAll();
+            assertEquals(1, loaded.size());
+            assertTrue(loaded.get("first-party-check").getPromptTemplate().contains("BUNDLED"));
+
+            ObjectMapper mapper = new ObjectMapper();
+            SkillManagerTool tool = new SkillManagerTool(mapper, project);
+            var params = mapper.createObjectNode().put("action", "expand_template")
+                    .put("name", "first-party-check").put("args", "works");
+            assertTrue(tool.execute(params, null).getOutput().contains("BUNDLED works"));
+            for (String action : java.util.List.of("update_skill", "delete_skill")) {
+                assertTrue(tool.execute(params.deepCopy().put("action", action), null).isError());
+            }
+            assertTrue(Files.readString(packaged).contains("BUNDLED"));
+
+            Path userSkill = home.resolve(".kompile/skills/first-party-check/SKILL.md");
+            Files.createDirectories(userSkill.getParent());
+            Files.writeString(userSkill, "---\nname: first-party-check\n---\nUSER\n");
+            assertTrue(new CustomSkillLoader(project).loadAll().get("first-party-check")
+                    .getPromptTemplate().contains("USER"));
+            Path projectSkill = project.resolve(".kompile/skills/first-party-check.md");
+            Files.createDirectories(projectSkill.getParent());
+            Files.writeString(projectSkill, "---\nname: first-party-check\n---\nPROJECT\n");
+            assertTrue(new CustomSkillLoader(project).loadAll().get("first-party-check")
+                    .getPromptTemplate().contains("PROJECT"));
+        } finally {
+            System.setProperty("user.home", previousHome);
+            if (previousInstall == null) System.clearProperty("kompile.install.dir");
+            else System.setProperty("kompile.install.dir", previousInstall);
+        }
+    }
+
+    @Test
     void duplicateProviderSkillsDoNotEmitWarningsButInvalidSkillsStillDo(@TempDir Path project) throws Exception {
         Path first = project.resolve(".claude/skills/quiet-check/SKILL.md");
         Path second = project.resolve(".codex/skills/quiet-check/SKILL.md");
@@ -113,6 +161,91 @@ class SkillRuntimeContractTest {
                 SkillConfig.builder("reminder").promptTemplate("shadow reminders").build()));
         assertThrows(IllegalArgumentException.class, () -> registry.register(
                 SkillConfig.builder("reminder-global").promptTemplate("shadow reminders").build()));
+    }
+
+    @Test
+    void packageLifecyclePreservesReferencesAndScopes(@TempDir Path temp) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", temp.toString());
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            Path project = temp.resolve("project");
+            SkillManagerTool tool = new SkillManagerTool(mapper, project);
+            var create = mapper.createObjectNode().put("action", "create_skill")
+                    .put("name", "package-check").put("layout", "package")
+                    .put("prompt_template", "ORIGINAL {{args}}");
+            assertFalse(tool.execute(create, null).isError());
+            Path userPackage = temp.resolve(".kompile/skills/package-check");
+            Path reference = userPackage.resolve("references/guide.md");
+            Files.createDirectories(reference.getParent());
+            Files.writeString(reference, "KEEP REFERENCE");
+            assertTrue(tool.execute(create.deepCopy().put("layout", "flat"), null).isError());
+
+            var update = mapper.createObjectNode().put("action", "update_skill")
+                    .put("name", "package-check").put("prompt_template", "UPDATED {{args}}");
+            assertFalse(tool.execute(update, null).isError());
+            assertEquals("KEEP REFERENCE", Files.readString(reference));
+            var expand = mapper.createObjectNode().put("action", "expand_template")
+                    .put("name", "package-check").put("args", "works");
+            assertTrue(tool.execute(expand, null).getOutput().contains("UPDATED works"));
+
+            assertFalse(tool.execute(create.deepCopy().put("project_scope", true), null).isError());
+            Path projectPackage = project.resolve(".kompile/skills/package-check");
+            assertFalse(tool.execute(update.deepCopy().put("project_scope", false)
+                    .put("prompt_template", "USER ONLY"), null).isError());
+            assertTrue(Files.readString(projectPackage.resolve("SKILL.md")).contains("ORIGINAL"));
+            var delete = mapper.createObjectNode().put("action", "delete_skill").put("name", "package-check");
+            assertFalse(tool.execute(delete, null).isError());
+            assertFalse(Files.exists(projectPackage));
+            assertTrue(Files.exists(reference));
+            assertFalse(tool.execute(delete.deepCopy().put("project_scope", false), null).isError());
+            assertFalse(Files.exists(userPackage));
+        } finally {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
+    void packageMutationsRejectAmbiguityAndUnsafePaths(@TempDir Path project) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        SkillManagerTool tool = new SkillManagerTool(mapper, project);
+        Path root = project.resolve(".kompile/skills");
+        Path pkg = root.resolve("safe-package");
+        Files.createDirectories(pkg);
+        Files.writeString(pkg.resolve("SKILL.md"), "---\nname: safe-package\n---\nOriginal");
+        Path flat = root.resolve("safe-package.md");
+        Files.writeString(flat, "Flat");
+        var params = mapper.createObjectNode().put("name", "safe-package").put("project_scope", true);
+        for (String action : java.util.List.of("create_skill", "update_skill", "delete_skill")) {
+            assertTrue(tool.execute(params.deepCopy().put("action", action), null).isError());
+        }
+        Files.delete(flat);
+        Path outside = project.resolve("outside.md");
+        Files.writeString(outside, "OUTSIDE");
+        Files.createSymbolicLink(pkg.resolve("linked.md"), outside);
+        assertTrue(tool.execute(params.deepCopy().put("action", "delete_skill"), null).isError());
+        assertTrue(Files.exists(pkg.resolve("SKILL.md")));
+        assertEquals("OUTSIDE", Files.readString(outside));
+        Files.delete(pkg.resolve("linked.md"));
+        Files.delete(pkg.resolve("SKILL.md"));
+        Files.createSymbolicLink(pkg.resolve("SKILL.md"), outside);
+        assertTrue(tool.execute(params.deepCopy().put("action", "update_skill"), null).isError());
+        assertTrue(tool.execute(params.deepCopy().put("action", "delete_skill"), null).isError());
+        Files.createSymbolicLink(root.resolve("linked-package"), pkg);
+        assertTrue(tool.execute(params.deepCopy().put("action", "create_skill")
+                .put("name", "linked-package").put("layout", "package"), null).isError());
+    }
+
+    @Test
+    void flatSkillNamedSkillDoesNotDeleteSkillRoot(@TempDir Path project) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        SkillManagerTool tool = new SkillManagerTool(mapper, project);
+        var params = mapper.createObjectNode().put("name", "SKILL").put("project_scope", true);
+        assertFalse(tool.execute(params.deepCopy().put("action", "create_skill"), null).isError());
+        Path sibling = project.resolve(".kompile/skills/other.md");
+        Files.writeString(sibling, "KEEP");
+        assertFalse(tool.execute(params.deepCopy().put("action", "delete_skill"), null).isError());
+        assertEquals("KEEP", Files.readString(sibling));
     }
 
     @Test

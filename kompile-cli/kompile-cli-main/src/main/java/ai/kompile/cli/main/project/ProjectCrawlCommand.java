@@ -1694,11 +1694,12 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             if (!markdownPath.startsWith(markdownDir)) {
                 throw new IllegalArgumentException("Markdown artifact escapes markdown directory: " + markdownPath);
             }
+            String header = knowledgeMarkdownHeader(title, document, profile, projectName);
             temporaryMarkdown = Files.createTempFile(markdownDir, document.documentId() + "-markdown-", ".tmp");
             try (BufferedWriter markdown = Files.newBufferedWriter(temporaryMarkdown, StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING);
                  BufferedReader body = Files.newBufferedReader(bodyPath, StandardCharsets.UTF_8)) {
-                markdown.write(knowledgeMarkdownHeader(title, document, profile, projectName));
+                markdown.write(header);
                 char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
                 int read;
                 while ((read = body.read(buffer)) >= 0) {
@@ -1712,7 +1713,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     .relativize(markdownPath.toAbsolutePath().normalize())
                     .toString()
                     .replace('\\', '/');
-            return LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline, bodyResult.outputs());
+            List<LocalDocumentLoaderRegistry.LoadedOutput> outputs = bodyResult.outputs().stream()
+                    .map(section -> {
+                        Map<String, Object> metadata = new LinkedHashMap<>(section.metadata());
+                        if (metadata.get("bodyStart") instanceof Number start
+                                && metadata.get("bodyEnd") instanceof Number end) {
+                            metadata.put("markdownStart", header.length() + start.longValue());
+                            metadata.put("markdownEnd", header.length() + end.longValue());
+                        }
+                        return new LocalDocumentLoaderRegistry.LoadedOutput(section.index(), section.title(), metadata);
+                    }).toList();
+            return LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline, outputs);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("Model-backed document extraction was cancelled", interrupted);
@@ -2126,6 +2137,15 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         return result;
     }
 
+    /** Same normalization as the streamed Markdown body, for loader provenance offsets. */
+    static String normalizeLocalBody(String text) throws IOException {
+        java.io.StringWriter result = new java.io.StringWriter();
+        try (Writer normalized = new NormalizedTextWriter(result)) {
+            if (text != null) normalized.write(text);
+        }
+        return result.toString();
+    }
+
     private static final class NormalizedTextWriter extends Writer {
         private final Writer delegate;
         private boolean started;
@@ -2460,6 +2480,18 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 output.write(",\"documentId\":");
                 output.write(jsonString(document.documentId()));
                 output.write(",\"index\":" + index + ",\"start\":" + absoluteStart + ",\"end\":" + absoluteEnd);
+                List<Integer> pages = new ArrayList<>();
+                for (LocalDocumentLoaderRegistry.LoadedOutput section : document.loaderOutputs()) {
+                    Map<String, Object> metadata = section.metadata();
+                    if (metadata.get("pageNumber") instanceof Number page
+                            && metadata.get("markdownStart") instanceof Number pageStart
+                            && metadata.get("markdownEnd") instanceof Number pageEnd
+                            && page.intValue() > 0 && pageStart.longValue() < absoluteEnd
+                            && pageEnd.longValue() > absoluteStart && !pages.contains(page.intValue())) {
+                        pages.add(page.intValue());
+                    }
+                }
+                output.write(",\"pages\":" + pages);
                 output.write(",\"pipelineId\":");
                 output.write(jsonString(pipeline.pipelineId()));
                 output.write(",\"pipelineType\":");

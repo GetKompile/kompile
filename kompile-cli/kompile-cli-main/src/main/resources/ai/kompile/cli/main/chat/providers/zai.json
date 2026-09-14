@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "provider": "zai",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "Z.AI chat-completion API documentation",
+    "url": "https://docs.z.ai/api-reference/llm/chat-completion",
+    "verifiedAt": "2026-09-14",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata and the CLI catalog carries none either."
+  },
+  "profiles": [
+    {
+      "modelPatterns": [
+        "glm-5\\.3(-flash)?"
+      ],
+      "defaultValue": "max",
+      "mandatory": true,
+      "options": [
+        {"value": "low", "label": "Low"},
+        {"value": "high", "label": "High"},
+        {"value": "max", "label": "Max"}
+      ]
+    },
+    {
+      "modelPatterns": [
+        "glm-5\\.2"
+      ],
+      "defaultValue": "",
+      "mandatory": false,
+      "options": [
+        {"value": "none", "label": "None (skip thinking)"},
+        {"value": "low", "label": "Low (mapped to high)"},
+        {"value": "medium", "label": "Medium (mapped to high)"},
+        {"value": "high", "label": "High"},
+        {"value": "max", "label": "Max"},
+        {"value": "xhigh", "label": "Xhigh (mapped to max)"}
+      ]
+    },
+    {
+      "modelPatterns": [
+        "glm-4\\.5(?!-x)",
+        "glm-4\\.6.*",
+        "glm-4\\.7.*",
+        "glm-5(-turbo)?",
+        "glm-5\\.1"
+      ],
+      "defaultValue": "",
+      "mandatory": false,
+      "options": [
+        {"value": "enabled", "label": "Enabled"},
+        {"value": "disabled", "label": "Disabled"}
+      ]
+    }
+  ]
+}

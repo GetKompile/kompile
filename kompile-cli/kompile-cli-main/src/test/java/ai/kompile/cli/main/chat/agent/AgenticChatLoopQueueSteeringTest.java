@@ -138,6 +138,9 @@ class AgenticChatLoopQueueSteeringTest {
             public String id() { return "task"; }
 
             @Override
+            public boolean isBackgroundable() { return true; }
+
+            @Override
             public String description() { return "blocking subagent fixture"; }
 
             @Override
@@ -192,21 +195,21 @@ class AgenticChatLoopQueueSteeringTest {
         AtomicInteger eligibilityChanges = new AtomicInteger();
         loop.setBackgroundEligibilityListener(eligibilityChanges::incrementAndGet);
 
-        assertFalse(loop.isBlockingSubagentInvocationActive(),
+        assertFalse(loop.isBackgroundableToolPhaseActive(),
                 "model thinking is not backgroundable");
         CompletableFuture<String> response = CompletableFuture.supplyAsync(() -> loop.chat(
                 "delegate work", "task-phase-" + UUID.randomUUID(),
                 "coder", "default", false));
         try {
             assertTrue(taskStarted.await(5, TimeUnit.SECONDS));
-            assertTrue(loop.isBlockingSubagentInvocationActive(),
-                    "TaskTool must publish the Ctrl+B-eligible phase");
+            assertTrue(loop.isBackgroundableToolPhaseActive(),
+                    "the backgroundable tool must publish the Ctrl+B-eligible phase");
         } finally {
             releaseTask.countDown();
         }
         assertEquals("done", response.get(5, TimeUnit.SECONDS));
-        assertFalse(loop.isBlockingSubagentInvocationActive(),
-                "eligibility must clear when TaskTool returns");
+        assertFalse(loop.isBackgroundableToolPhaseActive(),
+                "eligibility must clear when the backgroundable tool returns");
         assertEquals(2, eligibilityChanges.get(),
                 "the UI must be notified on both entry and exit");
     }

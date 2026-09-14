@@ -434,7 +434,9 @@ public final class CredentialStore {
         ensurePrivateParentDirectory();
         ReentrantLock jvmLock = JVM_LOCKS.computeIfAbsent(lockPath, ignored -> new ReentrantLock());
         try {
-            jvmLock.lockInterruptibly();
+            if (!jvmLock.tryLock(60, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new LockTimeoutException("Timed out waiting for credential-store JVM lock");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for credential-store lock " + lockPath, e);
@@ -443,7 +445,7 @@ public final class CredentialStore {
                 lockPath,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE);
-             FileLock ignored = channel.lock()) {
+             FileLock ignored = acquireFileLock(channel, 60_000L)) {
             applyOwnerOnlyPermissions(lockPath, false);
             StoreState store = readUnlocked();
             T result = operation.apply(store);
@@ -453,6 +455,58 @@ public final class CredentialStore {
             return result;
         } finally {
             jvmLock.unlock();
+        }
+    }
+
+    /**
+     * Keep the same cross-process exclusion without entering the kernel's blocking
+     * record-lock wait graph (F_SETLKW can report EDEADLK for multithreaded clients).
+     * Never retry the protected operation: a refresh may already have rotated a token.
+     */
+    static FileLock acquireFileLock(FileChannel channel, long timeoutMillis) throws IOException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        try {
+            while (true) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new java.nio.channels.FileLockInterruptionException();
+                }
+                FileLock lock = channel.tryLock();
+                if (lock != null) return lock;
+                if (System.nanoTime() - deadline >= 0) {
+                    throw new LockTimeoutException("Timed out waiting for credential-store file lock");
+                }
+                try {
+                    Thread.sleep(25L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.nio.channels.FileLockInterruptionException();
+                }
+            }
+        } catch (java.nio.channels.FileLockInterruptionException e) {
+            throw e;
+        } catch (LockTimeoutException e) {
+            // The bounded wait elapsed; do not mask it as a generic native lock failure.
+            throw e;
+        } catch (IOException e) {
+            // Preserve a typed local-I/O diagnostic; the safe credential wrapper
+            // otherwise loses generic native lock errors as UNKNOWN/http=0.
+            var local = new java.nio.file.FileSystemException(null, null,
+                    "Could not acquire credential-store file lock");
+            local.initCause(e);
+            throw local;
+        }
+    }
+
+    /**
+     * A credential-store lock wait timed out. Contention with another chat or CLI
+     * process, not broken file I/O. Classified as TEMPORARY/LOCK_TIMEOUT so the
+     * user is told to retry instead of rechecking configuration.
+     */
+    public static final class LockTimeoutException extends java.nio.file.FileSystemException {
+        private static final long serialVersionUID = 1L;
+
+        public LockTimeoutException(String reason) {
+            super(null, null, reason);
         }
     }
 

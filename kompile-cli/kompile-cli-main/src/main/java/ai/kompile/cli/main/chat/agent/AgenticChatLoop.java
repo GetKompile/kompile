@@ -44,6 +44,7 @@ import ai.kompile.cli.main.chat.render.ConversationSummarizer;
 import ai.kompile.cli.main.chat.render.OutputTruncator;
 import ai.kompile.cli.main.chat.render.StreamingMarkdownRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.render.ThinkingStreamRenderer;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.chat.tools.*;
@@ -249,9 +250,10 @@ public class AgenticChatLoop {
     private volatile Consumer<String> assistantDeltaListener;
     private final AtomicLong transcriptBlockSequence = new AtomicLong();
     private volatile Supplier<QueuedInput> queuedMessageSupplier = () -> null;
+    private volatile BooleanSupplier selfBackgroundRequest = () -> false;
     private volatile ReminderManager reminderManager;
     private final AtomicReference<Consumer<String>> backgroundOutputConsumer = new AtomicReference<>();
-    private final AtomicBoolean blockingSubagentInvocation = new AtomicBoolean(false);
+    private final AtomicBoolean backgroundableToolPhase = new AtomicBoolean(false);
     private volatile Runnable backgroundEligibilityListener = () -> { };
 
     // Inline enforcer: deterministic or LLM-backed checker applied to every turn.
@@ -513,6 +515,16 @@ public class AgenticChatLoop {
         this.queuedMessageSupplier = supplier != null ? supplier : () -> null;
     }
 
+    /**
+     * Install the owning session's backgrounding hook so tools can detach their
+     * own blocking work on the agent's initiative (the model-facing equivalent
+     * of the user pressing Ctrl+B). The supplier must be safe to call from the
+     * tool worker thread and return false whenever the transfer was rejected.
+     */
+    public void setSelfBackgroundRequest(BooleanSupplier selfBackgroundRequest) {
+        this.selfBackgroundRequest = selfBackgroundRequest != null ? selfBackgroundRequest : () -> false;
+    }
+
     /** Apply active session and project reminders at the provider request boundary. */
     public void setReminderManager(ReminderManager reminderManager) {
         this.reminderManager = reminderManager;
@@ -520,13 +532,37 @@ public class AgenticChatLoop {
     }
 
     private record ToolDetach(Consumer<String> output, Runnable detached,
-                              Consumer<ToolResult> completed) { }
+                              Consumer<ToolResult> completed, Runnable rejected) { }
+    private final Object backgroundTransferLock = new Object();
+    private final java.util.Set<Runnable> detachedInvocations = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Owning live harness shutdown; detached children must not outlive their session. */
+    public void cancelDetachedInvocations() {
+        for (Runnable cancel : detachedInvocations) cancel.run();
+        detachedInvocations.clear();
+    }
+
+    /** Request a transfer of the currently blocking invocation, never a later invocation. */
+    public boolean requestBackgroundActiveTurn(Consumer<String> output, Runnable detached,
+                                                Consumer<ToolResult> completed, Runnable rejected) {
+        synchronized (backgroundTransferLock) {
+            if (!backgroundableToolPhase.get() || toolDetach.get() != null) return false;
+            toolDetach.set(new ToolDetach(output, detached, completed, rejected));
+            return true;
+        }
+    }
+
+    private ToolDetach claimBackgroundTransfer(boolean alreadyCompleted) {
+        synchronized (backgroundTransferLock) {
+            return !alreadyCompleted && backgroundableToolPhase.get() ? toolDetach.getAndSet(null) : null;
+        }
+    }
     private final AtomicReference<ToolDetach> toolDetach = new AtomicReference<>();
 
     public void backgroundActiveTurn(Consumer<String> output, Runnable detached,
                                      Consumer<ToolResult> completed) {
         backgroundActiveTurn(output);
-        toolDetach.set(new ToolDetach(output, detached, completed));
+        toolDetach.set(new ToolDetach(output, detached, completed, () -> { }));
     }
 
     /** Route subsequent turn output to a retained background task. */
@@ -538,12 +574,13 @@ public class AgenticChatLoop {
     }
 
     /**
-     * True only while the parent turn is synchronously waiting for TaskTool.
+     * True only while a backgroundable tool's invocation is synchronously in
+     * flight (the phase Ctrl+B and the agent's own background parameter detach).
      * Main-model thinking and retained interactive follow-ups are deliberately
-     * excluded: neither is the subagent invocation Ctrl+B is meant to detach.
+     * excluded: neither owns the foreground work these are meant to detach.
      */
-    public boolean isBlockingSubagentInvocationActive() {
-        return blockingSubagentInvocation.get();
+    public boolean isBackgroundableToolPhaseActive() {
+        return backgroundableToolPhase.get();
     }
 
     /** Repaint the owning REPL when TaskTool enters or leaves its blocking phase. */
@@ -551,8 +588,16 @@ public class AgenticChatLoop {
         backgroundEligibilityListener = listener != null ? listener : () -> { };
     }
 
-    private void setBlockingSubagentInvocation(boolean active) {
-        if (blockingSubagentInvocation.getAndSet(active) == active) return;
+    private void setBackgroundableToolPhase(boolean active) {
+        ToolDetach rejected = null;
+        synchronized (backgroundTransferLock) {
+            if (backgroundableToolPhase.getAndSet(active) == active) return;
+            if (!active) rejected = toolDetach.getAndSet(null);
+        }
+        if (rejected != null) {
+            try { rejected.rejected().run(); }
+            catch (RuntimeException ignored) { /* observational callback */ }
+        }
         try {
             backgroundEligibilityListener.run();
         } catch (RuntimeException ignored) {
@@ -1415,6 +1460,7 @@ public class AgenticChatLoop {
                     chatConfig.getAutoCompactThreshold(),
                     limits.maxOutputTokens(),
                     chatConfig.getCompactionReserveTokens());
+            directLlmClient.setWireMaxOutputTokens(compactionService.wireMaxOutputTokens());
             refreshNativeCompactionTrigger();
         } catch (Exception e) {
             // Budget refresh must never break a chat turn; keep the previous budget.
@@ -1800,6 +1846,7 @@ public class AgenticChatLoop {
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
         toolContext.bindJudgeControl(control, false);
         toolContext.linkAbortSignal(turnToolAbort);
+        toolContext.linkSelfBackgroundRequest(selfBackgroundRequest);
         toolContext.setOutputConsumer(sessionContext.wrapConsumer(this::emitLine));
 
         boolean progressiveToolLoading = usesProgressiveToolLoading();
@@ -2311,9 +2358,9 @@ public class AgenticChatLoop {
                     }
 
                     long toolStart = System.currentTimeMillis();
-                    boolean subagentInvocation = "task".equals(normalizedToolName);
-                    if (subagentInvocation) {
-                        setBlockingSubagentInvocation(true);
+                    boolean backgroundableTool = tool.isBackgroundable();
+                    if (backgroundableTool) {
+                        setBackgroundableToolPhase(true);
                     }
                     ToolResult toolResult;
                     String completionSession = sessionId + "-background-" + java.util.UUID.randomUUID();
@@ -2325,8 +2372,8 @@ public class AgenticChatLoop {
                                         call.name, call.id, completionInput,
                                         completed.getOutput(), completed.isError()));
                     } finally {
-                        if (subagentInvocation) {
-                            setBlockingSubagentInvocation(false);
+                        if (backgroundableTool) {
+                            setBackgroundableToolPhase(false);
                         }
                     }
                     long toolDurationMs = System.currentTimeMillis() - toolStart;
@@ -3012,11 +3059,17 @@ public class AgenticChatLoop {
 
         try {
             while (true) {
-                ToolDetach transfer = blockingSubagentInvocation.get() ? toolDetach.getAndSet(null) : null;
+                ToolDetach transfer = claimBackgroundTransfer(execution.isDone());
                 if (transfer != null) {
                     detached.set(true);
                     output.set(transfer.output());
-                    setBlockingSubagentInvocation(false);
+                    setBackgroundableToolPhase(false);
+                    Runnable cancelDetached = () -> {
+                        output.set(ignored -> { });
+                        executionContext.abort();
+                        execution.cancel(true);
+                    };
+                    detachedInvocations.add(cancelDetached);
                     transfer.detached().run();
                     Thread completion = new Thread(sessionContext.wrap(() -> {
                         ToolResult result;
@@ -3030,7 +3083,11 @@ public class AgenticChatLoop {
                             Path saved = saveCompletion.apply(result);
                             if (saved != null) transfer.output().accept("\n[Final tool result saved to: " + saved + "]\n");
                         } finally {
-                            transfer.completed().accept(result);
+                            try {
+                                transfer.completed().accept(result);
+                            } finally {
+                                detachedInvocations.remove(cancelDetached);
+                            }
                         }
                     }), "chat-detached-tool-completion");
                     completion.setDaemon(true);
@@ -3309,6 +3366,7 @@ public class AgenticChatLoop {
         StreamingMarkdownRenderer markdownRenderer =
                 new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
         java.util.function.Consumer<String> previousConsumer = directLlmClient.getOutputConsumer();
+        java.util.function.Consumer<String> previousThinkingConsumer = directLlmClient.getThinkingConsumer();
         java.util.function.Consumer<DirectLlmClient.ConnectivityEvent> previousConnectivityConsumer =
                 directLlmClient.getConnectivityEventConsumer();
         DirectLlmClient.ProviderActivityListener previousProviderActivityListener =
@@ -3320,6 +3378,15 @@ public class AgenticChatLoop {
             reconnecting.set(false);
             setForegroundActivity("Responding");
             markdownRenderer.accept(chunk);
+        }));
+        // Line-buffered reasoning rendering: word-sized deltas coalesce into
+        // complete transcript lines instead of one fragmented line per delta.
+        ThinkingStreamRenderer thinkingRenderer =
+                new ThinkingStreamRenderer(this::emitLine, asciiRenderer.getTerminalRenderer());
+        directLlmClient.setThinkingConsumer(sessionContext.wrapConsumer(chunk -> {
+            if (chunk == null || chunk.isEmpty()) return;
+            setForegroundActivity("Thinking");
+            thinkingRenderer.accept(chunk);
         }));
         directLlmClient.setConnectivityEventConsumer(sessionContext.wrapConsumer(event -> {
             markdownRenderer.flush();
@@ -3379,8 +3446,10 @@ public class AgenticChatLoop {
         } finally {
             // Tool-only, empty, failed and cancelled responses may emit no text.
             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
+            thinkingRenderer.flush();
             markdownRenderer.flush();
             directLlmClient.setOutputConsumer(previousConsumer);
+            directLlmClient.setThinkingConsumer(previousThinkingConsumer);
             directLlmClient.setConnectivityEventConsumer(previousConnectivityConsumer);
             directLlmClient.setProviderActivityListener(previousProviderActivityListener);
         }

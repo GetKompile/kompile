@@ -7,7 +7,10 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.graph.reasoning.model.GraphEntity;
+import ai.kompile.graph.reasoning.unified.UnifiedGraphArchive;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
+import ai.kompile.graph.reasoning.unified.UnifiedGraphArchiveQueryEngine;
+import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -108,6 +111,13 @@ final class LocalProjectRagSearch {
             }
         }
 
+        ToolResult chunks = searchChunks(root, localKnowledgeBases, query, topic, limit);
+        if (chunks.isError()) return chunks;
+        return withGraphEvidence(localKnowledgeBases, query, chunks);
+    }
+
+    private ToolResult searchChunks(Path root, List<Path> localKnowledgeBases,
+                                    String query, String topic, int limit) {
         try {
             List<Chunk> chunks = loadChunks(localKnowledgeBases);
             if (chunks.isEmpty()) {
@@ -128,6 +138,73 @@ final class LocalProjectRagSearch {
         } catch (Exception e) {
             return ToolResult.error("Project-local knowledge search failed: " + conciseMessage(e));
         }
+    }
+
+    private ToolResult withGraphEvidence(List<Path> knowledgeBases, String query, ToolResult chunks) {
+        List<ObjectNode> evidence = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        UnifiedGraphArchiveQueryEngine engine = new UnifiedGraphArchiveQueryEngine();
+        // Bound retained evidence and archive fan-out; archive SEARCH streams entities, not a full graph load.
+        for (Path directory : knowledgeBases.stream().limit(8).toList()) {
+            ObjectNode item = mapper.createObjectNode();
+            item.put("knowledgeBase", directory.getFileName().toString());
+            try {
+                Path path = containedRegularFile(directory, "graph.kgraph");
+                if (path == null) continue;
+                try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(path)) {
+                    if (!archive.hasCompactTopology()) {
+                        warnings.add(directory.getFileName() + ": graph evidence requires compact KGraph v3");
+                        continue;
+                    }
+                    var result = engine.query(archive, new GraphQueryEngine.Query(
+                            GraphQueryEngine.Intent.SEARCH, null, null, GraphQueryEngine.Direction.BOTH,
+                            List.of(), 1, 5, null, null, query));
+                    var entities = item.putArray("entities");
+                    var relations = item.putArray("relations");
+                    java.util.Set<String> seen = new LinkedHashSet<>();
+                    for (var entity : result.entities()) {
+                        ObjectNode entityEvidence = entities.addObject().put("id", entity.id()).put("label", entity.label())
+                                .put("type", entity.type()).put("retrievalScore", entity.score());
+                        Map<String, Object> provenance = new LinkedHashMap<>();
+                        for (String key : List.of("source", "relativePath", "filePath", "documentId", "chunkId",
+                                "pages", "startLine", "endLine", "codeProjectId", "_kompileProjectionOwner")) {
+                            if (entity.attributes().containsKey(key)) provenance.put(key, entity.attributes().get(key));
+                        }
+                        entityEvidence.set("provenance", mapper.valueToTree(provenance));
+                        var links = archive.incidentLinks(entity.id(), GraphQueryEngine.Direction.BOTH, 11);
+                        if (links.size() > 10) item.put("relationsTruncated", true);
+                        for (var link : links.stream().limit(10).toList()) {
+                            if (seen.add(link.id())) {
+                                ObjectNode relation = relations.addObject().put("id", link.id())
+                                        .put("sourceId", link.sourceId()).put("targetId", link.targetId())
+                                        .put("type", link.type()).put("recordedConfidence", link.confidence());
+                                relation.set("attributes", mapper.valueToTree(link.attributes()));
+                            }
+                        }
+                    }
+                    item.put("status", result.status().name());
+                    item.put("verificationPerformed", false);
+                    item.put("entityLimit", 5);
+                    item.put("relationLimitPerEntity", 10);
+                }
+                // Publish only after the archive's unchanged-generation check succeeds on close.
+                evidence.add(item);
+            } catch (Exception failure) {
+                warnings.add(directory.getFileName() + ": " + conciseMessage(failure));
+            }
+        }
+        if (knowledgeBases.size() > 8) warnings.add("Graph evidence limited to eight selected knowledge bases.");
+        Map<String, Object> metadata = new LinkedHashMap<>(chunks.getMetadata());
+        metadata.put("graphEvidence", evidence);
+        metadata.put("graphEvidenceWarnings", warnings);
+        StringBuilder output = new StringBuilder(chunks.getOutput());
+        if (!evidence.isEmpty()) {
+            output.append("\n\nRecorded graph evidence (retrieval only, not verified claims). ")
+                    .append("Use entity IDs and the same knowledgeBase with graph_reasoning_query (VERIFY/WHY) to assess a claim.\n");
+            evidence.forEach(item -> output.append(item).append('\n'));
+        }
+        if (!warnings.isEmpty()) output.append("\nGraph evidence incomplete: ").append(String.join("; ", warnings));
+        return ToolResult.success("knowledge_search: " + query, output.toString(), metadata);
     }
 
     private List<Chunk> loadChunks(List<Path> knowledgeBases) throws IOException {
@@ -154,7 +231,7 @@ final class LocalProjectRagSearch {
                             chunks.add(new Chunk(directory, knowledgeBase,
                                     sources.getOrDefault(documentId, documentId), documentId,
                                     chunkId, documentId + "\u0000" + chunkId,
-                                    content, sha256(content)));
+                                    content, sha256(content), pages(chunk.path("pages"))));
                         } catch (Exception ignored) {
                             // Keep healthy chunks searchable when one JSONL row is malformed.
                         }
@@ -191,19 +268,46 @@ final class LocalProjectRagSearch {
         Path graphPath = containedRegularFile(directory, "graph.kgraph");
         if (graphPath == null) return;
 
-        UnifiedGraph graph = UnifiedGraph.load(graphPath);
         Map<String, GraphEntity> documents = new HashMap<>();
-        for (GraphEntity entity : graph.entities()) {
-            if ("DOCUMENT".equalsIgnoreCase(entity.type())) {
-                documents.put(entity.id(), entity);
-            }
-        }
         Map<String, String> documentByChunk = new HashMap<>();
-        graph.relations().stream()
-                .filter(relation -> "HAS_CHUNK".equalsIgnoreCase(relation.type()))
-                .forEach(relation -> documentByChunk.put(relation.targetId(), relation.sourceId()));
+        List<GraphEntity> textEntities = new ArrayList<>();
+        // Do not materialize an entire coding graph just to discover that it has no text chunks.
+        try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
+          if (!archive.hasCompactTopology()) {
+            // Preserve imported legacy archives; only compact v3 exposes streaming topology cursors.
+            UnifiedGraph legacy = UnifiedGraph.load(graphPath);
+            for (GraphEntity entity : legacy.entities()) {
+                if ("DOCUMENT".equalsIgnoreCase(entity.type())) documents.put(entity.id(), entity);
+                if ("CHUNK".equalsIgnoreCase(entity.type()) || "SNIPPET".equalsIgnoreCase(entity.type())) {
+                    textEntities.add(entity);
+                }
+            }
+            legacy.relations().stream().filter(link -> "HAS_CHUNK".equalsIgnoreCase(link.type()))
+                    .forEach(link -> documentByChunk.put(link.targetId(), link.sourceId()));
+          } else {
+            try (var cursor = archive.openEntities()) {
+                GraphEntity entity;
+                while ((entity = cursor.next()) != null) {
+                    if ("DOCUMENT".equalsIgnoreCase(entity.type())) documents.put(entity.id(), entity);
+                    if ("CHUNK".equalsIgnoreCase(entity.type()) || "SNIPPET".equalsIgnoreCase(entity.type())) {
+                        textEntities.add(entity);
+                    }
+                }
+            }
+            if (!textEntities.isEmpty()) {
+                try (var cursor = archive.openLinks()) {
+                    UnifiedGraphArchive.Link link;
+                    while ((link = cursor.next()) != null) {
+                        if ("HAS_CHUNK".equalsIgnoreCase(link.type())) {
+                            documentByChunk.put(link.targetId(), link.sourceId());
+                        }
+                    }
+                }
+            }
+          }
+        }
 
-        for (GraphEntity entity : graph.entities()) {
+        for (GraphEntity entity : textEntities) {
             if (!"CHUNK".equalsIgnoreCase(entity.type())
                     && !"SNIPPET".equalsIgnoreCase(entity.type())) continue;
             String content = attribute(entity, "content", "text", "contentPreview", "description");
@@ -219,7 +323,8 @@ final class LocalProjectRagSearch {
                     attribute(entity, "relativePath", "source", "path", "pathOrUrl"),
                     document != null ? document.label() : null, documentId, "Unknown");
             chunks.add(new Chunk(directory, knowledgeBase, source, documentId, chunkId,
-                    documentId + "\u0000" + chunkId, content, sha256(content)));
+                    documentId + "\u0000" + chunkId, content, sha256(content),
+                    pages(mapper.valueToTree(entity.attributes().get("pages")))));
         }
     }
 
@@ -413,10 +518,20 @@ final class LocalProjectRagSearch {
             output.append("### ").append(index).append(". ").append(chunk.source())
                     .append(" [").append(chunk.knowledgeBase()).append("] (")
                     .append(String.format(Locale.ROOT, "%.2f", hit.score())).append(")\n")
+                    .append("Document: ").append(chunk.documentId())
+                    .append(" | Chunk: ").append(chunk.chunkId())
+                    .append(chunk.pages().isEmpty() ? "" : " | Pages: " + chunk.pages()).append("\n")
                     .append(chunk.content().strip()).append("\n\n");
         }
         Map<String, Object> metadata = metadata(query, topic, knowledgeBases, hits.size(), mode,
                 modelId, degradedReason);
+        metadata.put("evidence", hits.stream().map(hit -> Map.of(
+                "knowledgeBase", hit.chunk().knowledgeBase(),
+                "source", hit.chunk().source(),
+                "documentId", hit.chunk().documentId(),
+                "chunkId", hit.chunk().chunkId(),
+                "pages", hit.chunk().pages(),
+                "score", hit.score())).toList());
         return ToolResult.success("knowledge_search: " + query, output.toString().strip(), metadata);
     }
 
@@ -588,8 +703,18 @@ final class LocalProjectRagSearch {
         return real;
     }
 
+    private static List<Integer> pages(JsonNode node) {
+        if (node == null || !node.isArray()) return List.of();
+        List<Integer> result = new ArrayList<>();
+        node.forEach(page -> {
+            if (page.isIntegralNumber() && page.canConvertToInt() && page.asInt() > 0
+                    && !result.contains(page.asInt())) result.add(page.asInt());
+        });
+        return List.copyOf(result);
+    }
+
     private record Chunk(Path directory, String knowledgeBase, String source, String documentId,
-                         String chunkId, String key, String content, String contentHash) {
+                         String chunkId, String key, String content, String contentHash, List<Integer> pages) {
     }
 
     private record VectorEntry(String key, String contentHash, float[] vector) {

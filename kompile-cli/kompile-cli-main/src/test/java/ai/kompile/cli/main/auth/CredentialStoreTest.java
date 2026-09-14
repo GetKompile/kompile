@@ -114,6 +114,113 @@ class CredentialStoreTest {
     }
 
     @Test
+    void refreshWaitsForAnotherProcessToReleaseTheStore() throws Exception {
+        Path auth = tempDir.resolve("process-auth.json");
+        CredentialStore store = new CredentialStore(auth);
+        store.putOAuth("openai", "old-access", "old-refresh", 1L);
+        String java = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
+        Process holder = new ProcessBuilder(java, "-cp",
+                System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
+                LockHolder.class.getName(), auth.resolveSibling("process-auth.json.lock").toString())
+                .redirectError(ProcessBuilder.Redirect.INHERIT).start();
+        var executor = Executors.newFixedThreadPool(2);
+        AtomicInteger refreshes = new AtomicInteger();
+        try {
+            var ready = executor.submit(() -> new java.io.BufferedReader(
+                    new java.io.InputStreamReader(holder.getInputStream())).readLine());
+            assertEquals("LOCKED", ready.get(10, TimeUnit.SECONDS));
+            CountDownLatch started = new CountDownLatch(1);
+            var result = executor.submit(() -> {
+                started.countDown();
+                return store.resolveOAuth("openai", 0L, current -> {
+                    refreshes.incrementAndGet();
+                    return ManagedCredential.oauth("new-access", "new-refresh", Long.MAX_VALUE);
+                });
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> result.get(200, TimeUnit.MILLISECONDS));
+            assertEquals(0, refreshes.get(), "must not refresh without the cross-process lock");
+            holder.getOutputStream().close();
+            assertTrue(holder.waitFor(5, TimeUnit.SECONDS));
+            assertEquals(0, holder.exitValue());
+            assertEquals("new-access", result.get(5, TimeUnit.SECONDS).getAccess());
+            assertEquals(1, refreshes.get());
+            assertEquals("new-refresh", store.read("openai").getRefresh());
+        } finally {
+            holder.destroyForcibly();
+            holder.waitFor(5, TimeUnit.SECONDS);
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    /** Separate JVM so this exercises OS contention, not Java's overlapping-lock table. */
+    public static final class LockHolder {
+        public static void main(String[] args) throws Exception {
+            try (var channel = java.nio.channels.FileChannel.open(Path.of(args[0]),
+                    java.nio.file.StandardOpenOption.WRITE);
+                 var lock = channel.lock()) {
+                System.out.println("LOCKED");
+                System.out.flush();
+                System.in.read();
+            }
+        }
+    }
+
+    @Test
+    void fileLockContentionUsesNonblockingAttempts() throws Exception {
+        var channel = org.mockito.Mockito.mock(java.nio.channels.FileChannel.class);
+        var lock = org.mockito.Mockito.mock(java.nio.channels.FileLock.class);
+        org.mockito.Mockito.when(channel.tryLock()).thenReturn(null, null, lock);
+        assertSame(lock, CredentialStore.acquireFileLock(channel, 1_000L));
+        org.mockito.Mockito.verify(channel, org.mockito.Mockito.times(3)).tryLock();
+        org.mockito.Mockito.verify(channel, org.mockito.Mockito.never()).lock();
+    }
+
+    @Test
+    void fileLockWaitIsBoundedAndClassifiedAsTemporaryLockTimeout() throws Exception {
+        var channel = org.mockito.Mockito.mock(java.nio.channels.FileChannel.class);
+        IOException failure = assertThrows(IOException.class,
+                () -> CredentialStore.acquireFileLock(channel, 0L));
+        assertInstanceOf(CredentialStore.LockTimeoutException.class, failure);
+        var classified = ai.kompile.cli.main.auth.oauth.CredentialFailure.classify(failure);
+        assertEquals(ai.kompile.cli.main.auth.oauth.CredentialFailure.Reason.LOCK_TIMEOUT,
+                classified.reason());
+        assertEquals(ai.kompile.cli.main.auth.oauth.CredentialFailure.Kind.TEMPORARY,
+                classified.kind());
+    }
+
+    @Test
+    void nativeLockFailureIsNotRetriedOrReportedAsUnknown() throws Exception {
+        var channel = org.mockito.Mockito.mock(java.nio.channels.FileChannel.class);
+        org.mockito.Mockito.when(channel.tryLock()).thenThrow(new IOException("synthetic native failure"));
+        IOException failure = assertThrows(IOException.class,
+                () -> CredentialStore.acquireFileLock(channel, 1_000L));
+        assertEquals(ai.kompile.cli.main.auth.oauth.CredentialFailure.Reason.FILE_IO,
+                ai.kompile.cli.main.auth.oauth.CredentialFailure.classify(failure).reason());
+        org.mockito.Mockito.verify(channel).tryLock();
+    }
+
+    @Test
+    void interruptedFileLockWaitPreservesCancellation() throws Exception {
+        var channel = org.mockito.Mockito.mock(java.nio.channels.FileChannel.class);
+        org.mockito.Mockito.when(channel.tryLock()).thenAnswer(invocation -> {
+            Thread.currentThread().interrupt();
+            return null;
+        });
+        try {
+            assertThrows(java.nio.channels.FileLockInterruptionException.class,
+                    () -> CredentialStore.acquireFileLock(channel, 1_000L));
+            assertTrue(Thread.currentThread().isInterrupted());
+            org.mockito.Mockito.verify(channel).tryLock();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
     void preservesOauthMetadataAndAllowsPermanentOauthMintedKeys() throws Exception {
         Path authPath = tempDir.resolve("metadata").resolve("auth.json");
         CredentialStore store = new CredentialStore(authPath);

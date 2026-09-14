@@ -29,6 +29,7 @@ import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.ChatActivityPhase;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.render.ThinkingStreamRenderer;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
@@ -136,6 +137,8 @@ public class SubprocessAgentRunner {
     private volatile Consumer<String> activityListener;
     private volatile String currentActivity;
     private volatile String currentToolName;
+    /** Line-buffered reasoning stream; constructed in ctor after renderer. */
+    private ThinkingStreamRenderer thinkingStream;
     private volatile RealtimeMonitor realtimeMonitor;
     private volatile Map<String, String> extraEnvironment = Map.of();
     private volatile String monitorInterruptReason;
@@ -180,6 +183,7 @@ public class SubprocessAgentRunner {
         this.systemPromptManager = systemPromptManager;
         this.renderer = renderer;
         this.ascii = ascii;
+        this.thinkingStream = new ThinkingStreamRenderer(this::emitLine, renderer);
     }
 
     public void setInputProvider(Function<String, String> inputProvider) {
@@ -521,6 +525,7 @@ public class SubprocessAgentRunner {
         monitorSoftInterrupt = false;
         monitorInterruptReason = null;
         currentToolName = null;
+        thinkingStream.flush();
         updateActivity(getAgentDisplayName() + ": starting...");
         String outboundMessage = reminderManager == null
                 ? message : reminderManager.decorateUserTurn(message);
@@ -659,6 +664,7 @@ public class SubprocessAgentRunner {
                 }
             }
 
+            thinkingStream.flush();
             flushPendingText(pendingText, spinner, spinnerStopped);
             if (managedOneShot && process.exitValue() != 0) {
                 if (spinnerStopped.compareAndSet(false, true)) {
@@ -844,6 +850,7 @@ public class SubprocessAgentRunner {
                 Thread.sleep(200);
             }
 
+            thinkingStream.flush();
             flushPendingText(pendingText, spinner, spinnerStopped);
 
         } catch (Exception e) {
@@ -1018,16 +1025,25 @@ public class SubprocessAgentRunner {
             return;
         }
 
-        if (event instanceof PassthroughStreamParser.ThinkingChunk) {
-            // Model is reasoning — switch spinner to "Thinking..." phase
-            // but don't add reasoning content to response text.
+        if (event instanceof PassthroughStreamParser.ThinkingChunk tc) {
+            // Model is reasoning — surface the reasoning text in the transcript in real
+            // time, dimmed so it is visually distinct from response text.
             spinner.setPhase("Thinking");
             updateActivity(getAgentDisplayName() + ": thinking...");
             renderer.setActivity(ChatActivityPhase.THINKING, agent);
+            if (tc.text() != null && !tc.text().isEmpty()) {
+                flushPendingText(pendingText, spinner, spinnerStopped);
+                if (spinnerStopped.compareAndSet(false, true)) {
+                    spinner.stop();
+                    emitLine("");
+                }
+                thinkingStream.accept(tc.text());
+            }
             return;
         }
 
         if (event instanceof PassthroughStreamParser.TextChunk tc) {
+            flushThinkingBurst();
             pendingText.append(tc.text());
             fullText.append(tc.text());
             MonitorDecision decision = evaluateRealtimeText(tc.text(), fullText.toString());
@@ -1041,6 +1057,7 @@ public class SubprocessAgentRunner {
                 updateActivity(getAgentDisplayName() + ": generating...");
             }
         } else if (event instanceof PassthroughStreamParser.ToolUse tu) {
+            flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
             MonitorDecision decision = evaluateRealtimeToolUse(tu.name(), tu.input());
             if (decision.interrupt()) {
@@ -1093,6 +1110,7 @@ public class SubprocessAgentRunner {
                     + (tu.cacheReadTokens() > 0 ? " \u00b7 " + FormatUtils.formatNumber(tu.cacheReadTokens()) + " cached" : "")
                     + "]"));
         } else if (event instanceof PassthroughStreamParser.TurnComplete tc) {
+            flushThinkingBurst();
             flushPendingText(pendingText, spinner, spinnerStopped);
 
             boolean hasTokenUsage = tc.inputTokens() > 0 || tc.outputTokens() > 0
@@ -1223,6 +1241,19 @@ public class SubprocessAgentRunner {
             emitLine("  " + rl);
         }
         pendingText.setLength(0);
+    }
+
+    /**
+     * Renders model reasoning in real time, dimmed and italic, with a one-time
+     * "✻ thinking" header per reasoning burst. Reasoning never enters response
+     * text ({@code fullText}) so metrics, history and monitors stay clean.
+     */
+    /**
+     * Closes the current reasoning burst before ordinary output resumes:
+     * emits any buffered partial line and clears the per-burst header.
+     */
+    private void flushThinkingBurst() {
+        thinkingStream.flush();
     }
 
     private MonitorDecision evaluateRealtimeText(String chunk, String fullText) {
@@ -1603,6 +1634,9 @@ public class SubprocessAgentRunner {
             cmd.add("--output-format");
             cmd.add("stream-json");
             cmd.add("--verbose");
+            // Stream content_block_delta events (text + thinking) as they are
+            // generated instead of waiting for each assistant message to complete.
+            cmd.add("--include-partial-messages");
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
             if (firstMessageSent) {
                 if (agentSessionId != null) {

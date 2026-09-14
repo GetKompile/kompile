@@ -54,6 +54,12 @@ public class DirectSubagentRunner implements SubagentRunner {
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
     private volatile LifecycleListener lifecycleListener;
+    private volatile java.util.function.BiConsumer<String, String> asyncCompletionListener;
+
+    @Override
+    public void setAsyncCompletionListener(java.util.function.BiConsumer<String, String> listener) {
+        this.asyncCompletionListener = listener;
+    }
     private volatile ReminderManager reminderManager;
     private final Map<String, DirectSession> sessions = new ConcurrentHashMap<>();
     private static final int MAX_RETAINED_SESSIONS = 16;
@@ -360,14 +366,26 @@ public class DirectSubagentRunner implements SubagentRunner {
     @Override
     public boolean sendMessage(String subagentId, String message) {
         DirectSession session = sessions.get(subagentId);
-        if (session == null || session.cancelled.get()
-                || message == null || message.isBlank()) return false;
+        if (session == null || !canSendMessage(subagentId)
+                || message == null || message.isBlank() || session.followUps.size() >= 64) return false;
         session.lastTouched = System.currentTimeMillis();
         session.followUps.add(message.strip());
         emitActivity(session.id, "follow-up queued", "\n  You › " + message.strip(),
                 session.parentContext);
         startQueuedRun(session);
         return true;
+    }
+
+    @Override
+    public boolean canSendMessage(String subagentId) {
+        DirectSession session = sessions.get(subagentId);
+        return session != null && !session.cancelled.get() && !session.parentContext.isAborted();
+    }
+
+    @Override
+    public boolean hasPendingWork(String subagentId) {
+        DirectSession session = sessions.get(subagentId);
+        return session != null && (session.running.get() || !session.followUps.isEmpty());
     }
 
     @Override
@@ -421,12 +439,20 @@ public class DirectSubagentRunner implements SubagentRunner {
                         session.id, session.agent.getName(), "Interactive follow-up");
             }
             try {
-                runConversation(session, first, System.currentTimeMillis());
-            } catch (Exception e) {
-                notifyStatus(session.id, "failed · " + e.getClass().getSimpleName());
-                emitActivity(session.id, "failed · " + e.getClass().getSimpleName(),
-                        renderer.renderSubagentError(session.agent.getName(), e.getMessage()),
-                        session.parentContext);
+                String result;
+                try {
+                    result = runConversation(session, first, System.currentTimeMillis());
+                } catch (Exception e) {
+                    result = "Subagent follow-up failed: " + AgenticChatLoop.describeThrowable(e);
+                    notifyStatus(session.id, "failed · " + e.getClass().getSimpleName());
+                    emitActivity(session.id, "failed · " + e.getClass().getSimpleName(),
+                            renderer.renderSubagentError(session.agent.getName(), e.getMessage()),
+                            session.parentContext);
+                }
+                // Publish before releasing ownership: a live host must not observe
+                // an idle child and terminate before its completion is delivered.
+                var listener = asyncCompletionListener;
+                if (!session.cancelled.get() && listener != null) listener.accept(session.id, result);
             } finally {
                 finishRun(session);
             }

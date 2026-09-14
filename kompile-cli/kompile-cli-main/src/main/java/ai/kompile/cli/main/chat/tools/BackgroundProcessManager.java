@@ -364,8 +364,7 @@ public class BackgroundProcessManager implements AutoCloseable {
      * @throws IOException if the process cannot be started or output directory cannot be created
      */
     public ProcessEntry launch(String command, String description, Path workDir) throws IOException {
-        return launch(new String[]{"bash", "-c", command}, command, description, workDir,
-                false, "");
+        return launchMonitored(command, description, workDir, "");
     }
 
     /** Launch a command with a one-shot completion monitor installed before output capture starts. */
@@ -386,7 +385,7 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public ProcessEntry launch(String[] args, String description, Path workDir) throws IOException {
         String command = String.join(" ", args);
-        return launch(args, command, description, workDir, false, "");
+        return launch(args, command, description, workDir, true, "");
     }
 
     private ProcessEntry launch(String[] args, String command, String description, Path workDir,

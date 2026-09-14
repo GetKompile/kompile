@@ -51,7 +51,16 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class CliModelCatalog {
 
-    /** One model's resolved metadata, sourced from the CLI catalog. */
+    /**
+     * One model's resolved metadata, sourced from the CLI catalog.
+     *
+     * <p>{@code reasoningOptions} carries the catalog's native thinking metadata
+     * ({@code reasoning_options} in the models.dev format): {@code ["toggle"]} for an
+     * on/off reasoning switch, or {@code ["effort", "high", "max"]} for named effort
+     * tiers ({@code effort} first, followed by its values). Empty means the catalog
+     * publishes no thinking metadata for this model — callers fall back to their own
+     * documented sources.</p>
+     */
     public record ModelSpec(String id,
                             String providerId,
                             int contextWindow,
@@ -59,7 +68,8 @@ public final class CliModelCatalog {
                             boolean supportsVision,
                             boolean supportsTools,
                             boolean free,
-                            String status) {}
+                            String status,
+                            List<String> reasoningOptions) {}
 
     private static final long REFRESH_INTERVAL_MS = 10_000L;
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -271,7 +281,8 @@ public final class CliModelCatalog {
                 boolean tools = m.path("tool_call").asBoolean(true);
                 String status = m.path("status").asText("active");
                 ModelSpec spec = new ModelSpec(modelId, providerId,
-                        ctx, out > 0 ? out : Math.max(1, ctx / 8), vision, tools, free, status);
+                        ctx, out > 0 ? out : Math.max(1, ctx / 8), vision, tools, free, status,
+                        parseReasoningOptions(m.path("reasoning_options")));
                 String bare = modelId.toLowerCase(Locale.ROOT);
                 ids.putIfAbsent(bare, spec);
                 ids.putIfAbsent(providerId.toLowerCase(Locale.ROOT) + "/" + bare, spec);
@@ -309,12 +320,40 @@ public final class CliModelCatalog {
                     alias.id(), alias.providerId(), context, output,
                     alias.supportsVision() || base.supportsVision(),
                     alias.supportsTools() || base.supportsTools(),
-                    alias.free(), alias.status());
+                    alias.free(), alias.status(), alias.reasoningOptions());
             scopedIds.put(scopedAlias, reconciled);
             // Do not overwrite an earlier bare/flat alias owned by another provider.
             ids.replace(aliasKey, alias, reconciled);
             ids.replace(providerKey + "/" + aliasKey, alias, reconciled);
         }
+    }
+
+    /**
+     * Parse the models.dev {@code reasoning_options} array into an ordered token list.
+     * {@code [{"type":"toggle"}]} → {@code ["toggle"]};
+     * {@code [{"type":"effort","values":["low","high"]}]} → {@code ["effort","low","high"]}.
+     * Unrecognized entries are skipped so a novel catalog shape degrades to empty, never wrong.
+     */
+    private static List<String> parseReasoningOptions(JsonNode options) {
+        if (!options.isArray()) return List.of();
+        List<String> tokens = new ArrayList<>();
+        for (JsonNode entry : options) {
+            if (!entry.isObject()) continue;
+            String type = entry.path("type").asText("").trim().toLowerCase(Locale.ROOT);
+            if (type.equals("toggle")) {
+                if (!tokens.contains("toggle")) tokens.add("toggle");
+            } else if (type.equals("effort")) {
+                if (!tokens.contains("effort")) tokens.add("effort");
+                JsonNode values = entry.path("values");
+                if (values.isArray()) {
+                    for (JsonNode value : values) {
+                        String effort = value.asText("").trim().toLowerCase(Locale.ROOT);
+                        if (!effort.isEmpty() && !tokens.contains(effort)) tokens.add(effort);
+                    }
+                }
+            }
+        }
+        return List.copyOf(tokens);
     }
 
     private static boolean hasImageModality(JsonNode modalities) {

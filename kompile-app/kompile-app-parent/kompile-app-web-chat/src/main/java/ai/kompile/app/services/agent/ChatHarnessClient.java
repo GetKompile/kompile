@@ -19,6 +19,16 @@ public interface ChatHarnessClient {
     /** Cancel an exact run owned by this client. */
     boolean cancel(String runId);
 
+    /** Write a control to an exact active run; execution is acknowledged separately over SSE. */
+    default Map<String, Object> control(String runId, JsonNode frame) {
+        return Map.of("accepted", false, "message", "Live controls unavailable");
+    }
+
+    /** Attach to buffered/live events of an existing run; never starts model work. */
+    default void reconnect(String runId, long after, SseEmitter emitter) {
+        throw new IllegalStateException("Run replay unavailable");
+    }
+
     /** Non-secret harness/provider/persona capabilities for a project directory. */
     JsonNode capabilities(String workingDirectory, boolean refresh);
 

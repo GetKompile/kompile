@@ -60,6 +60,12 @@ public interface SubagentRunner {
         // Default no-op for implementations that don't support it
     }
 
+    /** Results of asynchronous follow-ups that have no waiting TaskTool caller.
+     * Synchronous invocations return their result normally and must not notify twice.
+     */
+    default void setAsyncCompletionListener(java.util.function.BiConsumer<String, String> listener) {
+    }
+
     /** Configure reminders that must be applied at each subagent provider boundary. */
     default void setReminderManager(ReminderManager reminderManager) {
         // Default no-op for implementations that do not send model prompts directly.
@@ -72,6 +78,12 @@ public interface SubagentRunner {
     default boolean sendMessage(String subagentId, String message) {
         return false;
     }
+
+    /** Whether a retained child can accept a follow-up without creating a new child. */
+    default boolean canSendMessage(String subagentId) { return false; }
+
+    /** Work includes completion publication and queued follow-ups, not just cancellable execution. */
+    default boolean hasPendingWork(String subagentId) { return canCancel(subagentId); }
 
     /** Whether the identified subagent currently owns cancellable work. */
     default boolean canCancel(String subagentId) {

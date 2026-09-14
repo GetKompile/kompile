@@ -121,6 +121,33 @@ class ClaudeParserTest {
         assertEquals(0.0042, tc.costUsd(), 1e-9);
     }
 
+    @Test
+    void resultEventWithUsage_shouldCarryDisjointTokenCounts() {
+        // input_tokens is inclusive of cache tokens (Claude CLI convention)
+        String line = ParserTestFixtures.claudeResultEventWithUsage(
+                12345L, 0.0042, 1200L, 340L, 900L, 100L);
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        TurnComplete tc = AgentOutputAssertions.assertThat(events).firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        // Disjoint normalization: 1200 - 900 - 100 = 200 ordinary input
+        assertEquals(200L, tc.inputTokens());
+        assertEquals(340L, tc.outputTokens());
+        assertEquals(900L, tc.cacheReadTokens());
+        assertEquals(100L, tc.cacheCreationTokens());
+    }
+
+    @Test
+    void resultEventWithoutUsage_zeroTokenCounts() {
+        String line = ParserTestFixtures.claudeResultEvent(500L, 0.001);
+        List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+        TurnComplete tc = AgentOutputAssertions.assertThat(events).firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        assertEquals(0L, tc.inputTokens());
+        assertEquals(0L, tc.outputTokens());
+    }
+
     // ===================================================================
     // Edge cases
     // ===================================================================

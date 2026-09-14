@@ -118,6 +118,32 @@ class ProjectCommandKnowledgeCrawlTest {
         assertFalse(analysis.contains("\"term\":\"profile\""), analysis);
     }
 
+    @Test
+    void pageCitationsSurviveNormalizationBlankPagesAndChunking() throws Exception {
+        Path pdf = tempDir.resolve("pages.pdf");
+        writePdf(pdf, "  First   page alpha.  ", "", "Third page omega.");
+        var loaded = LocalDocumentLoaderRegistry.load(pdf, "pdf", java.util.Map.of());
+        assertEquals("First page alpha.\n\nThird page omega.", loaded.text());
+        assertEquals(1, loaded.outputs().get(0).metadata().get("pageNumber"));
+        assertEquals(3, loaded.outputs().get(1).metadata().get("pageNumber"));
+        for (var section : loaded.outputs()) {
+            int start = ((Number) section.metadata().get("bodyStart")).intValue();
+            int end = ((Number) section.metadata().get("bodyEnd")).intValue();
+            assertTrue(loaded.text().substring(start, end).endsWith("."));
+        }
+        Path project = tempDir.resolve("page-project");
+        assertEquals(0, execute("project", "create", "--root", project.toString(),
+                "--name", "page-project", "--backend", "local"));
+        assertEquals(0, execute("project", "crawl-add", "--root", project.toString(),
+                "--id", "pages", "--source", pdf.toString(), "--type", "file",
+                "--loader", "local-knowledge", "--chunker", "markdown-fixed"));
+        assertEquals(0, execute("project", "crawl", "--root", project.toString(), "--id", "pages"));
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var chunk = mapper.readTree(Files.readAllLines(project.resolve("data/crawls/pages/chunks.jsonl")).get(0));
+        assertEquals(mapper.readTree("[1,3]"), chunk.path("pages"));
+        assertEquals("# pages.pdf\n\n" + loaded.text(), chunk.path("text").asText());
+    }
+
     private static int execute(String... args) {
         CommandLine commandLine = new CommandLine(new MainCommand());
         commandLine.setOut(new PrintWriter(new StringWriter()));
@@ -125,8 +151,9 @@ class ProjectCommandKnowledgeCrawlTest {
         return commandLine.execute(args);
     }
 
-    private static void writePdf(Path path, String text) throws Exception {
+    private static void writePdf(Path path, String... texts) throws Exception {
         try (PDDocument document = new PDDocument()) {
+          for (String text : texts) {
             PDPage page = new PDPage();
             document.addPage(page);
             try (PDPageContentStream content = new PDPageContentStream(document, page)) {
@@ -136,6 +163,7 @@ class ProjectCommandKnowledgeCrawlTest {
                 content.showText(text);
                 content.endText();
             }
+          }
             document.save(path.toFile());
         }
     }

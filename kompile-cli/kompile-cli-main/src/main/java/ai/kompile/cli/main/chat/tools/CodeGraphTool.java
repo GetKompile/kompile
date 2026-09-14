@@ -1034,7 +1034,7 @@ public class CodeGraphTool implements CliTool {
                     "'. Run action='build' first.");
         }
         Path projectRoot = Path.of(cwd);
-        Path graphPath = resolveGraphPath(projectRoot);
+        Path graphPath = resolveGraphPath(projectRoot, projectId);
         if (graphPath == null) {
             return ToolResult.error("No projected KGraph found. Run action='build' first.");
         }
@@ -1084,7 +1084,7 @@ public class CodeGraphTool implements CliTool {
     }
 
     /** Locate the projected graph for this project from the coding-project metadata. */
-    private static Path resolveGraphPath(Path projectRoot) {
+    static Path resolveGraphPath(Path projectRoot, String projectId) {
         try {
             KompileProjectStore store = new KompileProjectStore();
             Path root = store.findProjectRoot(projectRoot).orElse(projectRoot);
@@ -1093,7 +1093,7 @@ public class CodeGraphTool implements CliTool {
                 return null;
             }
             KompileCodingProject codingProject = manifest.getCodingProjects().stream()
-                    .filter(cp -> root.startsWith(Path.of(cp.getRootPath()).toAbsolutePath().normalize()))
+                    .filter(cp -> projectId.equals(cp.getCodeProjectId()) || projectId.equals(cp.getId()))
                     .findFirst()
                     .orElse(null);
             if (codingProject == null) {
@@ -1103,7 +1103,12 @@ public class CodeGraphTool implements CliTool {
             if (relative == null || relative.isBlank()) {
                 return null;
             }
-            return root.resolve(relative).normalize();
+            Path graphPath = root.resolve(relative).toAbsolutePath().normalize();
+            Path realRoot = root.toRealPath();
+            if (!Files.isRegularFile(graphPath) || !graphPath.toRealPath().startsWith(realRoot)) {
+                return null;
+            }
+            return graphPath;
         } catch (Exception e) {
             return null;
         }
@@ -1115,32 +1120,12 @@ public class CodeGraphTool implements CliTool {
             return ToolResult.error("directory_path is required for remove_directory");
         }
 
-        Path baseIndexDir = LocalCodeIndexer.getBaseIndexDir().toAbsolutePath().normalize();
-        Path indexDir = LocalCodeIndexer.getIndexDir(projectId).toAbsolutePath().normalize();
-        if (indexDir.equals(baseIndexDir) || !indexDir.startsWith(baseIndexDir)) {
-            return ToolResult.error("Refusing to remove an index outside the local code-index directory");
-        }
-        if (!Files.exists(indexDir)) {
-            return ToolResult.success("remove_directory: " + dirPath,
-                    "No local index was tracked for project '" + projectId + "'.");
-        }
-
-        Map<String, Object> stats = new LocalCodeIndexer().getStats(projectId);
-        Path indexedRoot = Path.of(String.valueOf(stats.getOrDefault("rootPath", "")))
-                .toAbsolutePath().normalize();
-        Path requestedRoot = Path.of(dirPath).toAbsolutePath().normalize();
-        if (!requestedRoot.equals(indexedRoot)) {
-            return ToolResult.error("Directory is not tracked by the local index for project '"
-                    + projectId + "': " + requestedRoot);
-        }
-
-        try (var paths = Files.walk(indexDir)) {
-            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(path);
-            }
-        }
+        int graphs = ai.kompile.cli.main.codeindex.LocalCodeKGraphPublisher.remove(Path.of(dirPath), projectId);
         return ToolResult.success("remove_directory: " + dirPath,
-                "Local index removed for directory: " + requestedRoot);
+                "Removed the local index and project-owned live graph projection from " + graphs + " graph(s). "
+                        + "Source files, unrelated graph evidence and existing snapshots are preserved. "
+                        + "A removal marker prevents background re-creation; use local_code_index action=index to restore.",
+                Map.of("projectId", projectId, "updatedGraphs", graphs, "removed", true));
     }
 
     /**

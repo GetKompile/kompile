@@ -88,6 +88,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private final ScheduledExecutorService scheduler;
     private final FolderContextResolver folderContextResolver;
     private final Map<String, ActiveRun> activeRuns = new ConcurrentHashMap<>();
+    private final Map<String, HarnessReplayBuffer> replays = new ConcurrentHashMap<>();
     private final ReentrantLock[] sessionLocks = createSessionLocks();
     private final Map<Path, CachedCapabilities> capabilityCache = new ConcurrentHashMap<>();
 
@@ -140,13 +141,15 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             return runId;
         }
 
-        ActiveRun run = new ActiveRun(runId, "", null, sink);
+        HarnessReplayBuffer replay = new HarnessReplayBuffer(mapper);
+        replays.put(runId, replay);
+        attachReplay(replay, 0, emitter);
+        ActiveRun run = new ActiveRun(runId, "", null, replay);
         Runnable queuedTask = () -> runTurn(run, request);
         run.queuedTask = queuedTask;
         activeRuns.put(runId, run);
-        emitter.onCompletion(() -> disconnect(runId));
-        emitter.onTimeout(() -> disconnect(runId));
-        emitter.onError(ignored -> disconnect(runId));
+        try { replay.send("queued", Map.of("processId", runId, "reconnectable", true)); }
+        catch (IOException invalidEvent) { throw new IllegalStateException(invalidEvent); }
         int timeoutSeconds = effectiveTimeoutSeconds(request.getTimeoutSeconds());
         run.timeoutTask = scheduler.schedule(
                 () -> timeout(run, timeoutSeconds),
@@ -177,15 +180,92 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return true;
     }
 
-    private void disconnect(String runId) {
+    @Override
+    public Map<String, Object> control(String runId, JsonNode frame) {
+        validateControl(frame);
+        String requestId = frame.path("requestId").textValue();
         ActiveRun run = activeRuns.get(runId);
-        if (run == null || run.terminal.get()) return;
-        run.disconnected.set(true);
-        run.cancelled.set(true);
-        if (run.queuedTask != null) runExecutor.remove(run.queuedTask);
-        terminate(run.process);
-        cancelTimeout(run);
-        activeRuns.remove(runId, run);
+        if (run == null) return Map.of("accepted", false, "requestId", requestId, "message", "Run is no longer active");
+        synchronized (run) {
+            if (!run.controlReady || run.terminal.get() || run.cancelled.get() || run.process == null)
+                return Map.of("accepted", false, "requestId", requestId, "message", "Live controls are not ready");
+            try {
+                byte[] bytes = mapper.writeValueAsBytes(frame);
+                if (bytes.length > 65_536) throw new IllegalArgumentException("Control frame exceeds byte limit");
+                var stdin = run.process.getOutputStream();
+                stdin.write(bytes);
+                stdin.write('\n');
+                stdin.flush();
+                return Map.of("accepted", true, "requestId", requestId, "message", "Sent; awaiting harness acknowledgement");
+            } catch (IOException failure) {
+                run.controlReady = false;
+                return Map.of("accepted", false, "requestId", requestId, "message", "Harness control stream closed");
+            }
+        }
+    }
+
+    static void validateControl(JsonNode frame) {
+        if (frame == null || !frame.isObject() || !frame.path("version").isIntegralNumber()
+                || !frame.path("version").canConvertToInt() || frame.path("version").intValue() != 1)
+            throw new IllegalArgumentException("Expected control version 1 object");
+        var fields = frame.fieldNames();
+        while (fields.hasNext()) if (!java.util.Set.of("version", "requestId", "action", "targetId", "text").contains(fields.next()))
+            throw new IllegalArgumentException("Unknown control field");
+        controlString(frame, "requestId", 128);
+        String action = controlString(frame, "action", 32);
+        if (!java.util.Set.of("background", "process_list", "process_output", "process_kill", "input", "subagent_input", "subagent_cancel").contains(action))
+            throw new IllegalArgumentException("Unsupported control action");
+        boolean targeted = action.equals("process_output") || action.equals("process_kill")
+                || action.equals("subagent_input") || action.equals("subagent_cancel");
+        if (targeted) controlString(frame, "targetId", 128);
+        else if (frame.has("targetId")) throw new IllegalArgumentException("Unexpected targetId");
+        if (action.equals("input") || action.equals("subagent_input")) {
+            if (controlString(frame, "text", 32_768).stripLeading().startsWith("/"))
+                throw new IllegalArgumentException("Send slash commands after the live run finishes");
+        } else if (frame.has("text")) throw new IllegalArgumentException("Unexpected text");
+    }
+
+    private static String controlString(JsonNode frame, String field, int limit) {
+        JsonNode value = frame.path(field);
+        if (!value.isTextual() || value.textValue().isBlank() || value.textValue().length() > limit)
+            throw new IllegalArgumentException("Invalid " + field);
+        return value.textValue();
+    }
+
+    @Override
+    public void reconnect(String runId, long after, SseEmitter emitter) {
+        HarnessReplayBuffer replay = replays.get(runId);
+        if (replay == null) throw new IllegalStateException("Run replay expired or server restarted; work was not restarted");
+        attachReplay(replay, after, emitter);
+    }
+
+    private static void attachReplay(HarnessReplayBuffer replay, long after, SseEmitter emitter) {
+        HarnessReplayBuffer.Connection connection = new HarnessReplayBuffer.Connection() {
+            public void send(HarnessReplayBuffer.Event event) throws IOException {
+                emitter.send(SseEmitter.event().id(Long.toString(event.id())).name(event.name()).data(event.data()));
+            }
+            public void complete() { try { emitter.complete(); } catch (RuntimeException ignored) { } }
+            public void superseded() {
+                try { emitter.send(SseEmitter.event().name("superseded").data(Map.of("message", "Run connected in another view"))); }
+                catch (IOException | RuntimeException ignored) { }
+                complete();
+            }
+        };
+        emitter.onCompletion(() -> replay.detach(connection));
+        emitter.onTimeout(() -> replay.detach(connection));
+        emitter.onError(ignored -> replay.detach(connection));
+        replay.attach(after, connection);
+    }
+
+    private void expireReplay(ActiveRun run) {
+        HarnessReplayBuffer replay = replays.get(run.runId);
+        if (replay == null) return;
+        try { scheduler.schedule(() -> replays.remove(run.runId, replay), 2, TimeUnit.MINUTES); }
+        catch (RejectedExecutionException closing) { replays.remove(run.runId, replay); }
+        var completed = replays.entrySet().stream().filter(entry -> entry.getValue().isTerminal())
+                .sorted(java.util.Comparator.comparingLong(entry -> entry.getValue().createdAt)).toList();
+        completed.stream().limit(Math.max(0, completed.size() - 16))
+                .forEach(entry -> replays.remove(entry.getKey(), entry.getValue()));
     }
 
     private void timeout(ActiveRun run, int timeoutSeconds) {
@@ -315,10 +395,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                     "ragEnabled", request.isEnableRag(),
                     "graphRagEnabled", request.isEnableGraphRag()));
 
-            try (var stdin = process.getOutputStream()) {
+            synchronized (active) {
+                var stdin = process.getOutputStream();
                 stdin.write(mapper.writeValueAsBytes(input));
                 stdin.write('\n');
                 stdin.flush();
+                // Keep stdin open: subsequent frames are handled by the live CLI harness.
             }
 
             long lastSequence = 0;
@@ -374,7 +456,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 if (!detail.isBlank() && !message.contains(detail)) message += " (" + detail + ")";
                 emitTerminal(active, "error", bounded(message, 1_000));
             } else {
-                emitStandaloneError(sink, failure.getMessage() == null
+                emitTerminal(active, "error", failure.getMessage() == null
                         ? failure.getClass().getSimpleName() : failure.getMessage());
             }
         } finally {
@@ -393,6 +475,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return switch (type) {
             case "session" -> { run.sink.send("harness_session", event); yield false; }
             case "backend" -> { run.sink.send("backend", event); yield false; }
+            case "control", "activity", "turn_started", "turn_complete" -> {
+                if (!event.path("data").isObject()) throw new IOException("Missing live control event data");
+                if (type.equals("activity")) run.controlReady = true;
+                run.sink.send(type, event.get("data"));
+                yield false;
+            }
             case "text" -> { run.sink.send("chunk", event.path("text").asText("")); yield false; }
             case "tool_start" -> {
                 Map<String, Object> tool = new LinkedHashMap<>();
@@ -479,6 +567,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             catch (IOException ignored) { run.disconnected.set(true); }
         }
         run.sink.complete();
+        expireReplay(run);
     }
 
     private static void emitStandaloneError(HarnessEventSink sink, String message) {
@@ -498,6 +587,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         command.add("stream-json");
         command.add("--input-format");
         command.add("web-json");
+        command.add("--web-controls");
         command.add("--local");
         command.add("--working-dir");
         command.add(workDir.toString());
@@ -983,15 +1073,17 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         if (process.isAlive()) process.destroy();
         try {
             if (process.isAlive() && !process.waitFor(2, TimeUnit.SECONDS)) {
-                descendants = descendants(process);
-                descendants.forEach(ProcessHandle::destroyForcibly);
+                descendants(process).forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            descendants = descendants(process);
-            descendants.forEach(ProcessHandle::destroyForcibly);
+            descendants(process).forEach(ProcessHandle::destroyForcibly);
             if (process.isAlive()) process.destroyForcibly();
+        } finally {
+            // Retain the original handles: once the parent exits, resistant children
+            // are reparented and disappear from process.descendants().
+            descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
         }
     }
 
@@ -1167,6 +1259,8 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             terminate(run.process);
         });
         activeRuns.clear();
+        replays.values().forEach(HarnessReplayBuffer::complete);
+        replays.clear();
         scheduler.shutdownNow();
         runExecutor.shutdownNow();
     }
@@ -1200,6 +1294,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         private final String runId;
         private volatile String sessionId;
         private volatile Process process;
+        private volatile boolean controlReady;
         private volatile Runnable queuedTask;
         private volatile ScheduledFuture<?> timeoutTask;
         private JsonNode commandOutcome;

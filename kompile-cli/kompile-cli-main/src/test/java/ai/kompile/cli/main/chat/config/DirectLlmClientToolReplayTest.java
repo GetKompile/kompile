@@ -14,6 +14,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -31,6 +32,27 @@ class DirectLlmClientToolReplayTest {
         ChatConfig config = new ChatConfig(provider, "test-key",
                 "fixture-model", "http://127.0.0.1:1/v1");
         return new DirectLlmClient(config, mapper);
+    }
+
+    @Test
+    void zaiThinkingToggleRidesAsThinkingTypeAndEffortAsReasoningEffort() {
+        com.fasterxml.jackson.databind.node.ObjectNode request = mapper.createObjectNode();
+
+        DirectLlmClient.applyZaiThinking(request, "disabled");
+        assertEquals("disabled", request.path("thinking").path("type").asText(),
+                "the toggle maps to the z.ai thinking.type wire field");
+        assertFalse(request.has("reasoning_effort"));
+
+        request.removeAll();
+        DirectLlmClient.applyZaiThinking(request, "ENABLED");
+        assertEquals("enabled", request.path("thinking").path("type").asText(),
+                "selection is normalized case-insensitively");
+
+        request.removeAll();
+        DirectLlmClient.applyZaiThinking(request, "max");
+        assertEquals("max", request.path("reasoning_effort").asText(),
+                "effort tiers map to the z.ai reasoning_effort wire field");
+        assertFalse(request.has("thinking"));
     }
 
     // ── Envelope replay per route ───────────────────────────────────────────

@@ -102,8 +102,11 @@ public class SetupWizard {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
         if (method == AuthMethod.NATIVE) {
-            System.err.println("Native CLI authentication is externally managed; use a direct subscription route for session isolation.");
-            return null;
+            // Native CLI credentials are owned by the provider CLI and are
+            // machine-global; they cannot be pinned per session. Route them
+            // through the startup flow so session-scope callers (notably the
+            // in-session model picker) cannot dead-end on a guaranteed null.
+            return authenticate(reader, vendor, method);
         }
         try {
             CredentialStore store = CredentialStore.create();

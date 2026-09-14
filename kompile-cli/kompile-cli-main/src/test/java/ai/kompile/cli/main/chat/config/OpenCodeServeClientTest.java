@@ -219,4 +219,94 @@ class OpenCodeServeClientTest {
             server.stop(0);
         }
     }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
+    void serverBootSpawnSeesStdinAtEofImmediately() throws Exception {
+        // Zero-byte regression #1: opencode blocks on a never-EOF stdin pipe.
+        // The serve boot has nothing to say to the child, so its spawn template
+        // (NativeCliProcess) must give it a closed stdin. The turn spawn is
+        // deliberately piped instead — it delivers the prompt through stdin —
+        // covered by promptPipedToTurnProcess.
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:1", "session-1")) {
+            ProcessBuilder builder = ai.kompile.cli.common.util.NativeCliProcess
+                    .processBuilder(List.of("/bin/sh", "-c",
+                            // read -t distinguishes a live pipe (timeout exit > 128)
+                            // from EOF (exit 1), so a regression reports PIPED_OPEN
+                            // within seconds instead of hanging the suite.
+                            "read -t 3 -r _ < /proc/self/fd/0; rc=$?; "
+                                    + "if [ $rc -gt 128 ]; then echo PIPED_OPEN; "
+                                    + "else echo EOF_IMMEDIATE; fi"), Path.of("."));
+            Process process = builder.start();
+            String output;
+            try (java.io.InputStream in = process.getInputStream()) {
+                output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+
+            assertEquals("EOF_IMMEDIATE",
+                    output.strip(),
+                    "native OpenCode server boot must see stdin at EOF immediately");
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
+    void turnSpawnAcceptsLargePromptViaStdinWithoutArgLimitFailure() throws Exception {
+        // Zero-byte regression #3: composePrompt exceeded MAX_ARG_STRLEN (128 KiB)
+        // as a single argv element -> exec error=7 "Argument list too long". The
+        // turn must deliver the prompt through piped stdin instead. This probe
+        // mirrors the turn spawn shape: piped stdin, oversized single write.
+        char[] big = new char[200_000];
+        java.util.Arrays.fill(big, 'x');
+        String oversizedPrompt = new String(big);
+
+        ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c",
+                "tr -d '\\n' < /proc/self/fd/0 | wc -c")
+                .redirectErrorStream(true);
+        Process process = builder.start();
+        try (java.io.OutputStream stdin = process.getOutputStream()) {
+            stdin.write(oversizedPrompt.getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+        }
+        String output;
+        try (java.io.InputStream in = process.getInputStream()) {
+            output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertEquals(String.valueOf(oversizedPrompt.length()), output.strip(),
+                "a 200k-char prompt must survive stdin delivery intact");
+    }
+
+    @Test
+    void stdinRedirectTargetsThePlatformNullDevice() {
+        String expected = System.getProperty("os.name").toLowerCase()
+                .contains("win") ? "NUL" : "/dev/null";
+        ProcessBuilder.Redirect redirect =
+                ai.kompile.cli.common.util.NativeCliProcess.nullDeviceRedirect();
+        assertTrue(redirect.file() != null
+                        && expected.equals(redirect.file().getPath()),
+                "stdin redirect must use " + expected + ", got " + redirect.file());
+    }
+
+    @Test
+    void transportPinsHttp11ToAvoidNativeH2cUpgradeHang() throws Exception {
+        // The second zero-byte regression: Java HttpClient's default h2c upgrade
+        // makes OpenCode's Bun server accept POST /session but never respond, so
+        // session creation timed out after 30s on every attempt (the DB row was
+        // even persisted server-side). The transport must pin HTTP/1.1, matching
+        // curl's wire behavior, which never exhibited the hang.
+        OpenCodeServeClient client = new OpenCodeServeClient(objectMapper, Path.of("."));
+        java.lang.reflect.Field http = OpenCodeServeClient.class
+                .getDeclaredField("httpClient");
+        http.setAccessible(true);
+        HttpClient transport = (HttpClient) http.get(client);
+        assertEquals(HttpClient.Version.HTTP_1_1, transport.version(),
+                "OpenCode transport must pin HTTP/1.1 to avoid the Bun h2c "
+                        + "upgrade hang");
+        client.close();
+    }
 }

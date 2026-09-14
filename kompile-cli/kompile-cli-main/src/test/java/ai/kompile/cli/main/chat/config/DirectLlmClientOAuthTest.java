@@ -34,6 +34,100 @@ class DirectLlmClientOAuthTest {
     Path tempDir;
 
     @Test
+    void anthropicThinkingDeltasStreamToThinkingConsumerNotResponseText() throws Exception {
+        HttpServer server = server("/v1/messages", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange, """
+                    data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}
+
+                    data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"consider "}}
+
+                    data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"options"}}
+
+                    data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"answer"}}
+
+                    data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+
+                    data: {"type":"message_stop"}
+
+                    """);
+        });
+        try {
+            List<String> thinking = new ArrayList<>();
+            List<String> response = new ArrayList<>();
+            ChatConfig config = new ChatConfig("anthropic", "key", "claude-sonnet", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(response::add);
+                client.setThinkingConsumer(thinking::add);
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertEquals("answer", result.text);
+            }
+            assertEquals("consider options", String.join("", thinking));
+            assertEquals(List.of("answer"), response);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void responsesReasoningSummaryDeltasStreamToThinkingConsumer() throws Exception {
+        HttpServer server = server("/codex/responses", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange, """
+                    data: {"type":"response.reasoning_summary_text.delta","delta":"plan it"}
+
+                    data: {"type":"response.output_text.delta","delta":"done"}
+
+                    data: {"type":"response.completed","response":{"output":[]}}
+
+                    data: [DONE]
+
+                    """);
+        });
+        try {
+            List<String> thinking = new ArrayList<>();
+            ChatConfig config = new ChatConfig("openai-codex", "key", "gpt-5", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(ignored -> { });
+                client.setThinkingConsumer(thinking::add);
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertEquals("done", result.text);
+            }
+            assertEquals("plan it", String.join("", thinking));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void openAiCompatReasoningContentStreamsToThinkingConsumer() throws Exception {
+        HttpServer server = server("/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respondSse(exchange, """
+                    data: {"choices":[{"delta":{"reasoning_content":"deep thought"}}]}
+
+                    data: {"choices":[{"delta":{"content":"final"}}]}
+
+                    data: [DONE]
+
+                    """);
+        });
+        try {
+            List<String> thinking = new ArrayList<>();
+            ChatConfig config = new ChatConfig("deepseek", "key", "deepseek-reasoner", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                client.setOutputConsumer(ignored -> { });
+                client.setThinkingConsumer(thinking::add);
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertEquals("final", result.text);
+            }
+            assertEquals("deep thought", String.join("", thinking));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void anthropicOauthUsesBearerAndClaudeIdentityHeaders() throws Exception {
         withTemporaryHome(() -> {
             AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();

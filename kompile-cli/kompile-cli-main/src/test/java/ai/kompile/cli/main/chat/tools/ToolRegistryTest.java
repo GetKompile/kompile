@@ -46,6 +46,22 @@ class ToolRegistryTest {
     }
 
     @Test
+    void specialistsCanActivateEvidenceWithoutGainingTrainingOrSimulation() {
+        Set<String> evidence = Set.of("ask_graph_verify", "ask_graph_query", "ask_graph_explain",
+                "graph_bayes", "graph_centrality", "ask_graph_mebn");
+        evidence.forEach(id -> registry.register(namedTool(id)));
+        for (String id : Set.of("graph_embeddings", "graph_simulate", "knowledge_graph", "code_graph")) {
+            registry.register(namedTool(id));
+        }
+        AgentConfig specialist = AgentConfig.builder("explore-deep").enabledTools(Set.of("read")).build();
+        registry.getDynamicToolManager().activateGroup("graph_query");
+        registry.getDynamicToolManager().activateGroup("graph_analysis");
+        Set<String> visible = registry.getProgressiveToolsForAgent(specialist).stream()
+                .map(CliTool::id).collect(java.util.stream.Collectors.toSet());
+        assertEquals(evidence, visible);
+    }
+
+    @Test
     void testRegisterAndGet() {
         TodoWriteTool tool = new TodoWriteTool();
         registry.register(tool);

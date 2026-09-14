@@ -189,6 +189,12 @@ public class LocalCodeIndexer {
 
     private final ObjectMapper objectMapper;
 
+    public static final String REMOVAL_MARKER = "index.removed";
+
+    public static boolean isRemoved(String projectId) {
+        return Files.exists(getIndexDir(projectId).resolve(REMOVAL_MARKER));
+    }
+
     public LocalCodeIndexer() {
         this.objectMapper = JsonUtils.standardMapper();
     }
@@ -222,6 +228,10 @@ public class LocalCodeIndexer {
 
         // Acquire write lock (blocks other indexers, not readers)
         try (IndexLockManager.LockToken ignored = IndexLockManager.acquireWriteLock(projectId, indexDir)) {
+            if (isRemoved(projectId)) {
+                throw new IOException("Code index was removed for '" + projectId
+                        + "'. Use local_code_index action=index explicitly to restore it.");
+            }
             // Migrate from legacy flat entities.json if needed
             if (store.hasLegacyIndex()) {
                 out.println("Migrating legacy index to incremental format...");

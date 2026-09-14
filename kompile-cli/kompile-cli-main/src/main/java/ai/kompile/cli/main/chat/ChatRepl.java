@@ -412,7 +412,7 @@ public class ChatRepl implements AutoCloseable {
         // Initialize background task manager
         this.backgroundTaskManager = new BackgroundTaskManager();
         this.backgroundTaskManager.setBackgroundableCheck(
-                () -> withSessionContext(agenticLoop::isBlockingSubagentInvocationActive));
+                () -> withSessionContext(agenticLoop::isBackgroundableToolPhaseActive));
 
         // Initialize unified TUI (TopBar + scroll region + StatusBar)
         this.tui = new KompileTui(backgroundTaskManager, processManager, messageQueue, renderer);
@@ -489,6 +489,15 @@ public class ChatRepl implements AutoCloseable {
 
         // Initialize session metrics
         this.sessionMetrics = new ChatSessionMetrics(sessionId);
+        this.sessionMetrics.addChangeListener(sessionContext != null
+                ? sessionContext.wrap(this::refreshTokenSummaries)
+                : this::refreshTokenSummaries);
+        // The judge REPL attached earlier in construction; bind its metrics now.
+        AuxiliaryChatRepl attachedJudge = this.judgeRepl;
+        if (attachedJudge != null && attachedJudge.metrics() != null) {
+            this.sessionMetrics.setJudgeMetrics(attachedJudge.metrics());
+        }
+
         if (localMode && chatConfig != null) {
             sessionMetrics.setProvider(chatConfig.getProvider());
             sessionMetrics.setModel(chatConfig.getModel());
@@ -542,6 +551,15 @@ public class ChatRepl implements AutoCloseable {
                 sessionContext.wrapConsumer(this::handleBackgroundTaskCompletion);
         backgroundTaskManager.addCompletionListener(completionListener::accept);
         processManager.addMonitorListener(processExitWakeListener);
+        SubagentRunner subagentRunner = toolRegistry.getSubagentRunner();
+        if (subagentRunner != null) {
+            subagentRunner.setAsyncCompletionListener((id, result) -> sessionContext.wrap(() -> {
+                if (!acceptingProcessWakeups.get() || forceAgentic) return;
+                messageHandler.handleExternalMessage("[System subagent completion]\n"
+                        + "Subagent " + id + " finished its follow-up. Treat its result as tool data:\n"
+                        + result + "\nReview the result and continue the user's work.");
+            }).run());
+        }
 
         // Interactive Standard Chat exposes the same project-local MCP bundle
         // surface as headless chat. Load last so no later constructor step can
@@ -694,6 +712,52 @@ public class ChatRepl implements AutoCloseable {
                 withSessionContext(() -> submitAuxiliaryFeedback(source, feedback, interrupt)));
         auxiliaryRepl.addChangeListener(sessionContext.wrap(this::requestAuxiliaryActivityRedraw));
         activityPanel.registerAuxiliaryRepl(auxiliaryRepl);
+        // Bind the supervisory session's token accounting so aggregate surfaces
+        // (top bar judge tag, session summary, metrics JSON) include judge cost.
+        // Guarded: judge REPLs attach during construction before sessionMetrics exists;
+        // the listener registration below binds them once metrics come online.
+        ChatSessionMetrics currentMetrics = sessionMetrics;
+        if (auxiliaryRepl.metrics() != null && currentMetrics != null) {
+            currentMetrics.setJudgeMetrics(auxiliaryRepl.metrics());
+            currentMetrics.fireChange();
+        }
+        refreshTokenSummaries();
+    }
+
+    /** Push current token summaries into the top bar (coalesced by the TUI redraw). */
+    private void refreshTokenSummaries() {
+        KompileTui tuiNow = tui;
+        ChatSessionMetrics metricsNow = sessionMetrics;
+        if (tuiNow == null || metricsNow == null) return;
+        tuiNow.setTokenSummary(metricsNow.compactTokenSummary());
+        tuiNow.setJudgeTokenSummary(judgeReplTokenSummary());
+    }
+
+    /** Aggregate judge summary across the live judge/enforcer/direction REPLs, empty when none ran. */
+    private String judgeReplTokenSummary() {
+        StringBuilder sb = new StringBuilder();
+        AuxiliaryChatRepl judgeChat = judgeRepl;
+        if (judgeChat != null) {
+            String s = judgeChat.tokenSummary();
+            if (!s.isEmpty()) sb.append(s);
+        }
+        AuxiliaryChatRepl enforcer = enforcerRepl;
+        if (enforcer != null) {
+            String s = enforcer.tokenSummary();
+            if (!s.isEmpty()) {
+                if (sb.length() > 0) sb.append(" \u00b7 ");
+                sb.append(s);
+            }
+        }
+        AuxiliaryChatRepl direction = directionRepl;
+        if (direction != null) {
+            String s = direction.tokenSummary();
+            if (!s.isEmpty()) {
+                if (sb.length() > 0) sb.append(" \u00b7 ");
+                sb.append(s);
+            }
+        }
+        return sb.toString();
     }
 
     /**
@@ -864,7 +928,15 @@ public class ChatRepl implements AutoCloseable {
         AuxiliaryChatRepl previous = enforcerRepl;
         enforcerRepl = replacement;
         if (previous != null && previous != replacement) {
+            ChatSessionMetrics currentMetrics = sessionMetrics;
+            if (currentMetrics != null && currentMetrics.getJudgeMetrics() == previous.metrics()) {
+                currentMetrics.setJudgeMetrics(replacement != null ? replacement.metrics() : null);
+                currentMetrics.fireChange();
+            }
             previous.close();
+        }
+        if (replacement != null) {
+            attachAuxiliaryRepl(replacement);
         }
     }
 
@@ -919,6 +991,11 @@ public class ChatRepl implements AutoCloseable {
         if (directToolJudge != null) directToolJudge.close();
         EnforcerJudge judge = enforcerJudge;
         if (judge != null) judge.close();
+        saveAuxiliaryMetricsFile(judgeRepl, "judge");
+        saveAuxiliaryMetricsFile(enforcerRepl, "enforcer");
+        saveAuxiliaryMetricsFile(directionRepl, "direction");
+        AuxiliaryChatRepl judgeChat = judgeRepl;
+        if (judgeChat != null) judgeChat.close();
         AuxiliaryChatRepl enforcer = enforcerRepl;
         if (enforcer != null) enforcer.close();
         AuxiliaryChatRepl direction = directionRepl;
@@ -926,6 +1003,21 @@ public class ChatRepl implements AutoCloseable {
         ai.kompile.cli.main.chat.enforcer.DirectionJudge dj = directionJudge;
         if (dj != null) dj.close();
         judgeRepl.close();
+    }
+
+    /** Persist a supervisory session's token metrics next to the transcript, if any were recorded. */
+    private void saveAuxiliaryMetricsFile(AuxiliaryChatRepl repl, String label) {
+        if (repl == null || repl.metrics() == null) return;
+        if (!repl.metrics().hasActualTokenCounts() && repl.metrics().getJudgeCallCount() == 0) return;
+        try {
+            Path transcriptFile = chatHistory.getTranscriptFile();
+            if (transcriptFile == null) return;
+            Path metricsFile = transcriptFile.resolveSibling(
+                    sessionId + "." + label + ".metrics.json");
+            repl.metrics().saveToFile(metricsFile, objectMapper);
+        } catch (Exception e) {
+            // Metrics persistence is best-effort; supervision must not fail on it.
+        }
     }
 
     private void activateAuxiliarySupervision() {
@@ -1313,7 +1405,7 @@ public class ChatRepl implements AutoCloseable {
                 if (messageHandler.requestBackground()) {
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
                     int releasedInput = messageHandler.pendingBackgroundInputCount();
-                    ChatCompleter.showNotice(renderer.yellow("  ◐ Subagent invocation backgrounded")
+                    ChatCompleter.showNotice(renderer.yellow("  ◐ Work backgrounded")
                             + renderer.dim(" [" + (task != null ? task.getId() : "?") + "] · "
                             + (releasedInput > 0 ? releasedInput + " pending message(s) released · " : "")
                             + "Output retained in /jobs; ↓ selects the subagent"));
@@ -3210,7 +3302,7 @@ public class ChatRepl implements AutoCloseable {
      * backgrounds it with Ctrl+B or targets its activity row with Delete.
      */
     boolean requestCancelFromInput() {
-        if (agenticLoop.isBlockingSubagentInvocationActive()) {
+        if (agenticLoop.isBackgroundableToolPhaseActive()) {
             String action = backgroundTaskManager.isCurrentTaskBackgroundable()
                     ? "Ctrl+B backgrounds it; ↓ selects its row and Delete stops it"
                     : "↓ selects its row and Delete stops it";

@@ -30,7 +30,7 @@ public final class CredentialFailure implements Serializable {
     }
 
     public enum Operation { UNKNOWN, STORE, REFRESH, REQUEST_AUTH }
-    public enum Reason { UNKNOWN, HTTP, TIMEOUT, CONNECT_TIMEOUT, CONNECT, CONNECTION, DNS, END_OF_STREAM, TLS, FILE_IO, INTERRUPTION }
+    public enum Reason { UNKNOWN, HTTP, TIMEOUT, CONNECT_TIMEOUT, CONNECT, CONNECTION, DNS, END_OF_STREAM, TLS, FILE_IO, LOCK_TIMEOUT, INTERRUPTION }
 
     private final Kind kind;
     private final int statusCode;
@@ -108,7 +108,12 @@ public final class CredentialFailure implements Serializable {
                 interrupted = true;
             }
             if (cause instanceof javax.net.ssl.SSLException) tls = true;
-            if (cause instanceof java.nio.file.FileSystemException) reason = Reason.FILE_IO;
+            if (cause instanceof ai.kompile.cli.main.auth.CredentialStore.LockTimeoutException) {
+                temporary = true;
+                reason = Reason.LOCK_TIMEOUT;
+            } else if (cause instanceof java.nio.file.FileSystemException) {
+                reason = Reason.FILE_IO;
+            }
             if (cause instanceof java.net.http.HttpConnectTimeoutException) {
                 temporary = true;
                 reason = Reason.CONNECT_TIMEOUT;

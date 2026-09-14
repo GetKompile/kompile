@@ -67,15 +67,18 @@ public final class LocalDocumentLoaderRegistry {
                 .metadata(metadata)
                 .build();
 
+        // Keep physical page identity; full-document extraction cannot support precise citations.
+        if (loader instanceof PdfExtendedLoaderImpl pdf) pdf.setExtractByPage(true);
         List<Document> documents = loader.load(descriptor);
         List<String> sections = new ArrayList<>();
         List<LoadedOutput> outputs = new ArrayList<>();
         String title = file.getFileName().toString();
         int index = 0;
+        long bodyOffset = 0;
         for (Document document : documents) {
             if (document == null) continue;
             Map<String, Object> documentMetadata = document.getMetadata() == null
-                    ? Map.of() : new LinkedHashMap<>(document.getMetadata());
+                    ? new LinkedHashMap<>() : new LinkedHashMap<>(document.getMetadata());
             String outputTitle = firstText(documentMetadata, "title", "sheetName", "sheet_name", "fileName",
                     file.getFileName().toString());
             if (index == 0) title = outputTitle;
@@ -83,10 +86,19 @@ public final class LocalDocumentLoaderRegistry {
             if (text == null || text.isBlank()) {
                 text = document.getText();
             }
+            if ("pdf".equals(canonicalLoader)) {
+                text = ProjectCrawlCommand.normalizeLocalBody(text);
+                if (!text.isBlank()) {
+                    if (!sections.isEmpty()) bodyOffset += 2; // joining separator
+                    documentMetadata.put("bodyStart", bodyOffset);
+                    bodyOffset += text.length();
+                    documentMetadata.put("bodyEnd", bodyOffset);
+                }
+            }
             outputs.add(new LoadedOutput(index++, outputTitle,
                     Collections.unmodifiableMap(new LinkedHashMap<>(documentMetadata))));
             if (text != null && !text.isBlank()) {
-                sections.add(text.trim());
+                sections.add("pdf".equals(canonicalLoader) ? text : text.trim());
             }
         }
         return new LoadedDocument(title, String.join("\n\n", sections), List.copyOf(outputs));

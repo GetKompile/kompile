@@ -93,15 +93,17 @@ class CompactionServiceModelAwareTest {
     }
 
     @Test
-    void outputCapacityReservesEnoughContextForTheResponse() {
+    void reserveDefaultsToRealOutputAndTriggerStaysPureRatio() {
         CompactionService service = new CompactionService(mapper, 400_000);
         service.configure(true, 0.90d, 128_000, 0);
 
-        assertEquals(136_192, service.effectiveReserveTokens(),
-                "reserve includes the provider output limit plus an input-estimation safety margin");
-        assertEquals(263_808, service.triggerTokens(),
-                "output reserve must win over a later ratio trigger");
-        assertTrue(service.needsCompaction(263_808));
+        assertEquals(128_000, service.effectiveReserveTokens(),
+                "reserve defaults to the model's real output ceiling — the same value the wire sends");
+        assertEquals(360_000, service.triggerTokens(),
+                "without an explicit reserve the trigger is the pure ratio line");
+        assertEquals(40_000, service.wireMaxOutputTokens(),
+                "wire max_tokens is capped at what remains between trigger and window");
+        assertTrue(service.needsCompaction(360_000));
     }
 
     @Test
@@ -109,32 +111,63 @@ class CompactionServiceModelAwareTest {
         CompactionService service = new CompactionService(mapper, 1_050_000);
         service.configure(true, 0.85d, 128_000, 0);
 
-        assertEquals(136_192, service.effectiveReserveTokens());
+        assertEquals(128_000, service.effectiveReserveTokens());
         assertEquals(892_500, service.triggerTokens());
+        assertEquals(128_000, service.wireMaxOutputTokens(),
+                "window remainder exceeds the output ceiling, so the ceiling is the wire budget");
         assertFalse(service.needsCompaction(42_000));
         assertFalse(service.needsCompaction(892_499));
         assertTrue(service.needsCompaction(892_500));
     }
 
+    /**
+     * The regression that motivated the redesign: GLM-class models publish an output
+     * ceiling larger than half their window (glm-4.6: 131K output on 200K context).
+     * The old speculative reserve compacted such sessions at ~46% of the window. Now
+     * the trigger is the ratio line and the wire request carries the real leftover.
+     */
     @Test
-    void oversizedCatalogOutputLimitCannotConsumeTheInputWindow() {
+    void largeOutputCeilingDoesNotCompactEarlyOnGlmShapedWindows() {
+        CompactionService service = new CompactionService(mapper, 204_800);
+        service.configure(true, 0.85d, 131_072, 0);
+
+        assertEquals(174_080, service.triggerTokens(), "pure 85% of the window");
+        assertEquals(30_720, service.wireMaxOutputTokens(),
+                "window minus trigger, capped by the provider output ceiling");
+        assertFalse(service.needsCompaction(174_079));
+        assertTrue(service.needsCompaction(174_080));
+    }
+
+    @Test
+    void wireBudgetFloorsAtUsableMinimumOnTinyWindows() {
+        CompactionService service = new CompactionService(mapper, 4_096);
+        service.configure(true, 0.85d, 4_096, 0);
+        assertTrue(service.wireMaxOutputTokens() >= 1_024,
+                "tiny windows still get a workable response budget");
+    }
+
+    @Test
+    void oversizedCatalogOutputLimitCannotMoveTheTrigger() {
         CompactionService service = new CompactionService(mapper, 1_050_000);
         for (int outputLimit : new int[]{1_050_000, Integer.MAX_VALUE}) {
             service.configure(true, 0.85d, outputLimit, 0);
             assertEquals(outputLimit, service.getMaxOutputTokens(),
-                    "retain the advertised capability; only automatic headroom is capped");
-            assertEquals(533_192, service.effectiveReserveTokens());
-            assertEquals(516_808, service.triggerTokens());
+                    "retain the advertised capability");
+            assertEquals(892_500, service.triggerTokens(),
+                    "the automatic reserve never caps the ratio trigger");
+            assertEquals(157_500, service.wireMaxOutputTokens(),
+                    "wire budget is bounded by the window remainder, not the catalog ceiling");
             assertFalse(service.needsCompaction(42_000));
         }
     }
 
     @Test
-    void automaticReserveAlsoLeavesRoomInSmallWindows() {
+    void smallWindowReserveIsCappedByWindow() {
         CompactionService service = new CompactionService(mapper, 4_096);
         service.configure(true, 0.85d, 4_096, 0);
-        assertEquals(2_304, service.effectiveReserveTokens());
-        assertEquals(1_792, service.triggerTokens());
+        assertEquals(3_072, service.effectiveReserveTokens(),
+                "reserve can never exceed window minus 1K floor");
+        assertEquals(3_481, service.triggerTokens());
         assertFalse(service.needsCompaction(1_024));
 
         service.setMaxTokens(1_024);
@@ -147,7 +180,10 @@ class CompactionServiceModelAwareTest {
         CompactionService service = new CompactionService(mapper, 1_050_000);
         service.configure(true, 0.85d, 1_050_000, 900_000);
         assertEquals(900_000, service.effectiveReserveTokens());
-        assertEquals(150_000, service.triggerTokens());
+        assertEquals(150_000, service.triggerTokens(),
+                "an explicitly configured reserve still caps the trigger");
+        assertEquals(900_000, service.wireMaxOutputTokens(),
+                "window minus explicit-reserve trigger leaves exactly the reserve");
     }
 
     @Test

@@ -274,8 +274,12 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                     List<PassthroughEvent> events = parseAgentLineMulti(line);
 
                     for (PassthroughEvent event : events) {
-                        if (event instanceof PassthroughStreamParser.ThinkingChunk) {
-                            // Model is reasoning — skip, don't render as text
+                        if (event instanceof PassthroughStreamParser.ThinkingChunk tc) {
+                            // Stream model reasoning into the transcript, dimmed —
+                            // never into the captured response text.
+                            if (!quiet && tc.text() != null && !tc.text().isEmpty()) {
+                                printThinkingChunk(tc.text());
+                            }
                             continue;
                         }
                         if (event instanceof TextChunk tc) {
@@ -450,6 +454,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
             cmd.add("--output-format");
             cmd.add("stream-json");
             cmd.add("--verbose");
+            cmd.add("--include-partial-messages");
             if (firstMessageSent) {
                 cmd.add("--continue");
             }

@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.common.util.NativeCliProcess;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
@@ -91,6 +92,13 @@ final class OpenCodeServeClient implements AutoCloseable {
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
         this.connectivityPolicy = ProviderConnectivityPolicy.forProvider("opencode");
         this.httpClient = HttpClient.newBuilder()
+                // Java's HttpClient default negotiates an h2c upgrade, sending
+                // "Connection: Upgrade, HTTP2-Settings / Upgrade: h2c" headers.
+                // OpenCode's Bun server accepts such POSTs (the session row is even
+                // persisted) but never writes the response, so every request times
+                // out — while HTTP/1.1-pinned requests answer in milliseconds.
+                // Curl never sends these headers, which is why it appeared healthy.
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(connectivityPolicy.connectTimeout())
                 .build();
     }
@@ -145,8 +153,15 @@ final class OpenCodeServeClient implements AutoCloseable {
             command.add("--variant");
             command.add(variant.trim());
         }
-        command.add(composePrompt(systemPrompt, userMessage));
 
+        // The composed prompt (system instructions + user message) can exceed the
+        // kernel's per-argument limit (MAX_ARG_STRLEN, 128 KiB on Linux), which
+        // surfaces as exec error=7 "Argument list too long" and kills the turn
+        // before it starts. opencode reads its prompt from piped stdin, so deliver
+        // it there and close the pipe — the child then sees the EOF it waits for.
+        // The turn keeps the pipe stdin (prompt delivery), so this spawn bypasses
+        // NativeCliProcess's null-device redirect deliberately.
+        String prompt = composePrompt(systemPrompt, userMessage);
         ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(workingDirectory.toFile());
         if (definition != null) {
@@ -155,6 +170,19 @@ final class OpenCodeServeClient implements AutoCloseable {
         Process turn;
         try {
             turn = builder.start();
+            // Write-then-close in a bounded thread: opencode blocks reading stdin
+            // until EOF, so the pipe must close even if it stops consuming early.
+            Thread promptWriter = new Thread(sessionContext.wrap(() -> {
+                try (java.io.OutputStream stdin = turn.getOutputStream()) {
+                    stdin.write(prompt.getBytes(StandardCharsets.UTF_8));
+                    stdin.flush();
+                } catch (IOException ignored) {
+                    // Child exited before consuming the prompt; its exit code
+                    // and stderr surface below.
+                }
+            }), "kompile-opencode-prompt");
+            promptWriter.setDaemon(true);
+            promptWriter.start();
         } catch (IOException e) {
             throw new TurnNotStartedException(
                 "OpenCode turn process could not start: " + e.getMessage(), e);
@@ -448,13 +476,10 @@ final class OpenCodeServeClient implements AutoCloseable {
         String binary = definition != null && definition.getCommand() != null
                 ? definition.getCommand() : "opencode";
         int port = availablePort();
-        ProcessBuilder builder = new ProcessBuilder(
-                binary, "serve", "--hostname", "127.0.0.1", "--port", String.valueOf(port))
-                .directory(workingDirectory.toFile())
+        ProcessBuilder builder = processBuilder(List.of(
+                        binary, "serve", "--hostname", "127.0.0.1",
+                        "--port", String.valueOf(port)))
                 .redirectErrorStream(true);
-        if (definition != null) {
-            builder.environment().putAll(definition.safeEnvironment());
-        }
         serverProcess = builder.start();
         baseUrl = "http://127.0.0.1:" + port;
         Thread outputReader = readLines(serverProcess.getInputStream(), serverOutput, null);
@@ -511,6 +536,21 @@ final class OpenCodeServeClient implements AutoCloseable {
         thread.setDaemon(true);
         thread.start();
         return thread;
+    }
+
+    /**
+     * Spawn template for native OpenCode processes (turn and server boot).
+     * Delegates to {@link NativeCliProcess} so native CLI processes always get a
+     * closed stdin — {@code opencode run} blocks forever on ProcessBuilder's
+     * default never-EOF stdin pipe (the zero-byte response failure).
+     */
+    ProcessBuilder processBuilder(List<String> command) {
+        ProcessBuilder builder = NativeCliProcess.processBuilder(command, workingDirectory);
+        AgentProvider definition = opencodeDefinition();
+        if (definition != null) {
+            builder.environment().putAll(definition.safeEnvironment());
+        }
+        return builder;
     }
 
     private static AgentProvider opencodeDefinition() {

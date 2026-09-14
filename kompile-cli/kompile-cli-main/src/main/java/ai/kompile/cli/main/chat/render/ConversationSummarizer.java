@@ -79,11 +79,14 @@ public class ConversationSummarizer {
         // private summary as ordinary assistant text. Suppress both routes and
         // restore the owner even on cancellation or a failed utility request.
         Consumer<String> previousOutput = directLlmClient.getOutputConsumer();
+        Consumer<String> previousThinking = directLlmClient.getThinkingConsumer();
         DirectLlmClient.StreamResult result;
         directLlmClient.setOutputConsumer(ignored -> { });
+        directLlmClient.setThinkingConsumer(null);
         try {
             result = directLlmClient.streamOneShot(prompt, SUMMARY_SYSTEM_PROMPT, modelOverride);
         } finally {
+            directLlmClient.setThinkingConsumer(previousThinking);
             directLlmClient.setOutputConsumer(previousOutput);
         }
 

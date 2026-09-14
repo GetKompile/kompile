@@ -77,6 +77,9 @@ public final class LocalCodeKGraphPublisher {
                 projectState.resolve("code-kgraph-publisher.lock"),
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE);
              FileLock ignored = manifestChannel.lock()) {
+        if (LocalCodeIndexer.isRemoved(indexProjectId)) {
+            throw new IllegalStateException("Code index was removed; refusing stale graph publication: " + indexProjectId);
+        }
         KompileProjectManifest manifest;
         if (Files.isRegularFile(projectRoot.resolve(KompileProjectStore.MANIFEST_FILE))) {
             manifest = store.load(projectRoot);
@@ -173,6 +176,116 @@ public final class LocalCodeKGraphPublisher {
         } finally {
             processLock.unlock();
         }
+    }
+
+    private static <T> T withPublicationLock(Path root, java.util.concurrent.Callable<T> operation) throws Exception {
+        Path state = root.resolve(".kompile");
+        Files.createDirectories(state);
+        ReentrantLock lock = PROJECT_LOCKS.computeIfAbsent(root.toRealPath(), ignored -> new ReentrantLock());
+        lock.lock();
+        try (FileChannel channel = FileChannel.open(state.resolve("code-kgraph-publisher.lock"),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            return operation.call();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Only a new explicit tool request may lift the persistent removal fence. */
+    public static void prepareExplicitIndex(Path directory, String projectId) throws Exception {
+        Path root = new KompileProjectStore().findProjectRoot(directory).orElse(directory).toRealPath();
+        if (!LocalCodeIndexer.isSafeProjectId(projectId)) throw new IllegalArgumentException("Invalid project id");
+        withPublicationLock(root, () -> {
+            Path marker = LocalCodeIndexer.getIndexDir(projectId).resolve(LocalCodeIndexer.REMOVAL_MARKER);
+            try (var ignored = IndexLockManager.acquireWriteLock(projectId, LocalCodeIndexer.getIndexDir(projectId))) {
+                if (Files.isRegularFile(marker) && !directory.toRealPath().equals(Path.of(Files.readString(marker)).toRealPath())) {
+                    throw new IllegalArgumentException("Removed project belongs to a different directory");
+                }
+                KompileProjectStore store = new KompileProjectStore();
+                if (Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))) {
+                    KompileProjectManifest manifest = store.load(root);
+                    for (KompileCodingProject cp : manifest.getCodingProjects()) {
+                        if (projectId.equals(firstNonBlank(cp.getCodeProjectId(), cp.getId()))) {
+                            cp.setLifecycle(KompileProjectLifecycleState.ACTIVE);
+                            cp.getMetadata().remove("codeProjectionState");
+                            store.registerCodingProject(root, cp);
+                            break;
+                        }
+                    }
+                }
+                Files.deleteIfExists(marker);
+            }
+            return null;
+        });
+    }
+
+    /** Fenced, retryable removal. The marker and lock inode deliberately outlive the index. */
+    public static int remove(Path directory, String projectId) throws Exception {
+        if (!LocalCodeIndexer.isSafeProjectId(projectId)) throw new IllegalArgumentException("Invalid project id");
+        Path requested = directory.toRealPath();
+        KompileProjectStore store = new KompileProjectStore();
+        Path root = store.findProjectRoot(requested).orElse(requested).toRealPath();
+        Path index = LocalCodeIndexer.getIndexDir(projectId).toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(index) || !index.startsWith(LocalCodeIndexer.getBaseIndexDir().toAbsolutePath().normalize())) {
+            throw new IllegalArgumentException("Unsafe code-index directory: " + index);
+        }
+        return withPublicationLock(root, () -> {
+            KompileProjectManifest manifest = Files.isRegularFile(root.resolve(KompileProjectStore.MANIFEST_FILE))
+                    ? store.load(root) : null;
+            KompileCodingProject registration = manifest == null ? null : manifest.getCodingProjects().stream()
+                    .filter(cp -> projectId.equals(firstNonBlank(cp.getCodeProjectId(), cp.getId())))
+                    .findFirst().orElse(null);
+            Path marker = index.resolve(LocalCodeIndexer.REMOVAL_MARKER);
+            try (var ignored = IndexLockManager.acquireWriteLock(projectId, index)) {
+                String indexedRoot;
+                if (Files.isRegularFile(marker)) indexedRoot = Files.readString(marker);
+                else if (Files.isRegularFile(index.resolve("index.db"))) {
+                    indexedRoot = String.valueOf(new LocalCodeIndexer().getStats(projectId).get("rootPath"));
+                } else if (registration != null) indexedRoot = root.resolve(registration.getRootPath()).toString();
+                else throw new IllegalArgumentException("No index or registration found for project '" + projectId + "'");
+                if (!requested.equals(Path.of(indexedRoot).toRealPath())) {
+                    throw new IllegalArgumentException("Directory is not tracked by project '" + projectId + "'");
+                }
+                if (registration != null && !requested.equals(root.resolve(registration.getRootPath()).toRealPath())) {
+                    throw new IllegalArgumentException("Project registration root does not match index root");
+                }
+                Files.writeString(marker, requested.toString());
+            }
+            // Never hold the index lock while acquiring a graph lock: crawls take them in the reverse order.
+            BackgroundIndexService.getInstance().retireRemovedProject(projectId);
+            int updatedGraphs = 0;
+            Path crawls = root.resolve("data/crawls");
+            if (Files.isSymbolicLink(crawls)) throw new IllegalArgumentException("Unsafe crawl directory");
+            if (Files.isDirectory(crawls)) {
+                try (var bases = Files.list(crawls)) {
+                    for (Path base : bases.toList()) {
+                        if (Files.isSymbolicLink(base)) throw new IllegalArgumentException("Unsafe knowledge-base directory: " + base);
+                        Path graph = base.resolve("graph.kgraph");
+                        if (Files.isSymbolicLink(graph)) throw new IllegalArgumentException("Unsafe graph path: " + graph);
+                        if (Files.isRegularFile(graph) && new LocalProjectGraphBackend(MAPPER).removeCodeProjection(graph, projectId)) {
+                            updatedGraphs++;
+                        }
+                    }
+                }
+            }
+            if (registration != null) {
+                registration.setLifecycle(KompileProjectLifecycleState.ARCHIVED);
+                registration.getMetadata().put("codeProjectionState", "REMOVED");
+                registration.getMetadata().remove(META_PROJECTED_GENERATION);
+                registration.getMetadata().remove(META_PROJECTION_VERSION);
+                store.registerCodingProject(root, registration);
+            }
+            try (var ignored = IndexLockManager.acquireWriteLock(projectId, index);
+                 var paths = Files.walk(index)) {
+                for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                    if (!path.equals(index) && !path.equals(marker) && !path.equals(index.resolve("project.lock"))) {
+                        Files.deleteIfExists(path);
+                    }
+                }
+            }
+            return updatedGraphs;
+        });
     }
 
     private static ProjectionResult existingProjection(Path projectRoot,

@@ -70,4 +70,17 @@ public interface CliTool {
     default String compactHint() {
         return null;
     }
+
+    /**
+     * Whether the running chat loop may detach this tool's invocation in the
+     * background (the agent via a {@code background} parameter, or the user via
+     * Ctrl+B while the call blocks). Long-running tools whose work survives
+     * losing the foreground return true; quick read-style tools keep the
+     * default false. Declaring the capability here — instead of a tool-name
+     * switch in the chat loop — lets the backgroundable phase follow the tools
+     * themselves, including through wrapper implementations.
+     */
+    default boolean isBackgroundable() {
+        return false;
+    }
 }

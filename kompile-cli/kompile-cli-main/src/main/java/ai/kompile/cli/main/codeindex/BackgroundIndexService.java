@@ -494,6 +494,10 @@ public final class BackgroundIndexService {
      */
     public String prepareForRead(LocalCodeIndexer callerIndexer, String projectId) {
         if (projectId == null || projectId.isBlank() || closed.get()) return null;
+        if (LocalCodeIndexer.isRemoved(projectId)) {
+            retireRemovedProject(projectId);
+            return "[code index removed; explicit indexing is required to restore it]";
+        }
         if (!enabled()) {
             // Legacy behavior: synchronous throttled inline refresh.
             IndexAutoRefresher.RefreshOutcome outcome = IndexAutoRefresher.refresh(
@@ -700,7 +704,7 @@ public final class BackgroundIndexService {
      */
     private void scheduleRefresh(ProjectState state, long throttleMs) {
         synchronized (state) {
-            if (state.refreshQueued) return;
+            if (state.refreshQueued || LocalCodeIndexer.isRemoved(state.projectId)) return;
             state.refreshQueued = true;
         }
         long delay = throttleMs == 0 ? WRITE_DEBOUNCE_MS : 0;
@@ -718,6 +722,7 @@ public final class BackgroundIndexService {
         long seqBefore = state.writeSeq.get();
         synchronized (state) {
             state.refreshQueued = false;
+            if (LocalCodeIndexer.isRemoved(state.projectId)) return;
             IndexJob job = state.activeJob;
             if (job != null && !job.isDone()) {
                 // A full pass is in flight; its completion re-schedules us if
@@ -786,6 +791,10 @@ public final class BackgroundIndexService {
             return;
         }
         synchronized (state) {
+            if (LocalCodeIndexer.isRemoved(state.projectId)) {
+                if (job != null) job.learning = learningFailure("code project removed");
+                return;
+            }
             state.projectionDirty = true;
             if (job != null && !state.projectionJobs.contains(job)) {
                 state.projectionJobs.addLast(job);
@@ -1083,6 +1092,7 @@ public final class BackgroundIndexService {
         if (root == null || !Files.isDirectory(root)) return false;
 
         synchronized (state) {
+            if (LocalCodeIndexer.isRemoved(state.projectId)) return false;
             existing = state.watcher;
             if (existing != null && existing.isRunning()) return true;
             evictWatchersOverCap(state.projectId);
@@ -1172,6 +1182,23 @@ public final class BackgroundIndexService {
                 try { w.stop(); } catch (Exception ignored) {}
             }
         }
+    }
+
+    /** Stop local maintenance after the durable removal fence has been installed. */
+    public void retireRemovedProject(String projectId) {
+        if (!LocalCodeIndexer.isRemoved(projectId)) return;
+        ProjectState state = projects.get(projectId);
+        if (state == null) return;
+        IndexFileWatcher watcher;
+        synchronized (state) {
+            watcher = state.watcher;
+            state.watcher = null;
+            state.root = null;
+            state.lastTouchedMs = 0;
+            state.cleanSeq = state.writeSeq.get();
+        }
+        // stop may flush pending changes; the indexer's write-locked removal fence rejects that flush.
+        if (watcher != null) watcher.stop();
     }
 
     /** Whether a live watcher is maintaining this project's index. */

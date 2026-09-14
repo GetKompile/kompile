@@ -145,8 +145,9 @@ class GraphSimulateToolTest {
         ObjectNode params = OM.createObjectNode();
         params.put("action", "scenarios");
         ToolResult result = noUrl.execute(params, ctx());
-        assertFalse(result.isError(), result.getOutput());
-        assertTrue(result.getOutput().contains("project-local"), result.getOutput());
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("Project-local"), result.getOutput());
+        assertTrue(result.getOutput().contains("not supported"), result.getOutput());
         assertFalse(result.getOutput().contains("kompile-app"));
     }
 

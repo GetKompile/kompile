@@ -95,12 +95,14 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile AtomicBoolean cancelSignal;
     private volatile java.util.function.BooleanSupplier cancellationCheck;
     private volatile java.util.function.Consumer<String> outputConsumer;
+    private volatile java.util.function.Consumer<String> thinkingConsumer;
     private volatile java.util.function.Consumer<ConnectivityEvent> connectivityEventConsumer;
     private volatile ProviderActivityListener providerActivityListener;
     private volatile RadiusGatewayConfig radiusGatewayConfig;
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
     private volatile int nativeCompactionTriggerTokens;
+    private volatile int wireMaxOutputTokens;
     private volatile String promptCacheSessionId;
     private volatile JsonOutputSpec requestedJsonOutput;
     private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
@@ -256,6 +258,35 @@ public class DirectLlmClient implements AutoCloseable {
                 System.out.print(chunk);
                 System.out.flush();
             }
+        }
+    }
+
+    /**
+     * Set a consumer for model reasoning/thinking deltas. Thinking streams here
+     * instead of the response consumer so transcripts can render it distinctly
+     * while it never pollutes the captured answer text.
+     */
+    public void setThinkingConsumer(java.util.function.Consumer<String> consumer) {
+        this.thinkingConsumer = consumer;
+    }
+
+    public java.util.function.Consumer<String> getThinkingConsumer() {
+        return thinkingConsumer;
+    }
+
+    /**
+     * Route a thinking delta through the thinking consumer. With no consumer
+     * installed the delta is dropped: capture lanes (judges, enforcer, headless,
+     * summarization) must not receive reasoning, and raw ANSI must never reach
+     * piped stdout.
+     */
+    protected void printThinkingChunk(String chunk) {
+        if (chunk == null || chunk.isEmpty()) {
+            return;
+        }
+        java.util.function.Consumer<String> consumer = this.thinkingConsumer;
+        if (consumer != null) {
+            consumer.accept(chunk);
         }
     }
 
@@ -432,6 +463,16 @@ public class DirectLlmClient implements AutoCloseable {
 
     public void setNativeCompactionTriggerTokens(int tokens) {
         nativeCompactionTriggerTokens = Math.max(0, tokens);
+    }
+
+    /**
+     * Output ceiling carried as {@code max_tokens} on OpenAI-compatible chat requests.
+     * Derived from the active model's real context window and output limit (see
+     * {@code CompactionService#wireMaxOutputTokens}); zero leaves the request without
+     * an explicit cap, as before.
+     */
+    public void setWireMaxOutputTokens(int tokens) {
+        wireMaxOutputTokens = Math.max(0, tokens);
     }
 
     /** Attempt an explicit provider-native compaction without generic fallback. */
@@ -1249,13 +1290,54 @@ public class DirectLlmClient implements AutoCloseable {
         if (effort == null || effort.isBlank()) {
             return;
         }
+        if ("zai".equals(config.getProvider())) {
+            applyZaiThinking(request, effort);
+            return;
+        }
         if (responsesFormat) {
             ObjectNode reasoning = objectMapper.createObjectNode();
             reasoning.put("effort", effort);
+            // Ask the provider to include streamed reasoning summaries so the
+            // transcript can show them live. Providers that cannot summarize
+            // simply omit them.
+            reasoning.put("summary", "auto");
             request.set("reasoning", reasoning);
         } else {
             request.put("reasoning_effort", effort);
         }
+    }
+
+    /**
+     * Z.AI GLM wire contract (docs.z.ai chat-completion): a reasoning on/off choice
+     * rides as {@code thinking:{type:enabled|disabled}}; an effort tier rides as
+     * {@code reasoning_effort} (GLM-5.2+; implies thinking, which is enabled by
+     * default on those models). Values arrive already wire-shaped from the catalog's
+     * {@code reasoning_options} or the documented fallback resource.
+     */
+    static void applyZaiThinking(ObjectNode request, String value) {
+        String normalized = value.toLowerCase(Locale.ROOT).trim();
+        if ("enabled".equals(normalized) || "disabled".equals(normalized)) {
+            ObjectNode thinking = request.putObject("thinking");
+            thinking.put("type", normalized);
+            return;
+        }
+        request.put("reasoning_effort", normalized);
+    }
+
+    /**
+     * OpenAI's reasoning models (o-series, gpt-5+) reject {@code max_tokens} on chat
+     * completions and require {@code max_completion_tokens}; they ride the Responses
+     * route in this client, so the generic chat path simply omits the cap for them.
+     * Every other chat-completions provider (zai, deepseek, groq, ollama, xai, …)
+     * accepts {@code max_tokens} natively.
+     */
+    private static boolean acceptsMaxTokens(String model) {
+        if (model == null || model.isBlank()) return true;
+        String normalized = model.toLowerCase(Locale.ROOT).trim();
+        if (normalized.startsWith("o1") || normalized.startsWith("o3") || normalized.startsWith("o4")) {
+            return false;
+        }
+        return !normalized.startsWith("gpt-5");
     }
 
     private void applyOpenAiFastMode(ObjectNode request, String model) {
@@ -1880,6 +1962,10 @@ public class DirectLlmClient implements AutoCloseable {
                             result.text += delta;
                         }
                     }
+                    case "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
+                        // OpenAI Responses reasoning stream — transcript-only.
+                        printThinkingChunk(event.path("delta").asText(""));
+                    }
                     case "response.function_call_arguments.delta" -> {
                         ResponsesToolCallAccumulator accumulator =
                                 state.toolCalls.computeIfAbsent(
@@ -2422,6 +2508,10 @@ public class DirectLlmClient implements AutoCloseable {
                         String delta = event.path("delta").asText("");
                         ObjectNode block = piContentBlock(state, contentIndex, "thinking", "thinking");
                         block.put("thinking", block.path("thinking").asText("") + delta);
+                        if (!delta.isEmpty()) {
+                            // Pi reasoning stream — transcript-only.
+                            printThinkingChunk(delta);
+                        }
                     }
                     case "thinking_end" -> {
                         ObjectNode block = piContentBlock(state, contentIndex, "thinking", "thinking");
@@ -2875,6 +2965,9 @@ public class DirectLlmClient implements AutoCloseable {
             applyOpenAiFastMode(request, effectiveModel);
             applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
             applyChatCompletionsJsonOutput(request);
+            if (wireMaxOutputTokens > 0 && acceptsMaxTokens(effectiveModel)) {
+                request.put("max_tokens", wireMaxOutputTokens);
+            }
 
             // Request token usage in streamed response
             ObjectNode streamOptions = objectMapper.createObjectNode();
@@ -3198,6 +3291,12 @@ public class DirectLlmClient implements AutoCloseable {
                     if (content != null) {
                         printStreamingChunk(content);
                         result.text += content;
+                    }
+
+                    // Reasoning content (DeepSeek/OpenAI-compatible reasoning models)
+                    String reasoningContent = delta.path("reasoning_content").asText(null);
+                    if (reasoningContent != null && !reasoningContent.isEmpty()) {
+                        printThinkingChunk(reasoningContent);
                     }
 
                     // Tool calls (streamed as deltas)
@@ -3675,6 +3774,10 @@ public class DirectLlmClient implements AutoCloseable {
                                 String text = delta.path("text").asText("");
                                 printStreamingChunk(text);
                                 result.text += text;
+                            } else if ("thinking_delta".equals(deltaType)) {
+                                // Anthropic extended thinking — stream for the transcript,
+                                // never into result.text.
+                                printThinkingChunk(delta.path("thinking").asText(""));
                             } else if ("input_json_delta".equals(deltaType)) {
                                 String partial = delta.path("partial_json").asText("");
                                 currentToolArgs.append(partial);

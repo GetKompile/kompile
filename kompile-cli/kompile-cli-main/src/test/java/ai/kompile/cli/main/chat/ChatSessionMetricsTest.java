@@ -273,6 +273,185 @@ class ChatSessionMetricsTest {
 
             assertEquals(2, metrics.getCompactionEvents());
         }
+
+        @Test
+        void recordCompaction_accumulatesBeforeAfterAndSavings() {
+            metrics.recordCompaction(50000, 25000);
+            metrics.recordCompaction(30000, 15000);
+
+            assertEquals(80000, metrics.getTotalTokensBeforeCompaction());
+            assertEquals(40000, metrics.getTotalTokensSavedByCompaction());
+            assertEquals(30000, metrics.getLastCompactionBeforeTokens());
+            assertEquals(15000, metrics.getLastCompactionAfterTokens());
+        }
+
+        @Test
+        void recordCompaction_negativeTokensClampedToZero() {
+            metrics.recordCompaction(-100, -50);
+
+            assertEquals(0, metrics.getTotalTokensBeforeCompaction());
+            assertEquals(0, metrics.getTotalTokensSavedByCompaction());
+        }
+
+        @Test
+        void noCompactions_zeroAggregates() {
+            assertEquals(0, metrics.getTotalTokensBeforeCompaction());
+            assertEquals(0, metrics.getTotalTokensSavedByCompaction());
+            assertEquals(0, metrics.getLastCompactionBeforeTokens());
+            assertEquals(0, metrics.getLastCompactionAfterTokens());
+        }
+    }
+
+    // ===================================================================
+    // Change listeners (live UI surfacing)
+    // ===================================================================
+
+    @Nested
+    class ChangeListeners {
+
+        @Test
+        void recordTokenUsage_firesListener() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.recordTokenUsage(100, 50, 10, 5);
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void recordCompaction_firesListener() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.recordCompaction(1000, 500);
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void recordAssistantTurn_firesListener() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.recordAssistantTurn("response", 100);
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void manualFireChange_notifiesListeners() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.fireChange();
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void listenerException_doesNotBreakOtherListeners() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> { throw new RuntimeException("ui blew up"); });
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.recordTokenUsage(100, 50, 0, 0);
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void nullListener_ignored() {
+            assertDoesNotThrow(() -> metrics.addChangeListener(null));
+        }
+    }
+
+    // ===================================================================
+    // Judge metrics binding
+    // ===================================================================
+
+    @Nested
+    class JudgeMetricsBinding {
+
+        @Test
+        void noJudgeMetrics_emptyJudgeSummary() {
+            assertTrue(metrics.judgeTokenSummary().isEmpty());
+            assertEquals(0, metrics.getTotalJudgeCallCount());
+        }
+
+        @Test
+        void boundJudgeMetrics_aggregateCallsAndTokens() {
+            ChatSessionMetrics judge = new ChatSessionMetrics("judge-1");
+            judge.recordJudgeCall();
+            judge.recordTokenUsage(1000, 200, 0, 0);
+            metrics.setJudgeMetrics(judge);
+
+            assertEquals(1, metrics.getTotalJudgeCallCount());
+            String summary = metrics.judgeTokenSummary();
+            assertTrue(summary.contains("1 call"), summary);
+            assertTrue(summary.contains("1,200"), summary); // judge total tokens
+        }
+
+        @Test
+        void judgeTokenSummary_emptyUntilJudgeRecordsAnything() {
+            ChatSessionMetrics judge = new ChatSessionMetrics("judge-1");
+            metrics.setJudgeMetrics(judge);
+
+            assertTrue(metrics.judgeTokenSummary().isEmpty());
+        }
+
+        @Test
+        void judgeTokenSummary_fallsBackToEstimates() {
+            ChatSessionMetrics judge = new ChatSessionMetrics("judge-1");
+            judge.recordJudgeCall();
+            judge.recordAssistantTurn("a".repeat(400), 10); // ~100 est tokens
+            metrics.setJudgeMetrics(judge);
+
+            String summary = metrics.judgeTokenSummary();
+            assertTrue(summary.contains("~"), summary);
+        }
+    }
+
+    // ===================================================================
+    // compactTokenSummary()
+    // ===================================================================
+
+    @Nested
+    class CompactTokenSummary {
+
+        @Test
+        void noData_emptySummary() {
+            assertEquals("", metrics.compactTokenSummary());
+        }
+
+        @Test
+        void actualCounts_shownWithArrowsAndSigma() {
+            metrics.recordTokenUsage(1000, 500, 0, 0);
+
+            String summary = metrics.compactTokenSummary();
+            assertTrue(summary.contains("\u21911,000"), summary);
+            assertTrue(summary.contains("\u2193500"), summary);
+            assertTrue(summary.contains("\u03a31,500"), summary);
+            assertFalse(summary.contains("compact"), summary);
+        }
+
+        @Test
+        void compactionCount_included() {
+            metrics.recordCompaction(5000, 2500);
+
+            String summary = metrics.compactTokenSummary();
+            assertTrue(summary.contains("1 compact"), summary);
+        }
+
+        @Test
+        void estimatesUsed_whenNoActualCounts() {
+            metrics.recordUserTurn("a".repeat(400));
+            metrics.recordAssistantTurn("b".repeat(400), 10);
+
+            String summary = metrics.compactTokenSummary();
+            assertTrue(summary.startsWith("~"), summary);
+            assertTrue(summary.contains("est. tokens"), summary);
+        }
     }
 
     // ===================================================================
@@ -657,6 +836,44 @@ class ChatSessionMetricsTest {
             assertEquals(1, json.get("agentic").get("modelSwaps").asInt());
             assertEquals(200, json.get("agentic").get("thinkingTokens").asLong());
             assertEquals(1, json.get("agentic").get("subagentsSpawned").asInt());
+        }
+
+        @Test
+        void compactionDetails_serializedInAgenticSection() {
+            metrics.recordCompaction(50000, 25000);
+            metrics.recordCompaction(30000, 15000);
+
+            ObjectNode json = metrics.toJson(MAPPER);
+            var agentic = json.get("agentic");
+
+            assertEquals(2, agentic.get("compactions").asInt());
+            assertEquals(80000, agentic.get("compactionTokensBefore").asLong());
+            assertEquals(40000, agentic.get("compactionTokensAfter").asLong());
+            assertEquals(40000, agentic.get("tokensSavedByCompaction").asLong());
+            assertEquals(30000, agentic.get("lastCompactionBefore").asLong());
+            assertEquals(15000, agentic.get("lastCompactionAfter").asLong());
+        }
+
+        @Test
+        void judgeMetrics_serializedAsTopLevelSection() {
+            ChatSessionMetrics judge = new ChatSessionMetrics("judge-1");
+            judge.recordJudgeCall();
+            judge.recordTokenUsage(1000, 200, 0, 0);
+            metrics.setJudgeMetrics(judge);
+
+            ObjectNode json = metrics.toJson(MAPPER);
+
+            assertTrue(json.has("judge"));
+            assertEquals(1, json.get("judge").get("judgeCalls").asInt());
+            assertEquals(1000, json.get("judge").get("inputTokens").asLong());
+            assertEquals(200, json.get("judge").get("outputTokens").asLong());
+            assertEquals(1200, json.get("judge").get("totalTokens").asLong());
+        }
+
+        @Test
+        void noJudgeMetrics_judgeSectionOmitted() {
+            ObjectNode json = metrics.toJson(MAPPER);
+            assertFalse(json.has("judge"));
         }
 
         @Test

@@ -673,6 +673,7 @@ public final class HighMemoryToolCallGuard {
         @Override public String compactHint() { return delegate.compactHint(); }
         @Override public JsonNode parameterSchema() { return delegate.parameterSchema(); }
         @Override public String permissionKey() { return delegate.permissionKey(); }
+        @Override public boolean isBackgroundable() { return delegate.isBackgroundable(); }
         @Override public McpToolAnnotations mcpAnnotations() { return delegate.mcpAnnotations(); }
 
         @Override

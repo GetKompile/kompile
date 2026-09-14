@@ -25,6 +25,7 @@ import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -309,6 +310,37 @@ class CliModelCatalogTest {
         // Provider enumeration returns the catalog's models (for dynamic chain building).
         assertTrue(CliModelCatalog.modelsForProvider("opencode").contains("deepseek-v4-flash"));
         assertTrue(CliModelCatalog.modelsForProvider("opencode").contains("kimi-k2.6"));
+    }
+
+    @Test
+    void reasoningOptionsParseFromCatalogShapes() throws Exception {
+        useCatalog("""
+                {
+                  "zai": {"models": {
+                    "glm-4.6": {"limit": {"context": 204800, "output": 131072},
+                                "reasoning": true,
+                                "reasoning_options": [{"type": "toggle"}]},
+                    "glm-5.3": {"limit": {"context": 1000000, "output": 131072},
+                                "reasoning": true,
+                                "reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]},
+                    "glm-quiet": {"limit": {"context": 204800, "output": 131072},
+                                  "reasoning": false},
+                    "glm-weird": {"limit": {"context": 204800, "output": 131072},
+                                  "reasoning_options": [{"type": "holographic"}]}
+                  }}
+                }
+                """);
+
+        assertEquals(List.of("toggle"),
+                CliModelCatalog.lookup("zai", "glm-4.6").orElseThrow().reasoningOptions());
+        assertEquals(List.of("effort", "low", "high", "max"),
+                CliModelCatalog.lookup("zai", "glm-5.3").orElseThrow().reasoningOptions());
+        assertTrue(CliModelCatalog.lookup("zai", "glm-quiet").orElseThrow()
+                .reasoningOptions().isEmpty(),
+                "no reasoning_options node means no thinking metadata");
+        assertTrue(CliModelCatalog.lookup("zai", "glm-weird").orElseThrow()
+                .reasoningOptions().isEmpty(),
+                "unrecognized option types degrade to empty, never invented values");
     }
 
     @Test

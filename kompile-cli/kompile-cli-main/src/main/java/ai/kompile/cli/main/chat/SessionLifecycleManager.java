@@ -352,7 +352,21 @@ public class SessionLifecycleManager {
         // Agentic
         if (sessionMetrics.getCompactionEvents() > 0) {
             body.append("\n").append(renderer.bold("Agentic")).append("\n");
-            body.append("  Compacts:  ").append(sessionMetrics.getCompactionEvents()).append("\n");
+            body.append("  Compacts:  ").append(sessionMetrics.getCompactionEvents());
+            if (sessionMetrics.getTotalTokensBeforeCompaction() > 0) {
+                body.append(" (saved ").append(formatNumber(sessionMetrics.getTotalTokensSavedByCompaction()))
+                    .append(" tokens, last ")
+                    .append(formatNumber(sessionMetrics.getLastCompactionBeforeTokens())).append(" → ")
+                    .append(formatNumber(sessionMetrics.getLastCompactionAfterTokens())).append(")");
+            }
+            body.append("\n");
+        }
+
+        // Judge session
+        String judgeSummary = sessionMetrics.judgeTokenSummary();
+        if (!judgeSummary.isEmpty()) {
+            body.append("\n").append(renderer.bold("Judge")).append("\n");
+            body.append("  ").append(judgeSummary).append("\n");
         }
 
         // RAG

@@ -172,6 +172,24 @@ class CredentialFailureTest {
         assertEquals(CredentialFailure.Reason.FILE_IO, CredentialFailure.classify(file).reason());
     }
 
+    @Test
+    void credentialStoreLockTimeoutsAreTemporaryNotLocalMisconfiguration() {
+        var timeout = new ai.kompile.cli.main.auth.CredentialStore.LockTimeoutException(
+                "Timed out waiting for credential-store file lock");
+        CredentialFailure failure = CredentialFailure.classify(timeout);
+        assertEquals(TEMPORARY, failure.kind());
+        assertEquals(CredentialFailure.Reason.LOCK_TIMEOUT, failure.reason());
+        ChatConfig.AuthenticationException error =
+                new ChatConfig.AuthenticationException("openai-codex", timeout);
+        assertTrue(error.getMessage().contains("reason=LOCK_TIMEOUT"));
+        assertFalse(error.getMessage().contains("kompile auth login"));
+        assertNull(error.getCause());
+        // A lock timeout wrapped by a generic store IOException stays a lock timeout.
+        CredentialFailure wrapped = CredentialFailure.classify(new IOException(SECRET, timeout));
+        assertEquals(TEMPORARY, wrapped.kind());
+        assertEquals(CredentialFailure.Reason.LOCK_TIMEOUT, wrapped.reason());
+    }
+
     private static IOException http(int status, String body) {
         return assertThrows(IOException.class,
                 () -> OAuthSupport.requireSuccess(new OAuthSupport.Response(status, body), "Synthetic refresh"));

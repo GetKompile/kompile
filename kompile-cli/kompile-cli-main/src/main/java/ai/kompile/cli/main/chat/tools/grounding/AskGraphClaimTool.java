@@ -53,7 +53,8 @@ public class AskGraphClaimTool implements CliTool {
     @Override
     public String description() {
         return "Assess a factual claim (subject, predicate, object) against the knowledge base. " +
-                "Fuses five evidence lines of attack — direct connections in the graph, verified " +
+                "Locally uses ask_graph_verify semantics (SUPPORTED/REFUTED/UNKNOWN), without fusion; " +
+                "heuristic code calls are not verified facts. Managed backends fuse five evidence lines of attack — direct connections in the graph, verified " +
                 "facts from logical inference, connecting path scores, link plausibility from " +
                 "embeddings, and learned rules — into a single fused confidence score and a " +
                 "per-signal verdict breakdown. Useful when you need to know not just WHETHER a " +
@@ -71,7 +72,7 @@ public class AskGraphClaimTool implements CliTool {
                 .put("description", "Entity id of the claim subject (e.g. 'alice' or an internal node id).");
         props.putObject("predicate")
                 .put("type", "string")
-                .put("description", "Relation type to check (e.g. 'worksFor', 'isLocatedIn'). Case-insensitive.");
+                .put("description", "Relation type to check (e.g. 'worksFor', 'isLocatedIn'). Locally case-sensitive, matching ask_graph_verify.");
         props.putObject("object")
                 .put("type", "string")
                 .put("description", "Entity id of the claim object (e.g. 'acme_corp').");
@@ -95,7 +96,8 @@ public class AskGraphClaimTool implements CliTool {
     @Override
     public String compactHint() {
         return "Assess a claim: POST /api/kb-grounding/claim {subject, predicate, object, factSheetId?}. " +
-               "Returns verdict (SUPPORTED/REFUTED/UNCERTAIN), fusedScore [0,1], and which evidence " +
+               "Locally returns verification evidence and a null fusedScore, not five-channel fusion. " +
+               "Managed backends return verdict (SUPPORTED/REFUTED/UNCERTAIN), fusedScore [0,1], and which evidence " +
                "lines of attack support or attack it: direct connection (graph edge), verified facts " +
                "(logical inference), connecting paths, link plausibility (embeddings), learned rules. " +
                "Use this when you need BOTH a verdict and a per-signal breakdown explaining WHY.";

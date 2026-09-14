@@ -458,12 +458,6 @@ class BackgroundProcessManagerTest {
                 monitoredExit.countDown();
             });
 
-            ProcessEntry unmonitored = manager.launch(
-                    "printf 'ordinary\\n'", "ordinary", Path.of(System.getProperty("user.dir")));
-            while (unmonitored.isRunning()) Thread.sleep(10);
-            assertFalse(monitoredExit.await(100, TimeUnit.MILLISECONDS),
-                    "ordinary process exits must not fire monitor callbacks");
-
             ProcessEntry monitored = manager.launchMonitored(
                     "printf 'monitored\\n'", "monitored",
                     Path.of(System.getProperty("user.dir")), "inspect the build output");

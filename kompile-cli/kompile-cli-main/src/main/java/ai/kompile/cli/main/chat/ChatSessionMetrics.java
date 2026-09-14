@@ -27,6 +27,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -78,8 +79,16 @@ public class ChatSessionMetrics {
 
     // Agentic context tracking
     private final AtomicInteger compactionEvents = new AtomicInteger(0);
-    private long tokensBeforeCompaction = 0;
-    private long tokensAfterCompaction = 0;
+    private final AtomicLong totalTokensBeforeCompaction = new AtomicLong(0);
+    private final AtomicLong totalTokensAfterCompaction = new AtomicLong(0);
+    private volatile long lastCompactionBeforeTokens = 0;
+    private volatile long lastCompactionAfterTokens = 0;
+
+    // Judge session metrics (bound by the owning REPL; null when no judge runs)
+    private volatile ChatSessionMetrics judgeMetrics;
+
+    // Change listeners — cheap callbacks that queue UI redraws when metrics move.
+    private final transient List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
     // RAG tracking
     private final AtomicInteger ragQueries = new AtomicInteger(0);
@@ -150,6 +159,7 @@ public class ChatSessionMetrics {
     public void recordUserTurn(String message) {
         userTurns.incrementAndGet();
         estimatedInputChars.addAndGet(message.length());
+        fireChange();
     }
 
     public void recordAssistantTurn(String response, long durationMs) {
@@ -164,6 +174,7 @@ public class ChatSessionMetrics {
         }
 
         turnLog.add(new TurnMetric(Instant.now(), "assistant", response.length(), durationMs));
+        fireChange();
     }
 
     public void recordSystemEvent() {
@@ -179,6 +190,45 @@ public class ChatSessionMetrics {
         if (output > 0) outputTokens.addAndGet(output);
         if (cacheRead > 0) cacheReadTokens.addAndGet(cacheRead);
         if (cacheCreation > 0) cacheCreationTokens.addAndGet(cacheCreation);
+        fireChange();
+    }
+
+    // ========================================================================
+    // Change listeners (drive live UI surfaces)
+    // ========================================================================
+
+    /** Register a cheap listener fired whenever token/compaction/turn counters move. */
+    public void addChangeListener(Runnable listener) {
+        if (listener != null) changeListeners.add(listener);
+    }
+
+    /** Manually notify listeners (e.g. after binding judge metrics or outcome state). */
+    public void fireChange() {
+        for (Runnable listener : changeListeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException ignored) {
+                // A UI redraw failure must never break metric recording.
+            }
+        }
+    }
+
+    // ========================================================================
+    // Judge session metrics binding
+    // ========================================================================
+
+    /** Bind the judge session's metrics so aggregate surfaces (top bar, summary) can show it. */
+    public void setJudgeMetrics(ChatSessionMetrics judge) { this.judgeMetrics = judge; }
+    public ChatSessionMetrics getJudgeMetrics() { return judgeMetrics; }
+
+    /** Sum of judge calls from this session and any bound judge session. */
+    public int getTotalJudgeCallCount() {
+        int total = judgeCallCount.get();
+        ChatSessionMetrics judge = judgeMetrics;
+        if (judge != null) {
+            total += judge.getJudgeCallCount();
+        }
+        return total;
     }
 
     public boolean hasActualTokenCounts() {
@@ -206,8 +256,18 @@ public class ChatSessionMetrics {
 
     public void recordCompaction(long tokensBefore, long tokensAfter) {
         compactionEvents.incrementAndGet();
-        tokensBeforeCompaction = tokensBefore;
-        tokensAfterCompaction = tokensAfter;
+        totalTokensBeforeCompaction.addAndGet(Math.max(0, tokensBefore));
+        totalTokensAfterCompaction.addAndGet(Math.max(0, tokensAfter));
+        lastCompactionBeforeTokens = tokensBefore;
+        lastCompactionAfterTokens = tokensAfter;
+        fireChange();
+    }
+
+    public long getLastCompactionBeforeTokens() { return lastCompactionBeforeTokens; }
+    public long getLastCompactionAfterTokens() { return lastCompactionAfterTokens; }
+    public long getTotalTokensBeforeCompaction() { return totalTokensBeforeCompaction.get(); }
+    public long getTotalTokensSavedByCompaction() {
+        return Math.max(0, totalTokensBeforeCompaction.get() - totalTokensAfterCompaction.get());
     }
 
     // ========================================================================
@@ -353,6 +413,50 @@ public class ChatSessionMetrics {
         return Collections.unmodifiableMap(result);
     }
 
+    /**
+     * Compact, provider-neutral one-line token summary for live UI surfaces
+     * (top bar, activity rows, session summary).
+     * Format: {@code ↑in ↓out Σtotal [· N compact]} using actual API counts
+     * when available, otherwise {@code ~N est.} character-based estimates.
+     */
+    public String compactTokenSummary() {
+        StringBuilder sb = new StringBuilder();
+        if (hasActualTokenCounts()) {
+            sb.append('\u2191').append(formatNumber(getInputTokens()))
+              .append(" \u2193").append(formatNumber(getOutputTokens()))
+              .append(" \u03a3").append(formatNumber(getTotalTokens()));
+        } else {
+            long est = getEstimatedInputTokens() + getEstimatedOutputTokens();
+            if (est > 0) {
+                sb.append('~').append(formatNumber(est)).append(" est. tokens");
+            }
+        }
+        int compactions = compactionEvents.get();
+        if (compactions > 0) {
+            if (sb.length() > 0) sb.append(" \u00b7 ");
+            sb.append(compactions).append(" compact");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Compact summary for the bound judge session, empty when no judge metrics
+     * exist or the judge has not recorded any tokens or calls yet.
+     */
+    public String judgeTokenSummary() {
+        ChatSessionMetrics judge = judgeMetrics;
+        if (judge == null) return "";
+        String tokens = judge.compactTokenSummary();
+        int calls = judge.getJudgeCallCount();
+        StringBuilder sb = new StringBuilder();
+        if (calls > 0) sb.append(calls).append(calls == 1 ? " call" : " calls");
+        if (!tokens.isEmpty()) {
+            if (sb.length() > 0) sb.append(" \u00b7 ");
+            sb.append(tokens);
+        }
+        return sb.toString();
+    }
+
     // ========================================================================
     // Formatted output
     // ========================================================================
@@ -447,6 +551,15 @@ public class ChatSessionMetrics {
         // Agentic context
         ObjectNode agentic = mapper.createObjectNode();
         agentic.put("compactions", compactionEvents.get());
+        if (totalTokensBeforeCompaction.get() > 0) {
+            agentic.put("compactionTokensBefore", totalTokensBeforeCompaction.get());
+            agentic.put("compactionTokensAfter", totalTokensAfterCompaction.get());
+            agentic.put("tokensSavedByCompaction", getTotalTokensSavedByCompaction());
+            if (lastCompactionBeforeTokens > 0) {
+                agentic.put("lastCompactionBefore", lastCompactionBeforeTokens);
+                agentic.put("lastCompactionAfter", lastCompactionAfterTokens);
+            }
+        }
         root.set("agentic", agentic);
 
         // RAG
@@ -490,6 +603,17 @@ public class ChatSessionMetrics {
             ObjectNode scores = mapper.createObjectNode();
             getAvgScoreByModel().forEach(scores::put);
             root.set("qualityScores", scores);
+        }
+
+        // Judge session summary (tokens + calls aggregated from the bound judge)
+        ChatSessionMetrics judge = judgeMetrics;
+        if (judge != null) {
+            ObjectNode judgeNode = mapper.createObjectNode();
+            judgeNode.put("judgeCalls", judge.getJudgeCallCount());
+            judgeNode.put("inputTokens", judge.getInputTokens());
+            judgeNode.put("outputTokens", judge.getOutputTokens());
+            judgeNode.put("totalTokens", judge.getTotalTokens());
+            root.set("judge", judgeNode);
         }
 
         // Harness fields in agentic section

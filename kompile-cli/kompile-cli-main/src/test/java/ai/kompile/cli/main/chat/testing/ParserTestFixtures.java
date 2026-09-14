@@ -109,6 +109,27 @@ public final class ParserTestFixtures {
     }
 
     /**
+     * {@code {"type":"result","duration_ms":...,"cost_usd":...,"usage":{...}}}
+     * <p>
+     * Usage mirrors the Claude CLI result event: {@code input_tokens} is inclusive
+     * of cache read/creation tokens (they are subtracted when parsed).
+     */
+    public static String claudeResultEventWithUsage(long durationMs, double cost,
+                                                    long inputTokens, long outputTokens,
+                                                    long cacheRead, long cacheCreation) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "result");
+        node.put("duration_ms", durationMs);
+        node.put("cost_usd", cost);
+        ObjectNode usage = node.putObject("usage");
+        usage.put("input_tokens", inputTokens);
+        usage.put("output_tokens", outputTokens);
+        usage.put("cache_read_input_tokens", cacheRead);
+        usage.put("cache_creation_input_tokens", cacheCreation);
+        return serialize(node);
+    }
+
+    /**
      * {@code {"content_block":{"text":"..."}}}
      * <p>
      * Used for incremental content-block delta events emitted by the Claude
@@ -498,6 +519,27 @@ public final class ParserTestFixtures {
         ObjectNode node = MAPPER.createObjectNode();
         node.put("type", "result");
         node.set("stats", stats);
+        return serialize(node);
+    }
+
+    /**
+     * {@code {"type":"result","stats":{...},"usage":{...}}} — Google-style usage
+     * with {@code prompt_tokens} inclusive of {@code cached_content_token_count}.
+     */
+    public static String geminiResultWithUsage(long durationMs, int toolCalls,
+                                               long promptTokens, long candidatesTokens,
+                                               long cachedTokens) {
+        ObjectNode stats = MAPPER.createObjectNode();
+        stats.put("duration_ms", durationMs);
+        stats.put("tool_calls", toolCalls);
+
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "result");
+        node.set("stats", stats);
+        ObjectNode usage = node.putObject("usage");
+        usage.put("prompt_tokens", promptTokens);
+        usage.put("candidates_tokens", candidatesTokens);
+        usage.putObject("prompt_tokens_details").put("cached_content_token_count", cachedTokens);
         return serialize(node);
     }
 

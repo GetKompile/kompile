@@ -55,6 +55,29 @@ class LiveModelDiscoveryTest {
     }
 
     @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
+    void nativeDiscoverySpawnSeesStdinAtEofNotAnOpenPipe() throws Exception {
+        // The zero-byte sibling regression: discoverNative spawns provider model-list
+        // commands through NativeCliProcess. If the spawn regresses to a default open
+        // stdin pipe, Bun-based CLIs (opencode) block reading it as a prompt source
+        // and discovery silently returns an empty list after its timeout. read -t
+        // distinguishes a live pipe (exit > 128) from EOF (exit 1) in seconds.
+        Process process = ai.kompile.cli.common.util.NativeCliProcess.processBuilder(
+                List.of("/bin/sh", "-c",
+                        "read -t 3 -r _; if [ $? -gt 128 ]; then echo PIPED_OPEN; "
+                                + "else echo EOF_IMMEDIATE; fi"), null)
+                .start();
+        String output;
+        try (java.io.InputStream in = process.getInputStream()) {
+            output = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertTrue(process.waitFor(5, TimeUnit.SECONDS), "process must terminate");
+
+        assertTrue(output.contains("EOF_IMMEDIATE") && !output.contains("PIPED_OPEN"),
+                "model-list spawn must run with closed stdin, got: " + output);
+    }
+
+    @Test
     void installedOpenCodeInventoryUsesItsLiveModelsCommandWhenAvailable() {
         assumeTrue(commandSucceeds("opencode", "--version"),
                 "OpenCode is not installed in this environment");

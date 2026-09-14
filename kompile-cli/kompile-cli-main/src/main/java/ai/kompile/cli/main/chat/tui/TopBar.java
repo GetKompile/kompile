@@ -47,6 +47,8 @@ public class TopBar {
     private volatile boolean planningMode = false;
     private volatile boolean enforcerActive = false;
     private volatile String alert = "";
+    private volatile String tokenSummary = "";
+    private volatile String judgeTokenSummary = "";
     private volatile int terminalWidth = 80;
 
     private final Object drawLock;
@@ -83,6 +85,16 @@ public class TopBar {
 
     public String getAlert() {
         return alert;
+    }
+
+    /** Live token usage summary (from {@code ChatSessionMetrics#compactTokenSummary()}). */
+    public void setTokenSummary(String summary) {
+        this.tokenSummary = summary == null ? "" : summary.strip();
+    }
+
+    /** Judge session summary (calls + tokens); shown next to the token summary. */
+    public void setJudgeTokenSummary(String summary) {
+        this.judgeTokenSummary = summary == null ? "" : summary.strip();
     }
 
     public void setTerminalWidth(int width) {
@@ -172,13 +184,41 @@ public class TopBar {
     }
 
     private String buildAlert(int width) {
-        if (alert.isBlank()) return " ".repeat(Math.max(1, width - 1));
-        String singleLine = AnsiConstants.stripAnsi(alert)
+        if (alert.isBlank() && tokenSummary.isBlank() && judgeTokenSummary.isBlank()) {
+            return " ".repeat(Math.max(1, width - 1));
+        }
+        if (!alert.isBlank()) {
+            return renderAlert(alert, width);
+        }
+        // Idle row 2: live token usage + judge session, right-aligned to stay out
+        // of the way of the logo/agent bar above.
+        String summary = tokenSummary;
+        String judge = judgeTokenSummary;
+        StringBuilder content = new StringBuilder();
+        if (!summary.isEmpty()) {
+            content.append(DIM).append("tokens: ").append(RESET)
+                   .append(CYAN).append(summary).append(RESET);
+        }
+        if (!judge.isEmpty()) {
+            if (content.length() > 0) content.append("   ");
+            content.append(MAGENTA).append("judge: ").append(RESET)
+                   .append(DIM).append(judge).append(RESET);
+        }
+        if (content.length() == 0) {
+            return " ".repeat(Math.max(1, width - 1));
+        }
+        int visible = AnsiConstants.visibleLength(content.toString());
+        int lead = Math.max(1, width - 1 - visible);
+        return " ".repeat(lead) + content;
+    }
+
+    private String renderAlert(String alertText, int width) {
+        String singleLine = AnsiConstants.stripAnsi(alertText)
                 .replace('\r', ' ').replace('\n', ' ').replaceAll("\\s+", " ").strip();
         int available = Math.max(1, width - 5);
         String clipped = singleLine.length() <= available
                 ? singleLine
-                : singleLine.substring(0, Math.max(1, available - 1)) + "…";
-        return YELLOW + BOLD + " ⚠ " + RESET + YELLOW + clipped + RESET;
+                : singleLine.substring(0, Math.max(1, available - 1)) + "\u2026";
+        return YELLOW + BOLD + " \u26a0 " + RESET + YELLOW + clipped + RESET;
     }
 }

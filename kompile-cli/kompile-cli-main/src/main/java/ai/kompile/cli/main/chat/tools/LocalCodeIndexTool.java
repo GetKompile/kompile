@@ -414,6 +414,13 @@ public class LocalCodeIndexTool implements CliTool {
         boolean forceReindex = params.path("force_reindex").asBoolean(false);
 
         BackgroundIndexService service = BackgroundIndexService.getInstance();
+        if (LocalCodeIndexer.isRemoved(projectId)) {
+            BackgroundIndexService.IndexJob active = service.activeJob(projectId);
+            if (active != null && !active.isDone()) {
+                return ToolResult.error("The removed project's old index job is still finishing; retry explicit indexing after it exits.");
+            }
+            LocalCodeKGraphPublisher.prepareExplicitIndex(dirPath, projectId);
+        }
         boolean background = params.path("background").asBoolean(true) && service.enabled();
 
         if (!background) {

@@ -114,7 +114,7 @@ class CompactTurnLifecycleTest {
         ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
         AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
         AtomicBoolean subagentInvocation = field(
-                loop, "blockingSubagentInvocation", AtomicBoolean.class);
+                loop, "backgroundableToolPhase", AtomicBoolean.class);
         BackgroundProcessManager processes = field(
                 repl, "processManager", BackgroundProcessManager.class);
         CountDownLatch ownerStarted = new CountDownLatch(1);

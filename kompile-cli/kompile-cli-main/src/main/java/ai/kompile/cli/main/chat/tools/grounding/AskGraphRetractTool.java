@@ -62,7 +62,8 @@ public class AskGraphRetractTool implements CliTool {
 
     @Override
     public String description() {
-        return "True TMS retraction: physically removes an atom from the knowledge base and " +
+        return "Locally removes exact facts and invalidates learned state; no dependency analysis or automatic cascade, " +
+                "and mode=revise is unsupported. Managed backends provide true TMS retraction: physically removes an atom from the knowledge base and " +
                 "returns which dependent atoms became unsupported or weakened. A background " +
                 "re-reasoning cascade is always triggered. " +
                 "Use mode='retract' (default) for single-atom retraction; " +
@@ -72,7 +73,8 @@ public class AskGraphRetractTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Physically remove an atom from the KB; returns which dependent atoms became unsupported or weakened. " +
+        return "Local stdio removes exact facts only, invalidates learned state, and rejects mode=revise; no dependency analysis or cascade. " +
+                "Managed backends physically remove an atom from the KB; return which dependent atoms became unsupported or weakened. " +
                 "Triggers re-reasoning. Use mode=revise for synchronous propagation. " +
                 "Local stdio retracts from the current folder; factSheetId is an optional remote/legacy override.";
     }
@@ -94,7 +96,8 @@ public class AskGraphRetractTool implements CliTool {
                 .put("description", "Project-local knowledge-base id returned in crawlResult; selects that crawl's graph.");
         props.putObject("mode")
                 .put("type", "string")
-                .put("description", "Retraction mode: 'retract' (default) = retraction + dependency " +
+                .put("description", "Local: 'retract' only, exact-fact removal without dependency analysis or cascade. " +
+                        "Managed retraction mode: 'retract' (default) = retraction + dependency " +
                         "analysis, re-reasoning runs in background; 'revise' = also removes sole-dependent atoms " +
                         "before returning.");
 

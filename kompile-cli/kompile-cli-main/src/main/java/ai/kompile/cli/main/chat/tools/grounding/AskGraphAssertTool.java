@@ -53,7 +53,8 @@ public class AskGraphAssertTool implements CliTool {
     public String description() {
         return "Assert a new fact into the knowledge base from agent output. " +
                 "The fact is attributed to the calling agent session (provenance). " +
-                "Contradiction-checking (TMS) runs synchronously before returning. " +
+                "Locally stores the fact and invalidates learned state, without contradiction-checking or an automatic cascade. " +
+                "On managed backends, contradiction-checking (TMS) runs synchronously before returning. " +
                 "Background re-reasoning cascades asynchronously — the 'stale' meta " +
                 "flag in subsequent verify/query calls will be true until the cascade " +
                 "completes. For optimistic-concurrency: supply expectedVersion from " +

@@ -26,6 +26,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChatCommandRoutingTest {
 
     @Test
+    void liveWebInputAcceptsAdaptersStdinSentinelWithoutConsumingControls() throws Exception {
+        var original = System.in;
+        String initial = "{\"version\":1,\"rawInput\":\"hello\"}";
+        var input = new java.io.ByteArrayInputStream((initial + "\ncontrol-next\n")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            System.setIn(input);
+            ChatCommand command = parse("--web-controls", "--input-format", "web-json",
+                    "--output-format", "stream-json", "-");
+            assertEquals(initial, org.springframework.test.util.ReflectionTestUtils.invokeMethod(command, "resolveHeadlessPrompt"));
+            assertEquals("control-next", ai.kompile.cli.main.chat.exec.WebHarnessControls.readLine(input, 1024));
+        } finally { System.setIn(original); }
+    }
+
+    @Test
     void profilePromptIsSharedByModesButNeverHeadlessWizardOrResume() {
         for (String mode : List.of("standard", "passthrough")) {
             ChatCommand command = parse("--mode", mode);

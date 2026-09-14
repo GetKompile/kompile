@@ -51,7 +51,8 @@ public class AskGraphSynthesizeTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Ask a natural-language question and get ranked grounded answers from the knowledge base. "
+        return "Local mode returns unverified lexical candidates (retrievalScore, recordedConfidence); use ask_graph_verify for facts. "
+                + "Managed backends: ask a natural-language question and get ranked grounded answers from the knowledge base. "
                 + "query = plain English, e.g. 'who leads Acme?' or 'which companies are based in London?'. "
                 + "Returns candidates ranked by likelihood [0,1]; KB-contradicted answers are demoted automatically. "
                 + "expectedType optional — narrow to a specific entity class, e.g. 'person', 'organization', 'place'. "
@@ -63,7 +64,8 @@ public class AskGraphSynthesizeTool implements CliTool {
 
     @Override
     public String description() {
-        return "Synthesize ranked answers to a question from the knowledge base. The configured graph "
+        return "Locally retrieves unverified lexical candidates, not inferred answers. Managed backends "
+                + "synthesize ranked answers to a question from the knowledge base. The configured graph "
                 + "backend supplies retrieval, verification and any available ontology/KGE signals. "
                 + "Optional chatModel.provider/modelId uses native chat to interpret the returned evidence; "
                 + "model answers do not replace engine scores, rankings or verification.";

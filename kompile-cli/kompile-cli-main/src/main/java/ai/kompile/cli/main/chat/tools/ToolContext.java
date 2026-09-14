@@ -48,6 +48,7 @@ public class ToolContext {
     private final Path workingDirectory;
     private volatile AtomicBoolean aborted;
     private volatile BooleanSupplier additionalAbortCheck;
+    private volatile BooleanSupplier selfBackgroundRequest;
     private final ToolRegistry toolRegistry;
     private volatile Consumer<String> outputConsumer;
     private volatile boolean autoApproveAll = false;
@@ -133,6 +134,32 @@ public class ToolContext {
     }
 
     /**
+     * Install the owning turn's backgrounding hook so a tool can detach its own
+     * blocking work (the agent-initiated equivalent of the user's Ctrl+B).
+     * The supplier returns true only when the request was accepted and the
+     * current invocation will be transferred; the caller must then return a
+     * placeholder result without running the work synchronously.
+     */
+    public void linkSelfBackgroundRequest(BooleanSupplier selfBackgroundRequest) {
+        this.selfBackgroundRequest = selfBackgroundRequest;
+    }
+
+    /**
+     * Request that the owning turn detach this tool invocation. Returns false
+     * when no hook is installed (headless tools, subagent child contexts,
+     * legacy callers) or the turn cannot currently be backgrounded — callers
+     * must fall back to synchronous execution.
+     */
+    public boolean requestSelfBackground() {
+        BooleanSupplier supplier = selfBackgroundRequest;
+        try {
+            return supplier != null && supplier.getAsBoolean();
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * Returns the output consumer for streaming progress to the caller, or null if not set.
      */
     public Consumer<String> getOutputConsumer() { return outputConsumer; }
@@ -154,6 +181,7 @@ public class ToolContext {
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
         child.linkAbortSignal(aborted);
         child.linkAbortCheck(additionalAbortCheck);
+        child.linkSelfBackgroundRequest(selfBackgroundRequest);
         child.setAutoApproveAll(autoApproveAll);
         child.setOutputConsumer(outputConsumer);
         child.subagentSupervision = subagentSupervision;

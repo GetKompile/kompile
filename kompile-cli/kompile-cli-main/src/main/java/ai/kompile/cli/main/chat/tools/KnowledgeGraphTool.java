@@ -80,6 +80,12 @@ public class KnowledgeGraphTool implements CliTool {
         String action = params.path("action").asText("").toLowerCase();
         if (action.isEmpty()) return ToolResult.error("action is required");
         try {
+            // Host-native operations run against the configured chat provider, not the
+            // remote graph service; extraction already follows this rule.
+            if (action.equals("list_models") || action.equals("capability_probe")
+                    || action.equals("extract")) {
+                return localBackend.knowledgeGraph(params, context);
+            }
             if (baseUrl == null || baseUrl.isBlank()) return localBackend.knowledgeGraph(params, context);
             if ("extract".equals(action)) return managedHostExtraction(params, context, action);
             return remote(action, params);

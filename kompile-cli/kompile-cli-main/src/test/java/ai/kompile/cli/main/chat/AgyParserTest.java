@@ -141,6 +141,23 @@ class AgyParserTest {
         assertEquals(0, tc.numTurns());
     }
 
+    @Test
+    void resultWithUsage_shouldCarryDisjointTokenCounts() {
+        // prompt_tokens is inclusive of cached_content (Google convention)
+        String line = ParserTestFixtures.geminiResultWithUsage(
+                5000L, 3, 2000L, 500L, 700L);
+        PassthroughEvent event = parser.parseAgyLine(line);
+
+        TurnComplete tc = AgentOutputAssertions.assertThat(event).firstOfType(TurnComplete.class);
+        assertNotNull(tc);
+        // Disjoint normalization: 2000 - 700 = 1300 ordinary prompt tokens
+        assertEquals(1300L, tc.inputTokens());
+        assertEquals(500L, tc.outputTokens());
+        assertEquals(700L, tc.cacheReadTokens());
+        assertEquals(0L, tc.cacheCreationTokens());
+        assertEquals(5000L, tc.durationMs());
+    }
+
     // ===================================================================
     // Edge cases
     // ===================================================================

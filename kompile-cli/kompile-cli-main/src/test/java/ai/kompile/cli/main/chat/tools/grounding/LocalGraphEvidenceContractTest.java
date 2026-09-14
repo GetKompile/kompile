@@ -60,6 +60,95 @@ class LocalGraphEvidenceContractTest {
         return mapper.readTree(result.getOutput());
     }
 
+    @Test void boundedReasoningResolvesNamesFromJournalAndCompactedArchive() throws Exception {
+        save(graph());
+        execute("ask_graph_assert", request().put("atom", "RELATED_TO(Alex, Morgan)").put("value", 1.0));
+        ObjectNode query = request().put("operation", "VERIFY").put("entityId", "Alex").put("targetId", "Morgan");
+        query.putArray("relationTypes").add("RELATED_TO");
+        assertEquals("SUPPORTED", new LocalProjectGraphBackend(mapper).reasoningQuery(query, context())
+                .path("status").asText());
+        ai.kompile.graph.reasoning.unified.UnifiedGraphMutationJournal.compact(
+                root.resolve("data/crawls/fixture/graph.kgraph"));
+        assertEquals("SUPPORTED", new LocalProjectGraphBackend(mapper).reasoningQuery(query, context())
+                .path("status").asText());
+    }
+
+    @Test void boundedReasoningResolvesFqnAndRejectsAmbiguousLabels() throws Exception {
+        UnifiedGraph graph = graph();
+        graph.addEntity(GraphEntity.builder("first").type("CLASS").label("Service")
+                .attribute("fullyQualifiedName", "one.Service").build());
+        graph.addEntity(GraphEntity.builder("second").type("CLASS").label("Service")
+                .attribute("fullyQualifiedName", "two.Service").build());
+        edge(graph, "edge", "first", "b", 1.0);
+        save(graph);
+        ObjectNode query = request().put("operation", "VERIFY").put("entityId", "one.Service").put("targetId", "b");
+        query.putArray("relationTypes").add("CALLS");
+        assertEquals("SUPPORTED", backend.reasoningQuery(query, context()).path("status").asText());
+        query.put("entityId", "Service");
+        assertThrows(IllegalArgumentException.class, () -> backend.reasoningQuery(query, context()));
+    }
+
+    @Test void claimUsesVerificationWithoutInventingFusion() throws Exception {
+        UnifiedGraph graph = graph();
+        graph.addRelation(GraphRelation.builder("ab", "a", "b").type("CALLS").confidence(1.0)
+                .attribute("_kompileProjectionOwner", "local-code-index").build());
+        edge(graph, "bc", "b", "c", 0.4);
+        edge(graph, "cd", "c", "d", 0.0);
+        save(graph);
+        for (String[] pair : new String[][]{{"a", "b"}, {"b", "c"}, {"c", "d"}, {"d", "a"}}) {
+            JsonNode verify = execute("ask_graph_verify", request()
+                    .put("atom", "CALLS(" + pair[0] + ", " + pair[1] + ")"));
+            JsonNode claim = execute("ask_graph_claim", request().put("subject", pair[0])
+                    .put("predicate", "CALLS").put("object", pair[1]));
+            assertEquals(verify.path("verdict"), claim.path("verdict"));
+            assertEquals(verify.path("confidence"), claim.path("confidence"));
+            assertTrue(claim.path("fusedScore").isNull());
+            assertFalse(claim.path("fusionPerformed").asBoolean());
+        }
+    }
+
+    @Test void unsupportedAnalysisDoesNotCreateFakeRunsOrReadAGraph() throws Exception {
+        for (String action : Set.of("scenarios", "create_run", "runs", "run", "step", "play",
+                "pause", "promote", "delete", "reason", "ground_truth")) {
+            ToolResult result = backend.executeOfflineTool("graph_simulate", request().put("action", action)
+                    .put("scenario_id", "fixture").put("run_id", "fake"), context());
+            assertTrue(result.isError(), action);
+            assertTrue(result.getOutput().contains("not supported"), result.getOutput());
+        }
+        for (String action : Set.of("discover", "discover_all", "entailment", "conformance",
+                "declare", "bpmn", "suggestions", "suggestion")) {
+            ToolResult result = backend.executeOfflineTool("process_mining", request().put("action", action), context());
+            assertTrue(result.isError(), action);
+            assertTrue(result.getOutput().contains("not supported"), result.getOutput());
+        }
+        assertFalse(Files.exists(root.resolve("data")));
+    }
+
+    @Test void reviseRejectsBeforeMutationAndRetractionDisclosesLimits() throws Exception {
+        UnifiedGraph graph = graph();
+        edge(graph, "ab", "a", "b", 1.0);
+        save(graph);
+        ToolResult revision = backend.executeOfflineTool("ask_graph_retract", request()
+                .put("atomKey", "CALLS(a, b)").put("mode", "revise"), context());
+        assertTrue(revision.isError());
+        assertEquals("SUPPORTED", execute("ask_graph_verify", request().put("atom", "CALLS(a, b)"))
+                .path("verdict").asText());
+        JsonNode retraction = execute("ask_graph_retract", request().put("atomKey", "CALLS(a, b)"));
+        assertTrue(retraction.path("dependentAtomsUnsupported").isNull());
+        assertFalse(retraction.path("dependencyAnalysisPerformed").asBoolean());
+        assertFalse(retraction.path("cascadeTriggered").asBoolean());
+    }
+
+    @Test void synthesisIdentifiesCandidatesAsUnverifiedRetrieval() throws Exception {
+        save(graph());
+        JsonNode result = execute("ask_graph_synthesize", request().put("query", "CLASS"));
+        assertEquals("RETRIEVAL_ONLY", result.path("status").asText());
+        assertFalse(result.path("verificationPerformed").asBoolean());
+        assertFalse(result.path("answers").isEmpty());
+        assertTrue(result.path("answers").get(0).has("retrievalScore"));
+        assertFalse(result.path("answers").get(0).has("likelihood"));
+    }
+
     @Test void verifyHonorsThresholdAndDoesNotClaimHistoricalSupport() throws Exception {
         UnifiedGraph graph = graph();
         edge(graph, "ab", "a", "b", 0.4);

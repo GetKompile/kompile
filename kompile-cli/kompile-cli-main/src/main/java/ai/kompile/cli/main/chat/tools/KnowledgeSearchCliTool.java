@@ -42,12 +42,16 @@ public class KnowledgeSearchCliTool implements CliTool {
     private final LocalProjectCrawlBackend localBackend;
 
     public KnowledgeSearchCliTool(String baseUrl, ObjectMapper objectMapper) {
+        this(baseUrl, objectMapper, new LocalProjectCrawlBackend(objectMapper),
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
+    }
+
+    KnowledgeSearchCliTool(String baseUrl, ObjectMapper objectMapper,
+                           LocalProjectCrawlBackend localBackend, HttpClient httpClient) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
-        this.localBackend = new LocalProjectCrawlBackend(objectMapper);
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        this.localBackend = localBackend;
+        this.httpClient = httpClient;
     }
 
     @Override
@@ -107,7 +111,7 @@ public class KnowledgeSearchCliTool implements CliTool {
         }
 
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return localBackend.search(query, knowledgeBase, limit, context);
+            return localBackend.search(query, topic, knowledgeBase, limit, context);
         }
 
         try {
@@ -140,7 +144,8 @@ public class KnowledgeSearchCliTool implements CliTool {
             return formatResponse(query, result);
 
         } catch (java.net.ConnectException e) {
-            return localBackend.search(query, knowledgeBase, limit, context);
+            return ToolResult.error("The explicitly configured remote knowledge service is unavailable at "
+                    + baseUrl + ". Remove --url to search the current folder; no local fallback was performed.");
         } catch (Exception e) {
             return ToolResult.error("Knowledge search error: " + e.getMessage());
         }

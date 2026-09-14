@@ -461,12 +461,17 @@ final class StandardChatActivityPanel {
         synchronized (auxiliaryReplLock) {
             for (Map.Entry<String, AuxiliaryChatRepl> entry : auxiliaryRepls.entrySet()) {
                 AuxiliaryChatRepl repl = entry.getValue();
+                String summary = repl.status() + " · " + repl.describe();
+                String tokens = repl.tokenSummary();
+                if (!tokens.isEmpty()) {
+                    summary += " · " + tokens;
+                }
                 rawItems.add(new ActivityItem(
                         entry.getKey(),
                         repl.id(),
                         ActivityKind.REPL,
                         repl.displayName(),
-                        repl.status() + " · " + repl.describe(),
+                        summary,
                         repl.isRunning(),
                         false,
                         repl.startedAt(),

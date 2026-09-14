@@ -44,6 +44,33 @@ public final class SkillPathPolicy {
         return file;
     }
 
+    /** Resolve a directory package with the same confinement rules as a flat skill. */
+    public static Path resolvePackage(Path skillsRoot, String name) throws IOException {
+        Path flat = resolve(skillsRoot, name);
+        Path directory = flat.getParent().resolve(name);
+        Path entry = directory.resolve("SKILL.md");
+        if (Files.isSymbolicLink(directory) || Files.isSymbolicLink(entry)) {
+            throw new IOException("Skill package must not contain a symbolic-link entry: " + entry);
+        }
+        return entry;
+    }
+
+    /** Return the unambiguous existing entry point, or null. Never choose between duplicates. */
+    public static Path existing(Path skillsRoot, String name) throws IOException {
+        Path flat = resolve(skillsRoot, name);
+        Path packaged = resolvePackage(skillsRoot, name);
+        boolean hasFlat = Files.exists(flat, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        boolean hasPackage = Files.exists(packaged, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        if (hasFlat && hasPackage) {
+            throw new IOException("Ambiguous skill: both " + flat + " and " + packaged + " exist");
+        }
+        Path entry = hasFlat ? flat : hasPackage ? packaged : null;
+        if (entry != null && !Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Skill entry must be a regular file: " + entry);
+        }
+        return entry;
+    }
+
     /**
      * True when a provider/project-controlled component is a symbolic link.
      * The trusted workspace/home prefix may itself be symlinked.

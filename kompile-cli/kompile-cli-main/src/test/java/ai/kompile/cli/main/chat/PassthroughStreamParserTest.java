@@ -217,6 +217,49 @@ class PassthroughStreamParserTest {
             assertInstanceOf(TextChunk.class, events.get(0));
             assertInstanceOf(InteractiveQuestion.class, events.get(1));
         }
+
+        @Test
+        void assistantThinkingBlock_producesThinkingChunk() {
+            String line = "{\"type\":\"assistant\",\"message\":{\"content\":[" +
+                    "{\"type\":\"thinking\",\"thinking\":\"Need to check the config first.\"}," +
+                    "{\"type\":\"text\",\"text\":\"Let me look.\"}]}}";
+            List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+            assertEquals(2, events.size());
+            ThinkingChunk thinking = (ThinkingChunk) events.get(0);
+            assertEquals("Need to check the config first.", thinking.text());
+            TextChunk text = (TextChunk) events.get(1);
+            assertEquals("Let me look.", text.text());
+        }
+
+        @Test
+        void streamEventThinkingDelta_producesThinkingChunk() {
+            String line = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\"," +
+                    "\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"partial thought\"}}}";
+            List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+            assertEquals(1, events.size());
+            ThinkingChunk thinking = (ThinkingChunk) events.get(0);
+            assertEquals("partial thought", thinking.text());
+        }
+
+        @Test
+        void streamEventTextDelta_producesTextChunk() {
+            String line = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\"," +
+                    "\"delta\":{\"type\":\"text_delta\",\"text\":\"streamed words\"}}}";
+            List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+
+            assertEquals(1, events.size());
+            TextChunk text = (TextChunk) events.get(0);
+            assertEquals("streamed words", text.text());
+        }
+
+        @Test
+        void streamEventNonDeltaEvent_ignored() {
+            String line = "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"}}";
+            List<PassthroughEvent> events = parser.parseClaudeLineMulti(line);
+            assertTrue(events.isEmpty());
+        }
     }
 
     // ===================================================================
@@ -473,6 +516,21 @@ class PassthroughStreamParserTest {
         void knownNoise_yoloMode_suppressed() {
             assertNull(parser.parseGeminiLine("YOLO mode is enabled for this session"));
         }
+
+        @Test
+        void geminiThoughtEvent_producesThinkingChunk() {
+            String line = "{\"type\":\"thought\",\"thought\":\"Considering the tradeoffs here.\"}";
+            PassthroughEvent event = parser.parseGeminiLine(line);
+
+            assertInstanceOf(ThinkingChunk.class, event);
+            assertEquals("Considering the tradeoffs here.", ((ThinkingChunk) event).text());
+        }
+
+        @Test
+        void geminiThoughtEvent_emptyThought_returnsNull() {
+            PassthroughEvent event = parser.parseGeminiLine("{\"type\":\"thought\"}");
+            assertNull(event);
+        }
     }
 
     // ===================================================================
@@ -546,6 +604,24 @@ class PassthroughStreamParserTest {
 
             assertInstanceOf(TextChunk.class, event);
             assertTrue(((TextChunk) event).text().contains("Context window exceeded"));
+        }
+
+        @Test
+        void codexReasoningDelta_producesThinkingChunk() {
+            PassthroughEvent event = parser.parseCodexLine(
+                    "{\"type\":\"agent_reasoning_delta\",\"delta\":\"weighing options\"}");
+
+            assertInstanceOf(ThinkingChunk.class, event);
+            assertEquals("weighing options", ((ThinkingChunk) event).text());
+        }
+
+        @Test
+        void codexResponsesReasoningSummaryDelta_producesThinkingChunk() {
+            PassthroughEvent event = parser.parseCodexLine(
+                    "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"checking auth\"}");
+
+            assertInstanceOf(ThinkingChunk.class, event);
+            assertEquals("checking auth", ((ThinkingChunk) event).text());
         }
 
         @Test
@@ -784,6 +860,16 @@ class PassthroughStreamParserTest {
         @Test
         void unknownType_skipped() {
             assertNull(parser.parsePiLine("{\"type\":\"ping\"}"));
+        }
+
+        @Test
+        void piThinkingDelta_producesThinkingChunk() {
+            String line = "{\"type\":\"message_update\",\"assistantMessageEvent\":{" +
+                    "\"type\":\"thinking_delta\",\"delta\":\"plan the steps\"}}";
+            PassthroughEvent event = parser.parsePiLine(line);
+
+            assertInstanceOf(ThinkingChunk.class, event);
+            assertEquals("plan the steps", ((ThinkingChunk) event).text());
         }
 
         @Test

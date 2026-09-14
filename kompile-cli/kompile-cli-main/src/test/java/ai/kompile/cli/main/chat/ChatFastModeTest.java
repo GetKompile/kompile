@@ -41,27 +41,34 @@ class ChatFastModeTest {
             client.addToHistory("user", "keep this context");
             int historySize = client.getHistorySize();
 
+            // The REPL owns a session-isolated copy (bound to the session config file);
+            // /fast toggles and persists THAT object, not the caller's original.
+            ChatConfig session = repl.getChatConfig();
+
             assertTrue(router.handleSlashCommand("/fast status"));
-            assertFalse(config.isFastMode());
+            assertFalse(session.isFastMode());
             assertTrue(router.handleSlashCommand("/fast"));
-            assertTrue(config.isFastMode());
-            assertTrue(ChatConfig.loadProject(project).isFastMode());
+            assertTrue(session.isFastMode());
+            assertTrue(ChatConfig.loadSession("fast-mode-command-test").isFastMode(),
+                    "the toggle must persist to the session config file");
+            assertTrue(config != session && !config.isFastMode(),
+                    "the caller's config must stay isolated from the session copy");
             assertTrue(router.handleSlashCommand("/fast on"));
-            assertTrue(config.isFastMode(), "on must be idempotent, not a second toggle");
+            assertTrue(session.isFastMode(), "on must be idempotent, not a second toggle");
             assertTrue(router.handleSlashCommand("/fast invalid"));
-            assertTrue(config.isFastMode(), "invalid commands must not change the preference");
+            assertTrue(session.isFastMode(), "invalid commands must not change the preference");
             assertTrue(router.handleSlashCommand("/fast off"));
-            assertFalse(config.isFastMode());
-            assertFalse(ChatConfig.loadProject(project).isFastMode());
-            assertEquals("high", config.getThinking());
+            assertFalse(session.isFastMode());
+            assertFalse(ChatConfig.loadSession("fast-mode-command-test").isFastMode());
+            assertEquals("high", session.getThinking());
             assertEquals(historySize, client.getHistorySize());
 
-            config.setProvider("custom");
+            session.setProvider("custom");
             assertTrue(router.handleSlashCommand("/fast on"));
-            assertFalse(config.isFastMode());
-            config.setFastMode(true); // Simulate an old setting after eligibility changed.
+            assertFalse(session.isFastMode());
+            session.setFastMode(true); // Simulate an old setting after eligibility changed.
             assertTrue(router.handleSlashCommand("/fast off"));
-            assertFalse(config.isFastMode());
+            assertFalse(session.isFastMode());
         } finally {
             if (repl != null) {
                 field(repl, "processManager", BackgroundProcessManager.class).close();

@@ -176,6 +176,23 @@ public final class ChatHarnessCapabilities {
         root.put("ragEnabled", report.ragEnabled());
         root.put("workflowEnabled", report.workflowEnabled());
         root.put("attachmentsSupported", report.attachmentsSupported());
+        ObjectNode controls = root.putObject("webControls");
+        controls.put("supported", true);
+        controls.put("optIn", true);
+        controls.put("option", "--web-controls");
+        controls.put("version", 1);
+        controls.put("inputFormat", "web-json");
+        controls.put("outputFormat", "stream-json");
+        controls.put("framing", "initial web-json line followed by control JSONL");
+        controls.put("maxFrameBytes", WebHarnessControls.MAX_FRAME_BYTES);
+        controls.put("maxInitialBytes", WebHarnessControls.MAX_INITIAL_BYTES);
+        controls.put("maxQueuedInputs", 64);
+        controls.put("maxRequests", 4096);
+        controls.put("eofBehavior", "drain accepted input and background completions, then result");
+        controls.putArray("actions").add("background").add("process_list").add("process_output")
+                .add("process_kill").add("input").add("subagent_input").add("subagent_cancel");
+        controls.putArray("events").add("control").add("activity").add("turn_started").add("turn_complete");
+        controls.put("backgroundEligibility", "blocking subagent invocation only; acknowledged after detach");
         ObjectNode webInput = root.putObject("webInput");
         webInput.put("format", WebChatInput.FORMAT);
         webInput.put("version", WebChatInput.VERSION);

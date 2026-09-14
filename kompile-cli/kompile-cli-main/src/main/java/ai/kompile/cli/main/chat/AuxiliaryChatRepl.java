@@ -88,6 +88,8 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
     private final StringBuilder transcript = new StringBuilder();
     private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    /** Own token accounting for this supervisory session; null for observer REPLs. */
+    private final ChatSessionMetrics metrics;
 
     private volatile String status;
     private volatile String failureReason = "";
@@ -101,6 +103,19 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
             StructuredTurnRunner structuredVerdictRunner,
             AutoCloseable ownedResource,
             String initialStatus) {
+        this(kind, backendDescription, turnRunner, verdictRunner, structuredVerdictRunner,
+                ownedResource, initialStatus, null);
+    }
+
+    private AuxiliaryChatRepl(
+            Kind kind,
+            String backendDescription,
+            TurnRunner turnRunner,
+            TurnRunner verdictRunner,
+            StructuredTurnRunner structuredVerdictRunner,
+            AutoCloseable ownedResource,
+            String initialStatus,
+            ChatSessionMetrics metrics) {
         this.kind = kind;
         this.backendDescription = backendDescription == null || backendDescription.isBlank()
                 ? "in-process" : backendDescription;
@@ -108,6 +123,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         this.verdictRunner = verdictRunner;
         this.structuredVerdictRunner = structuredVerdictRunner;
         this.ownedResource = ownedResource;
+        this.metrics = metrics;
         this.status = initialStatus;
         append("[" + kind.id() + "] " + initialStatus + " · " + this.backendDescription + "\n");
     }
@@ -129,6 +145,29 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         // ResilientJudgeBackend enforces a hard deadline by interrupting its worker.
         // Make that interruption visible to every direct-provider stream parser.
         client.setCancellationCheck(() -> Thread.currentThread().isInterrupted());
+        // Track this supervisory session's own token usage so judge cost is visible.
+        ChatSessionMetrics replMetrics = new ChatSessionMetrics(kind.id() + "-" + java.util.UUID.randomUUID());
+        replMetrics.setAgentName(kind.displayName());
+        replMetrics.setProvider(provider);
+        replMetrics.setModel(model);
+        client.setProviderActivityListener(new DirectLlmClient.ProviderActivityListener() {
+            @Override
+            public void onToolStart(String callId, String name, String input) {
+                // Judge clients do not run tools; nothing to track.
+            }
+
+            @Override
+            public void onToolComplete(String callId, String name, String output,
+                                       int exitCode, boolean error) {
+                // Judge clients do not run tools; nothing to track.
+            }
+
+            @Override
+            public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
+                replMetrics.recordTokenUsage(input, output, cacheRead, cacheCreation);
+                replMetrics.recordJudgeCall();
+            }
+        });
         AtomicReference<String> activeRoute = new AtomicReference<>(String.valueOf(provider) + "/" + String.valueOf(model));
         TurnRunner conversationalRunner = (userPrompt, systemPrompt, stream) -> {
             String providerNow = client.getConfiguredProvider();
@@ -181,13 +220,35 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
                 };
         return new AuxiliaryChatRepl(
                 kind, description, conversationalRunner, statelessVerdictRunner,
-                structuredRunner, client, "ready");
+                structuredRunner, client, "ready", replMetrics);
     }
 
     /** Create an in-process transcript/control REPL without an LLM backend. */
     public static AuxiliaryChatRepl observer(Kind kind, String status) {
         String initial = status == null || status.isBlank() ? "idle" : status;
         return new AuxiliaryChatRepl(kind, "in-process", null, null, null, null, initial);
+    }
+
+    /** This supervisory session's own token metrics; empty (no counts) for observer REPLs. */
+    public ChatSessionMetrics metrics() {
+        return metrics;
+    }
+
+    /**
+     * One-line summary of this session's judge activity, empty until the judge
+     * has run at least one model call. Format: {@code N calls · ↑in ↓out Σtotal}.
+     */
+    public String tokenSummary() {
+        if (metrics == null) return "";
+        String tokens = metrics.compactTokenSummary();
+        int calls = metrics.getJudgeCallCount();
+        StringBuilder sb = new StringBuilder();
+        if (calls > 0) sb.append(calls).append(calls == 1 ? " call" : " calls");
+        if (!tokens.isEmpty()) {
+            if (sb.length() > 0) sb.append(" \u00b7 ");
+            sb.append(tokens);
+        }
+        return sb.toString();
     }
 
     /** Test seam for a streaming in-process turn runner. */

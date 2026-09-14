@@ -227,9 +227,21 @@ public final class HeadlessAgentRunner {
     /** Run outcome. {@code exitCode} 0 = ok, 124 = timed out, 1 = error. */
     public record Result(int exitCode, String text, String sessionId) {}
 
+    private final WebHarnessControls webControls;
+
+    public HeadlessAgentRunner() { this(null); }
+
+    public HeadlessAgentRunner(WebHarnessControls webControls) { this.webControls = webControls; }
+
     public Result run(Options opts) {
         synchronized (STDOUT_REDIRECT_LOCK) {
-            return runWithRedirect(opts);
+            try {
+                if (webControls != null && (opts.webInput() == null || opts.outputMode() != OutputMode.JSON))
+                    throw new IllegalArgumentException("Live controls require web-json input and JSON output");
+                return runWithRedirect(opts);
+            } finally {
+                if (webControls != null) webControls.close();
+            }
         }
     }
 
@@ -400,6 +412,10 @@ public final class HeadlessAgentRunner {
         // ── Build the agent harness (auto-approve: non-interactive) ─────────
         PermissionService permissionService = new PermissionService();
         permissionService.setAutoApproveAll(opts.autoApproveTools());
+        if (webControls != null) {
+            // The JSONL reader owns stdin. ASK must fail closed, never consume a control frame.
+            permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
+        }
         BackgroundProcessManager processManager = new BackgroundProcessManager(
                 opts.sessionId(), opts.workingDirectory());
         CoordinationStateManager coordinationManager = new CoordinationStateManager(
@@ -425,6 +441,9 @@ public final class HeadlessAgentRunner {
         ReminderManager reminderManager = new ReminderManager(
                 mapper, opts.sessionId(), opts.workingDirectory());
         loop.setReminderManager(reminderManager);
+        if (toolRegistry.getSubagentRunner() != null) {
+            toolRegistry.getSubagentRunner().setReminderManager(reminderManager);
+        }
         if (serverMode) {
             loop.setAssistantDeltaListener(textSink);
             loop.setServerEventListener(new AgenticChatLoop.ServerEventListener() {
@@ -528,7 +547,31 @@ public final class HeadlessAgentRunner {
             // scope so even a required-server startup failure closes headless resources.
             mcpBundleTools = McpBundleToolLoader.load(
                     opts.workingDirectory(), toolRegistry, opts.sessionId());
-            response = opts.timeoutMs() > 0
+            final String turnAgent = localAgent;
+            var processTool = webControls == null ? null
+                    : new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager, coordinationManager);
+            var controlContext = webControls == null ? null
+                    : new ai.kompile.cli.main.chat.tools.ToolContext(opts.sessionId(),
+                    agentRegistry.get(turnAgent), permissionService, opts.workingDirectory(), toolRegistry);
+            AtomicBoolean firstLiveTurn = new AtomicBoolean(true);
+            response = webControls != null
+                    ? webControls.run(loop, processManager, opts.sessionId(), outboundPrompt, opts.timeoutMs(), cancel,
+                    prompt -> {
+                        String outbound = reminderManager.decorateUserTurn(prompt);
+                        if (!firstLiveTurn.getAndSet(false)) history.logUserMessage(outbound);
+                        long turnStart = System.currentTimeMillis();
+                        String text = loop.chat(outbound, opts.sessionId(), turnAgent, serverAgent, effectiveRag);
+                        long turnDuration = System.currentTimeMillis() - turnStart;
+                        history.logAgentResponse(effectiveAgent, text, turnDuration);
+                        metrics.recordAssistantTurn(text, turnDuration);
+                        return text;
+                    },
+                    (action, id) -> {
+                        controlContext.checkPermission("process", "Web process " + action + ": " + id);
+                        return processTool.execute(mapper.createObjectNode().put("action", action)
+                                .put("process_id", id).put("tail_lines", 50), controlContext);
+                    }, events::publish, toolRegistry.getSubagentRunner())
+                    : opts.timeoutMs() > 0
                     ? runWithTimeout(loop, opts, outboundPrompt,
                     localAgent, serverAgent, effectiveRag, cancel)
                     : loop.chat(outboundPrompt, opts.sessionId(), localAgent,
@@ -559,11 +602,11 @@ public final class HeadlessAgentRunner {
         long durationMs = System.currentTimeMillis() - start;
 
         try {
-            history.logAgentResponse(effectiveAgent, response, durationMs);
+            if (webControls == null) history.logAgentResponse(effectiveAgent, response, durationMs);
         } catch (Exception ignored) {
             // best-effort
         }
-        metrics.recordAssistantTurn(response, durationMs);
+        if (webControls == null) metrics.recordAssistantTurn(response, durationMs);
         metrics.saveToFile(
                 KompileHome.homeDirectory().toPath().resolve("conversations")
                         .resolve(opts.sessionId() + ".metrics.json"), mapper);
@@ -730,6 +773,12 @@ public final class HeadlessAgentRunner {
             if (sink != null) {
                 sink.accept(chunk);
             }
+        }
+
+        /** Reasoning is display-only chrome — never part of the captured answer. */
+        @Override
+        protected void printThinkingChunk(String chunk) {
+            // Intentionally dropped: headless sinks receive answer text only.
         }
 
         String captured() {

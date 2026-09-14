@@ -107,6 +107,10 @@ public class ChatCommand implements Callable<Integer> {
     private String inputFormat;
     private WebChatInput webInput;
 
+    @CommandLine.Option(names = "--web-controls", description = "Read live JSONL controls after the initial web-json line; requires --output-format stream-json.")
+    private boolean webControls;
+    private ai.kompile.cli.main.chat.exec.WebHarnessControls liveControls;
+
     @CommandLine.Option(names = {"--json"}, defaultValue = "false",
             description = "Emit an ordered streaming JSONL event stream to stdout.")
     private boolean jsonOutput;
@@ -382,7 +386,7 @@ public class ChatCommand implements Callable<Integer> {
                         if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
                         // Commands do not require model config, attachments, transcripts,
                         // or a mutable runtime; the runner owns the ordered event lifecycle.
-                        return new HeadlessAgentRunner().run(new HeadlessAgentRunner.Options(
+                        return new HeadlessAgentRunner(liveControls).run(new HeadlessAgentRunner.Options(
                                 "", sessionId, false, null, null, headlessMode,
                                 effectiveWorkingDirectory(), 0, outputLastMessage)
                                 .withWebInput(webInput)).exitCode();
@@ -662,7 +666,7 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     boolean isHeadlessRequested() {
-        return inputFormat != null || jsonOutput || blankToNull(outputFormat) != null
+        return webControls || inputFormat != null || jsonOutput || blankToNull(outputFormat) != null
                 || headlessPrompt != null
                 || (promptParts != null && !promptParts.isEmpty());
     }
@@ -690,6 +694,15 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     private String resolveHeadlessPrompt() throws IOException {
+        if (webControls) {
+            if (!WebChatInput.FORMAT.equals(inputFormat) || !"stream-json".equals(outputFormat))
+                throw new IllegalArgumentException("--web-controls requires --input-format web-json and --output-format stream-json");
+            if (headlessPrompt != null || (promptParts != null && !promptParts.isEmpty()
+                    && !promptParts.equals(java.util.List.of("-"))))
+                throw new IllegalArgumentException("--web-controls reads its initial JSON line from stdin, not PROMPT");
+            liveControls = new ai.kompile.cli.main.chat.exec.WebHarnessControls(System.in);
+            return liveControls.readInitialInput();
+        }
         if (blankToNull(headlessPrompt) != null && promptParts != null && !promptParts.isEmpty()) {
             throw new IllegalArgumentException(
                     "Use either --prompt or positional PROMPT arguments, not both.");
@@ -897,10 +910,11 @@ public class ChatCommand implements Callable<Integer> {
                 resolvedRole,
                 dangerouslySkipPermissions,
                 attachments, webInput);
-        return new HeadlessAgentRunner().run(options).exitCode();
+        return new HeadlessAgentRunner(liveControls).run(options).exitCode();
     }
 
     private int headlessError(String message, int exitCode) {
+        if (liveControls != null) liveControls.close();
         if (jsonOutput || "json".equalsIgnoreCase(outputFormat)
                 || "jsonl".equalsIgnoreCase(outputFormat)
                 || "stream-json".equalsIgnoreCase(outputFormat)) {

@@ -116,7 +116,12 @@ public class TaskTool implements CliTool {
                 .append("CLI agent selection and per-CLI role defaults belong to the MCP task tool, not this direct chat tool.\n")
                 .append("In standard chat, Ctrl+B backgrounds a running subagent invocation. ")
                 .append("Select its activity row and press Delete to stop it, or open it and type ")
-                .append("to continue its retained conversation.");
+                .append("to continue its retained conversation.\n")
+                .append("Set background=true to detach this invocation yourself (the agent-initiated ")
+                .append("equivalent of Ctrl+B): the parent continues immediately with a placeholder and ")
+                .append("the final result is delivered as a system message on completion, so several ")
+                .append("independent delegations can run concurrently. Silently falls back to synchronous ")
+                .append("execution when the running harness cannot background (headless runs, subagent child contexts).");
         return desc.toString();
     }
 
@@ -163,12 +168,19 @@ public class TaskTool implements CliTool {
         props.putObject("role").put("type", "string").put("description",
                 "Named role's prompt and tool policy, instead of agent_type. Does not apply CLI-agent launch defaults. "
                         + "Recursive delegation remains disabled.");
+        props.putObject("background").put("type", "boolean").put("description",
+                "Detach this subagent invocation so the parent continues immediately; the final result "
+                        + "arrives as a system message on completion. Ignored with a synchronous fallback "
+                        + "when the harness cannot background. Default: false.");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
 
     @Override
     public String permissionKey() { return "task"; }
+
+    @Override
+    public boolean isBackgroundable() { return true; }
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
@@ -222,11 +234,26 @@ public class TaskTool implements CliTool {
 
         context.emitOutput("  [Spawning " + agentType + " subagent: " + desc + "]");
 
+        boolean requestedBackground = params.path("background").asBoolean(false);
+        boolean backgrounded = false;
+        if (requestedBackground) {
+            backgrounded = context.requestSelfBackground();
+            if (backgrounded) {
+                context.emitOutput("  [Subagent '" + desc + "' detached to background; "
+                        + "its final result will be delivered as a system message]");
+            }
+            // If the request was rejected (no harness hook, headless run, child
+            // context, or the transfer could not be accepted) fall through to the
+            // normal synchronous path instead of failing the delegation.
+        }
+
         try {
             String result = subagentRunner.runSubagent(subagentConfig, prompt, context);
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("agentType", agentType);
             metadata.put("description", desc);
+            metadata.put("backgroundRequested", requestedBackground);
+            metadata.put("backgrounded", backgrounded);
             if (subagentConfig.getModelOverride() != null) metadata.put("model", subagentConfig.getModelOverride());
             if (subagentConfig.getThinkingOverride() != null) metadata.put("thinking", subagentConfig.getThinkingOverride());
             if (!roleName.isEmpty()) metadata.put("role", roleName);

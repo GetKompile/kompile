@@ -82,6 +82,10 @@ public class BackgroundTaskManager {
             this.status = status;
             if (status == BackgroundTaskStatus.BACKGROUNDED) {
                 this.backgrounded = true;
+            } else if (status == BackgroundTaskStatus.RUNNING) {
+                // A transfer rejected because the worker already finished is
+                // still a foreground result, not a second completion wakeup.
+                this.backgrounded = false;
             }
             if (status == BackgroundTaskStatus.COMPLETED || status == BackgroundTaskStatus.FAILED) {
                 this.completedAt = Instant.now();

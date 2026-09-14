@@ -674,16 +674,8 @@ class ChatMessageHandlerQueueTest {
             loop.setPerformanceHarness(null);
             accepting.set(true);
 
-            BackgroundProcessManager.ProcessEntry unmonitored = processes.launch(
-                    "printf 'ignored\\n'", "bridge-unmonitored",
+            processes.launch("printf 'done\\n'", "bridge-completed",
                     Path.of(System.getProperty("user.dir")));
-            assertTrue(awaitCondition(() -> !unmonitored.isRunning(), 5, TimeUnit.SECONDS));
-            Thread.sleep(200);
-            assertEquals(0, requestCount.get(),
-                    "unmonitored process exits must not wake the agent");
-
-            processes.launchMonitored("printf 'done\\n'", "bridge-completed",
-                    Path.of(System.getProperty("user.dir")), "inspect completed output");
             assertTrue(completedWake.await(5, TimeUnit.SECONDS),
                     "a successful process exit must wake an idle parent agent");
             assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS));
@@ -754,7 +746,7 @@ class ChatMessageHandlerQueueTest {
         ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
         AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
         AtomicBoolean subagentInvocation = field(
-                loop, "blockingSubagentInvocation", AtomicBoolean.class);
+                loop, "backgroundableToolPhase", AtomicBoolean.class);
         BackgroundTaskManager tasks = field(
                 repl, "backgroundTaskManager", BackgroundTaskManager.class);
         BackgroundProcessManager processes = field(
@@ -861,7 +853,7 @@ class ChatMessageHandlerQueueTest {
         ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
         AgenticChatLoop loop = field(repl, "agenticLoop", AgenticChatLoop.class);
         AtomicBoolean subagentInvocation = field(
-                loop, "blockingSubagentInvocation", AtomicBoolean.class);
+                loop, "backgroundableToolPhase", AtomicBoolean.class);
         MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
         MessageQueueManager queueManager = field(repl, "queueManager", MessageQueueManager.class);
         BackgroundProcessManager processes = field(
@@ -1021,6 +1013,91 @@ class ChatMessageHandlerQueueTest {
     }
 
     @Test
+    void processExitReleasesBlockedSubagentAndItsCompletionWakesParentWithoutCtrlB() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch processWake = new CountDownLatch(1);
+        CountDownLatch childWake = new CountDownLatch(1);
+        AtomicInteger childCompletions = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String delta;
+            if (request.contains("[System background task completion]")) {
+                childCompletions.incrementAndGet();
+                childWake.countDown();
+                delta = "{\"content\":\"child result reviewed\"}";
+            } else if (request.contains("[System process completion]")) {
+                processWake.countDown();
+                delta = "{\"content\":\"process result reviewed\"}";
+            } else if (request.contains("call-auto-background")) {
+                delta = "{\"content\":\"waiting for completion\"}";
+            } else {
+                delta = "{\"tool_calls\":[{\"index\":0,\"id\":\"call-auto-background\","
+                        + "\"function\":{\"name\":\"task\",\"arguments\":\"{}\"}}]}";
+            }
+            byte[] body = ("data: {\"choices\":[{\"delta\":" + delta
+                    + ",\"finish_reason\":null}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        ChatRepl repl = new ChatRepl(null, null, "auto-background-" + System.nanoTime(),
+                false, "default", false, new ChatConfig("custom", null, "auto-background-test",
+                "http://127.0.0.1:" + server.getAddress().getPort()));
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+        BackgroundProcessManager processes = field(repl, "processManager", BackgroundProcessManager.class);
+        field(repl, "toolRegistry", ToolRegistry.class).register(new CliTool() {
+            public String id() { return "task"; }
+            public boolean isBackgroundable() { return true; }
+            public String description() { return "blocked child fixture"; }
+            public JsonNode parameterSchema() { return JsonUtils.standardMapper().createObjectNode().put("type", "object"); }
+            public String permissionKey() { return "read"; }
+            public ToolResult execute(JsonNode params, ToolContext context) {
+                started.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) return ToolResult.error("fixture timed out");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ToolResult.error("child interrupted");
+                }
+                return ToolResult.success("completed child result");
+            }
+        });
+        try {
+            field(repl, "acceptingProcessWakeups", AtomicBoolean.class).set(true);
+            field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+            if (repl.isAutoDequeueEnabled()) {
+                field(repl, "queueManager", MessageQueueManager.class).toggleAutoDequeue();
+            }
+            queue.clear();
+            handler.handleChatMessage("run child fixture");
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            handler.handleChatMessage("keep this user input queued");
+            processes.launch(new String[]{"sh", "-c", "exit 0"}, "automatic process exit", null);
+            assertTrue(processWake.await(5, TimeUnit.SECONDS), "completion must release parent without Ctrl+B");
+            assertEquals(1L, release.getCount(), "the child must still be running");
+            assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS));
+            assertEquals(1, queue.size(), "automatic detachment must not bypass manual queue policy");
+            release.countDown();
+            assertTrue(childWake.await(5, TimeUnit.SECONDS), "child completion must automatically wake parent");
+            assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 5, TimeUnit.SECONDS));
+            assertEquals(1, childCompletions.get(), "child completion must not cause recursive turns");
+            assertEquals(1, queue.size());
+        } finally {
+            release.countDown();
+            handler.shutdown();
+            queue.clear();
+            processes.close();
+            server.stop(0);
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
     void backgroundTaskReleasesParentBeforeWorkerCompletes() throws Exception {
         verifyBackgroundTaskReleasesParent(false);
     }
@@ -1076,6 +1153,7 @@ class ChatMessageHandlerQueueTest {
         BackgroundProcessManager processes = field(repl, "processManager", BackgroundProcessManager.class);
         tools.register(new CliTool() {
             public String id() { return "task"; }
+            public boolean isBackgroundable() { return true; }
             public String description() { return "blocked background fixture"; }
             public JsonNode parameterSchema() { return JsonUtils.standardMapper().createObjectNode().put("type", "object"); }
             public String permissionKey() { return "read"; }

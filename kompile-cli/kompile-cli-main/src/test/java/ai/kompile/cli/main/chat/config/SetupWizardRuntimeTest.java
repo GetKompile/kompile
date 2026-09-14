@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
+import ai.kompile.core.llm.CliModelCatalog;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,26 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SetupWizardRuntimeTest {
+
+    private static final String THINKING_CATALOG_PROP = "kompile.cli.modelCatalogPaths";
+
+    /** Point the catalog at an absent file so documented-fallback assertions are deterministic. */
+    private static void isolateThinkingCatalog() throws Exception {
+        System.setProperty(THINKING_CATALOG_PROP,
+                java.nio.file.Path.of("nonexistent-thinking-catalog.json").toAbsolutePath().toString());
+        java.lang.reflect.Method invalidate = CliModelCatalog.class
+                .getDeclaredMethod("invalidateCacheForTest");
+        invalidate.setAccessible(true);
+        invalidate.invoke(null);
+    }
+
+    private static void restoreThinkingCatalog() throws Exception {
+        System.clearProperty(THINKING_CATALOG_PROP);
+        java.lang.reflect.Method invalidate = CliModelCatalog.class
+                .getDeclaredMethod("invalidateCacheForTest");
+        invalidate.setAccessible(true);
+        invalidate.invoke(null);
+    }
 
     private static org.jline.reader.LineReader reader(String... answers) {
         ArrayDeque<String> input = new ArrayDeque<>(List.of(answers));
@@ -198,16 +219,25 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
-    void thinkingControlsPreferLiveMetadataAndUseDocumentedProviderFallbacks() {
-        assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
-                SetupWizard.thinkingOptions("openai-codex", "gpt-5.6-terra")
-                        .stream().map(SetupWizard.ThinkingOption::value).toList());
-        assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
-                SetupWizard.thinkingOptions("github-copilot", "gpt-5.6-sol")
-                        .stream().map(SetupWizard.ThinkingOption::value).toList());
-        assertEquals(List.of("", "low", "medium", "high"),
-                SetupWizard.thinkingOptions("openai", "o3")
-                        .stream().map(SetupWizard.ThinkingOption::value).toList());
+    void thinkingControlsPreferLiveMetadataAndUseDocumentedProviderFallbacks() throws Exception {
+        // These assertions verify the documented-fallback ladder (and live-vs-fallback
+        // precedence); the catalog stage must be isolated so the real models.dev file
+        // on this machine cannot shadow the fallback being tested.
+        try {
+            isolateThinkingCatalog();
+
+            assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
+                    SetupWizard.thinkingOptions("openai-codex", "gpt-5.6-terra")
+                            .stream().map(SetupWizard.ThinkingOption::value).toList());
+            assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
+                    SetupWizard.thinkingOptions("github-copilot", "gpt-5.6-sol")
+                            .stream().map(SetupWizard.ThinkingOption::value).toList());
+            assertEquals(List.of("", "low", "medium", "high"),
+                    SetupWizard.thinkingOptions("openai", "o3")
+                            .stream().map(SetupWizard.ThinkingOption::value).toList());
+        } finally {
+            restoreThinkingCatalog();
+        }
         assertTrue(SetupWizard.thinkingOptions("unknown-provider", "unknown-model").isEmpty());
 
         ModelDiscovery.Result liveVariants = ModelDiscovery.Result.success(

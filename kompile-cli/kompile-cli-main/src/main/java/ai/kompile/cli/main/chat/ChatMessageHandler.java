@@ -145,6 +145,10 @@ public class ChatMessageHandler {
                 .map(MessageQueue.QueuedMessage::getContent)
                 .collect(Collectors.toList()));
         this.agenticLoop.setQueuedMessageSupplier(this::claimPendingInputAtBoundary);
+        // Agent-initiated backgrounding delegates to the same transfer path as
+        // Ctrl+B; the subagent-invocation eligibility gate inside requestBackground
+        // remains the single source of truth for what may be detached.
+        this.agenticLoop.setSelfBackgroundRequest(this::requestBackground);
     }
 
     // ========================================================================
@@ -211,6 +215,10 @@ public class ChatMessageHandler {
             if (repl.isLlmBusy()) {
                 if (mandatoryExternalMessages.contains(normalized)) return;
                 mandatoryExternalMessages.add(normalized);
+                // A blocking child is not a model boundary. Release the parent
+                // automatically so completion events do not require Ctrl+B.
+                // Keep ordinary queued user input subject to its own policy.
+                requestBackground(false);
                 ChatCompleter.showNotice(renderer.cyan(hasBackgroundedActiveTurn()
                         ? "  ↻ Completion event handed to background task"
                         : "  ↻ Completion event queued for agent"));
@@ -530,13 +538,17 @@ public class ChatMessageHandler {
     }
 
     /**
-     * Detach the blocking subagent worker without cancelling it. The parent
-     * resumes with an explicit pending tool result, so queued and fresh input
-     * reach a model boundary without waiting for that worker to finish.
+     * Detach the blocking backgroundable tool worker without cancelling it. The
+     * parent resumes with an explicit pending tool result, so queued and fresh
+     * input reach a model boundary without waiting for that worker to finish.
      */
     public boolean requestBackground() {
+        return requestBackground(true);
+    }
+
+    private boolean requestBackground(boolean releaseUserInput) {
         synchronized (turnDispatchLock) {
-            if (!turnActive.get()) {
+            if (!turnActive.get() || cancelSignal.get()) {
                 return false;
             }
             BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.requestBackground();
@@ -544,11 +556,20 @@ public class ChatMessageHandler {
                 return false;
             }
 
-            int released = releaseQueuedInputToBackgroundTurn();
+            Runnable rejected = () -> {
+                synchronized (turnDispatchLock) {
+                    if (backgroundTaskManager.getCurrentTask() == task) {
+                        task.setStatus(BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.RUNNING);
+                        backgroundTaskManager.clearBackgroundRequest();
+                        agenticLoop.clearBackgroundOutput();
+                    }
+                }
+            };
+            int released = releaseUserInput ? releaseQueuedInputToBackgroundTurn() : 0;
             task.appendOutput("\n[Backgrounded; input is processed directly at the next safe boundary]"
                     + (released > 0 ? " [released " + released + " queued message(s)]" : "")
                     + "\n");
-            agenticLoop.backgroundActiveTurn(task::appendOutput, () -> {
+            boolean accepted = agenticLoop.requestBackgroundActiveTurn(task::appendOutput, () -> {
                 synchronized (turnDispatchLock) {
                     backgroundTaskManager.detachTask(task);
                     backgroundTaskManager.startTask("Parent conversation (background task continues)");
@@ -558,7 +579,12 @@ public class ChatMessageHandler {
                 task.appendOutput("\n" + result.getOutput() + "\n");
                 backgroundTaskManager.completeDetachedTask(task, result.isError()
                         ? new IllegalStateException(result.getOutput()) : null);
-            });
+            }, rejected);
+            if (!accepted) {
+                rejected.run();
+                return false;
+            }
+            agenticLoop.backgroundActiveTurn(task::appendOutput);
             repl.stopGeneratingSpinner();
             ChatCompleter.setActivity(null);
             repl.requestStatusRedraw();

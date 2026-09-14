@@ -611,8 +611,23 @@ class KnowledgeGraphToolTest {
         java.util.concurrent.atomic.AtomicReference<JsonNode> captured = new java.util.concurrent.atomic.AtomicReference<>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
-            captured.set(om.readTree(exchange.getRequestBody()));
-            String payload = "{\"entities\":[{\"id\":\"acme\",\"name\":\"Acme\",\"type\":\"ORGANIZATION\"}],\"relations\":[]}";
+            JsonNode request = om.readTree(exchange.getRequestBody());
+            captured.set(request);
+            // Protocol-faithful stub: a strict json_schema request is the corpus
+            // schema pre-pass and must be answered with the requested tool's
+            // argument shape; the required property names in the wire schema
+            // (nodeTypes vs relationshipTypes) identify the pass. Plain text
+            // requests get the extraction graph.
+            JsonNode required = request.path("response_format").path("json_schema")
+                    .path("schema").path("required");
+            String payload;
+            if (!required.isArray() || required.isEmpty()) {
+                payload = "{\"entities\":[{\"id\":\"acme\",\"name\":\"Acme\",\"type\":\"ORGANIZATION\"}],\"relations\":[]}";
+            } else if ("relationshipTypes".equals(required.get(0).asText())) {
+                payload = "{\"relationshipTypes\":[]}";
+            } else {
+                payload = "{\"nodeTypes\":[]}";
+            }
             ObjectNode event = om.createObjectNode();
             event.putArray("choices").addObject().putObject("delta").put("content", payload);
             byte[] bytes = ("data: " + event + "\n\ndata: [DONE]\n\n")
