@@ -228,6 +228,20 @@ public final class ModelContextWindows {
     }
 
     /**
+     * Provider-scoped vision lookup: the provider's models.dev metadata wins, then
+     * known native provider aliases, then the static fallback table. Unknown models
+     * return empty rather than a guess, so callers can warn without blocking.
+     */
+    public static Optional<Boolean> supportsVision(String provider, String model) {
+        if (model == null || model.isBlank()) return Optional.empty();
+        Optional<Boolean> dynamic = lookupProviderMetadata(provider, model)
+                .map(CliModelCatalog.ModelSpec::supportsVision);
+        if (dynamic.isPresent()) return dynamic;
+        ModelSpec spec = resolve(model);
+        return spec != null ? Optional.of(spec.supportsVision) : Optional.empty();
+    }
+
+    /**
      * Resolve a model name to its spec.
      * Tries exact match first, then prefix matching for versioned model IDs.
      * Also strips OpenRouter-style provider prefixes (e.g. "anthropic/claude-sonnet-4").

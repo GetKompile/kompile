@@ -55,6 +55,22 @@ public interface StructuredChatLanguageModel {
         }
     }
 
+    /**
+     * One inline image riding with a chat turn (base64 already encoded; no data: prefix).
+     * consumed by adapters that own an image-to-embeddings path (local VLM serving);
+     * remote providers map it to their own image content block.
+     */
+    record InlineImage(String mimeType, String base64Data, String detail) {
+        public InlineImage {
+            mimeType = mimeType == null || mimeType.isBlank() ? "image/png" : mimeType.trim();
+            base64Data = base64Data == null ? "" : base64Data;
+            detail = detail == null ? "" : detail.trim();
+            if (base64Data.isBlank()) {
+                throw new IllegalArgumentException("inline image base64Data must not be blank");
+            }
+        }
+    }
+
     record Tool(String name, String description, Map<String, Object> parameters) {
         public Tool {
             name = name == null ? "" : name.trim();
@@ -81,6 +97,10 @@ public interface StructuredChatLanguageModel {
         }
     }
 
+    /**
+     * One structured chat request. {@code images} are inline images for the latest
+     * user turn; they default to empty and all legacy constructors stay intact.
+     */
     record Request(
             List<Message> messages,
             List<Tool> tools,
@@ -88,7 +108,8 @@ public interface StructuredChatLanguageModel {
             ToolDefinitionFormat toolDefinitionFormat,
             ToolCallFormat toolCallFormat,
             ToolChoice toolChoice,
-            Map<String, Object> templateArguments) {
+            Map<String, Object> templateArguments,
+            List<InlineImage> images) {
         public Request {
             messages = messages == null ? List.of() : List.copyOf(messages);
             tools = tools == null ? List.of() : List.copyOf(tools);
@@ -102,6 +123,19 @@ public interface StructuredChatLanguageModel {
             templateArguments = templateArguments == null
                     ? Map.of()
                     : Map.copyOf(new LinkedHashMap<>(templateArguments));
+            images = images == null ? List.of() : List.copyOf(images);
+        }
+
+        public Request(
+                List<Message> messages,
+                List<Tool> tools,
+                boolean addGenerationPrompt,
+                ToolDefinitionFormat toolDefinitionFormat,
+                ToolCallFormat toolCallFormat,
+                ToolChoice toolChoice,
+                Map<String, Object> templateArguments) {
+            this(messages, tools, addGenerationPrompt, toolDefinitionFormat,
+                    toolCallFormat, toolChoice, templateArguments, List.of());
         }
 
         public Request(
@@ -128,6 +162,11 @@ public interface StructuredChatLanguageModel {
         public Request(List<Message> messages, List<Tool> tools) {
             this(messages, tools, true, ToolDefinitionFormat.FLAT,
                     ToolCallFormat.MODEL, ToolChoice.AUTO, Map.of());
+        }
+
+        /** True when this turn carries inline images. */
+        public boolean hasImages() {
+            return !images.isEmpty();
         }
     }
 

@@ -171,6 +171,15 @@ public class LlmGenerateController {
                 body.put("correlation", request.get("correlation"));
             }
             return ResponseEntity.ok(body);
+        } catch (UnsupportedOperationException imageUnsupported) {
+            // Structured capability error so CLI/web clients react to a real vision
+            // boundary instead of a generic parse failure.
+            Map<String, Object> body = structuredErrorResponse(imageUnsupported.getMessage());
+            body.put("errorKind", "IMAGE_INPUT_UNSUPPORTED");
+            if (request.get("correlation") != null) {
+                body.put("correlation", request.get("correlation"));
+            }
+            return ResponseEntity.ok(body);
         } catch (Exception e) {
             logger.error("POST /api/llm/chat: structured generation failed for model '{}'",
                     languageModel.getLoadedModelId(), e);

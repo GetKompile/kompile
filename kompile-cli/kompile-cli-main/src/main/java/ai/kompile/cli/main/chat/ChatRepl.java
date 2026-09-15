@@ -36,6 +36,7 @@ import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
 import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -69,6 +70,7 @@ import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.utils.AnsiConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.Binding;
+import org.jline.reader.History;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.Reference;
@@ -79,6 +81,7 @@ import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
+import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.utils.InfoCmp;
 import org.jline.utils.NonBlockingReader;
 
@@ -627,6 +630,95 @@ public class ChatRepl implements AutoCloseable {
     public CrawlRunStore getCrawlRunStore() { return crawlRunStore; }
     public boolean isForceAgentic() { return forceAgentic; }
     ReminderManager getReminderManager() { return reminderManager; }
+
+    // ── Clipboard image paste (Claude Code-style [Image #N] chips) ────────────
+
+    /**
+     * Attach a staged clipboard image for the next message. Called from the
+     * {@code image-paste} widget. Duplicate staged paths are ignored so an
+     * accidental double keypress does not send the image twice.
+     *
+     * @return true when the image joined {@code pendingAttachments}
+     */
+    boolean attachImageFromClipboard(Path stagedImage) {
+        try {
+            if (stagedImage == null || !Files.isRegularFile(stagedImage)) {
+                return false;
+            }
+            long size = Files.size(stagedImage);
+            if (size > ChatAttachmentLoader.MAX_ATTACHMENT_BYTES) {
+                ChatCompleter.showNotice(renderer.yellow(
+                        "  ⚠ Clipboard image exceeds the 5 MiB per-attachment limit (" +
+                                ChatCommandRouter.formatFileSize(stagedImage) + ")"));
+                return false;
+            }
+            for (ChatRepl.PendingAttachment existing : pendingAttachments) {
+                if (existing.path().equals(stagedImage)) {
+                    return true; // already queued; just rewrite the chip
+                }
+            }
+            pendingAttachments.add(new ChatRepl.PendingAttachment(
+                    stagedImage, "image/png", true));
+            statusBar.requestRedraw();
+            return true;
+        } catch (Exception e) {
+            ChatCompleter.showNotice(renderer.yellow(
+                    "  ⚠ Could not attach clipboard image: " + e.getMessage()));
+            return false;
+        }
+    }
+
+    /**
+     * Claude Code-style bare-path handling: absolute image paths typed or pasted in the
+     * prompt are attached as real image inputs and replaced with {@code [Image #N]} chips.
+     * Only existing regular files with a known image extension qualify; relative paths and
+     * quoted paths inside sentences are left untouched.
+     */
+    String autoAttachImagePaths(String message) {
+        if (message == null || message.isBlank()) return message;
+        java.util.regex.Matcher matcher = IMAGE_PATH_PATTERN.matcher(message);
+        if (!matcher.find()) return message;
+        matcher.reset();
+        StringBuilder rewritten = new StringBuilder();
+        int last = 0;
+        while (matcher.find()) {
+            String raw = matcher.group(1);
+            Path candidate = Path.of(raw);
+            if (!candidate.isAbsolute()) {
+                matcher.appendReplacement(rewritten,
+                        java.util.regex.Matcher.quoteReplacement(matcher.group(0)));
+                continue;
+            }
+            String mime = ChatCommandRouter.detectImageMimeType(candidate);
+            if (mime == null || !Files.isRegularFile(candidate)) {
+                matcher.appendReplacement(rewritten,
+                        java.util.regex.Matcher.quoteReplacement(matcher.group(0)));
+                continue;
+            }
+            try {
+                if (Files.size(candidate) > ChatAttachmentLoader.MAX_ATTACHMENT_BYTES) {
+                    matcher.appendReplacement(rewritten,
+                            java.util.regex.Matcher.quoteReplacement(matcher.group(0)));
+                    continue;
+                }
+                pendingAttachments.add(new ChatRepl.PendingAttachment(candidate, mime, true));
+                String chip = "[Image #" + pendingAttachments.size() + "]";
+                matcher.appendReplacement(rewritten,
+                        java.util.regex.Matcher.quoteReplacement(chip));
+                ChatCompleter.showNotice(renderer.dim("  ✓ Attached " + candidate.getFileName()));
+            } catch (Exception e) {
+                matcher.appendReplacement(rewritten,
+                        java.util.regex.Matcher.quoteReplacement(matcher.group(0)));
+            }
+            last = matcher.end();
+        }
+        matcher.appendTail(rewritten);
+        return rewritten.toString();
+    }
+
+    private static final java.util.regex.Pattern IMAGE_PATH_PATTERN = java.util.regex.Pattern.compile(
+            "(?<![\\w/])(/[A-Za-z0-9._~/-]+\\.(?:png|jpe?g|gif|webp|bmp))\\b",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
 
     void requestNewConversation() {
         newConversationRequested = true;
@@ -1387,6 +1479,9 @@ public class ChatRepl implements AutoCloseable {
 
         // Auto-trigger slash command completion as the user types
         ChatCompleter.enableAutoTrigger(reader);
+        // Claude Code-style image paste: staged clipboard images join pendingAttachments
+        // and the input buffer gets an [Image #N] chip at the cursor.
+        ChatCompleter.setImageChipAttacher(this::attachImageFromClipboard);
 
         // Standard chat owns the activity rows below the input. Down enters them,
         // Up navigates back toward the prompt, Enter opens the selected activity,
@@ -2613,9 +2708,12 @@ public class ChatRepl implements AutoCloseable {
             StandardChatActivityPanel activityPanel, KompileTui tui,
             Consumer<String> queueEditStarted) {
         reader.getWidgets().put(STANDARD_CHAT_UP_WIDGET, () -> {
-            // The picker borrows this reader, not the chat queue/activity actions.
+            // The modal picker owns the screen: Up scrolls its content (same
+            // direction and magnitude as the mouse wheel) instead of recalling
+            // history — the picker prompt itself takes typed numbers/names.
             if (tui != null && tui.isTemporaryWindowActive()) {
-                reader.callWidget(LineReader.UP_LINE_OR_HISTORY);
+                tui.scrollContent(3);
+                redisplayWithContent(reader, tui);
                 return true;
             }
             String text = reader.getBuffer().toString();
@@ -2713,7 +2811,9 @@ public class ChatRepl implements AutoCloseable {
         Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
         reader.getWidgets().put(STANDARD_CHAT_DOWN_WIDGET, () -> {
             if (tui != null && tui.isTemporaryWindowActive()) {
-                return originalDown == null || originalDown.apply();
+                tui.scrollContent(-3);
+                redisplayWithContent(reader, tui);
+                return true;
             }
             String text = reader.getBuffer().toString();
             if (text.isBlank() && activityPanel.selectNext()) {
@@ -3383,6 +3483,11 @@ public class ChatRepl implements AutoCloseable {
         String selectedVendor = SetupWizard.vendorForProvider(selectedProvider);
         String selectedModel = chatConfig.getModel();
         boolean committed = false;
+        // Menu answers (option numbers, model ids, credential prompts) are
+        // transient picker input: swap in a throwaway history so they never
+        // persist to the chat history file or surface in Up/Down recall at the
+        // chat prompt afterwards.
+        PickerHistoryState pickerHistory = beginPickerHistory(reader);
         try {
             modelPickerActive = true;
             ChatCompleter.setTemporaryWindowActive(true);
@@ -3671,6 +3776,7 @@ public class ChatRepl implements AutoCloseable {
             // Escape/EOF closes only the temporary picker. The active turn's cancel
             // widget has already requested interruption when Escape was pressed.
         } finally {
+            endPickerHistory(reader, pickerHistory);
             modelPickerActive = false;
             ChatCompleter.setTemporaryWindowActive(false);
             tui.closeTemporaryWindow();
@@ -3681,6 +3787,60 @@ public class ChatRepl implements AutoCloseable {
                         + renderer.cyan(activeModelDisplayName())
                         + renderer.dim(" (applies to the next message)"));
             }
+        }
+    }
+
+    /**
+     * Swap the reader's history for a throwaway in-memory one for the duration of
+     * a modal picker. The chat reader shares one persisted history file with the
+     * normal prompt, so menu answers typed inside the picker ("1", model ids,
+     * credential answers) would otherwise be written into that file and then
+     * surface at the chat prompt via Up/Down recall.
+     *
+     * @return the reader's previous history, to be restored by {@link #endPickerHistory}
+     */
+    /**
+     * Detached state captured when a modal picker borrows the shared reader.
+     * Package-visible so the key-binding test can exercise the swap directly.
+     */
+    record PickerHistoryState(History history, Object historyFile) {}
+
+    static PickerHistoryState beginPickerHistory(LineReader reader) {
+        if (!(reader instanceof LineReaderImpl impl)) return null;
+        PickerHistoryState previous =
+                new PickerHistoryState(impl.getHistory(), reader.getVariable(LineReader.HISTORY_FILE));
+        try {
+            DefaultHistory throwaway = new DefaultHistory();
+            impl.setHistory(throwaway);
+            // Detach persistence as well: DefaultHistory.save()/load() no-op
+            // without a history-file variable, so the throwaway (with
+            // HISTORY_INCREMENTAL set) can never write the shared file even if
+            // something re-enters add() while the picker prompt is live.
+            reader.setVariable(LineReader.HISTORY_FILE, null);
+            throwaway.attach(reader);
+        } catch (RuntimeException ignored) {
+            restorePickerHistory(reader, previous);
+            return null;
+        }
+        return previous;
+    }
+
+    /** Restore the chat history after a modal picker closes (null-tolerant). */
+    static void endPickerHistory(LineReader reader, PickerHistoryState previous) {
+        if (previous == null) return;
+        restorePickerHistory(reader, previous);
+    }
+
+    private static void restorePickerHistory(LineReader reader, PickerHistoryState previous) {
+        if (!(reader instanceof LineReaderImpl impl)) return;
+        try {
+            impl.setHistory(previous.history());
+            reader.setVariable(LineReader.HISTORY_FILE, previous.historyFile());
+            // attach() short-circuits when already bound to this reader, so this
+            // restores the recall cursor without re-reading the history file.
+            previous.history().attach(reader);
+        } catch (RuntimeException ignored) {
+            // Restoring history must never mask the picker's own outcome.
         }
     }
 

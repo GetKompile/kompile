@@ -74,6 +74,14 @@
             <artifactId>samediff-llm</artifactId>
         </dependency>
 
+        <!-- Vision-language companion load for staged VLM model sets (vision_encoder.sdz +
+             decoder.sdz beside the staged text model). Image chat turns route through the
+             VLM pipeline; text turns keep the standard GenerationPipeline. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-vlm</artifactId>
+        </dependency>
+
         <!-- Serving reads the source GGUF's own chat template when the staged tokenizer has none.
              samediff-llm keeps nd4j-ggml test-scoped to stay decoupled from the file format, so it
              is declared here rather than relied on transitively. -->

@@ -103,6 +103,39 @@ class ChatCompleterTest {
         assertEquals(Set.of("refresh", "show", "hide", "status"), values);
     }
 
+    // ========================================================================
+    // Image paste chip numbering ([Image #N] derivation)
+    // ========================================================================
+
+    @Test
+    void imageChipNumberingDerivesFromBufferChips(@TempDir Path tempDir) throws IOException {
+        // insertImageChip is package-private and needs a LineReaderImpl buffer;
+        // exercise the numbering path via a LineReader built like the REPL's.
+        org.jline.terminal.Terminal terminal = org.jline.terminal.TerminalBuilder
+                .builder().dumb(true).build();
+        org.jline.reader.impl.LineReaderImpl reader =
+                (org.jline.reader.impl.LineReaderImpl) org.jline.reader.LineReaderBuilder.builder()
+                        .terminal(terminal)
+                        .completer(completer)
+                        .build();
+        List<Path> attached = new ArrayList<>();
+        ChatCompleter.setImageChipAttacher(attached::add);
+        try {
+            Path first = Files.createFile(tempDir.resolve("one.png"));
+            Path second = Files.createFile(tempDir.resolve("two.png"));
+            reader.getBuffer().write("[Image #1]");
+            assertEquals(2, ChatCompleter.insertImageChip(reader, second),
+                    "chip number must continue after existing chips");
+            reader.getBuffer().clear();
+            assertEquals(1, ChatCompleter.insertImageChip(reader, first),
+                    "empty buffer numbers the first chip #1");
+            assertEquals(2, attached.size(), "attacher must receive both staged images");
+        } finally {
+            ChatCompleter.setImageChipAttacher(null);
+            try { terminal.close(); } catch (Exception ignored) { }
+        }
+    }
+
     @Test
     void resourcesCompletesPlainTextControls() {
         Set<String> values = candidateValues(complete("/resources "));

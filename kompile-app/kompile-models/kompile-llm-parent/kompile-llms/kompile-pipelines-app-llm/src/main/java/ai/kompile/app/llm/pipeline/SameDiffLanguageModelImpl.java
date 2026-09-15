@@ -40,6 +40,9 @@ import org.eclipse.deeplearning4j.llm.data.LLMModelDownloader.ModelFamily;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
+import org.eclipse.deeplearning4j.vlm.model.VisionLanguageModel;
+import org.eclipse.deeplearning4j.vlm.preprocessing.VLMImagePreprocessor;
+import org.eclipse.deeplearning4j.llm.generation.SameDiffMemoryUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -56,8 +59,15 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import jakarta.annotation.PreDestroy;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
+import java.nio.file.DirectoryStream;
+import java.util.Base64;
+import javax.imageio.ImageIO;
 import org.nd4j.autodiff.samediff.serde.ModelSizeInfo;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
 import org.nd4j.ggml.convert.GGMLToSameDiffConverter;
@@ -108,6 +118,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     private static final Logger logger = LoggerFactory.getLogger(SameDiffLanguageModelImpl.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     private static final int CONTINUATION_CHUNK_TOKENS_DEFAULT = 384;
+    /** Per-turn image ceiling for local vision chat (VRAM safety at vision-encoder res). */
+    public static final int MAX_IMAGES_PER_TURN = 8;
 
     private final Object loadLock = new Object();
     private final ExecutorService modelExecutionLane;
@@ -227,6 +239,17 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     public StructuredChatLanguageModel.Response generateChat(
             StructuredChatLanguageModel.Request request, int maxNewTokens) {
         Objects.requireNonNull(request, "request");
+        if (request.hasImages()) {
+            LoadedModel current = this.loaded;
+            if (current == null || current.vision == null) {
+                throw new UnsupportedOperationException(
+                        "Loaded local model '" + getLoadedModelId() + "' has no vision encoder. "
+                                + "Stage a VLM model set (vision_encoder.sdz + decoder.sdz beside the "
+                                + "text model, e.g. SmolDocling/LLaVA) or switch to a vision-capable "
+                                + "remote provider (/model). Images are rejected, not dropped.");
+            }
+            return generateVisionChat(current, request, maxNewTokens);
+        }
         List<ChatTemplate.Message> messages = new ArrayList<>();
         for (StructuredChatLanguageModel.Message message : request.messages()) {
             messages.add(new ChatTemplate.Message(message.role(), message.content()));
@@ -275,6 +298,160 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 outputBlocks,
                 calls,
                 result.getParseErrors());
+    }
+
+    /**
+     * True when the loaded model can accept inline images (a VLM companion was detected
+     * and loaded alongside the text pipeline). Surfaces in /api/llm/status.
+     */
+    public boolean supportsImageInput() {
+        LoadedModel current = this.loaded;
+        return current != null && current.vision != null;
+    }
+
+    /**
+     * Run an image turn through the VLM companion: render the conversation through the
+     * model-owned chat template with an {@code <image>} content part (the same contract
+     * the crawl VLM pipelines use), preprocess the pixels, and decode with the VLM's
+     * own vision-encoder → embedding-merge → decoder flow.
+     */
+    private StructuredChatLanguageModel.Response generateVisionChat(
+            LoadedModel current,
+            StructuredChatLanguageModel.Request request,
+            int maxNewTokens) {
+        if (request.images().size() > MAX_IMAGES_PER_TURN) {
+            throw new UnsupportedOperationException(
+                    "Local vision chat accepts at most " + MAX_IMAGES_PER_TURN
+                            + " images per turn; got "
+                            + request.images().size());
+        }
+        List<INDArray> frameEmbeddings = new ArrayList<>();
+        int totalVisionTokens = 0;
+        try {
+            for (StructuredChatLanguageModel.InlineImage image : request.images()) {
+                INDArray pixels;
+                try {
+                    byte[] bytes = Base64.getDecoder().decode(image.base64Data());
+                    BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(bytes));
+                    if (decoded == null) {
+                        throw new IllegalArgumentException(
+                                "Unsupported image data for local vision chat (mime "
+                                        + image.mimeType() + ")");
+                    }
+                    INDArray raw = bufferedImageToChannelsFirst(decoded);
+                    VLMImagePreprocessor preprocessor = current.visionPreprocessor;
+                    pixels = preprocessor != null ? preprocessor.preprocess(raw) : raw;
+                    if (pixels != raw) {
+                        raw.close();
+                    }
+                } catch (IOException e) {
+                    throw new IllegalArgumentException(
+                            "Could not decode chat image: " + e.getMessage(), e);
+                }
+                try {
+                    INDArray embedding = current.vision.encodeImage(pixels);
+                    totalVisionTokens += (int) embedding.size(1);
+                    frameEmbeddings.add(embedding);
+                } finally {
+                    pixels.close();
+                }
+            }
+
+            String transcript = renderVisionTranscript(request);
+            SamplingConfig sampling = SamplingConfig.builder()
+                    .maxNewTokens(maxNewTokens)
+                    .temperature(0.2d)
+                    .doSample(false)
+                    .build();
+            INDArray visionEmbeddings = frameEmbeddings.size() == 1
+                    ? frameEmbeddings.get(0)
+                    : Nd4j.concat(1, frameEmbeddings.toArray(new INDArray[0]));
+            GenerationResult result = current.vision.generateFromEmbeddings(
+                    visionEmbeddings, transcript, sampling,
+                    0, 0, totalVisionTokens);
+            String text = result.getText() == null ? "" : result.getText();
+            return new StructuredChatLanguageModel.Response(
+                    text,
+                    text,
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of());
+        } finally {
+            for (INDArray embedding : frameEmbeddings) {
+                SameDiffMemoryUtils.safeClose(embedding);
+            }
+        }
+    }
+
+    /**
+     * Render the conversation as a plain transcript with ONE leading {@code <image>}
+     * placeholder marking where all vision embeddings merge. The single-image path in
+     * {@code VisionLanguageModel} applies the model-owned chat template around an
+     * [image part, text part] message itself, so we must not double-template here.
+     * The placeholder comes first so merged embeddings precede the text, matching
+     * the ordering of {@code generateWithMetrics}.
+     */
+    private static String renderVisionTranscript(StructuredChatLanguageModel.Request request) {
+        StringBuilder transcript = new StringBuilder("<image>\n");
+        List<StructuredChatLanguageModel.Message> requestMessages = request.messages();
+        for (int i = 0; i < requestMessages.size(); i++) {
+            StructuredChatLanguageModel.Message message = requestMessages.get(i);
+            String content = message.content() == null ? "" : message.content();
+            if (content.isBlank()) continue;
+            boolean isLastUser = i == requestMessages.size() - 1
+                    && "user".equalsIgnoreCase(message.role());
+            if (isLastUser) {
+                transcript.append(content).append('\n');
+            } else if ("assistant".equalsIgnoreCase(message.role())) {
+                transcript.append("Assistant: ").append(content).append('\n');
+            } else if ("system".equalsIgnoreCase(message.role())) {
+                transcript.append("System: ").append(content).append('\n');
+            } else {
+                transcript.append("User: ").append(content).append('\n');
+            }
+        }
+        return transcript.toString();
+    }
+
+    private static INDArray bufferedImageToChannelsFirst(BufferedImage image) {
+        int h = image.getHeight();
+        int w = image.getWidth();
+        int[] rgbPixels = image.getRGB(0, 0, w, h, null, 0, w);
+        float[] data = new float[3 * h * w];
+        int hwSize = h * w;
+        for (int i = 0; i < rgbPixels.length; i++) {
+            int rgb = rgbPixels[i];
+            data[i] = ((rgb >> 16) & 0xFF) / 255.0f;
+            data[hwSize + i] = ((rgb >> 8) & 0xFF) / 255.0f;
+            data[2 * hwSize + i] = (rgb & 0xFF) / 255.0f;
+        }
+        return Nd4j.create(data, new int[]{1, 3, h, w}, 'c');
+    }
+
+    /**
+     * Detect staged VLM components beside the text model: vision_encoder.sdz +
+     * decoder.sdz in the same directory (SmolDocling-style multi-part layout).
+     */
+    private static VisionLanguageModel tryLoadVisionCompanion(String modelId, Path modelFile)
+            throws IOException {
+        Path dir = modelFile.toAbsolutePath().getParent();
+        if (dir == null || !Files.isDirectory(dir)) return null;
+        Path visionEncoder = firstExisting(dir,
+                List.of("vision_encoder.sdz", "vision_encoder.onnx", "vision-encoder.sdz"));
+        Path decoder = firstExisting(dir, List.of("decoder.sdz", "decoder_model_merged.sdz"));
+        if (visionEncoder == null || decoder == null) return null;
+        logger.info("Detected VLM components for '{}' ({} + {}) — loading vision companion",
+                modelId, visionEncoder.getFileName(), decoder.getFileName());
+        return VisionLanguageModel.fromDirectory(dir.toFile());
+    }
+
+    private static Path firstExisting(Path dir, List<String> names) {
+        for (String name : names) {
+            Path candidate = dir.resolve(name);
+            if (Files.isRegularFile(candidate)) return candidate;
+        }
+        return null;
     }
 
     /**
@@ -466,7 +643,23 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         synchronized (loadLock) {
             LoadedModel previous = this.loaded;
             this.modelExecutionDevice = executionDevice;
-            this.loaded = new LoadedModel(modelId, backend, durationMs);
+            VisionLanguageModel vision = null;
+            VLMImagePreprocessor visionPreprocessor = null;
+            Exception visionFailure = null;
+            try {
+                vision = tryLoadVisionCompanion(modelId, modelFile);
+                visionPreprocessor = vision != null ? vision.getImagePreprocessor() : null;
+            } catch (Exception e) {
+                visionFailure = e;
+            }
+            this.loaded = new LoadedModel(modelId, backend, durationMs,
+                    vision, visionPreprocessor);
+            if (vision != null) {
+                logger.info("Loaded VLM companion for '{}' — image chat enabled", modelId);
+            } else if (visionFailure != null) {
+                logger.warn("VLM components detected for '{}' but the vision companion failed to load: {}",
+                        modelId, visionFailure.getMessage());
+            }
             this.loading = false;
             this.loadingModelId = null;
             this.loadStartedAtMs = -1;
@@ -479,6 +672,13 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 logger.info("Replaced previously loaded model '{}' with '{}'",
                         previous.modelId, modelId);
                 closeBackendQuietly(previous.backend, "previous model '" + previous.modelId + "'");
+                if (previous.vision != null) {
+                    try {
+                        previous.vision.close();
+                    } catch (Exception e) {
+                        logger.warn("Failed to close previous VLM companion: {}", e.getMessage());
+                    }
+                }
             } else {
                 logger.info("Loaded model '{}' in {} ms", modelId, durationMs);
             }
@@ -488,12 +688,20 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     public void unloadModel() {
         executeModelOperation(() -> {
             synchronized (loadLock) {
-                LoadedModel current = this.loaded;
-                this.loaded = null;
-                if (current != null) {
-                    closeBackendQuietly(current.backend, "model '" + current.modelId + "'");
-                    logger.info("Unloaded model '{}'", current.modelId);
+            LoadedModel current = this.loaded;
+            this.loaded = null;
+            if (current != null) {
+                closeBackendQuietly(current.backend, "model '" + current.modelId + "'");
+                if (current.vision != null) {
+                    try {
+                        current.vision.close();
+                    } catch (Exception e) {
+                        logger.warn("Failed to close VLM companion for '{}': {}",
+                                current.modelId, e.getMessage());
+                    }
                 }
+                logger.info("Unloaded model '{}'", current.modelId);
+            }
                 this.modelExecutionDevice = null;
             }
             return null;
@@ -1829,11 +2037,21 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         final String modelId;
         final InferenceBackend backend;
         final long loadDurationMs;
+        /** Vision-language companion; null for text-only models. */
+        final VisionLanguageModel vision;
+        final VLMImagePreprocessor visionPreprocessor;
 
         LoadedModel(String modelId, InferenceBackend backend, long loadDurationMs) {
+            this(modelId, backend, loadDurationMs, null, null);
+        }
+
+        LoadedModel(String modelId, InferenceBackend backend, long loadDurationMs,
+                    VisionLanguageModel vision, VLMImagePreprocessor visionPreprocessor) {
             this.modelId = modelId;
             this.backend = backend;
             this.loadDurationMs = loadDurationMs;
+            this.vision = vision;
+            this.visionPreprocessor = visionPreprocessor;
         }
     }
 }

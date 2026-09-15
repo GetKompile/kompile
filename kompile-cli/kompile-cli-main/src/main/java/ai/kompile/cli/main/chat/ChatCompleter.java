@@ -37,6 +37,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -1066,6 +1067,7 @@ public class ChatCompleter implements Completer {
     private static void installPasteSupport(LineReaderImpl impl) {
         if (!PASTE_SUPPORT_READERS.add(impl)) return;
         impl.setOpt(LineReader.Option.BRACKETED_PASTE);
+        installImagePasteWidgets(impl);
 
         Widget beginPaste = impl.getWidgets().get(LineReader.BEGIN_PASTE);
         if (beginPaste == null) beginPaste = impl.getBuiltinWidgets().get(LineReader.BEGIN_PASTE);
@@ -1101,6 +1103,94 @@ public class ChatCompleter implements Completer {
                 }
             }));
         }
+    }
+
+    /**
+     * Claude Code-style image paste: Ctrl+V (and Alt+V on Windows/WSL) inserts an
+     * {@code [Image #N]} chip when the clipboard holds image data; a text clipboard
+     * falls through to the normal text paste. The attachment side effect lives in
+     * the REPL via {@link #setImageChipAttacher} — this widget only coordinates.
+     */
+    private static final String IMAGE_PASTE_WIDGET = "image-paste";
+    private static volatile Predicate<Path> imageChipAttacher;
+
+    /** Installed by ChatRepl so pasted images join {@code pendingAttachments}. */
+    public static void setImageChipAttacher(Predicate<Path> attacher) {
+        imageChipAttacher = attacher;
+    }
+
+    /** Insert one [Image #N] chip; returns the chip number or -1 when rejected. */
+    static int insertImageChip(LineReaderImpl impl, Path stagedImage) {
+        Predicate<Path> attacher = imageChipAttacher;
+        if (attacher == null) {
+            stagedImage.toFile().deleteOnExit();
+            return -1;
+        }
+        int chip = attacher.test(stagedImage) ? nextImageChipNumber(impl) : -1;
+        if (chip > 0) {
+            impl.getBuffer().write("[Image #" + chip + "]");
+            updatePostDisplay(impl);
+            return chip;
+        }
+        stagedImage.toFile().deleteOnExit();
+        return -1;
+    }
+
+    private static int nextImageChipNumber(LineReaderImpl impl) {
+        String buffer = impl.getBuffer().toString();
+        int max = 0;
+        for (int index = buffer.indexOf("[Image #"); index >= 0;
+             index = buffer.indexOf("[Image #", index + 1)) {
+            int start = index + "[Image #".length();
+            int end = buffer.indexOf(']', start);
+            if (end > start) {
+                try {
+                    max = Math.max(max, Integer.parseInt(buffer.substring(start, end)));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return max + 1;
+    }
+
+    private static void installImagePasteWidgets(LineReaderImpl impl) {
+        Widget imagePaste = ChatUiSession.current().captureWidget(() -> {
+            Optional<Path> staged = ImageClipboardSupport.readClipboardImage();
+            if (staged.isPresent()) {
+                if (insertImageChip(impl, staged.get()) > 0) return true;
+            }
+            // Clipboard has text (e.g. a file path) or no image helper — normal paste.
+            return insertPastedText(impl, readClipboardText());
+        });
+        impl.getWidgets().put(IMAGE_PASTE_WIDGET, imagePaste);
+        boolean windowsLike = System.getProperty("os.name", "").toLowerCase().contains("win")
+                || readProcVersion().contains("microsoft");
+        if (windowsLike) {
+            impl.getWidgets().put("paste-image-alt", ChatUiSession.current().captureWidget(imagePaste::apply));
+        }
+        // Bind in every active key map, matching bindBackgroundKey() semantics.
+        // Alt+V on Windows/WSL arrives as ESC 'v'; a two-char key sequence binds it.
+        org.jline.reader.Reference pasteRef = new org.jline.reader.Reference(IMAGE_PASTE_WIDGET);
+        org.jline.reader.Reference altPasteRef = new org.jline.reader.Reference("paste-image-alt");
+        for (org.jline.keymap.KeyMap<org.jline.reader.Binding> keyMap : impl.getKeyMaps().values()) {
+            if (keyMap == null) continue;
+            keyMap.bind(pasteRef, org.jline.keymap.KeyMap.ctrl('V'));
+            if (windowsLike) {
+                keyMap.bind(altPasteRef, "\u001bv");
+            }
+        }
+    }
+
+    private static String readProcVersion() {
+        try {
+            return Files.readString(Path.of("/proc/version")).toLowerCase();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String readClipboardText() {
+        return ClipboardUtil.readFromClipboard().orElse("");
     }
 
     private static void compactInsertedPaste(LineReaderImpl impl, int beforeLength) {

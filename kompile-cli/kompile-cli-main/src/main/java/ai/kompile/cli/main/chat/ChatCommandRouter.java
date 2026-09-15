@@ -2008,20 +2008,12 @@ public class ChatCommandRouter {
     private void handleAttachImage(String pathStr) {
         if (pathStr.isBlank()) {
             System.out.println("Usage: /image <path>");
-            System.out.println("Attach an image to the next message.");
+            System.out.println("Attach an image to the next message. Ctrl+V pastes a clipboard image.");
             System.out.println("Supported: PNG, JPEG, GIF, WebP");
             return;
         }
 
-        // Check model supports vision
-        ChatConfig chatConfig = repl.getChatConfig();
-        if (localMode && chatConfig != null) {
-            String model = chatConfig.getModel();
-            if (!ModelContextWindows.supportsVision(model)) {
-                System.out.println(renderer.yellow("  ⚠ Model '" + model + "' may not support image inputs."));
-                System.out.println(renderer.dim("    Attaching anyway — the API will reject if unsupported."));
-            }
-        }
+        warnWhenModelLacksVision();
 
         Path filePath = resolveAttachmentPath(pathStr);
         if (filePath == null) return;
@@ -2052,6 +2044,10 @@ public class ChatCommandRouter {
 
         String mime = detectImageMimeType(filePath);
         boolean isImage = (mime != null);
+
+        if (isImage) {
+            warnWhenModelLacksVision();
+        }
 
         if (!isImage) {
             // Determine mime for text files
@@ -2089,6 +2085,25 @@ public class ChatCommandRouter {
     }
 
     // Attachment helper utilities
+
+    /**
+     * Provider/model-scoped vision warning shared by /image, /file, and clipboard paste.
+     * Known text-only models warn up front; unknown models stay silent — the provider's
+     * API error surfaces on send, and guessing would block valid custom models.
+     */
+    private void warnWhenModelLacksVision() {
+        ChatConfig chatConfig = repl.getChatConfig();
+        if (chatConfig == null) return;
+        String model = chatConfig.getModel();
+        if (model == null || model.isBlank()) return;
+        Optional<Boolean> vision = ModelContextWindows.supportsVision(
+                chatConfig.getProvider(), model);
+        if (vision.isPresent() && !vision.get()) {
+            System.out.println(renderer.yellow(
+                    "  ⚠ Model '" + model + "' is text-only — image attachments will be rejected by the API."));
+            System.out.println(renderer.dim("    Switch with /model, or drop the image and describe it instead."));
+        }
+    }
 
     Path resolveAttachmentPath(String pathStr) {
         Path filePath = Paths.get(pathStr);
@@ -2431,7 +2446,8 @@ public class ChatCommandRouter {
                 statusMap.put("Provider", chatConfig.getProvider());
                 statusMap.put("Model", chatConfig.getModel());
                 String model = chatConfig.getModel();
-                boolean vision = ModelContextWindows.supportsVision(model);
+                boolean vision = ModelContextWindows.supportsVision(chatConfig.getProvider(), model)
+                        .orElse(false);
                 // Before the first turn only the catalog number is known; once the loop
                 // has run, its budget also covers staged local models via the staging probe.
                 int ctx = agenticLoop.conversationEntryCount() > 0
