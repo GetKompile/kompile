@@ -195,6 +195,117 @@ class DirectLlmClientOAuthTest {
         }
     }
 
+    /**
+     * The z.ai silent-stream-drop regression: the coding endpoint sometimes stops
+     * generation mid-reasoning with no finish_reason and no [DONE] while keepalives
+     * keep the socket open. The client must resume once by asking the model to
+     * continue, splicing the continuation after the partial text instead of
+     * surfacing a dead turn.
+     */
+    @Test
+    void silentStreamDropWithoutTerminalEventIsResumedOnceAndSpliced() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (requests.size() == 1) {
+                // First pass: reasoning + partial visible text, then the socket ends
+                // with NO finish_reason and NO [DONE] — the silent drop signature.
+                respondSse(exchange, """
+                        data: {"choices":[{"delta":{"reasoning_content":"long thought"}}]}
+
+                        data: {"choices":[{"delta":{"content":"partial answer"}}]}
+
+                        """);
+            } else {
+                respondSse(exchange, """
+                        data: {"choices":[{"delta":{"content":" continued"}}]}
+
+                        data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                        data: [DONE]
+
+                        """);
+            }
+        });
+        try {
+            ChatConfig config = new ChatConfig("zai", "key", "glm-5.3", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, mapper)) {
+                client.setOutputConsumer(ignored -> { });
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertEquals("partial answer continued", result.text,
+                        "the continuation is spliced after the partial answer");
+                assertFalse(result.failed);
+            }
+            assertEquals(2, requests.size(), "exactly one resume pass");
+            JsonNode resumeMessages = requests.get(1).path("messages");
+            assertTrue(resumeMessages.toString().contains("Continue exactly where you stopped"),
+                    "the resume request carries an explicit continuation instruction");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /** A clean stop (finish_reason present) must never trigger the resume path. */
+    @Test
+    void cleanStopDoesNotResume() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, """
+                    data: {"choices":[{"delta":{"content":"done"}}]}
+
+                    data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                    data: [DONE]
+
+                    """);
+        });
+        try {
+            ChatConfig config = new ChatConfig("zai", "key", "glm-5.3", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, mapper)) {
+                client.setOutputConsumer(ignored -> { });
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertEquals("done", result.text);
+                assertFalse(result.failed);
+            }
+            assertEquals(1, requests.size(), "no resume pass after a clean stop");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * If the resume pass also dies silently, the turn surfaces the connectivity
+     * failure instead of pretending the answer completed.
+     */
+    @Test
+    void resumeThatDropsAgainSurfacesConnectivityFailure() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respondSse(exchange, """
+                    data: {"choices":[{"delta":{"content":"partial"}}]}
+
+                    """);
+        });
+        try {
+            ChatConfig config = new ChatConfig("zai", "key", "glm-5.3", baseUrl(server));
+            try (DirectLlmClient client = new DirectLlmClient(config, mapper)) {
+                client.setOutputConsumer(ignored -> { });
+                DirectLlmClient.StreamResult result = client.streamChat("hi", "system", null, null);
+                assertTrue(result.failed);
+                assertTrue(result.failureMessage.contains("terminal"),
+                        "failure explains the missing terminal event");
+                assertEquals(2, requests.size(), "one resume, no more");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void anthropicOauthUsesBearerAndClaudeIdentityHeaders() throws Exception {
         withTemporaryHome(() -> {

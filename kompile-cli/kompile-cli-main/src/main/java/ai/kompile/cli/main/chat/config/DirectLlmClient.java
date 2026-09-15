@@ -400,7 +400,7 @@ public class DirectLlmClient implements AutoCloseable {
             String effectiveModel, List<AttachmentInput> attachments, OAuthProviderFlow.RequestAuth retryAuth) {
         return switch (route.protocol()) {
             case KOMPILE_LOCAL -> streamKompileServing(
-                    userMessage, systemPrompt, toolDefs, toolResults);
+                    userMessage, systemPrompt, toolDefs, toolResults, attachments);
             case OPENCODE -> streamOpenCode(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
             case OPENAI_RESPONSES -> streamOpenAiResponses(
@@ -2767,7 +2767,8 @@ public class DirectLlmClient implements AutoCloseable {
             String userMessage,
             String systemPrompt,
             ArrayNode toolDefs,
-            List<ToolCallResultInput> toolResults) {
+            List<ToolCallResultInput> toolResults,
+            List<AttachmentInput> attachments) {
         StreamResult result = new StreamResult();
         try {
             if (isCancelled()) {
@@ -2778,6 +2779,16 @@ public class DirectLlmClient implements AutoCloseable {
             ObjectNode structured = request.putObject("request");
             structured.set("messages", buildKompileServingMessages(
                     userMessage, systemPrompt, toolResults));
+            if (attachments != null && !attachments.isEmpty()) {
+                ArrayNode images = structured.putArray("images");
+                for (AttachmentInput attachment : attachments) {
+                    if (attachment.isImage()) {
+                        ObjectNode inline = images.addObject();
+                        inline.put("mimeType", attachment.mimeType());
+                        inline.put("base64Data", attachment.base64Data());
+                    }
+                }
+            }
             ArrayNode tools = buildKompileServingTools(toolDefs);
             structured.set("tools", tools);
             structured.put("addGenerationPrompt", true);
@@ -2988,36 +2999,126 @@ public class DirectLlmClient implements AutoCloseable {
             ArrayNode messages = buildOpenAiMessages(
                     userMessage, systemPrompt, toolResults, attachments);
 
-            ObjectNode request = objectMapper.createObjectNode();
-            request.put("model", effectiveModel);
-            request.set("messages", messages);
-            request.put("stream", true);
-            applyReasoningEffort(request, false);
-            applyOpenAiFastMode(request, effectiveModel);
-            applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
-            applyChatCompletionsJsonOutput(request);
-            if (wireMaxOutputTokens > 0 && acceptsMaxTokens(effectiveModel)) {
-                request.put("max_tokens", wireMaxTokens(
-                        wireMaxOutputTokens, contextWindowTokens,
-                        estimateRequestInputTokens(messages, toolDefs)));
-            }
-
-            // Request token usage in streamed response
-            ObjectNode streamOptions = objectMapper.createObjectNode();
-            streamOptions.put("include_usage", true);
-            request.set("stream_options", streamOptions);
-
-            if (toolDefs != null && toolDefs.size() > 0) {
-                ArrayNode openAiTools = convertToolDefsToOpenAi(toolDefs);
-                if (openAiTools.size() > 0) {
-                    request.set("tools", openAiTools);
-                }
-            }
+            ObjectNode request = buildOpenAiWireRequest(
+                    effectiveModel, messages, toolDefs);
 
             OAuthProviderFlow.RequestAuth auth = retryAuth != null ? retryAuth : config.resolveRequestAuth();
             String baseUrl = config.resolveBaseUrl(auth);
             String url = appendPath(baseUrl, "/chat/completions");
 
+            for (int pass = 0; ; pass++) {
+                StreamResult passResult = (pass == 0)
+                        ? result : new StreamResult();
+                openAiStreamOnce(url, request, auth, userMessage, toolDefs,
+                        passResult);
+                if (pass > 0) {
+                    // The resumed stream continues the same answer: splice its text
+                    // after what the dropped pass already showed, and merge usage so
+                    // token accounting covers both requests.
+                    result.text += passResult.text;
+                    result.inputTokens += passResult.inputTokens;
+                    result.outputTokens += passResult.outputTokens;
+                    result.cacheReadTokens += passResult.cacheReadTokens;
+                    result.cacheCreationTokens += passResult.cacheCreationTokens;
+                    result.toolCalls.addAll(passResult.toolCalls);
+                    result.refusalDetected |= passResult.refusalDetected;
+                    result.truncatedDetected |= passResult.truncatedDetected;
+                }
+                if (!isSilentStreamDrop(passResult, toolDefs) || pass >= 1) {
+                    if (pass > 0) {
+                        result.failed = passResult.failed;
+                        result.failureKind = passResult.failureKind;
+                        result.failureStatusCode = passResult.failureStatusCode;
+                        result.failureMessage = passResult.failureMessage;
+                        result.cancelled |= passResult.cancelled;
+                        if (passResult.silentStreamDrop) {
+                            // Even the continuation died without a terminal event;
+                            // surface it instead of presenting a silent cut as done.
+                            result.failed = true;
+                            result.failureKind = FailureKind.PROVIDER_ERROR;
+                            result.failureMessage = "[Provider stream dropped again without "
+                                    + "a terminal event after the continuation attempt]";
+                        }
+                    }
+                    commitOpenAiTurnHistory(result, toolResults, userMessage, attachments);
+                    return result;
+                }
+                // The provider silently dropped a thinking stream (observed on the
+                // Z.AI coding endpoint: generation stops mid-reasoning with no
+                // finish_reason and no [DONE], keepalives still flowing). Ask it to
+                // continue from where the visible answer stopped.
+                emitConnectivityEvent(new ConnectivityEvent(
+                        config.getProvider(), 1, 1, Duration.ZERO,
+                        "provider dropped the stream mid-generation without a terminal "
+                                + "event; asking the model to continue"));
+                JsonNode existingMessages = request.get("messages");
+                if (existingMessages instanceof ArrayNode messageArray) {
+                    ObjectNode continueMsg = messageArray.addObject();
+                    continueMsg.put("role", "user");
+                    continueMsg.put("content",
+                            "Your previous response was cut off before you finished. "
+                                    + "Continue exactly where you stopped without repeating "
+                                    + "any earlier text. If you had already finished, reply DONE.");
+                }
+            }
+        } catch (Exception e) {
+            recordStreamFailure(result, e, "[Error: ");
+        }
+
+        return result;
+    }
+
+    /** Build the shared OpenAI chat-completions wire request body. */
+    private ObjectNode buildOpenAiWireRequest(String effectiveModel, ArrayNode messages,
+                                              ArrayNode toolDefs) {
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("model", effectiveModel);
+        request.set("messages", messages);
+        request.put("stream", true);
+        applyReasoningEffort(request, false);
+        applyOpenAiFastMode(request, effectiveModel);
+        applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
+        applyChatCompletionsJsonOutput(request);
+        if (wireMaxOutputTokens > 0 && acceptsMaxTokens(effectiveModel)) {
+            request.put("max_tokens", wireMaxTokens(
+                    wireMaxOutputTokens, contextWindowTokens,
+                    estimateRequestInputTokens(messages, toolDefs)));
+        }
+
+        // Request token usage in streamed response
+        ObjectNode streamOptions = objectMapper.createObjectNode();
+        streamOptions.put("include_usage", true);
+        request.set("stream_options", streamOptions);
+
+        if (toolDefs != null && toolDefs.size() > 0) {
+            ArrayNode openAiTools = convertToolDefsToOpenAi(toolDefs);
+            if (openAiTools.size() > 0) {
+                request.set("tools", openAiTools);
+            }
+        }
+        return request;
+    }
+
+    /**
+     * True when the stream died without any terminal event and there is something
+     * worth continuing: visible text already streamed, no tool calls mid-flight,
+     * and no provider-stated reason (refusal/length). Tool-bearing turns are never
+     * resumed here — a half-streamed tool_call envelope cannot be continued safely
+     * by re-asking, and the agentic loop owns its own retry surface.
+     */
+    private static boolean isSilentStreamDrop(StreamResult result, ArrayNode toolDefs) {
+        if (result.cancelled || result.failed) return false;
+        if (toolDefs != null && toolDefs.size() > 0) return false;
+        if (!result.toolCalls.isEmpty()) return false;
+        if (result.silentStreamDrop) return true;
+        // Terminal event seen (or parser state inconclusive with text) — no drop.
+        return !result.terminalEventSeen;
+    }
+
+    /** One HTTP pass of the OpenAI-compatible stream (send, parse, history commit). */
+    private void openAiStreamOnce(String url, ObjectNode request,
+                                  OAuthProviderFlow.RequestAuth auth, String userMessage,
+                                  ArrayNode toolDefs, StreamResult result) throws Exception {
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
@@ -3033,76 +3134,84 @@ public class DirectLlmClient implements AutoCloseable {
             if (response.statusCode() != 200) {
                 if (response.statusCode() == 401) {
                     recordUnauthorizedResponse(result, response.body(), auth);
-                    return result;
+                    return;
                 }
                 String body = readResponseBody(response.body());
-                if (recordKnownProviderFailure(result, response.statusCode(), body)) return result;
+                if (recordKnownProviderFailure(result, response.statusCode(), body)) return;
                 String error = extractErrorMessage(body) + ProviderResponseFailure.diagnostics(body, response.headers());
                 String finalMessage = "[LLM API error " + response.statusCode()
                         + ": " + error + "]";
                 if (isContextOverflowFailure(response.statusCode(), body)) {
                     appendProviderFailure(
                             result, response.statusCode(), body, finalMessage, true);
-                    return result;
+                    return;
                 }
                 if (recordHttpConnectivityFailure(
                         result, response.statusCode(), response.headers(),
                         ChatProviderRegistry.label(config.getProvider()) + " HTTP "
                                 + response.statusCode() + ": " + error,
                         finalMessage)) {
-                    return result;
+                    return;
                 }
                 appendProviderFailure(
                         result, response.statusCode(), body, finalMessage, true);
-                return result;
+                return;
             }
 
             parseOpenAiStream(guardResponseStream(response.body()), result);
             result.toolCalls.addAll(rescueTextEncodedToolCalls(result, toolDefs));
 
+            // A stream that died with no terminal event and nothing streamed is a
+            // transport failure (route-independent); with text streamed it is the
+            // silent-drop signature and the caller's resume logic decides.
+            if (result.silentStreamDrop && result.text.isEmpty() && result.toolCalls.isEmpty()) {
+                throw new EOFException("OpenAI stream ended before a terminal event");
+            }
+
             if (!result.cancelled && (!result.failed || isGenerationStopped(result))) {
-                appendOpenAiToolResultHistory(toolResults);
+                appendOpenAiToolResultHistory(null);
             }
-            if (!result.cancelled && !result.failed) {
-                if (userMessage != null || !attachments.isEmpty()) {
-                    ObjectNode userMsg = objectMapper.createObjectNode();
-                    userMsg.put("role", "user");
-                    if (attachments.isEmpty()) {
-                        userMsg.put("content", userMessage);
-                    } else {
-                        userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
-                    }
-                    conversationHistory.add(userMsg);
-                }
-            }
+    }
 
-            if (!result.cancelled && !result.failed
-                    && (!result.text.isEmpty() || !result.toolCalls.isEmpty())) {
-                ObjectNode assistantMsg = objectMapper.createObjectNode();
-                assistantMsg.put("role", "assistant");
-                assistantMsg.put("content", result.text);
-                if (!result.toolCalls.isEmpty()) {
-                    ArrayNode toolCallsArray = objectMapper.createArrayNode();
-                    for (ToolCallOutput tc : result.toolCalls) {
-                        ObjectNode tcNode = objectMapper.createObjectNode();
-                        tcNode.put("id", tc.id);
-                        tcNode.put("type", "function");
-                        ObjectNode fn = objectMapper.createObjectNode();
-                        fn.put("name", tc.name);
-                        fn.put("arguments", tc.arguments != null ? tc.arguments.toString() : "{}");
-                        tcNode.set("function", fn);
-                        toolCallsArray.add(tcNode);
-                    }
-                    assistantMsg.set("tool_calls", toolCallsArray);
-                }
-                conversationHistory.add(assistantMsg);
+    /**
+     * Commit one finished chat-completions turn to the replayable history:
+     * submitted tool results, then the user message, then the assistant answer.
+     * A rejected/dropped turn must not poison later requests.
+     */
+    private void commitOpenAiTurnHistory(StreamResult result, List<ToolCallResultInput> toolResults,
+                                         String userMessage, List<AttachmentInput> attachments) {
+        if (result.cancelled || (result.failed && !isGenerationStopped(result))) return;
+        appendOpenAiToolResultHistory(toolResults);
+        if (result.failed) return;
+        if (userMessage != null || !attachments.isEmpty()) {
+            ObjectNode userMsg = objectMapper.createObjectNode();
+            userMsg.put("role", "user");
+            if (attachments.isEmpty()) {
+                userMsg.put("content", userMessage);
+            } else {
+                userMsg.set("content", buildOpenAiContentArray(userMessage, attachments));
             }
-
-        } catch (Exception e) {
-            recordStreamFailure(result, e, "[Error: ");
+            conversationHistory.add(userMsg);
         }
-
-        return result;
+        if (result.text.isEmpty() && result.toolCalls.isEmpty()) return;
+        ObjectNode assistantMsg = objectMapper.createObjectNode();
+        assistantMsg.put("role", "assistant");
+        assistantMsg.put("content", result.text);
+        if (!result.toolCalls.isEmpty()) {
+            ArrayNode toolCallsArray = objectMapper.createArrayNode();
+            for (ToolCallOutput tc : result.toolCalls) {
+                ObjectNode tcNode = objectMapper.createObjectNode();
+                tcNode.put("id", tc.id);
+                tcNode.put("type", "function");
+                ObjectNode fn = objectMapper.createObjectNode();
+                fn.put("name", tc.name);
+                fn.put("arguments", tc.arguments != null ? tc.arguments.toString() : "{}");
+                tcNode.set("function", fn);
+                toolCallsArray.add(tcNode);
+            }
+            assistantMsg.set("tool_calls", toolCallsArray);
+        }
+        conversationHistory.add(assistantMsg);
     }
 
     private ArrayNode buildOpenAiMessages(String userMessage, String systemPrompt,
@@ -3297,6 +3406,7 @@ public class DirectLlmClient implements AutoCloseable {
                 String data = line.substring(6).trim();
                 if ("[DONE]".equals(data)) {
                     terminal = true;
+                    result.terminalEventSeen = true;
                     break;
                 }
 
@@ -3361,7 +3471,10 @@ public class DirectLlmClient implements AutoCloseable {
 
                     // Check for finish_reason
                     String finishReason = chunk.path("choices").path(0).path("finish_reason").asText(null);
-                    if (finishReason != null && !finishReason.isBlank()) terminal = true;
+                    if (finishReason != null && !finishReason.isBlank()) {
+                        terminal = true;
+                        result.terminalEventSeen = true;
+                    }
                     result.refusalDetected |= "content_filter".equals(finishReason);
                     result.truncatedDetected |= "length".equals(finishReason);
                     if (terminal && finishGenerationOutcome(result)) return;
@@ -3388,7 +3501,15 @@ public class DirectLlmClient implements AutoCloseable {
         }
 
         if (!result.cancelled && !result.failed && !terminal) {
-            throw new EOFException("OpenAI stream ended before a terminal event");
+            // A text-bearing stream that dies without a terminal event is the
+            // silent-drop signature (Z.AI coding endpoint) — leave it unflagged so
+            // the route's resume logic can decide; routes without a resume path
+            // surface it through streamOpenAi's post-parse check below.
+            if (result.text.isEmpty() && result.toolCalls.isEmpty()) {
+                throw new EOFException("OpenAI stream ended before a terminal event");
+            }
+            result.silentStreamDrop = true;
+            return;
         }
 
         if (finishGenerationOutcome(result)) return;
@@ -4398,6 +4519,9 @@ public class DirectLlmClient implements AutoCloseable {
         private String connectivityFailure;
         private String connectivityFinalMessage;
         private HttpHeaders connectivityHeaders;
+        private boolean terminalEventSeen;
+        /** Stream ended without any terminal event; route-specific resume logic decides. */
+        private boolean silentStreamDrop;
         public String nativeCompactionSummary;
         public String nativeCompactionStrategy;
         public JsonNode nativeCompactionPayload;
