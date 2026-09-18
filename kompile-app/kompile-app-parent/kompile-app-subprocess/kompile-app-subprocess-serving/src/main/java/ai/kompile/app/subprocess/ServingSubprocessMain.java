@@ -290,8 +290,19 @@ public class ServingSubprocessMain {
     /**
      * Wrap the serving API so {@code GET /api/llm/status} also reports the in-JVM
      * watchdog state. Load/generate/chat/unload are passed through untouched.
+     *
+     * <p>Generate and chat are synchronized like load/unload: generation mutates the
+     * process-global NativePlanCache (per-thread SameDiff session reset/teardown clears
+     * plans other calls may still be using). Concurrent generations caused glibc
+     * "double free or corruption" aborts in the native plan teardown (observed on every
+     * parallel crawl with graphExtractionParallelism &gt; 1; serial crawls are clean).
+     * Serializing them here is throughput-neutral because GPU decode is effectively
+     * single-tenant already. Opt-out via -Dkompile.serving.subprocess.generate-serialization=false
+     * for controlled concurrency testing.</p>
      */
     private static ServingSubprocessHttpServer.Api servingApiWithWatchdog(ServingComponents components) {
+        boolean serializeGenerations = defaultPositive(
+                "kompile.serving.subprocess.generate-serialization", 1) == 1;
         return new ServingSubprocessHttpServer.Api() {
             @Override
             public synchronized ResponseEntity<Map<String, Object>> load(LoadRequest request) {
@@ -312,12 +323,22 @@ public class ServingSubprocessMain {
             @Override
             public ResponseEntity<Map<String, Object>> generate(
                     Map<String, Object> request) {
+                if (serializeGenerations) {
+                    synchronized (components.generateController()) {
+                        return components.generateController().generate(request);
+                    }
+                }
                 return components.generateController().generate(request);
             }
 
             @Override
             public ResponseEntity<Map<String, Object>> chat(
                     Map<String, Object> request) {
+                if (serializeGenerations) {
+                    synchronized (components.generateController()) {
+                        return components.generateController().chat(request);
+                    }
+                }
                 return components.generateController().chat(request);
             }
 
@@ -525,6 +546,15 @@ public class ServingSubprocessMain {
         // Apply DSP / optimizer flags from args
         if (servingArgs.dspEnabled() != null && !servingArgs.dspEnabled()) {
             System.setProperty(ND4JSystemProperties.DSP_NO_FREEZE, "true");
+        }
+        // Multi-GPU is a supported serving topology: the native DSP migrator owns
+        // cross-segment movement (peer copy, H2D staging, capacity-shift segment
+        // rebind, host-staged non-peer failover) and the DeviceMemoryManager owns
+        // cap enforcement with automatic admission. Multi-backend routing stays ON
+        // by default; explicit args/system properties may still opt out.
+        Boolean singleGpu = servingArgs.dspSingleGpu();
+        if (singleGpu != null) {
+            System.setProperty(ND4JSystemProperties.DSP_SINGLE_GPU, singleGpu.toString());
         }
         // Explicit args override JSON config; absent settings retain runtime defaults.
         applyOptimizerProperties(servingArgs, config);

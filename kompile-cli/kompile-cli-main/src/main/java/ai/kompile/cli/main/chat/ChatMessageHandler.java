@@ -77,6 +77,10 @@ public class ChatMessageHandler {
     private final Object turnDispatchLock = new Object();
     /** Serializes synchronous crawl/headless turns without blocking cancellation. */
     private final Object synchronousTurnLock = new Object();
+    /** Auto-continue watchdog for provider usage-limit windows (e.g. 5-hour quota). */
+    private final UsageLimitAutoContinue usageLimitAutoContinue = new UsageLimitAutoContinue(
+            this::resumeAfterUsageLimitWindow,
+            line -> ChatCompleter.showNotice(line));
     private final ProviderConnectivityPolicy serverConnectivityPolicy =
             ProviderConnectivityPolicy.forProvider("kompile");
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
@@ -162,6 +166,8 @@ public class ChatMessageHandler {
      */
     public void handleChatMessage(String message) {
         if (!acceptingDispatches.get()) return;
+        // Any user-submitted input takes ownership back from the watchdog.
+        usageLimitAutoContinue.disarm();
         repl.initializeSessionTitleFromPrompt(message);
         // Crawl/headless runs deliberately stay synchronous so callers do not
         // tear down the transcript before the one requested turn completes.
@@ -288,6 +294,7 @@ public class ChatMessageHandler {
 
     /** Stop all dispatch before the owning REPL closes shared session resources. */
     void shutdown() {
+        usageLimitAutoContinue.shutdown();
         synchronized (turnDispatchLock) {
             acceptingDispatches.set(false);
             mandatoryUserFeedback.clear();
@@ -958,6 +965,18 @@ public class ChatMessageHandler {
         }
     }
 
+    /**
+     * Terminal failure evidence for the usage-limit watchdog: the exception
+     * message alone loses the in-band error envelope ("[OpenAI Codex API error
+     * 429: usage limit reached]") that the provider streamed into the turn's
+     * retained output before failing.
+     */
+    private static String textOf(BackgroundTaskManager.BackgroundTask task) {
+        if (task == null) return "";
+        String output = task.getOutput();
+        return output == null ? "" : output;
+    }
+
     private void startActivityIndicator() {
         setForegroundActivity("Thinking");
         repl.requestStatusRedraw();
@@ -974,6 +993,9 @@ public class ChatMessageHandler {
     // ========================================================================
 
     public void handleLocalChat(String message) {
+        // Claude Code-style: a bare image path in the prompt becomes an attached image
+        // plus an [Image #N] chip so the model sees the pixels, not the filename.
+        message = repl.autoAttachImagePaths(message);
         // Build memory-enriched message if memory is enabled
         String enrichedMessage = message;
         if (chatMemory != null && chatMemory.isEnabled()) {
@@ -1006,12 +1028,16 @@ public class ChatMessageHandler {
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             appendFinalTaskOutput(task, response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
+            usageLimitAutoContinue.noteTurnSucceeded();
         } catch (Exception e) {
             if (cancelSignal.get()) {
                 emitInterruptedMessage(task);
             } else {
                 repl.stopGeneratingSpinner();
+                String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in chat: " + e.getMessage()));
+                usageLimitAutoContinue.onTurnFailure(
+                        failure + "\n" + textOf(task), message, !repl.isForceAgentic());
                 task.setError(e);
             }
         }
@@ -1339,6 +1365,7 @@ public class ChatMessageHandler {
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             appendFinalTaskOutput(backgroundTaskManager.getCurrentTask(), response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
+            usageLimitAutoContinue.noteTurnSucceeded();
 
         } catch (Exception e) {
             BackgroundTaskManager.BackgroundTask parentTask = backgroundTaskManager.getCurrentTask();
@@ -1346,10 +1373,27 @@ public class ChatMessageHandler {
                 emitInterruptedMessage(parentTask);
             } else {
                 repl.stopGeneratingSpinner();
+                String failure = e.getMessage() == null ? "" : e.getMessage();
                 emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
+                usageLimitAutoContinue.onTurnFailure(
+                        failure + "\n" + textOf(parentTask), message, !repl.isForceAgentic());
                 if (parentTask != null) parentTask.setError(e);
             }
         }
+    }
+
+    /**
+     * Wake action for the usage-limit watchdog: re-dispatch the failed message
+     * through the ordinary turn path. Runs on the watchdog's scheduler thread;
+     * handleChatMessage's dispatch lock makes the hand-off safe and skips
+     * cleanly when the session is closing or a new turn owns the model.
+     */
+    private void resumeAfterUsageLimitWindow(String message) {
+        ChatCompleter.showNotice(renderer.cyan("  ▶ Usage limit window elapsed — auto-continuing: "
+                + StringUtils.truncate(message, 60)));
+        chatHistory.logSystem("[auto-continue] usage-limit window elapsed; resending "
+                + "the failed turn (attempt budget managed by UsageLimitAutoContinue)");
+        handleChatMessage(message);
     }
 
     // ========================================================================

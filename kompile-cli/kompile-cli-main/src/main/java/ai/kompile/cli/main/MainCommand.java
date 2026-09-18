@@ -61,6 +61,7 @@ import ai.kompile.cli.main.telemetry.TelemetryCommand;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
 import ai.kompile.cli.main.cloud.CloudCommand;
 import ai.kompile.cli.main.web.WebCommand;
+import ai.kompile.cli.common.logs.RetentionSweeper;
 import ai.kompile.cli.plugin.api.CliCommandRegistrar;
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain;
 import org.slf4j.Logger;
@@ -183,6 +184,11 @@ public class MainCommand implements Callable<Integer> {
         // owns only its manifest-declared direct JNI closure; CUDA/ND4J initialization
         // belongs to the model-serving subprocesses spawned on demand.
         NativeLibraryResolver.bootstrapCoreOrThrow();
+
+        // Automatic log retention for process output (agent/subprocess/crawl runs).
+        // Transcripts are intentionally excluded and handled separately. Bounded and
+        // best-effort: never throws, and rate-limited by an internal stamp file.
+        RetentionSweeper.runAtStartup();
 
         CommandLine commandLine = new CommandLine(new MainCommand());
 

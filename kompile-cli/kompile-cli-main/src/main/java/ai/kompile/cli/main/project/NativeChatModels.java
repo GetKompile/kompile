@@ -11,6 +11,7 @@ import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelDiscoveryHttp;
 import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
+import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -38,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /** Native chat boundary shared by MCP pipelines and graph extraction. No CLI or artifact fallback. */
 public final class NativeChatModels {
@@ -186,9 +188,15 @@ public final class NativeChatModels {
                 case "image", "pdf" -> protocol == DirectLlmClient.WireProtocol.OPENAI_CHAT
                         || protocol == DirectLlmClient.WireProtocol.OPENAI_RESPONSES
                         || protocol == DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES;
-                // DirectLlmClient does not emit strict schemas on Anthropic/custom chat routes.
+                // Structured output is a transport capability declared by the
+                // provider descriptor (see ProviderStructuredOutputCapabilities);
+                // DirectLlmClient emits response_format json_schema for every
+                // provider that declares it. Anthropic/custom chat routes without
+                // a declared contract still fall back to validated text.
                 case "json_schema" -> protocol == DirectLlmClient.WireProtocol.OPENAI_RESPONSES
-                        || (protocol == DirectLlmClient.WireProtocol.OPENAI_CHAT && "openai".equals(provider()));
+                        || (protocol == DirectLlmClient.WireProtocol.OPENAI_CHAT
+                                && ProviderStructuredOutputCapabilities.forProvider(provider())
+                                        .supportsJsonSchema());
                 default -> false;
             };
         }
@@ -258,6 +266,20 @@ public final class NativeChatModels {
     public static String call(Path root, Selection selection, String prompt, String systemPrompt,
                               List<DirectLlmClient.AttachmentInput> attachments, JsonNode schema,
                               Duration timeout, int maxResponseChars) throws Exception {
+        return call(root, selection, prompt, systemPrompt, attachments, schema, timeout, maxResponseChars, null);
+    }
+
+    /**
+     * Bounded isolated call that additionally forwards every streamed answer-text chunk
+     * through {@code chunkConsumer} while the response is still in flight. The callback is
+     * observational: cancellation and the {@code maxResponseChars} bound are enforced exactly
+     * as before, the returned string stays the complete final answer, and a throwing observer
+     * never alters the captured result.
+     */
+    public static String call(Path root, Selection selection, String prompt, String systemPrompt,
+                              List<DirectLlmClient.AttachmentInput> attachments, JsonNode schema,
+                              Duration timeout, int maxResponseChars,
+                              Consumer<String> chunkConsumer) throws Exception {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("Positive chat timeout required");
         if (maxResponseChars < 1) throw new IllegalArgumentException("Positive response limit required");
         selection.requireSupported(schema != null ? "json_schema" : attachments.isEmpty() ? "text" : "image");
@@ -279,8 +301,15 @@ public final class NativeChatModels {
                 client.setCancellationCheck(() -> cancelled.get() || owner.isInterrupted() || worker.isInterrupted()
                         || streamedChars.get() > maxResponseChars);
                 client.setOutputConsumer(chunk -> {
-                    if (chunk != null && streamedChars.addAndGet(chunk.length()) > maxResponseChars)
+                    if (chunk == null) return;
+                    if (streamedChars.addAndGet(chunk.length()) > maxResponseChars)
                         throw new IllegalStateException("CHAT_MODEL response exceeds maxResponseChars=" + maxResponseChars);
+                    if (chunkConsumer == null) return;
+                    try {
+                        chunkConsumer.accept(chunk);
+                    } catch (RuntimeException observerFailure) {
+                        // A misbehaving observer must never corrupt the captured answer text.
+                    }
                 });
                 if (!selection.config.isValid()) throw new IOException(
                         "Native chat provider authentication/configuration is unavailable; configure this provider with kompile chat --setup");

@@ -749,6 +749,34 @@ public final class KompileLocalServingBootstrap {
             command.add("-Dfile.encoding=UTF-8");
             command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
             command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
+            // Forward selected ND4J/backend JVM properties to the serving child when the
+            // caller sets them explicitly. Multi-backend routing stays ON by default: the
+            // native DSP migrator owns cross-device movement (peer copy, H2D staging,
+            // capacity-shift rebind) and the DeviceMemoryManager enforces caps with
+            // automatic admission — do not default routing off.
+            String multiAuto = System.getProperty("org.nd4j.backend.multi.auto");
+            if (multiAuto != null && !multiAuto.isBlank()) {
+                command.add("-Dorg.nd4j.backend.multi.auto=" + multiAuto);
+            }
+            String dspDiag = System.getProperty("nd4j.dsp.diagnostics");
+            if (dspDiag != null && !dspDiag.isBlank()) {
+                command.add("-Dnd4j.dsp.diagnostics=" + dspDiag);
+                String level = System.getProperty("nd4j.dsp.diagnostics.level");
+                if (level != null && !level.isBlank()) {
+                    command.add("-Dnd4j.dsp.diagnostics.level=" + level);
+                }
+            }
+            String dspSingleGpu = System.getProperty("nd4j.dsp.singleGpu");
+            if (dspSingleGpu != null && !dspSingleGpu.isBlank()) {
+                command.add("-Dnd4j.dsp.singleGpu=" + dspSingleGpu);
+            }
+            // Default serving children to DSP single-GPU placement: a proportional
+            // split across asymmetric GPUs (e.g. 22 GiB + 4 GiB caps) strands slots on
+            // the small device whose cap then rejects mid-plan migrations. Callers can
+            // still opt into sharding with -Dnd4j.dsp.singleGpu=false on the CLI.
+            if (dspSingleGpu == null || dspSingleGpu.isBlank()) {
+                command.add("-Dnd4j.dsp.singleGpu=true");
+            }
             command.add("-jar");
             command.add(launcher.path().toString());
         }

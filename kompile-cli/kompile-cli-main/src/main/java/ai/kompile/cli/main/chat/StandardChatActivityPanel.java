@@ -21,12 +21,14 @@ import ai.kompile.cli.main.chat.activity.ProjectActivityView;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessMonitor;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.cli.main.chat.tui.StatusBar.SubagentEntry;
 import ai.kompile.utils.FormatUtils;
+import ai.kompile.utils.StringUtils;
 
 import java.time.Instant;
 import java.time.Duration;
@@ -98,9 +100,9 @@ final class StandardChatActivityPanel {
     static final String MAIN_KEY = "main";
     static final String PROJECT_ACTIVITY_KEY = "project:agents";
     private static final int MAX_RETAINED_TOOL_ACTIVITIES = 64;
-    private static final int MAX_INLINE_SUBAGENT_LINES = 80;
-    private static final int MAX_INLINE_SUBAGENT_CHARS = 16_000;
-    private static final int MAX_INLINE_SUBAGENT_LINE_CHARS = 2_000;
+    /** One-line steps shown in the collapsed inline block (the rest collapse into a count). */
+    private static final int MAX_INLINE_SUBAGENT_STEPS = 3;
+    private static final int MAX_INLINE_STEP_CHARS = 160;
 
     private final BackgroundTaskManager taskManager;
     private final BackgroundProcessManager processManager;
@@ -224,7 +226,10 @@ final class StandardChatActivityPanel {
 
     /**
      * Build the replaceable main-transcript block for one subagent. The selected
-     * activity view remains the full transcript; this is only a bounded live tail.
+     * activity view remains the full transcript; the main window only shows a
+     * collapsed header plus the last few one-line steps — the equivalent of a
+     * compact task block. Raw tool output and streamed model text stay in the
+     * inspectable transcript (↓ then Enter) instead of flooding the main window.
      */
     String inlineSubagentTranscript(String id) {
         SubagentEntry entry = findSubagent(id);
@@ -237,27 +242,50 @@ final class StandardChatActivityPanel {
         }
 
         boolean backgrounded = isCurrentTurnBackgrounded();
+        List<String> steps = entry.getRecentSummaries();
         StringBuilder block = new StringBuilder()
                 .append("  ◉ Subagent [").append(entry.getId()).append("] ")
                 .append(entry.getType());
         if (description != null && !description.isBlank()) {
             block.append(" — ").append(description);
         }
-        block.append("\n  ").append(status).append(" · ").append(entry.getElapsed());
+        int total = entry.getTotalSteps();
+        block.append("\n  ").append(entry.getElapsed());
+        if (total > 0) {
+            block.append(" · ").append(total).append(total == 1 ? " step" : " steps");
+        }
+        if (taskManager.isCurrentTaskBackgroundable()) {
+            block.append(" · Ctrl+B background this invocation");
+        }
+        block.append(" · ↓ then Delete to stop or Enter to inspect");
         if (backgrounded) {
             block.append("\n  ◐ Backgrounded · output continues in the subagent row below")
                     .append(" · ↓ selects it; Enter opens it; then type a follow-up · Delete to stop");
             return block.toString();
         }
 
-        block.append("\n  Live activity");
-        if (taskManager.isCurrentTaskBackgroundable()) {
-            block.append(" · Ctrl+B background this invocation");
+        int shown = Math.min(steps.size(), MAX_INLINE_SUBAGENT_STEPS);
+        int hidden = Math.max(0, total - shown);
+        if (hidden > 0) {
+            block.append("\n  … +").append(hidden).append(" earlier step").append(hidden == 1 ? "" : "s");
         }
-        block.append(" · ↓ then Delete to stop or Enter to inspect");
-        String transcript = boundedInlineTranscript(entry.getTranscript());
-        if (!transcript.isBlank()) {
-            block.append('\n').append(transcript);
+
+        boolean active = entry.isActive();
+        if (steps.isEmpty()) {
+            // No discrete steps yet (starting/thinking/connecting): show the live
+            // status as the running row so the block never reads as idle.
+            block.append("\n  ").append(active ? "⟳ " : "⎿ ").append(status.strip());
+            return block.toString();
+        }
+        int first = steps.size() - shown;
+        for (int i = first; i < steps.size(); i++) {
+            String step = steps.get(i);
+            // The runners append " …" to the in-flight call summary and " ✓ "/" ✗ "
+            // to finished ones; a trailing ellipsis alone is not evidence of running.
+            boolean runningStep = active && i == steps.size() - 1
+                    && step.endsWith(" …") && !step.contains(" ✓ ") && !step.contains(" ✗ ");
+            block.append("\n  ").append(runningStep ? "⟳ " : "⎿ ")
+                    .append(StringUtils.truncateEllipsis(step, MAX_INLINE_STEP_CHARS));
         }
         return block.toString();
     }
@@ -266,38 +294,6 @@ final class StandardChatActivityPanel {
         BackgroundTask task = taskManager.getCurrentTask();
         return task != null
                 && task.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
-    }
-
-    private static String boundedInlineTranscript(String transcript) {
-        if (transcript == null || transcript.isBlank()) return "";
-        String[] lines = transcript.split("\\R", -1);
-        int minimum = Math.max(0, lines.length - MAX_INLINE_SUBAGENT_LINES);
-        int first = lines.length;
-        int chars = 0;
-        for (int i = lines.length - 1; i >= minimum; i--) {
-            String line = boundedInlineLine(lines[i]);
-            int added = line.length() + (first == lines.length ? 0 : 1);
-            if (chars + added > MAX_INLINE_SUBAGENT_CHARS && first < lines.length) break;
-            first = i;
-            chars += added;
-        }
-
-        StringBuilder bounded = new StringBuilder(chars + 64);
-        if (first > 0) {
-            bounded.insert(0, "  … earlier subagent activity available below\n");
-        }
-        for (int i = first; i < lines.length; i++) {
-            if (bounded.length() > 0 && bounded.charAt(bounded.length() - 1) != '\n') {
-                bounded.append('\n');
-            }
-            bounded.append(boundedInlineLine(lines[i]));
-        }
-        return bounded.toString().stripTrailing();
-    }
-
-    private static String boundedInlineLine(String line) {
-        if (line.length() <= MAX_INLINE_SUBAGENT_LINE_CHARS) return line;
-        return "…" + line.substring(line.length() - MAX_INLINE_SUBAGENT_LINE_CHARS + 1);
     }
 
     static int reservedRowsForTerminal(int terminalHeight, int terminalWidth) {
@@ -506,14 +502,16 @@ final class StandardChatActivityPanel {
         for (ProcessEntry entry : processes) {
             boolean active = entry.isRunning();
             String state = entry.getState().name().toLowerCase(Locale.ROOT);
+            boolean shared = entry.getKind() == ProcessKind.SHARED;
+            String sharedLabel = shared ? sharedOwnerLabel(entry) + " · " : "";
             rawItems.add(new ActivityItem(
                     "process:" + entry.getId(),
                     entry.getId(),
                     ActivityKind.PROCESS,
-                    truncate(entry.getDescription(), 64),
+                    truncate(sharedLabel + entry.getDescription(), 64),
                     state + " · " + FormatUtils.formatDuration(entry.getDuration()),
                     active,
-                    active && !entry.isVirtual(),
+                    active && !entry.isVirtual() && !shared,
                     entry.getStartTime(),
                     processParentKey(entry, processKeys, processKeysByPid),
                     0));
@@ -715,6 +713,15 @@ final class StandardChatActivityPanel {
             }
         }
         return MAIN_KEY;
+    }
+
+    /** "agent · session" owner tag for a coordination-published shared mirror. */
+    private static String sharedOwnerLabel(ProcessEntry entry) {
+        String agent = entry.getMetadata().get("ownerAgent");
+        if (agent == null || agent.isBlank()) {
+            agent = entry.getMetadata().get("ownerSessionId");
+        }
+        return agent == null || agent.isBlank() ? "shared" : agent;
     }
 
     private void appendChildren(
@@ -1009,12 +1016,21 @@ final class StandardChatActivityPanel {
         } else if (item.kind() == ActivityKind.PROCESS) {
             ProcessEntry process = processManager.get(item.id());
             if (process != null) {
-                details.append("  pid: ").append(process.getPid())
-                        .append(" · command: ").append(process.getCommand()).append("\n");
+                // The log IS the view. The streaming output fills the body so
+                // opening a row means reading the live log, not staring at its
+                // file path; metadata collapses into a footer beneath it.
+                details.append("\n").append(processManager.readOutput(item.id(), 2000))
+                        .append("\n");
+                details.append("\n  command: ").append(process.getCommand()).append("\n");
+                details.append("  pid: ").append(process.getPid());
                 if (process.getOutputFile() != null) {
-                    details.append("  output: ").append(process.getOutputFile()).append("\n");
+                    details.append(" · log: ").append(process.getOutputFile());
                 }
-                details.append("\n").append(processManager.readOutput(item.id(), 2000));
+                details.append("\n");
+                if (process.getKind() == ProcessKind.SHARED) {
+                    details.append("  owner: ").append(sharedOwnerLabel(process))
+                            .append(" · mirrored from coordination state; inspect/logs only\n");
+                }
             }
         } else if (item.kind() == ActivityKind.MONITOR) {
             ProcessMonitor monitor = processManager.getMonitor(item.id());

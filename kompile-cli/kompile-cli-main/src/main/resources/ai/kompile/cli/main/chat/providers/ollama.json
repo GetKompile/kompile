@@ -8,5 +8,14 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "structuredOutput": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://docs.ollama.com/api#generate-a-chat-completion",
+      "verifiedAt": "2026-09-17",
+      "notice": "Ollama accepts format json_schema on chat-completion requests for capable models."
+    },
+    "jsonSchema": true
+  },
   "profiles": []
 }

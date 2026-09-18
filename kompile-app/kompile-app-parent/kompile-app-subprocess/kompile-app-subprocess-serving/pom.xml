@@ -37,6 +37,13 @@
         <!-- Native-image consumes the regular classes/dependency classpath, not the
              multi-gigabyte executable JAR. Distribution JVM packaging leaves this false. -->
         <shade.skip>false</shade.skip>
+        <!-- Module-owned backend selection, following the platform-tests
+             backend.artifactId convention: the property is declared HERE so a CLI
+             -Dnd4j.backend=nd4j-cuda-12.9 override reaches this module's dependency
+             resolution (pom-declared parent properties do not accept CLI -D overrides
+             the same way). Default matches the parent default. -->
+        <nd4j.backend>nd4j-native</nd4j.backend>
+        <nd4j.native.backend>${nd4j.backend}</nd4j.native.backend>
     </properties>
 
     <dependencies>
@@ -108,9 +115,76 @@
     </dependencies>
 
     <!-- Ship the model server as its own runnable artifact. Local MCP crawls launch this
-         narrow binary/JAR directly; they never route through kompile-app-main. -->
+        narrow binary/JAR directly; they never route through kompile-app-main. -->
     <build>
         <plugins>
+            <!-- Thin main jar: runnable from the pom-declared dependency closure
+                 resolved in ~/.m2 (same environment the unit/IT tests see), so dev
+                 serving children never run a bundled closure that can drift from
+                 the installed jars. dependency:build-classpath emits ABSOLUTE m2
+                 paths; antrun stamps them into the manifest (ant folds long
+                 Class-Path lines correctly). Launch: java -jar <this jar>.
+                 The shaded -exec jar remains the distribution artifact. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>emit-runtime-classpath</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>build-classpath</goal>
+                        </goals>
+                        <configuration>
+                            <outputFile>${project.build.directory}/runtime-classpath.txt</outputFile>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <!-- Pin 3.1.0: without a version, Maven's super-POM default (1.3) binds
+                     and silently ignores the modern <target> element, so thin-manifest.mf
+                     is never written and the jar goal fails on the missing manifest. -->
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>thin-jar-manifest</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <loadfile property="runtime.classpath.raw"
+                                      srcFile="${project.build.directory}/runtime-classpath.txt"/>
+                                <!-- Manifest Class-Path is SPACE-separated (URL list),
+                                     not colon-separated like -cp. -->
+                                <pathconvert property="runtime.classpath"
+                                         pathsep=" ">
+                                    <path path="${runtime.classpath.raw}"/>
+                                </pathconvert>
+                                <manifest file="${project.build.directory}/thin-manifest.mf">
+                                    <attribute name="Main-Class"
+                                           value="ai.kompile.app.subprocess.ServingSubprocessMain"/>
+                                    <attribute name="Class-Path" value="${runtime.classpath}"/>
+                                </manifest>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <archive>
+                        <manifestFile>${project.build.directory}/thin-manifest.mf</manifestFile>
+                    </archive>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

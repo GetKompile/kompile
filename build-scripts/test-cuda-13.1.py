@@ -175,12 +175,13 @@ source "$wrapper"
         source = DIST.read_text()
         reactor = source.split('    JAVA_BUILD_MODULES=""', 1)[1].split(
             '    if [ -z "${JAVA_BUILD_MODULES}" ];', 1)[0]
-        result = shell('VARIANT=cli-only; JARS_ONLY=false; LOCAL_RUNTIME=true\n' +
+        result = shell('VARIANT=cli-only; JARS_ONLY=false; LOCAL_RUNTIME=true; CHAT_JAR=true\n' +
                        reactor + '\nprintf "%s\\n" "$JAVA_BUILD_MODULES"')
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
             ":kompile-cli-main,:kompile-model-cli,:kompile-agent-cli,"
-            ":kompile-app-subprocess-serving,:kompile-pipeline-serving\n", result.stdout)
+            ":kompile-app-subprocess-serving,:kompile-pipeline-serving,"
+            ":kompile-app-chat\n", result.stdout)
         self.assertRegex(source, re.compile(
             r'if \[ "\$\{LOCAL_RUNTIME\}" = true \] && \[ "\$\{SERVER_JARS_ONLY\}" = false \]; then'
             r'.*?kompile-model-serving.*?kompile-pipeline-serving.*?"\$\{MAVEN_BUILD_ARGS\[@\]\}"',

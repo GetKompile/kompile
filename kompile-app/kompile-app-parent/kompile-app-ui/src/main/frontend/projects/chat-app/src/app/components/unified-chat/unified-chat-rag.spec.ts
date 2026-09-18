@@ -951,7 +951,8 @@ describe('UnifiedChatComponent - RAG End-to-End', () => {
       expect(component.currentSession).not.toBeNull();
       expect(component.currentSession!.id).not.toBe('browser-session-old');
       expect(component.currentSession!.name).toBe('New Chat');
-      expect(component.sessions.map(session => session.id)).toEqual([component.currentSession!.id]);
+      expect(component.sessions.map(session => session.id)).toEqual([component.currentSession!.id, original.id]);
+      expect(original.messages[0].content).toBe('old');
       expect(component.messages).toEqual([]);
       expect(component.currentConversationId).toBeNull();
       expect((component as any).agentSession).toBeNull();

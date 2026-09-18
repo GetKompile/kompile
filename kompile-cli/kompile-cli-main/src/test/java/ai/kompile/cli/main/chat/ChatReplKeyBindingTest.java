@@ -2,6 +2,7 @@ package ai.kompile.cli.main.chat;
 
 import org.jline.keymap.KeyMap;
 import org.jline.reader.Binding;
+import org.jline.reader.History;
 import org.jline.reader.LineReader;
 import org.jline.reader.Reference;
 import org.jline.terminal.MouseEvent;
@@ -126,6 +127,8 @@ class ChatReplKeyBindingTest {
         keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_BOTTOM_WIDGET),
                 "\033[1;5F", "\033[5F");
         keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET), "\033[M", "\033[<");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_COPY_WIDGET),
+                "\033[27;6;67~", "\033[99;6u", "\033[67;6u");
     }
 
     @Test
@@ -275,6 +278,24 @@ class ChatReplKeyBindingTest {
     }
 
     @Test
+    void shiftCtrlCBindsCopyWidgetWithoutTouchingPlainCtrlC() {
+        assertEquals(ChatRepl.STANDARD_CHAT_COPY_WIDGET,
+                ((Reference) keyMap.getBound("\033[27;6;67~")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_COPY_WIDGET,
+                ((Reference) keyMap.getBound("\033[99;6u")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_COPY_WIDGET,
+                ((Reference) keyMap.getBound("\033[67;6u")).name());
+        // Plain Ctrl+C's modifyOtherKeys encoding (modifier 5 = Ctrl only) must
+        // never reach the copy widget: binding it would hijack cancellation —
+        // exactly the all-hotkeys-removed regression from the earlier session.
+        Object plainCtrlCEncoding = keyMap.getBound("\033[27;5;67~");
+        assertFalse(plainCtrlCEncoding instanceof Reference
+                        && ChatRepl.STANDARD_CHAT_COPY_WIDGET.equals(
+                                ((Reference) plainCtrlCEncoding).name()),
+                "plain Ctrl+C encoding must not be bound to the copy widget");
+    }
+
+    @Test
     void sgrMouseReportsDecodeDragReleaseWheelAndExtendedCoordinates() {
         MouseEvent pressed = ChatRepl.parseSgrMouseEvent("0;301;41M", null);
         assertNotNull(pressed);
@@ -381,5 +402,85 @@ class ChatReplKeyBindingTest {
         assertInstanceOf(Reference.class, boundCtrlX);
         assertEquals("cycle-agent", ((Reference) boundCtrlX).name(),
                 "Varargs bind should (incorrectly) bind bare Ctrl+X — proving the bug exists");
+    }
+
+    // ── Mid-session /model picker: history isolation + arrow scrolling ──────
+
+    /**
+     * The mid-session /model picker borrows the shared chat reader. Its menu
+     * answers (option numbers, model ids) must never land in the chat history:
+     * previously "1" typed inside the picker surfaced later at the chat prompt
+     * via Up/Down recall.
+     */
+    @org.junit.jupiter.api.Test
+    void modelPickerAnswersNeverReachTheChatHistory() {
+        LineReader reader = lineReaderWithPersistedHistory();
+
+        // Chat history contains a real message and the reader is bound to it.
+        reader.getHistory().add("real chat message");
+
+        ChatRepl.PickerHistoryState detached = ChatRepl.beginPickerHistory(reader);
+        try {
+            assertNotNull(detached, "a LineReaderImpl reader must expose its detached state");
+            // Inside the picker: a fresh, empty history backs menu answers.
+            assertNotSame(detached.history(), reader.getHistory());
+            assertEquals(0, reader.getHistory().size(), "picker history starts empty");
+            // Persistence is detached: no history file is linked while the picker is open.
+            assertNull(reader.getVariable(LineReader.HISTORY_FILE),
+                    "the picker must not write menu answers to the chat history file");
+
+            reader.getHistory().add("1");
+            reader.getHistory().add("2");
+            assertEquals(2, reader.getHistory().size(), "picker answers land in the throwaway history");
+        } finally {
+            ChatRepl.endPickerHistory(reader, detached);
+        }
+
+        // After the picker: the chat history is restored and menu answers are gone.
+        assertSame(detached.history(), reader.getHistory());
+        assertEquals(1, reader.getHistory().size(), "menu answers must not pollute the chat history");
+        assertEquals("real chat message", reader.getHistory().get(0));
+        assertEquals(tempDir.resolve("chat-history.txt"),
+                reader.getVariable(LineReader.HISTORY_FILE),
+                "history file variable must be restored");
+    }
+
+    /**
+     * A null detached state (defensive path) is tolerated by the restore call.
+     */
+    @org.junit.jupiter.api.Test
+    void endPickerHistoryToleratesANullDetachedState() {
+        LineReader reader = lineReaderWithPersistedHistory();
+        History before = reader.getHistory();
+
+        assertDoesNotThrow(() -> ChatRepl.endPickerHistory(reader, null));
+        assertSame(before, reader.getHistory(),
+                "a null detached state must leave the active history untouched");
+    }
+
+    private LineReader lineReaderWithPersistedHistory() {
+        try {
+            org.jline.terminal.Terminal terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                    "picker-test", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8);
+            terminal.setSize(new org.jline.terminal.Size(120, 40));
+            pickerTestTerminals.add(terminal);
+
+            return org.jline.reader.LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .variable(LineReader.HISTORY_FILE, tempDir.resolve("chat-history.txt"))
+                    .build();
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("test terminal setup failed", e);
+        }
+    }
+
+    private final java.util.List<org.jline.terminal.Terminal> pickerTestTerminals = new java.util.ArrayList<>();
+
+    @org.junit.jupiter.api.AfterEach
+    void closePickerTestTerminals() {
+        for (org.jline.terminal.Terminal terminal : pickerTestTerminals) {
+            try { terminal.close(); } catch (Exception ignored) {}
+        }
+        pickerTestTerminals.clear();
     }
 }

@@ -71,6 +71,11 @@ class AuthCommandTest {
             assertEquals(0, auth.execute(
                     "login", "openai", "--stdin", "--name", "personal"));
 
+            var open = new ai.kompile.cli.main.chat.config.ChatConfig("openai", null, "model", null);
+            open.bindSession("open-chat");
+            var firstSelection = CredentialStore.create().sessionSelections().get("openai");
+            assertNotNull(firstSelection);
+
             System.setIn(input("work-secret\n"));
             assertEquals(0, auth.execute(
                     "login", "openai", "--stdin", "--name", "work", "--no-switch"));
@@ -80,8 +85,15 @@ class AuthCommandTest {
             assertEquals("personal", store.activeCredentialName("openai"));
             assertEquals("personal-secret", store.resolveApiKey("openai", name -> null));
 
+            assertEquals(firstSelection, store.sessionSelections().get("openai"));
+            assertEquals("personal-secret", open.getApiKey());
             assertEquals(0, auth.execute("switch", "openai", "work"));
             assertEquals("work-secret", store.resolveApiKey("openai", name -> null));
+            assertEquals("work-secret", open.getApiKey());
+
+            System.setIn(input("new-personal-secret\n"));
+            assertEquals(0, auth.execute("login", "openai", "--stdin", "--name", "personal"));
+            assertEquals("new-personal-secret", open.getApiKey());
 
             store.putApiKey("anthropic", "default", "anthropic-secret", true);
             assertEquals(0, auth.execute("logout", "openai", "work"));

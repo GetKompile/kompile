@@ -11,11 +11,14 @@
  *   distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
- * limitations under the License.
+ *  limitations under the License.
  */
 
 package ai.kompile.cli.common.logs;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,24 +32,46 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Enforces log retention under {@code ~/.kompile/logs/agents}.
+ * Enforces log retention under {@code ~/.kompile/logs}.
  *
- * <p>Each agent run is a pair: {@code <processId>.log} + {@code <processId>.meta.json}.
- * Retention operates on this pair as a unit — deleting one always deletes the other.
+ * <p>Each agent/subprocess run is a pair: {@code <id>.log} + {@code <id>.meta.json}.
+ * Retention operates on this pair as a unit — retiring one always retires the other.
  *
- * <p>The manager never deletes files belonging to the current JVM's writers;
- * callers must only pass retention on runs they are not actively writing.
- * Writers use {@link java.nio.file.StandardOpenOption#APPEND} so a concurrent
- * deletion would not corrupt them, but deleting an in-flight log would lose data.
+ * <p>Retirement is either a delete or (when an {@link LogArchiver} is supplied and the
+ * policy enables archiving) a move into the cold archive tree. The manager never retires
+ * files belonging to the current JVM's writers: {@link #skipRunning} (on by default) keeps
+ * any run whose metadata still reports {@code state=RUNNING} with a recent modification
+ * time, so an in-flight run is never archived or deleted. Writers use
+ * {@link java.nio.file.StandardOpenOption#APPEND}, so a concurrent delete would not corrupt
+ * them, but retiring an in-flight log would lose data.
  */
 public final class LogRetentionManager {
 
     private static final Logger log = LoggerFactory.getLogger(LogRetentionManager.class);
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
+
+    /** A run still marked RUNNING is only considered in-flight if touched this recently. */
+    private static final long ACTIVE_GRACE_MS = 6L * 60 * 60 * 1000;
 
     private final LogRetentionPolicy policy;
+    private final LogArchiver archiver;
+    private final boolean skipRunning;
 
+    /** Delete-only retention, skipping in-flight runs. */
     public LogRetentionManager(LogRetentionPolicy policy) {
+        this(policy, null, true);
+    }
+
+    /**
+     * @param archiver    when non-null and {@link LogRetentionPolicy#archiveEnabled()}, retired
+     *                    logs are moved into the archive tree instead of deleted
+     * @param skipRunning skip runs whose metadata reports {@code state=RUNNING} and that were
+     *                    modified recently (in-flight runs)
+     */
+    public LogRetentionManager(LogRetentionPolicy policy, LogArchiver archiver, boolean skipRunning) {
         this.policy = policy;
+        this.archiver = archiver;
+        this.skipRunning = skipRunning;
     }
 
     /** Applies retention to every agent log directory under {@code logs/agents}. */
@@ -57,14 +82,14 @@ public final class LogRetentionManager {
         }
 
         List<File> allLogs = collectAgentLogs(agentsRoot);
-        int deletedByAge = deleteByAge(allLogs);
-        int deletedByPerAgent = deleteByPerAgentCap(agentsRoot);
+        int retiredByAge = deleteByAge(allLogs, "agents");
+        int retiredByPerAgent = deleteByPerAgentCap(agentsRoot, "agents");
         long currentSize = totalSize(collectAgentLogs(agentsRoot));
-        int deletedBySize = 0;
+        int retiredBySize = 0;
         if (currentSize > policy.maxTotalBytes()) {
-            deletedBySize = deleteBySize(collectAgentLogs(agentsRoot), currentSize);
+            retiredBySize = deleteBySize(collectAgentLogs(agentsRoot), currentSize, "agents");
         }
-        return new RetentionResult(deletedByAge, deletedByPerAgent, deletedBySize);
+        return new RetentionResult(retiredByAge, retiredByPerAgent, retiredBySize);
     }
 
     /**
@@ -87,14 +112,14 @@ public final class LogRetentionManager {
         }
 
         List<File> allLogs = collectSubprocessLogs(subprocessesRoot);
-        int deletedByAge = deleteByAge(allLogs);
-        int deletedByPerAgent = deleteByPerTypeCap(subprocessesRoot);
+        int retiredByAge = deleteByAge(allLogs, "subprocesses");
+        int retiredByPerAgent = deleteByPerTypeCap(subprocessesRoot, "subprocesses");
         long currentSize = totalSize(collectSubprocessLogs(subprocessesRoot));
-        int deletedBySize = 0;
+        int retiredBySize = 0;
         if (currentSize > policy.maxTotalBytes()) {
-            deletedBySize = deleteBySize(collectSubprocessLogs(subprocessesRoot), currentSize);
+            retiredBySize = deleteBySize(collectSubprocessLogs(subprocessesRoot), currentSize, "subprocesses");
         }
-        return new RetentionResult(deletedByAge, deletedByPerAgent, deletedBySize);
+        return new RetentionResult(retiredByAge, retiredByPerAgent, retiredBySize);
     }
 
     /**
@@ -107,14 +132,53 @@ public final class LogRetentionManager {
             return RetentionResult.empty();
         }
         List<File> allLogs = collectCrawlLogs(crawlsRoot);
-        int deletedByAge = deleteByAge(allLogs);
-        int deletedByCap = capLeafDirectory(crawlsRoot);
+        int retiredByAge = deleteByAge(allLogs, "crawls");
+        int retiredByCap = capLeafDirectory(crawlsRoot, "crawls");
         long currentSize = totalSize(collectCrawlLogs(crawlsRoot));
-        int deletedBySize = 0;
+        int retiredBySize = 0;
         if (currentSize > policy.maxTotalBytes()) {
-            deletedBySize = deleteBySize(collectCrawlLogs(crawlsRoot), currentSize);
+            retiredBySize = deleteBySize(collectCrawlLogs(crawlsRoot), currentSize, "crawls");
         }
-        return new RetentionResult(deletedByAge, deletedByCap, deletedBySize);
+        return new RetentionResult(retiredByAge, retiredByCap, retiredBySize);
+    }
+
+    /**
+     * Applies retention to flat log files sitting directly under {@code logs/} (e.g.
+     * {@code mcp-activity.log}, {@code mcp-stderr.log}, stray {@code *.out.log} /
+     * {@code *.err.log} launcher files, and rotated {@code *.log.N} copies). Only files
+     * matching {@code *.log} or {@code *.log.<digits>} are in scope; subdirectories
+     * (agents, subprocesses, crawls, transcripts, cli, archive, …) are never touched.
+     * There is no per-run metadata sidecar for these, so age is the safety signal: an
+     * actively-written file has a fresh modification time and is never retired.
+     */
+    public RetentionResult applyToRootFiles() {
+        File logsRoot = LogPaths.logsDirectory();
+        if (!logsRoot.isDirectory()) {
+            return RetentionResult.empty();
+        }
+        List<File> allLogs = collectRootLogFiles(logsRoot);
+        int retiredByAge = deleteByAge(allLogs, "misc");
+        long currentSize = totalSize(collectRootLogFiles(logsRoot));
+        int retiredBySize = 0;
+        if (currentSize > policy.maxTotalBytes()) {
+            retiredBySize = deleteBySize(collectRootLogFiles(logsRoot), currentSize, "misc");
+        }
+        return new RetentionResult(retiredByAge, 0, retiredBySize);
+    }
+
+    private List<File> collectRootLogFiles(File logsRoot) {
+        List<File> out = new ArrayList<>();
+        File[] files = logsRoot.listFiles(File::isFile);
+        if (files == null) {
+            return out;
+        }
+        for (File f : files) {
+            String name = f.getName();
+            if (name.endsWith(".log") || name.matches(".*\\.log\\.[0-9]+")) {
+                out.add(f);
+            }
+        }
+        return out;
     }
 
     private List<File> collectAgentLogs(File agentsRoot) {
@@ -129,7 +193,9 @@ public final class LogRetentionManager {
             for (File agent : agents) {
                 File[] logs = agent.listFiles((d, name) -> name.endsWith(".log"));
                 if (logs == null) continue;
-                java.util.Collections.addAll(out, logs);
+                for (File logFile : logs) {
+                    if (!isSkipped(logFile)) out.add(logFile);
+                }
             }
         }
         return out;
@@ -144,7 +210,9 @@ public final class LogRetentionManager {
         for (File type : types) {
             File[] logs = type.listFiles((d, name) -> name.endsWith(".log"));
             if (logs == null) continue;
-            java.util.Collections.addAll(out, logs);
+            for (File logFile : logs) {
+                if (!isSkipped(logFile)) out.add(logFile);
+            }
         }
         return out;
     }
@@ -153,82 +221,119 @@ public final class LogRetentionManager {
         List<File> out = new ArrayList<>();
         File[] logs = crawlsRoot.listFiles((d, name) -> name.endsWith(".log"));
         if (logs != null) {
-            java.util.Collections.addAll(out, logs);
+            for (File logFile : logs) {
+                if (!isSkipped(logFile)) out.add(logFile);
+            }
         }
         return out;
     }
 
-    private int deleteByAge(List<File> logs) {
+    private int deleteByAge(List<File> logs, String destination) {
         Instant cutoff = Instant.now().minus(policy.maxAge());
-        int deleted = 0;
+        int retired = 0;
         for (File logFile : logs) {
             if (Instant.ofEpochMilli(logFile.lastModified()).isBefore(cutoff)) {
-                if (deletePair(logFile)) {
-                    deleted++;
+                if (retirePair(logFile, destination)) {
+                    retired++;
                 }
             }
         }
-        return deleted;
+        return retired;
     }
 
-    private int deleteByPerAgentCap(File agentsRoot) {
-        int deleted = 0;
+    private int deleteByPerAgentCap(File agentsRoot, String destination) {
+        int retired = 0;
         File[] instances = agentsRoot.listFiles(File::isDirectory);
         if (instances == null) return 0;
         for (File instance : instances) {
             File[] agents = instance.listFiles(File::isDirectory);
             if (agents == null) continue;
             for (File agent : agents) {
-                deleted += capLeafDirectory(agent);
+                retired += capLeafDirectory(agent, destination);
             }
         }
-        return deleted;
+        return retired;
     }
 
-    private int deleteByPerTypeCap(File subprocessesRoot) {
-        int deleted = 0;
+    private int deleteByPerTypeCap(File subprocessesRoot, String destination) {
+        int retired = 0;
         File[] types = subprocessesRoot.listFiles(File::isDirectory);
         if (types == null) return 0;
         for (File type : types) {
-            deleted += capLeafDirectory(type);
+            retired += capLeafDirectory(type, destination);
         }
-        return deleted;
+        return retired;
     }
 
-    private int capLeafDirectory(File dir) {
+    private int capLeafDirectory(File dir, String destination) {
         File[] logs = dir.listFiles((d, name) -> name.endsWith(".log"));
-        if (logs == null || logs.length <= policy.maxFilesPerAgent()) return 0;
-        List<File> sorted = new ArrayList<>(java.util.Arrays.asList(logs));
-        sorted.sort(Comparator.comparingLong(File::lastModified));
-        int excess = sorted.size() - policy.maxFilesPerAgent();
-        int deleted = 0;
+        if (logs == null) return 0;
+        List<File> eligible = new ArrayList<>();
+        for (File logFile : logs) {
+            if (!isSkipped(logFile)) eligible.add(logFile);
+        }
+        if (eligible.size() <= policy.maxFilesPerAgent()) return 0;
+        eligible.sort(Comparator.comparingLong(File::lastModified));
+        int excess = eligible.size() - policy.maxFilesPerAgent();
+        int retired = 0;
         for (int i = 0; i < excess; i++) {
-            if (deletePair(sorted.get(i))) {
-                deleted++;
+            if (retirePair(eligible.get(i), destination)) {
+                retired++;
             }
         }
-        return deleted;
+        return retired;
     }
 
-    private int deleteBySize(List<File> logs, long currentSize) {
+    private int deleteBySize(List<File> logs, long currentSize, String destination) {
         List<File> sorted = new ArrayList<>(logs);
         sorted.sort(Comparator.comparingLong(File::lastModified));
-        int deleted = 0;
+        int retired = 0;
         for (File logFile : sorted) {
             if (currentSize <= policy.maxTotalBytes()) break;
             long fileSize = logFile.length();
-            if (deletePair(logFile)) {
+            if (retirePair(logFile, destination)) {
                 currentSize -= fileSize;
-                deleted++;
+                retired++;
             }
         }
-        return deleted;
+        return retired;
     }
 
     private long totalSize(List<File> logs) {
         long total = 0L;
         for (File f : logs) total += f.length();
         return total;
+    }
+
+    /** Archive (if enabled) or delete the log plus its metadata sidecar, as a unit. */
+    private boolean retirePair(File logFile, String destination) {
+        if (archiver != null && policy.archiveEnabled()) {
+            File metaFile = new File(logFile.getParentFile(), pairedMetaName(logFile.getName()));
+            return archiver.archive(logFile, metaFile, destination);
+        }
+        return deletePair(logFile);
+    }
+
+    private boolean isSkipped(File logFile) {
+        if (!skipRunning) {
+            return false;
+        }
+        File metaFile = new File(logFile.getParentFile(), pairedMetaName(logFile.getName()));
+        if (!metaFile.isFile()) {
+            return false;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(metaFile);
+            boolean running = "RUNNING".equals(node.path("state").asText(null));
+            boolean ended = node.has("endedAt") && !node.get("endedAt").isNull();
+            if (!running || ended) {
+                return false;
+            }
+            long age = System.currentTimeMillis() - logFile.lastModified();
+            return age < ACTIVE_GRACE_MS;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private boolean deletePair(File logFile) {
@@ -256,6 +361,11 @@ public final class LogRetentionManager {
         return logName + ".meta.json";
     }
 
+    /**
+     * Counts of runs retired (archived or deleted) by each cap. Field names retain the
+     * historical "deleted" wording for backward compatibility with callers that only know
+     * about deletion; "retired" is the accurate term when archiving is enabled.
+     */
     public record RetentionResult(int deletedByAge, int deletedByPerAgent, int deletedBySize) {
         public int totalDeleted() {
             return deletedByAge + deletedByPerAgent + deletedBySize;

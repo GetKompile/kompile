@@ -574,9 +574,23 @@ class LocalProjectGraphBackendTest {
             boolean persisted = prompt.contains(
                     "Only add missing node types; never repeat or redefine these frozen node types")
                     && prompt.contains("OLD_ENTITY");
-            String label = persisted ? "NEW_ENTITY" : "OLD_ENTITY";
-            return mapper.writeValueAsString(Map.of("nodeTypes", List.of(
-                    Map.of("label", label, "parentType", "CONCEPT"))));
+            // The corpus-wide consolidation pass accepts only label/parentType;
+            // the per-batch discovery pass additionally requires 1-2 evidence
+            // spans whose sourceId is a submitted window (s1, s2, ...) and whose
+            // quote is an exact bounded substring of that window's content.
+            if (prompt.contains("schema type consolidation")) {
+                String label = persisted ? "NEW_ENTITY" : "OLD_ENTITY";
+                return mapper.writeValueAsString(Map.of("nodeTypes", List.of(
+                        Map.of("label", label, "parentType", "CONCEPT"))));
+            }
+            String windowContent = firstSubmittedWindow(prompt);
+            String quote = windowContent.length() > 60
+                    ? windowContent.substring(0, 60) : windowContent;
+            Map<String, Object> proposal = Map.of(
+                    "label", persisted ? "NEW_ENTITY" : "OLD_ENTITY",
+                    "parentType", "CONCEPT",
+                    "evidence", List.of(Map.of("sourceId", "s1", "quote", quote)));
+            return mapper.writeValueAsString(Map.of("nodeTypes", List.of(proposal)));
         }
         if (schemaProperty(schema, "relationshipTypes")) {
             boolean persisted = prompt.contains(
@@ -586,12 +600,41 @@ class LocalProjectGraphBackendTest {
                     Map.of("type", "OLD_REL", "connectionFamily", "REFERENCE"));
             return mapper.writeValueAsString(Map.of("relationshipTypes", values));
         }
+        if (schemaProperty(schema, "classifications")) {
+            // submit_entity_classifications sample: classify the corpus's named
+            // entities with a common-noun category and a trusted baseline parent.
+            return mapper.writeValueAsString(Map.of("classifications", List.of(
+                    Map.of("name", "Old Entity", "category", "ORGANIZATION",
+                            "parentType", "ORGANIZATION"),
+                    Map.of("name", "New Entity", "category", "ORGANIZATION",
+                            "parentType", "ORGANIZATION"))));
+        }
         throw new AssertionError("unexpected native schema bridge contract: " + schema);
     }
 
     private static boolean schemaProperty(Map<String, Object> schema, String property) {
         Object properties = schema == null ? null : schema.get("properties");
         return properties instanceof Map<?, ?> values && values.containsKey(property);
+    }
+
+    /** Read s1's content from the prompt's UNTRUSTED_CORPUS_PASSAGES_JSON block. */
+    private String firstSubmittedWindow(String prompt) {
+        try {
+            int marker = prompt.indexOf("UNTRUSTED_CORPUS_PASSAGES_JSON=");
+            if (marker < 0) return "";
+            int start = marker + "UNTRUSTED_CORPUS_PASSAGES_JSON=".length();
+            int end = prompt.indexOf('\n', start);
+            String json = prompt.substring(start, end < 0 ? prompt.length() : end).trim();
+            List<?> windows = mapper.readValue(json, List.class);
+            for (Object window : windows) {
+                if (window instanceof Map<?, ?> entry && "s1".equals(entry.get("sourceId"))) {
+                    return entry.get("content") instanceof String text ? text : "";
+                }
+            }
+            return "";
+        } catch (Exception brokenPrompt) {
+            throw new AssertionError("native fixture could not read submitted windows", brokenPrompt);
+        }
     }
 
     private static String nativeFacts(String entityType) {

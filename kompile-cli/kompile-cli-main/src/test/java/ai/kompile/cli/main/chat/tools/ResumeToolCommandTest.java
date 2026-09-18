@@ -360,6 +360,62 @@ class ResumeToolCommandTest {
     }
 
     @Test
+    @org.junit.jupiter.api.parallel.ResourceLock(org.junit.jupiter.api.parallel.Resources.SYSTEM_PROPERTIES)
+    @org.junit.jupiter.api.Timeout(10)
+    void failedSavedAuthenticationKeepsPickerUsableForAnotherSelection() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousDir = System.getProperty("user.dir");
+        ChatSourceRegistry previousSources = ChatSourceRegistry.getInstance();
+        System.setProperty("user.home", tempDir.toString());
+        System.setProperty("user.dir", tempDir.toString());
+        ChatSourceRegistry.setInstance(ChatSourceRegistry.of(List.of()));
+        try {
+            String id = "failed-auth-resume";
+            ChatHistory history = new ChatHistory(id);
+            history.open("(local)", null, false, tempDir);
+            history.logUserMessage("resume after failed authorization");
+            history.close();
+            var store = ai.kompile.cli.main.auth.CredentialStore.create();
+            store.putApiKey("openai", "selected", "test-secret", true);
+            var config = new ai.kompile.cli.main.chat.config.ChatConfig("openai", null, "model", null);
+            config.bindSession(id);
+            store.deleteCredential("openai", "selected");
+            Path configPath = ai.kompile.cli.main.chat.config.ChatConfig.sessionConfigPath(id);
+            String before = Files.readString(configPath);
+
+            var output = new java.io.StringWriter();
+            Terminal terminal = org.mockito.Mockito.mock(Terminal.class);
+            org.mockito.Mockito.when(terminal.writer()).thenReturn(new java.io.PrintWriter(output, true));
+            org.mockito.Mockito.when(terminal.getWidth()).thenReturn(120);
+            org.mockito.Mockito.when(terminal.getHeight()).thenReturn(30);
+            var closed = new java.util.concurrent.atomic.AtomicInteger();
+            org.mockito.Mockito.doAnswer(call -> { closed.incrementAndGet(); return null; })
+                    .when(terminal).close();
+            var answers = new java.util.ArrayDeque<>(List.of("r 1", "1", "", "r 1", "1", "", "q"));
+            LineReader input = org.mockito.Mockito.mock(LineReader.class, call -> {
+                if (!call.getMethod().getName().equals("readLine")) return null;
+                assertEquals(0, closed.get(), "Auth failure must not close the picker terminal");
+                assertFalse(answers.isEmpty(), "Unexpected extra prompt");
+                return answers.removeFirst();
+            });
+            ResumeTool tool = new ResumeTool(terminal, input, null, new ConversationImportTool(),
+                    new ai.kompile.cli.main.chat.format.ConversationFormatter(), new ConversationReader());
+            ToolResult result = tool.runInteractiveBrowser();
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(answers.isEmpty(), "The picker must accept a second selection and then quit");
+            assertEquals(1, closed.get(), "Only explicit quit closes the terminal");
+            assertTrue(output.toString().contains("Error resuming standard chat:"));
+            assertTrue(output.toString().contains("Press Enter to return to the resume browser"));
+            assertFalse(output.toString().contains("test-secret"));
+            assertEquals(before, Files.readString(configPath), "Failed resume must retain the saved pin");
+        } finally {
+            ChatSourceRegistry.setInstance(previousSources);
+            System.setProperty("user.home", previousHome);
+            System.setProperty("user.dir", previousDir);
+        }
+    }
+
+    @Test
     void standardChatsAreExposedAndDefaultToLiteralKompileResume() throws Exception {
         String previousHome = System.getProperty("user.home");
         Path home = tempDir.resolve("standard-chat-home");

@@ -21,24 +21,42 @@ import java.time.Duration;
 /**
  * Retention thresholds applied by {@link LogRetentionManager}.
  *
- * <p>Three independent caps — any single cap being violated triggers deletion
- * of the oldest logs first (by file modification time). Caps are applied in
- * the order: age, per-agent count, total size.
+ * <p>Three independent caps — any single cap being violated triggers retirement
+ * (archive or delete) of the oldest logs first (by file modification time). Caps
+ * are applied in the order: age, per-agent count, total size.
+ *
+ * <p>When {@link #archiveEnabled()} is {@code true}, "retirement" means moving the
+ * log (and its metadata sidecar) into the archive tree under
+ * {@code ~/.kompile/logs/archive/&lt;destination&gt;/&lt;yyyy-MM&gt;/} instead of deleting it.
+ * Archived files are then subject to {@link #coldRetention()}, after which they are
+ * permanently deleted. Transcripts are intentionally NOT governed by this policy —
+ * see {@code ChatTranscriptRetention} for the separate transcript lifecycle.
  */
 public record LogRetentionPolicy(
         Duration maxAge,
         long maxTotalBytes,
-        int maxFilesPerAgent) {
+        int maxFilesPerAgent,
+        boolean archiveEnabled,
+        Duration coldRetention) {
 
     public static final LogRetentionPolicy DEFAULT = new LogRetentionPolicy(
             Duration.ofDays(30),
             2L * 1024 * 1024 * 1024,
-            100);
+            100,
+            true,
+            Duration.ofDays(90));
 
     public static LogRetentionPolicy of(long maxAgeDays, long maxTotalMb, int maxFilesPerAgent) {
+        return of(maxAgeDays, maxTotalMb, maxFilesPerAgent, true, 90);
+    }
+
+    public static LogRetentionPolicy of(long maxAgeDays, long maxTotalMb, int maxFilesPerAgent,
+                                        boolean archiveEnabled, long coldRetentionDays) {
         return new LogRetentionPolicy(
                 Duration.ofDays(maxAgeDays),
                 maxTotalMb * 1024L * 1024L,
-                maxFilesPerAgent);
+                maxFilesPerAgent,
+                archiveEnabled,
+                Duration.ofDays(coldRetentionDays));
     }
 }

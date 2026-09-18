@@ -267,7 +267,24 @@ dev_copy() {
         done
     fi
     if [ -n "${src}" ]; then
+        # Fail loudly BEFORE truncating lib/<name>: a disk-full copy silently
+        # leaves a truncated jar that later launches as "Invalid or corrupt jarfile".
+        local src_bytes dest_bytes avail_bytes
+        src_bytes="$(wc -c < "${src}" | tr -d '[:space:]')"
+        avail_bytes="$(df -k "${INSTALL_DIR}" 2>/dev/null | awk 'NR==2 {print $4*1024}')"
+        if [ -n "${avail_bytes}" ] && [ "${avail_bytes}" -gt 0 ] \
+                && [ "${src_bytes}" -ge "${avail_bytes}" ]; then
+            error "${lib_name}: ${src} is ${src_bytes} bytes but ${INSTALL_DIR} has only ${avail_bytes} free"
+            error "Free disk space and rerun the install; refusing to write a truncated ${lib_name}"
+            return 1
+        fi
         cp -f "${src}" "${INSTALL_DIR}/lib/${lib_name}"
+        dest_bytes="$(wc -c < "${INSTALL_DIR}/lib/${lib_name}" | tr -d '[:space:]')"
+        if [ "${src_bytes}" != "${dest_bytes}" ]; then
+            error "${lib_name}: copy truncated (${src_bytes} -> ${dest_bytes} bytes); disk may have filled mid-copy"
+            rm -f -- "${INSTALL_DIR}/lib/${lib_name}"
+            return 1
+        fi
         info "  ${lib_name}  <-  ${src} ($(du -h "${src}" | cut -f1))"
     else
         info "  SKIP ${lib_name}  (no ${classifier} jar in ${repo_dir} or ~/.m2/repository/ai/kompile/${artifact})"
@@ -286,12 +303,23 @@ if [ "${DEV_MODE}" = "1" ]; then
     dev_copy "kompile-cli/kompile-app-cli/target"                                                           kompile-app-cli                   shaded kompile-app-cli.jar
     dev_copy "kompile-cli/kompile-model-cli/target"                                                         kompile-model                     shaded kompile-model.jar
     dev_copy "kompile-cli/kompile-component-cli/target"                                                     kompile-component                 shaded kompile-component.jar
+    # CLI web handoff payload (ChatInstanceBootstrap). Absent target/ prints a
+    # graceful SKIP, same as every other row.
+    dev_copy "kompile-app/kompile-app-parent/kompile-app-chat/target"                                       kompile-app-chat                  exec   kompile-chat.jar
     dev_copy "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target"  kompile-app-subprocess-serving    exec   kompile-model-serving.jar
     dev_copy "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target"                   kompile-pipeline-serving          exec   kompile-pipeline-serving.jar
 
     # Optional extras: copied only when present.
     dev_copy "kompile-app/kompile-data/kompile-compute-graphs/kompile-compute-graph-scripting/target"       kompile-compute-graph-scripting   exec   kompile-scripting-worker.jar
     dev_copy "kompile-app/kompile-middleware/kompile-sdk-serving/target"                                    kompile-sdk-serving               shaded kompile-sdk-serving.jar
+
+    # First-party defaults are distribution payload, not user-authored overrides.
+    SKILLS_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/skills"
+    if [ -d "${SKILLS_SRC}" ]; then
+        mkdir -p "${INSTALL_DIR}/lib/skills"
+        cp -R "${SKILLS_SRC}/." "${INSTALL_DIR}/lib/skills/"
+        info "Installed first-party skills into ${INSTALL_DIR}/lib/skills"
+    fi
 
     # Swapped exec jars invalidate any previously extracted subprocess classpath.
     if [ -d "${INSTALL_DIR}/lib/.boot-inf-extracted" ]; then
@@ -394,7 +422,8 @@ if [ -z "${VARIANT}" ]; then
     if select_download_url full >/dev/null; then
         VARIANT="full"
     else
-        echo "  (full distribution not published for ${PLATFORM} — installing cli-only; server components unavailable)"
+        echo "  (full distribution not published for ${PLATFORM} — installing cli-only;"
+        echo "   chat runs from the bundled handoff JAR; server personas unavailable)"
         VARIANT="cli-only"
     fi
 fi

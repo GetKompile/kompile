@@ -223,7 +223,7 @@ class ShellMandatePolicyTest {
                 "ps aux | grep java",
                 "ps aux | grep java | grep -v grep",
                 "ps aux | awk '{print $2}'",
-                "git log --oneline -10 | head -5",
+                "git log --oneline -5",
                 "jcmd 1 Thread.print | grep RUNNABLE",
                 "echo hello | grep hello",
                 "printf '%s\\n' a b | grep a",
@@ -378,6 +378,96 @@ class ShellMandatePolicyTest {
     }
 
     @Nested
+    @DisplayName("Sleep is banned — waiting must go through process monitors")
+    class SleepBan {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "sleep 30",
+                "sleep 0.5",
+                "sleep 1h30m",
+                "sleep 500ms",
+                "sleep 30s && mvn test",
+                "mvn test; sleep 5; git status",
+                "nohup sleep 60 &",
+                "timeout 10 sleep 5",
+                "sleep 5 | cat",
+                "usleep 1000",
+                "bash -c 'sleep 5'",
+                "echo $(sleep 1)",
+                "at now + 5 minutes -f job.sh",
+                "at 09:30 -f job.sh"
+        })
+        void blockedForms(String command) {
+            assertBlocked("bash", command);
+        }
+
+        @Test
+        void violationPointsAtProcessMonitors() {
+            EnforcerToolCallDecision decision = eval("bash", "sleep 30");
+            assertTrue(decision.getViolations().get(0).contains("process"),
+                    () -> decision.blockMessage());
+        }
+
+        @Test
+        void plainAtWithoutTimeSpecPasses() {
+            assertAllowed("bash", "at -l");
+        }
+
+        @Test
+        void correctionPromptNamesMonitorsAndPolling() {
+            EnforcerToolCallDecision decision = eval("bash", "sleep 30");
+            assertTrue(decision.getCorrectionPrompt().contains("action=monitor"),
+                    decision::getCorrectionPrompt);
+        }
+
+        @Test
+        void similarlyNamedBinariesAreNotOverBlocked() {
+            assertAllowed("bash", "sleepless daemon");
+        }
+    }
+
+    @Nested
+    @DisplayName("Stream slicing with head/tail is banned — page via dedicated paths")
+    class StreamSlicers {
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "mvn test 2>&1 | tail -30",
+                "mvn test | head -20",
+                "git log --oneline -10 | head -5",
+                "git log | head -20",
+                "find . | head",
+                "ls | tail -5",
+                "jcmd 1 Thread.print | tail -50",
+                "echo hi | head -1",
+                "git diff | head -40",
+                "git log --oneline | head -5 | wc -l"
+        })
+        void blockedForms(String command) {
+            assertBlocked("bash", command);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "mvn test | grep ERROR",                     // search filter over a stream stays legal
+                "ps aux | awk '{print $2}'",                 // awk filter unchanged
+                "git log --oneline -5",                      // native limit flag
+                "git status | wc -l",                        // non-slicing filter unchanged
+                "head -1 <<< \"$var\"",                      // inlined text, not fishing a stream
+                "tail -3 -",                                 // explicit stdin source
+        })
+        void allowedForms(String command) {
+            assertAllowed("bash", command);
+        }
+
+        @Test
+        void violationNamesThePagingPaths() {
+            EnforcerToolCallDecision decision = eval("bash", "mvn test 2>&1 | tail -30");
+            String message = decision.getViolations().get(0);
+            assertTrue(message.contains("fetch_result") && message.contains("tail_lines"), message);
+        }
+    }
+
+    @Nested
     @DisplayName("Wiring")
     class Wiring {
         @TempDir
@@ -420,6 +510,14 @@ class ShellMandatePolicyTest {
                         "bash", Map.of("command", "sed -i 's/a/b/' src/Foo.java"));
                 assertFalse(decision.isAllowed());
                 assertTrue(guard.describe().contains("lazy"), "hard block must not build the judge");
+            }
+        }
+
+        @Test
+        void guardBlocksSleepWithoutJudgeOrRules() throws Exception {
+            try (EnforcerToolCallGuard guard = guardWithRules("Use tools relevant to the request.")) {
+                assertFalse(guard.evaluate("bash", Map.of("command", "sleep 30")).isAllowed(),
+                        "sleep must be hard-blocked by the deterministic mandate");
             }
         }
 

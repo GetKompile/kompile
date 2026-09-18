@@ -140,6 +140,13 @@
     </files>
 
     <fileSets>
+        <!-- First-party defaults; user overrides remain in ~/.kompile/skills. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/skills</directory>
+            <outputDirectory>lib/skills</outputDirectory>
+            <useDefaultExcludes>true</useDefaultExcludes>
+        </fileSet>
+
         <!-- Complete DL4J companion SDK, validated and staged by the POM. -->
         <fileSet>
             <directory>${project.build.directory}/sdx-sdk</directory>

@@ -45,6 +45,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** MCP-native authoring, versioning, validation, and execution for every pipeline. */
 public final class PipelineTool implements CliTool {
@@ -84,6 +85,8 @@ public final class PipelineTool implements CliTool {
                 + "Capabilities can inspect provider/model/operation without calls; probe=true opts into a bounded synthetic live test. "
                 + "Probe text and image separately for each exact model; catalog membership is not modality proof. "
                 + "run is asynchronous by default; poll status with the returned runId until terminal=true. "
+                + "status exposes the last stage progress event plus streamed output metadata "
+                + "(chunk/char counts and a bounded outputPreview) for CHAT_MODEL runs. "
                 + "FAILED status includes the page/step diagnostic and stops execution on the first VLM page error. "
                 + "Use model_runtime status/bootstrap/import/convert to acquire or prepare artifacts, or use localPath for local-only models.";
     }
@@ -735,7 +738,7 @@ public final class PipelineTool implements CliTool {
                 UnifiedPipelineDefinition prepared = prepare(root, definition, input, runtime, registration, false);
                 String text = ChatModelPipelineRunner.executeDefinition(root, prepared, input, event -> {
                     if (state != null) state.progress = event;
-                });
+                }, state == null ? null : state::recordChunk);
                 if (Thread.currentThread().isInterrupted() || (state != null && state.cancelRequested.get())) {
                     throw new InterruptedException("CHAT_MODEL cancelled");
                 }
@@ -1342,6 +1345,8 @@ public final class PipelineTool implements CliTool {
     }
 
     private static final class RunState {
+        /** Status responses stay bounded; the full text only materializes in terminal output. */
+        private static final int MAX_STREAM_PREVIEW_CHARS = 4096;
         private final String runId;
         private final String pipelineId;
         private final long version;
@@ -1358,6 +1363,11 @@ public final class PipelineTool implements CliTool {
         private volatile Thread hostRequestOwner;
         private volatile boolean hostFinished;
         private volatile Map<String, Object> progress;
+        private final AtomicLong streamedChunks = new AtomicLong();
+        private final AtomicLong streamedChars = new AtomicLong();
+        private volatile long streamingStartedAt;
+        private volatile long streamingLastChunkAt;
+        private final StringBuilder streamPreview = new StringBuilder();
 
         private RunState(String runId, String pipelineId, long version, boolean host) {
             this.runId = runId;
@@ -1369,6 +1379,21 @@ public final class PipelineTool implements CliTool {
         private boolean hostTerminationConfirmed() {
             return (hostFinished || (hostTask != null && hostTask.isCancelled() && hostWorker == null))
                     && !NativeChatModels.hasActiveRequest(hostRequestOwner);
+        }
+
+        /** Observational chunk sink; must never throw into the streaming request. */
+        private void recordChunk(String chunk) {
+            if (chunk == null || chunk.isEmpty()) return;
+            long now = System.currentTimeMillis();
+            streamedChunks.incrementAndGet();
+            streamedChars.addAndGet(chunk.length());
+            streamingLastChunkAt = now;
+            if (streamingStartedAt == 0L) streamingStartedAt = now;
+            synchronized (streamPreview) {
+                streamPreview.append(chunk);
+                int overflow = streamPreview.length() - MAX_STREAM_PREVIEW_CHARS;
+                if (overflow > 0) streamPreview.delete(0, overflow);
+            }
         }
 
         private synchronized Map<String, Object> snapshot() {
@@ -1383,6 +1408,17 @@ public final class PipelineTool implements CliTool {
             if (error != null) result.put("error", error);
             if (diagnostic != null) result.put("diagnostic", diagnostic);
             if (progress != null) result.put("progress", progress);
+            if (streamedChunks.get() > 0 || streamingStartedAt > 0) {
+                Map<String, Object> streaming = new LinkedHashMap<>();
+                streaming.put("chunkCount", streamedChunks.get());
+                streaming.put("charCount", streamedChars.get());
+                streaming.put("startedAt", streamingStartedAt);
+                streaming.put("lastChunkAt", streamingLastChunkAt);
+                String preview;
+                synchronized (streamPreview) { preview = streamPreview.toString(); }
+                if (!preview.isEmpty()) streaming.put("outputPreview", preview);
+                result.put("streaming", streaming);
+            }
             if (host) {
                 result.put("execution", "CHAT_MODEL");
                 result.put("terminationConfirmed", hostTerminationConfirmed());

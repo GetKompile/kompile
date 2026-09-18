@@ -30,7 +30,8 @@
 #   build-kompile-local.sh      Lean local (CLI + request-scoped workers)
 #   build-kompile-local-cpu.sh  Lean local CPU preset
 #   build-kompile-local-cuda.sh Lean local CUDA 12.9 preset
-#   build-kompile-cli-only.sh   cli-only dist: CLI images, no servers/runtime
+#   build-kompile-cli-only.sh   cli-only dist: CLI images + chat handoff jar,
+#                               no server personas/runtime
 #   build-kompile-hosted.sh     hosted dist: full web product, no local backend
 #   build-kompile-full.sh       full dist: CPU product + bundled runtime
 #   build-kompile-target.sh     Named images only (e.g. cli,app), no dist

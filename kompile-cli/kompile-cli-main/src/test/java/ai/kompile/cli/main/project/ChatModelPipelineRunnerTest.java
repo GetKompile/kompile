@@ -50,10 +50,13 @@ class ChatModelPipelineRunnerTest {
                     "text", Map.of("modelId", "request-model", "maxInputChars", 10_000));
 
             List<Map<String, Object>> progress = new ArrayList<>();
+            List<String> chunks = new ArrayList<>();
             String result = ChatModelPipelineRunner.extract(
-                    tempDir, input, pipeline, "", progress::add);
+                    tempDir, input, pipeline, "", progress::add, chunks::add);
 
             assertTrue(result.contains("Remote text"), result);
+            assertEquals(List.of("# Remote text\n\nprocessed"), chunks,
+                    "The streamed answer text must reach the consumer while the final result stays intact");
             assertEquals(1, requests.size());
             assertEquals("request-model", requests.get(0).path("model").asText());
             JsonNode content = userContent(requests.get(0));

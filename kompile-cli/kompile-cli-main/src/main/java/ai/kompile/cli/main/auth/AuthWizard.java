@@ -131,7 +131,7 @@ final class AuthWizard implements AutoCloseable {
         }
 
         boolean activate = existing.isEmpty()
-                || prompter.confirm("Use this credential now for " + providerLabel(providerId) + "?", true);
+                || prompter.confirm("Use this credential now for " + providerLabel(providerId) + " (including open chats)?", true);
         return new LoginRequest(
                 credentialProviderId,
                 credentialName,
@@ -171,7 +171,7 @@ final class AuthWizard implements AutoCloseable {
     }
 
     SwitchRequest promptForSwitch(CredentialStore store) throws IOException {
-        prompter.header("Kompile Auth Switch", "Choose the active credential for a provider");
+        prompter.header("Kompile Auth Switch", "Choose the provider credential, including for open chats");
         List<CredentialStore.CredentialInfo> all = store.list();
         if (all.isEmpty()) {
             prompter.message("No stored credentials. Run 'kompile auth login' first.");

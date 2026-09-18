@@ -169,12 +169,13 @@ public class SetupWizard {
     private static final List<String> CHAT_MODE_OPTIONS = List.of(
             "Standard Chat — REPL with RAG, memory, and tools",
             "Passthrough — delegate to Claude Code, Codex, Gemini, etc.",
+            "Workflow — multi-model team (designer → workers → reviewer)",
             "Resume Previous Conversation",
             "Resume All — launch recently active sessions in new terminals"
     );
 
     private static final List<String> CHAT_MODE_VALUES = List.of(
-            "standard", "passthrough", "resume", "resume-all");
+            "standard", "passthrough", "workflow", "resume", "resume-all");
 
 
     /**
@@ -206,8 +207,17 @@ public class SetupWizard {
 
     public enum Destination { TERMINAL, BROWSER }
 
-    /** Invocation-only routing; never part of a profile, credential, or session config. */
-    public record SetupResult(ChatConfig config, Destination destination) {}
+    /**
+     * Invocation-only routing plus the workflow team chosen during setup; never
+     * part of a profile, credential, or persisted session config. {@code workflow}
+     * is null when the user declined a workflow (or selected None).
+     */
+    public record SetupResult(ChatConfig config, Destination destination,
+                              ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot workflow) {
+        public SetupResult(ChatConfig config, Destination destination) {
+            this(config, destination, null);
+        }
+    }
 
     public static SetupResult runWithDestination(ChatConfig.Scope scope, Path projectRoot) {
         return run(scope, projectRoot, false, true);
@@ -316,15 +326,41 @@ public class SetupWizard {
                 return new SetupResult(completedAction, Destination.TERMINAL);
             }
 
+            // Workflow mode: a multi-model team session. The team selection IS the
+            // step — the base chat config is whatever the project already has. The
+            // returned sentinel config carries chatMode "workflow"; ChatCommand
+            // consumes the snapshot separately.
+            if ("workflow".equals(chatMode)) {
+                WorkflowSelection workflow = chooseWorkflow(reader, projectRoot);
+                if (workflow.cancelled()) return null;
+                if (workflow.snapshot() == null) {
+                    System.err.println("No workflow selected.");
+                    return null;
+                }
+                ChatConfig workflowAction = existingConfig != null
+                        ? existingConfig
+                        : new ChatConfig(null, null, null, null);
+                workflowAction.setChatMode("workflow");
+                System.out.println();
+                System.out.println(GREEN + "  Launching workflow team: "
+                        + workflow.snapshot().workflowName() + RESET);
+                System.out.println();
+                return new SetupResult(workflowAction, Destination.TERMINAL, workflow.snapshot());
+            }
+
             ProfileSelection profile = selectProjectProfile(reader, projectRoot, chatMode);
             if (profile.cancelled()) return null;
             if (profile.config() != null) {
                 ChatConfig selected = profile.config();
+                // Workflow team step is part of the setup wizard itself: always asked,
+                // including when a saved profile is used (templates offered when none exist).
+                WorkflowSelection workflow = selectWorkflow(reader, projectRoot);
+                if (workflow.cancelled()) return null;
                 Destination destination = selectDestination(reader, selected, webHandoff, offerDestination);
                 if (destination == null) return null;
                 JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, selected);
                 selected.save(targetScope, projectRoot);
-                return new SetupResult(selected, destination);
+                return new SetupResult(selected, destination, workflow.snapshot());
             }
 
             // Step 2: Select the passthrough style and agent when no profile was chosen.
@@ -434,12 +470,15 @@ public class SetupWizard {
             }
             config.setPassthroughManaged(passthroughManaged);
             if ("passthrough".equals(chatMode) && !configurePassthroughModel(reader, config)) return null;
+            // Workflow team step: part of the wizard proper, asked for every fresh config.
+            WorkflowSelection workflow = selectWorkflow(reader, projectRoot);
+            if (workflow.cancelled()) return null;
             Destination destination = selectDestination(reader, config, webHandoff, offerDestination);
             if (destination == null) return null;
             if (!saveProjectProfile(reader, projectRoot, config)) return null;
             JudgeDefaultsWizard.configure(reader, targetScope, projectRoot, config);
 
-            SetupResult result = new SetupResult(config, destination);
+            SetupResult result = new SetupResult(config, destination, workflow.snapshot());
             if (saveConfiguration(config, destination, targetScope, projectRoot)) {
                 System.out.println();
                 System.out.println(GREEN + "  ✓ Configuration saved!" + RESET);
@@ -583,6 +622,109 @@ public class SetupWizard {
                 managed ? AgentLaunchDefaults.LaunchMode.MANAGED
                         : AgentLaunchDefaults.LaunchMode.INTERACTIVE).isEmpty();
     }
+
+    // ── Workflow team selection ─────────────────────────────────────────────
+
+    /**
+     * Interactive workflow-team selection shown before launch. Following the
+     * profile contract: "no" and blank keep normal setup, "cancel"/EOF aborts
+     * the launch, and choosing a workflow resolves roles immediately — an
+     * unresolvable workflow aborts rather than degrading to prompt-only
+     * instructions.
+     */
+    public static WorkflowSelection selectWorkflow(Path projectRoot) {
+        try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
+            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
+            return selectWorkflow(reader, projectRoot);
+        } catch (IOException e) {
+            System.err.println("Could not open workflow picker: " + e.getMessage());
+            return new WorkflowSelection(null, true);
+        }
+    }
+
+    /** Gated wrapper: "no"/blank skips with a null (non-cancelled) selection. */
+    public static WorkflowSelection selectWorkflow(LineReader reader, Path projectRoot) {
+        Boolean use = profileYesNo(reader, "Run this chat with a workflow team?");
+        if (use == null) return new WorkflowSelection(null, true);
+        if (!use) return new WorkflowSelection(null, false);
+        return chooseWorkflow(reader, projectRoot);
+    }
+
+    /**
+     * The forced picker shown when Workflow is chosen as a chat mode (or after
+     * the opt-in question): saved teams first, then the zero-config templates,
+     * then the full creation wizard.
+     */
+    public static WorkflowSelection chooseWorkflow(LineReader reader, Path projectRoot) {
+        try {
+            if (reader == null) {
+                try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
+                    return chooseWorkflow(LineReaderBuilder.builder().terminal(terminal).build(), projectRoot);
+                }
+            }
+            List<ai.kompile.cli.main.chat.workflow.WorkflowTeam> workflows =
+                    ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.list(projectRoot);
+            List<String> options = new ArrayList<>();
+            workflows.forEach(team -> options.add(team.name() + " — " + team.participants().size()
+                    + " participants" + (team.routing().isEmpty() ? "" : ", purposes: " + team.routing().keySet())));
+            int designerWorkers = options.size();
+            options.add("Designer + workers (start from a template)");
+            int designerWorkersReviewer = options.size();
+            options.add("Designer + workers + reviewer (start from a template)");
+            int createOption = options.size();
+            options.add("Create a new workflow (full wizard)");
+
+            int selected = selectNumbered(reader, "Select Workflow:", options);
+            if (selected < 0) return new WorkflowSelection(null, true);
+
+            if (selected == designerWorkers || selected == designerWorkersReviewer) {
+                boolean withReviewer = selected == designerWorkersReviewer;
+                ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
+                        ai.kompile.cli.main.chat.workflow.WorkflowWizard.createFromTemplate(reader, projectRoot,
+                                withReviewer
+                                        ? ai.kompile.cli.main.chat.workflow.WorkflowWizard.designerWorkersReviewerTeam()
+                                        : ai.kompile.cli.main.chat.workflow.WorkflowWizard.designerWorkersTeam(),
+                                withReviewer
+                                        ? ai.kompile.cli.main.chat.workflow.WorkflowWizard.designerWorkerReviewerRoles()
+                                        : ai.kompile.cli.main.chat.workflow.WorkflowWizard.designerWorkerRoles());
+                if (created == null) return new WorkflowSelection(null, true);
+                return activateWorkflow(projectRoot, created);
+            }
+            if (selected == createOption) {
+                ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
+                        ai.kompile.cli.main.chat.workflow.WorkflowWizard.create(reader, projectRoot);
+                if (created == null) return new WorkflowSelection(null, true);
+                return activateWorkflow(projectRoot, created);
+            }
+            ai.kompile.cli.main.chat.workflow.WorkflowTeam team = workflows.get(selected);
+            return activateWorkflow(projectRoot, team);
+        } catch (java.io.IOException e) {
+            System.err.println("Could not read project workflows: " + e.getMessage());
+            return new WorkflowSelection(null, true);
+        } catch (java.io.UncheckedIOException e) {
+            System.err.println("Could not read project workflows: " + e.getCause().getMessage());
+            return new WorkflowSelection(null, true);
+        }
+    }
+
+    /** Resolves a team into an activation-ready snapshot, aborting on unresolvable roles. */
+    private static WorkflowSelection activateWorkflow(Path projectRoot,
+                                                      ai.kompile.cli.main.chat.workflow.WorkflowTeam team) {
+        try {
+            ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot snapshot =
+                    ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot.resolve(team,
+                            new ai.kompile.cli.main.chat.roles.RoleManager(projectRoot));
+            System.out.println("  Using workflow team: " + team.name());
+            return new WorkflowSelection(snapshot, false);
+        } catch (IllegalArgumentException e) {
+            System.err.println("  Workflow '" + team.name() + "' cannot be activated: " + e.getMessage());
+            return new WorkflowSelection(null, true);
+        }
+    }
+
+    /** Workflow choice from the wizard; null snapshot means no workflow (or cancelled). */
+    public record WorkflowSelection(ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot snapshot,
+                                    boolean cancelled) {}
 
     static boolean configurePassthroughModel(LineReader reader, ChatConfig config) {
         Boolean customize = profileYesNo(reader, "Choose model/thinking for this CLI agent?");

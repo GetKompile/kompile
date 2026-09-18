@@ -24,6 +24,9 @@
 #   --jars-only          Use exec JARs instead of native images (implies --skip-native)
 #   --parallel N         Number of parallel native-image builds (default: 1)
 #   --output-dir DIR     Where to write the final .zip and .tar.gz (default: ./dist/)
+#   --archive-format F   Release formats to produce: both (default), zip, or tar.gz.
+#                        zip alone halves the packaging peak disk; CI/release lanes
+#                        that publish both formats pass --archive-format both.
 #   --version VER        Version string (default: from pom.xml)
 #   --platform PLATFORM  Maven/JavaCPP platform classifier (default: detected host)
 #   --sdx-assets DIR     DL4J SDK assets (runtime packages plus jars/) for backend variants
@@ -84,6 +87,7 @@ PLATFORM_OVERRIDE=""
 SDX_ASSETS_DIR="${KOMPILE_SDX_ASSETS_DIR:-}"
 CUDA_VERSION="${KOMPILE_CUDA_VERSION:-12.9}"
 INSTALL_MAVEN=true
+ARCHIVE_FORMAT="${KOMPILE_ARCHIVE_FORMAT:-both}"   # both | zip | tar.gz
 BACKEND_PROFILE_OVERRIDE=""
 SDK_CLASSIFIER_OVERRIDE=""
 DISTRIBUTION_CLASSIFIER_OVERRIDE=""
@@ -96,6 +100,7 @@ while [ $# -gt 0 ]; do
         --jars-only)        JARS_ONLY=true; SKIP_NATIVE=true; shift ;;
         --parallel)         PARALLEL="$2"; shift 2 ;;
         --output-dir)       OUTPUT_DIR="$2"; shift 2 ;;
+        --archive-format)   ARCHIVE_FORMAT="$2"; shift 2 ;;
         --version)          VERSION="$2"; shift 2 ;;
         --platform)         PLATFORM_OVERRIDE="$2"; shift 2 ;;
         --sdx-assets)       SDX_ASSETS_DIR="$2"; shift 2 ;;
@@ -114,6 +119,19 @@ case "${PARALLEL}" in
         exit 1
         ;;
 esac
+case "${ARCHIVE_FORMAT}" in
+    both|zip|tar.gz) ;;
+    *)
+        echo "--archive-format must be one of: both, zip, tar.gz (got '${ARCHIVE_FORMAT}')" >&2
+        exit 1
+        ;;
+esac
+if [ "${INSTALL_MAVEN}" = true ] && [ "${ARCHIVE_FORMAT}" = tar.gz ]; then
+    echo "--archive-format tar.gz cannot be combined with the Maven install lane: the" >&2
+    echo "classified ZIP is required by install.sh (managed updates) and repository materialization." >&2
+    echo "Pass --skip-maven-install, or use --archive-format both|zip." >&2
+    exit 1
+fi
 
 if [ -z "${VARIANT}" ]; then
     echo "Usage: $0 <variant> [options]"
@@ -178,6 +196,7 @@ SERVER_JARS_ONLY=false     # package service JARs instead of service images
 BUNDLE_RUNTIME=true        # jlink runtime for JVM fallback/product services
 INCLUDE_CLI_JAR=true       # shaded CLI/JBang fallback
 INCLUDE_PRODUCT_EXTRAS=true # web personas, SDK server, C/Python bindings, app config
+CHAT_JAR=false             # lib/kompile-chat.jar only (CLI web handoff; no native, no runtime)
 ND4J_BACKEND=""            # Java backend artifact; empty = no local models
 KOMPILE_BACKEND_PROFILE="" # exact root-POM profile matching the DL4J classifier matrix
 CUDA_FLAG=""               # compatibility switch used by downstream native-image configuration
@@ -190,6 +209,11 @@ case "${VARIANT}" in
         BUNDLE_RUNTIME=false
         INCLUDE_CLI_JAR=false
         INCLUDE_PRODUCT_EXTRAS=false
+        # The CLI web handoff (ChatInstanceBootstrap) launches the installed chat
+        # persona and refuses to run without it, so even the smallest archive
+        # carries the chat exec JAR. Server personas (app-main, crawl-manager),
+        # the chat native image, and the bundled runtime stay excluded.
+        CHAT_JAR=true
         ;;
     local)
         # Native folder-local execution only. Local crawl is a hidden mode of the
@@ -444,6 +468,9 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
             if [ "${LOCAL_RUNTIME}" = true ]; then
                 JAVA_BUILD_MODULES+=",:kompile-app-subprocess-serving,:kompile-pipeline-serving"
             fi
+            if [ "${CHAT_JAR}" = true ]; then
+                JAVA_BUILD_MODULES+=",:kompile-app-chat"
+            fi
             JAVA_BUILD_ALSO_MAKE=true
             ;;
         local)
@@ -588,6 +615,31 @@ if [ "${SKIP_JAVA_BUILD}" = true ] \
             echo "  ✓ ${PERSONA_MODULE} exec JAR built"
         fi
     done
+fi
+
+# ── Step 1c: Build the chat handoff JAR if needed ───────────────────────────
+#
+# cli-only ships no native chat image and no bundled runtime, but the CLI web
+# handoff launches the installed chat persona from lib/kompile-chat.jar and
+# fails without it. Under --skip-java-build a stale target/ from another
+# backend lane is rebuilt here — same validation as the persona exec JARs —
+# and packaging fails closed when the JAR cannot be produced.
+if [ "${CHAT_JAR}" = true ] && [ "${SKIP_JAVA_BUILD}" = true ]; then
+    CHAT_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-chat/target/*-exec.jar 2>/dev/null | head -1 || true)
+    if [ -n "${CHAT_EXEC_JAR}" ] && ! exec_jar_matches_backend "${CHAT_EXEC_JAR}"; then
+        echo "  kompile-app-chat: existing exec JAR does not contain ${ND4J_BACKEND}; rebuilding"
+        CHAT_EXEC_JAR=""
+    fi
+    if [ -z "${CHAT_EXEC_JAR}" ]; then
+        echo ""
+        echo "──── Step 1c: Building chat handoff JAR ──────────────────────────"
+        echo ""
+        (
+            cd kompile-app/kompile-app-parent/kompile-app-chat
+            "${MVN}" package -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
+                2>&1 | tee /tmp/kompile-app-chat-jar.log
+        )
+    fi
 fi
 
 # ── Step 2: Native image builds ──────────────────────────────────────────────
@@ -1167,6 +1219,21 @@ if [ "${APP_NATIVE}" = true ]; then
     done
 fi
 
+# Ship the chat handoff JAR for jar-only variants (cli-only). Resolution order
+# in ComponentRegistry is bin/<alias> first, lib/<alias>.jar second — with no
+# bin/kompile-chat present the CLI's web handoff finds exactly this JAR.
+if [ "${CHAT_JAR}" = true ]; then
+    CHAT_EXEC_JAR_PATH=$(ls kompile-app/kompile-app-parent/kompile-app-chat/target/*-exec.jar 2>/dev/null | head -1 || true)
+    if [ -n "${CHAT_EXEC_JAR_PATH}" ] && [ -f "${CHAT_EXEC_JAR_PATH}" ]; then
+        cp "${CHAT_EXEC_JAR_PATH}" "${DIST_DIR}/lib/kompile-chat.jar"
+        echo "  lib/kompile-chat.jar ($(du -h "${CHAT_EXEC_JAR_PATH}" | cut -f1))"
+    else
+        echo "  ERROR: chat handoff JAR is missing; the CLI web handoff requires lib/kompile-chat.jar" >&2
+        echo "  Build :kompile-app-chat first or drop --skip-java-build." >&2
+        exit 1
+    fi
+fi
+
 # A normal server distribution is a dual-form contract: the launcher must have an AOT binary and
 # an exec-jar fallback. `--jars-only` deliberately relaxes only the native half. Fail before archive
 # creation instead of publishing a manifest that merely describes a partial component.
@@ -1320,6 +1387,12 @@ fi
 if [ "${WHEEL_FOUND}" = false ]; then
     echo "  SKIP: no Python wheel found at ${PYTHON_DIST}/ (build kompile-python to include)"
 fi
+
+# First-party skill packages, including references/scripts, are managed payload.
+# Never collect release skills from the build machine's vendor or user directories.
+mkdir -p "${DIST_DIR}/lib/skills"
+cp -R skills/. "${DIST_DIR}/lib/skills/"
+echo "  lib/skills/ (first-party skill packages)"
 
 # Default application configuration → conf/  (matches dist.xml conf/ fileSet)
 CONF_SRC="kompile-app/kompile-app-parent/kompile-app-main/src/main/resources"
@@ -1616,24 +1689,28 @@ find "${DIST_DIR}" -type f | sort | while read -r f; do
     echo "    ${f#${DIST_DIR}/}"
 done
 
-# Create both release formats. Distribution modules attach both under the same
-# classifier; direct installers select tar.gz on Unix and ZIP on Windows.
+# Create the configured release formats (default: both). Distribution modules
+# attach both under the same classifier; direct installers select tar.gz on Unix
+# and ZIP on Windows, and managed updates require the ZIP. Lanes that only
+# consume one format can halve the packaging peak with --archive-format zip.
 echo ""
 ZIP_ARCHIVE="${OUTPUT_DIR}/${DIST_NAME}.zip"
 TAR_ARCHIVE="${OUTPUT_DIR}/${DIST_NAME}.tar.gz"
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN=python3
-elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN=python
-else
-    echo "  ERROR: Python 3 is required to create the distribution ZIP" >&2
-    exit 1
-fi
-# Python is a native process on the Windows worker. Pass native paths explicitly;
-# do not rely on MSYS argument conversion for the archive operation.
-PYTHON_OUTPUT_DIR="$(kompile_path_to_native "${OUTPUT_DIR}")"
-PYTHON_ZIP_ARCHIVE="$(kompile_path_to_native "${ZIP_ARCHIVE}")"
-"${PYTHON_BIN}" - "${PYTHON_OUTPUT_DIR}" "${DIST_NAME}" "${PYTHON_ZIP_ARCHIVE}" <<'PY'
+if [ "${ARCHIVE_FORMAT}" != tar.gz ]; then
+    # The ZIP is built for both (default) and zip; tar.gz-only lanes skip it.
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN=python3
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_BIN=python
+    else
+        echo "  ERROR: Python 3 is required to create the distribution ZIP" >&2
+        exit 1
+    fi
+    # Python is a native process on the Windows worker. Pass native paths explicitly;
+    # do not rely on MSYS argument conversion for the archive operation.
+    PYTHON_OUTPUT_DIR="$(kompile_path_to_native "${OUTPUT_DIR}")"
+    PYTHON_ZIP_ARCHIVE="$(kompile_path_to_native "${ZIP_ARCHIVE}")"
+    "${PYTHON_BIN}" - "${PYTHON_OUTPUT_DIR}" "${DIST_NAME}" "${PYTHON_ZIP_ARCHIVE}" <<'PY'
 import os
 import sys
 import zipfile
@@ -1652,15 +1729,18 @@ with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=T
             path = Path(current) / file_name
             archive.write(path, path.relative_to(root).as_posix())
 PY
-(
-    # Keep tar operands relative to the output directory.  On Windows/MSYS,
-    # passing a C:\\... archive path directly makes tar treat the drive colon
-    # as a remote-host separator ("Cannot connect to C").
-    cd "${OUTPUT_DIR}"
-    tar -czf "$(basename "${TAR_ARCHIVE}")" "${DIST_NAME}/"
-)
-printf '%s  %s\n' "$(checksum_value "${ZIP_ARCHIVE}")" "$(basename "${ZIP_ARCHIVE}")" > "${ZIP_ARCHIVE}.sha256"
-printf '%s  %s\n' "$(checksum_value "${TAR_ARCHIVE}")" "$(basename "${TAR_ARCHIVE}")" > "${TAR_ARCHIVE}.sha256"
+    printf '%s  %s\n' "$(checksum_value "${ZIP_ARCHIVE}")" "$(basename "${ZIP_ARCHIVE}")" > "${ZIP_ARCHIVE}.sha256"
+fi
+if [ "${ARCHIVE_FORMAT}" != zip ]; then
+    (
+        # Keep tar operands relative to the output directory.  On Windows/MSYS,
+        # passing a C:\\... archive path directly makes tar treat the drive colon
+        # as a remote-host separator ("Cannot connect to C").
+        cd "${OUTPUT_DIR}"
+        tar -czf "$(basename "${TAR_ARCHIVE}")" "${DIST_NAME}/"
+    )
+    printf '%s  %s\n' "$(checksum_value "${TAR_ARCHIVE}")" "$(basename "${TAR_ARCHIVE}")" > "${TAR_ARCHIVE}.sha256"
+fi
 
 if [ "${INSTALL_MAVEN}" = true ]; then
     install_distribution_artifact() {
@@ -1683,8 +1763,12 @@ if [ "${INSTALL_MAVEN}" = true ]; then
         )
         "${MVN}" "${MAVEN_BUILD_ARGS[@]}" "${install_args[@]}"
     }
+    # Validation above guarantees the ZIP exists in this lane; tar.gz follows
+    # the requested archive format.
     install_distribution_artifact "${ZIP_ARCHIVE}" zip
-    install_distribution_artifact "${TAR_ARCHIVE}" tar.gz
+    if [ "${ARCHIVE_FORMAT}" != zip ]; then
+        install_distribution_artifact "${TAR_ARCHIVE}" tar.gz
+    fi
 fi
 
 echo "  ZIP:      ${ZIP_ARCHIVE}"

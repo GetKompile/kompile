@@ -266,6 +266,12 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--role"}, description = "Assign a role to the agent (e.g. architect, reviewer, devops)")
     private String role;
 
+    @CommandLine.Option(names = {"--workflow"}, description = {
+            "Start this chat with a named workflow team (participants, delegation edges, gates).",
+            "'--workflow create' opens the creation wizard; otherwise the named workflow's",
+            "role assignments are enforced for the session."})
+    private String workflow;
+
     @CommandLine.Option(names = {"--roles"}, description = "Show role selection menu before starting chat", defaultValue = "false")
     private boolean showRoleMenu;
 
@@ -499,10 +505,12 @@ public class ChatCommand implements Callable<Integer> {
         if (multiSession && config == null) {
             return printError("--multi-session requires a configured direct provider. Run `kompile chat --setup` separately first.", 2);
         }
+        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot wizardWorkflow = null;
         if (!multiSession && !headless && shouldRunSetupWizard(config, hasExplicitAction)) {
             SetupWizard.SetupResult result = runSetupWizard();
             config = result == null ? null : result.config();
             if (result != null && result.destination() == SetupWizard.Destination.BROWSER) {
+                if (result.workflow() != null) exportWorkflowEnvironment(result.workflow());
                 return runWebHandoff(config);
             }
             configSelectedInThisRun = true;
@@ -510,6 +518,8 @@ public class ChatCommand implements Callable<Integer> {
                 System.err.println("Setup cancelled.");
                 return 1;
             }
+            // The workflow step already ran inside the setup wizard; reuse its choice.
+            wizardWorkflow = result.workflow();
         }
 
         // Override chat mode from --mode flag
@@ -527,8 +537,28 @@ public class ChatCommand implements Callable<Integer> {
                 config.save(globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT,
                         effectiveWorkingDirectory());
                 configSelectedInThisRun = true;
+                // A profile switch re-opens the launch choices; the wizard's workflow
+                // choice belonged to the replaced configuration.
+                wizardWorkflow = null;
             }
         }
+
+        // ── Workflow team resolution (wizard choice, else explicit flag, else prompt) ──
+        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot workflowSnapshot;
+        if (wizardWorkflow != null && workflow == null) {
+            workflowSnapshot = wizardWorkflow;
+        } else {
+            try {
+                workflowSnapshot = resolveWorkflow(headless);
+            } catch (IllegalArgumentException e) {
+                return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
+            }
+        }
+        if (workflowSnapshot != null) {
+            exportWorkflowEnvironment(workflowSnapshot);
+            System.out.println(workflowSnapshot.summarize());
+        }
+
         try {
             applyCommandLineOverrides(config);
         } catch (IllegalArgumentException e) {
@@ -536,6 +566,7 @@ public class ChatCommand implements Callable<Integer> {
         }
         if (!isWizardActionMode(config)
                 && !"passthrough".equalsIgnoreCase(config.getChatMode())
+                && !"workflow".equalsIgnoreCase(config.getChatMode())
                 && !config.isValid()) {
             String message = "Incomplete Standard Chat configuration for provider '"
                     + config.getProvider() + "'. Run `kompile chat --setup` or provide a compatible model and credential.";
@@ -1026,7 +1057,11 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     static boolean isWizardActionMode(ChatConfig config) {
-        return config != null && "resume".equalsIgnoreCase(config.getChatMode());
+        // "resume": the wizard already launched ResumeTool/ResumeAllCommand.
+        // "workflow": the wizard already resolved a workflow team; ChatCommand
+        // exports it and routes straight into chat.
+        return config != null && ("resume".equalsIgnoreCase(config.getChatMode())
+                || "workflow".equalsIgnoreCase(config.getChatMode()));
     }
 
     boolean canUseInstalledChatSubprocessFallback() {
@@ -1076,6 +1111,18 @@ public class ChatCommand implements Callable<Integer> {
 
         // Resume action: the wizard already launched ResumeTool or ResumeAllCommand.
         if (isWizardActionMode(config)) {
+            // Workflow mode: the wizard resolved the team; run the standard REPL
+            // under the exported workflow environment (the lead is the local chat).
+            if ("workflow".equalsIgnoreCase(chatMode)) {
+                if (config.isKompileServer()) {
+                    System.err.println("Workflow mode runs the local REPL; it cannot drive a "
+                            + "kompile chat server. Re-run the wizard or choose another mode.");
+                    return 1;
+                }
+                System.out.println("Starting standard chat as the workflow lead (multi-model "
+                        + "delegation enforced via task/multi_task).");
+                return runLocalLlmMode(config, isResume, resolvedRole);
+            }
             return 0;
         }
 
@@ -1708,6 +1755,80 @@ public class ChatCommand implements Callable<Integer> {
 
         return null;
     }
+
+    // ── Workflow team support ───────────────────────────────────────────────
+
+    /**
+     * Resolves the workflow snapshot for this launch. Priority: --workflow flag,
+     * else the interactive wizard prompt (interactive non-headless sessions only).
+     * Returns null when no workflow applies. An explicit --workflow that cannot
+     * be resolved aborts the launch rather than starting unenforced.
+     */
+    ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot resolveWorkflow(boolean headless) {
+        String requested = workflow == null ? null : workflow.trim();
+
+        // `--workflow create` runs the creation wizard, then (if saved) activates it.
+        if (requested != null && requested.equalsIgnoreCase("create")) {
+            if (headless) {
+                throw new IllegalArgumentException("--workflow create is interactive; run `kompile chat` without --headless.");
+            }
+            ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
+                    ai.kompile.cli.main.chat.workflow.WorkflowWizard.create(effectiveWorkingDirectory());
+            if (created == null) {
+                throw new IllegalArgumentException("Workflow creation cancelled.");
+            }
+            return ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot.resolve(created,
+                    new RoleManager(effectiveWorkingDirectory()));
+        }
+
+        if (requested != null && !requested.isBlank()) {
+            try {
+                ai.kompile.cli.main.chat.workflow.WorkflowTeam team =
+                        ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.get(
+                                effectiveWorkingDirectory(), requested);
+                if (team == null) {
+                    throw new IllegalArgumentException("No workflow named '" + requested
+                            + "' in " + ai.kompile.cli.main.chat.workflow.WorkflowTeamStore
+                            .path(effectiveWorkingDirectory())
+                            + ". Create one with `kompile chat --workflow create`.");
+                }
+                return ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot.resolve(team,
+                        new RoleManager(effectiveWorkingDirectory()));
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Workflow '" + requested + "' could not be loaded: "
+                        + e.getMessage(), e);
+            }
+        }
+        if (headless) return null;
+        if (System.console() == null) return null;
+        SetupWizard.WorkflowSelection selection =
+                SetupWizard.selectWorkflow(effectiveWorkingDirectory());
+        if (selection.cancelled()) {
+            throw new IllegalArgumentException("Workflow selection cancelled.");
+        }
+        return selection.snapshot();
+    }
+
+    /** Propagates the workflow identity into this session's harness state for MCP tools. */
+    static void exportWorkflowEnvironment(ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot snapshot) {
+        if (snapshot == null) return;
+        ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement enforcement =
+                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.forCaller(
+                        snapshot, ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement
+                                .resolveCallerParticipant(snapshot.team()));
+        // Java cannot mutate its own process environment; the harness exports these
+        // values when spawning the MCP stdio server (McpToolInjectionSupport) and
+        // subagents (SubprocessAgentRunner), which is the authoritative channel —
+        // tool arguments can never alter them.
+        WORKFLOW_ENV_EXPORT.putAll(enforcement.childEnvironment(enforcement.callerParticipant()));
+    }
+
+    /** Workflow environment values the harness exports to children. Package-visible for tests. */
+    static final java.util.concurrent.ConcurrentMap<String, String> WORKFLOW_ENV_EXPORT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
 
     /**
      * Show interactive role selection menu.

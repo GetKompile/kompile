@@ -58,6 +58,38 @@ class SyntaxHighlighterTest {
                 SyntaxHighlighter.familyForFilename(null));
     }
 
+    /** CUDA sources must resolve through fence tags and .cu/.cuh/.cuda extensions. */
+    @Test
+    void cudaFenceTagsAndFilenamesResolveToClike() {
+        assertEquals(SyntaxHighlighter.Family.CLIKE, SyntaxHighlighter.familyOf("cuda"));
+        assertEquals(SyntaxHighlighter.Family.CLIKE, SyntaxHighlighter.familyOf("cu"));
+        assertEquals(SyntaxHighlighter.Family.CLIKE, SyntaxHighlighter.familyOf("cuh"));
+        assertEquals(SyntaxHighlighter.Family.CLIKE,
+                SyntaxHighlighter.familyForFilename("kernels.cu"));
+        assertEquals(SyntaxHighlighter.Family.CLIKE,
+                SyntaxHighlighter.familyForFilename("path/to/foo.cuh"));
+        assertEquals(SyntaxHighlighter.Family.CLIKE,
+                SyntaxHighlighter.familyForFilename("path/to/foo.cuda"));
+    }
+
+    /** Execution-space qualifiers and CUDA vector types must style distinctly. */
+    @Test
+    void cudaQualifiersAndTypesStyled() {
+        String out = ansi.highlight(
+                "__global__ void k(float* x) {", "kernels.cu");
+        assertTrue(out.contains("\033[1;34m__global__\033[0m"),
+                "execution-space qualifier keyword-styled: " + out);
+        assertTrue(out.contains("\033[36mvoid\033[0m"),
+                "void is in the types set — type-styled cyan: " + out);
+        assertTrue(out.contains("\033[36mfloat\033[0m"), "float stays type-styled: " + out);
+
+        String vec = ansi.highlight(
+                "int idx = blockIdx.x * blockDim.x + threadIdx.x;", "cuda");
+        // Table lookup is case-insensitive; emitted spans keep the source's case.
+        assertTrue(vec.contains("\033[36mblockIdx\033[0m"),
+                "CUDA built-in variable type-styled: " + vec);
+    }
+
     // ── Styling ─────────────────────────────────────────────────────────
 
     @Test

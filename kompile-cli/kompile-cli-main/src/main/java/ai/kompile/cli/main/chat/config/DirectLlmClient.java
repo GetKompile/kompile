@@ -1400,7 +1400,9 @@ public class DirectLlmClient implements AutoCloseable {
 
     private void applyChatCompletionsJsonOutput(ObjectNode request) {
         JsonOutputSpec output = requestedJsonOutput;
-        if (output == null || !"openai".equalsIgnoreCase(config.getProvider())) {
+        if (output == null
+                || !ProviderStructuredOutputCapabilities.forProvider(config.getProvider())
+                        .supportsJsonSchema()) {
             return;
         }
         ObjectNode responseFormat = objectMapper.createObjectNode();
@@ -1408,7 +1410,7 @@ public class DirectLlmClient implements AutoCloseable {
         ObjectNode jsonSchema = responseFormat.putObject("json_schema");
         jsonSchema.put("name", output.name());
         jsonSchema.put("strict", output.strict());
-        // Do not apply the native Codex compatibility reduction to generic OpenAI models.
+        // Do not apply the native Codex compatibility reduction to generic providers.
         jsonSchema.set("schema", output.schema().deepCopy());
         request.set("response_format", responseFormat);
     }

@@ -51,6 +51,13 @@ PERSONA_VARIANTS = {
     "amd-zluda",
 }
 
+# Variants that ship exactly one persona artifact: the chat exec JAR backing the
+# CLI web handoff (ChatInstanceBootstrap refuses to run without an installed
+# chat persona). No persona native binaries and no other persona JARs.
+CHAT_JAR_VARIANTS = {
+    "cli-only",
+}
+
 
 def fail(message: str) -> None:
     raise AssertionError(message)
@@ -160,9 +167,22 @@ def verify_dist(dist_root: Path, variant: str, platform: str, require_native: bo
                 if component.get("native") is not True:
                     fail(f"metadata does not mark {persona} native binary as present")
     else:
+        if variant in CHAT_JAR_VARIANTS:
+            chat = PERSONAS["chat"]
+            jar_relative = f"lib/{chat['jar']}"
+            verify_exec_jar(dist_root / jar_relative, "chat")
+            required_files.append(jar_relative)
+            component = info.get("components", {}).get("chat", {})
+            if component.get("jar") is not True:
+                fail("metadata does not mark chat JAR as present")
+            if component.get("native") is True:
+                fail("metadata must not mark chat native binary as present in a jar-only variant")
         for persona, contract in PERSONAS.items():
+            if persona == "chat" and variant in CHAT_JAR_VARIANTS:
+                continue
             if (dist_root / "lib" / contract["jar"]).exists():
                 fail(f"{variant} distribution unexpectedly contains {persona} JAR")
+        for persona, contract in PERSONAS.items():
             if (dist_root / "bin" / contract["binary"]).exists() or (
                 dist_root / "bin" / f"{contract['binary']}.exe"
             ).exists():

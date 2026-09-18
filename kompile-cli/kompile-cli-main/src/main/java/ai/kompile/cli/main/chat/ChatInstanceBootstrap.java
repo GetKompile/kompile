@@ -87,6 +87,16 @@ final class ChatInstanceBootstrap {
             throws BootstrapException {
         List<String> missing = missingDistributionComponents(registry);
         if (!missing.isEmpty()) {
+            // A corrupt installed jar (truncated/empty zip — the disk-full install
+            // casualty) also reports as missing; name it precisely instead.
+            List<File> corrupt = registry.corruptJarCandidates(ComponentRegistry.KOMPILE_APP_CHAT);
+            if (!corrupt.isEmpty()) {
+                throw new BootstrapException("The installed Kompile chat artifact is corrupt "
+                        + "(truncated or empty — often the result of a disk-full install): "
+                        + String.join(", ", corrupt.stream().map(File::getAbsolutePath).toList())
+                        + ". Free disk space and reinstall it with: kompile install "
+                        + ComponentRegistry.KOMPILE_APP_CHAT);
+            }
             throw new BootstrapException("The installed distribution is missing required component: "
                     + String.join(", ", missing));
         }
@@ -103,6 +113,7 @@ final class ChatInstanceBootstrap {
 
         File chatArtifact = registry.findInstalledJar(ComponentRegistry.KOMPILE_APP_CHAT);
         if (chatArtifact == null) {
+            // Unreachable while missingDistributionComponents gates above; kept as a guard.
             throw new BootstrapException("The installed Kompile chat executable was not found.");
         }
 
@@ -146,14 +157,35 @@ final class ChatInstanceBootstrap {
                 process.destroyForcibly();
             }
             InstanceRegistry.unregister(instanceName);
+            // Surface the launch failure directly: the err log names it (e.g.
+            // "Error: Invalid or corrupt jarfile") and a bare timeout message hides it.
+            String errorTail = tailLines(new File(logDirectory, instanceName + ".err.log"), 20);
             throw new BootstrapException("The Kompile chat subprocess did not become ready at "
                     + requestedChatUrl + " within " + timeoutSeconds + " seconds. Logs: "
-                    + logDirectory.getAbsolutePath());
+                    + logDirectory.getAbsolutePath()
+                    + (errorTail.isEmpty() ? "" : "\nLast error output:\n" + errorTail));
         }
 
         System.out.println("  Chat subprocess ready (PID: " + process.pid() + ")");
         System.out.println("  Logs: " + logDirectory.getAbsolutePath());
         return new StartupResult(requestedChatUrl, true);
+    }
+
+    /** Last {@code maxLines} lines of a log file, each capped, or empty when unreadable. */
+    private static String tailLines(File logFile, int maxLines) {
+        try {
+            List<String> lines = java.nio.file.Files.readAllLines(logFile.toPath());
+            StringBuilder out = new StringBuilder();
+            for (String line : lines.subList(Math.max(0, lines.size() - maxLines), lines.size())) {
+                if (out.length() > 0) {
+                    out.append('\n');
+                }
+                out.append(line.length() > 500 ? line.substring(0, 500) + "…" : line);
+            }
+            return out.toString();
+        } catch (IOException | RuntimeException e) {
+            return "";
+        }
     }
 
     static boolean isLoopbackHttpUrl(String value) {

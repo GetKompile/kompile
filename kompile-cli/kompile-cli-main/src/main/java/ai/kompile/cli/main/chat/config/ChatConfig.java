@@ -97,6 +97,29 @@ public class ChatConfig {
     private String authenticationScope = "session";
     @JsonIgnore
     private transient Path sessionSettingsPath;
+    /** Baseline captured on opening, not persisted: closed chats keep their own pins. */
+    @JsonIgnore
+    private transient Map<String, CredentialStore.SessionSelection> observedSessionSelections;
+
+    private void observeSessionSelections() throws IOException {
+        if (observedSessionSelections == null) {
+            observedSessionSelections = CredentialStore.create().sessionSelections();
+        }
+    }
+
+    /** Poll at request boundaries so auth login in another process reaches this chat. */
+    private synchronized void applySessionSelection() throws IOException {
+        if (observedSessionSelections == null || provider == null) return;
+        String key = provider.toLowerCase(java.util.Locale.ROOT);
+        CredentialStore.SessionSelection selection = CredentialStore.create().sessionSelections().get(key);
+        if (selection == null || selection.equals(observedSessionSelections.get(key))) return;
+        credentialNames.put(key, selection.credentialName());
+        apiKey = null;
+        authenticationMethod = null; // Resolve the selected account's API-key/OAuth route, not the old one.
+        // Save only this chat's configuration; never rewrite another session or its model settings.
+        if (sessionSettingsPath != null) saveLoadedOrGlobal();
+        observedSessionSelections.put(key, selection);
+    }
 
     public String getAuthenticationScope() { return authenticationScope; }
     public void setAuthenticationScope(String scope) {
@@ -112,6 +135,14 @@ public class ChatConfig {
     public void setCredentialName(String name) {
         if (provider == null) throw new IllegalStateException("Select a provider first");
         String key = provider.toLowerCase(java.util.Locale.ROOT);
+        // An explicit session choice made after a broadcast wins over that broadcast.
+        if (observedSessionSelections != null) {
+            try {
+                observedSessionSelections.put(key, CredentialStore.create().sessionSelections().get(key));
+            } catch (IOException e) {
+                throw new AuthenticationException(provider, e);
+            }
+        }
         if (name == null) credentialNames.remove(key); else credentialNames.put(key, name);
         apiKey = null;
     }
@@ -148,6 +179,7 @@ public class ChatConfig {
         try {
             ChatConfig config = MAPPER.readValue(path.toFile(), ChatConfig.class);
             config.sessionSettingsPath = path;
+            config.observeSessionSelections();
             return config;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot load session authentication settings", e);
@@ -156,6 +188,7 @@ public class ChatConfig {
 
     public void bindSession(String sessionId) throws IOException {
         sessionSettingsPath = sessionConfigPath(sessionId);
+        observeSessionSelections();
         // Preserve explicitly supplied keys before pinning an existing account.
         if (apiKey == null || apiKey.isBlank()) pinActiveCredential();
         saveLoadedOrGlobal();
@@ -272,6 +305,8 @@ public class ChatConfig {
         copy.authenticationMethod = authenticationMethod;
         copy.authenticationScope = authenticationScope;
         copy.credentialNames = new LinkedHashMap<>(credentialNames);
+        copy.observedSessionSelections = observedSessionSelections == null ? null
+                : new LinkedHashMap<>(observedSessionSelections);
         copy.promptCacheRetention = promptCacheRetention;
         copy.autoCompactEnabled = autoCompactEnabled;
         copy.autoCompactThreshold = autoCompactThreshold;
@@ -312,6 +347,11 @@ public class ChatConfig {
         if ("none".equalsIgnoreCase(authenticationMethod)
                 || "native".equalsIgnoreCase(authenticationMethod)) {
             return null;
+        }
+        try {
+            applySessionSelection();
+        } catch (IOException e) {
+            throw new AuthenticationException(provider, e);
         }
         boolean oauthOnly = "oauth".equalsIgnoreCase(authenticationMethod);
         boolean apiKeyOnly = "api-key".equalsIgnoreCase(authenticationMethod);
@@ -509,6 +549,16 @@ public class ChatConfig {
         if (source == null) {
             throw new IllegalArgumentException("Source chat configuration is required");
         }
+        Map<String, CredentialStore.SessionSelection> selections = source.observedSessionSelections;
+        if (selections == null && observedSessionSelections != null) {
+            // /setup can supply an unbound config. Keep this open chat subscribed,
+            // acknowledging earlier activations in favor of the newly chosen account.
+            try {
+                selections = CredentialStore.create().sessionSelections();
+            } catch (IOException e) {
+                throw new AuthenticationException(source.provider, e);
+            }
+        }
         this.provider = source.provider;
         this.apiKey = source.apiKey;
         this.model = source.model;
@@ -519,6 +569,7 @@ public class ChatConfig {
         this.authenticationMethod = source.authenticationMethod;
         this.authenticationScope = source.authenticationScope;
         this.credentialNames = new LinkedHashMap<>(source.credentialNames);
+        this.observedSessionSelections = selections == null ? null : new LinkedHashMap<>(selections);
         // These limits describe the selected provider/model. The provider-neutral
         // enable/threshold/reserve policy intentionally remains session-wide.
         this.contextWindowTokens = source.contextWindowTokens;

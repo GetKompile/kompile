@@ -853,6 +853,34 @@ public class CoordinationStateManager {
         }
     }
 
+    /**
+     * Read-only process snapshot for passive observers such as the chat activity
+     * panel's shared-process mirror. Unlike {@link #queryProcesses()} this never
+     * rewrites coordination files, never promotes LOST state, and stays silent on
+     * unreadable entries — polling must not churn the coordinator lock or spam the
+     * user's screen. A quietly-dead RUNNING entry is still returned so the mirror
+     * can render it as running; liveness reconciliation remains the owner's job.
+     */
+    public List<ProcessCoordEntry> snapshotProcesses() {
+        try {
+            return withCoordinatorLock(() -> {
+                List<ProcessCoordEntry> all = readProcessEntries();
+                List<ProcessCoordEntry> active = new ArrayList<>();
+                for (ProcessCoordEntry entry : all) {
+                    if (!hasSafeProcessIdentity(entry) || entry.isStale()) {
+                        continue;
+                    }
+                    active.add(entry);
+                }
+                return active;
+            });
+        } catch (Exception e) {
+            // Transient failures return null rather than an empty list: a passive
+            // observer must never mistake a lost lock race for mass eviction.
+            return null;
+        }
+    }
+
     // ── Staleness Eviction ────────────────────────────────────────────────
 
     /**

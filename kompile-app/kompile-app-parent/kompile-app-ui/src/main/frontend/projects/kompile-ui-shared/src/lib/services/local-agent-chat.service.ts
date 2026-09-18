@@ -41,6 +41,48 @@ import {
 /**
  * Token metrics from LLM streaming responses.
  */
+export interface HarnessActivityEntry {
+  id: string;
+  description: string;
+  state: string;
+  command?: string;
+  output?: string;
+}
+export interface HarnessSubagent extends HarnessActivityEntry {
+  type: string;
+  running: boolean;
+  canSend: boolean;
+  canCancel: boolean;
+}
+export interface HarnessActivity {
+  backgroundable: boolean;
+  turnActive: boolean;
+  processes: HarnessActivityEntry[];
+  tasks: HarnessActivityEntry[];
+  subagents?: HarnessSubagent[];
+}
+export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'input' | 'subagent_input' | 'subagent_cancel';
+export interface HarnessReconnectBookmark {
+  runId: string;
+  browserSessionId: string;
+  backendUrl: string;
+  expiresAt: number;
+  seed: LocalAgentSession;
+  messageStart: number;
+  cursor?: number;
+  turnId?: number;
+  currentMessageId?: string;
+  lastMessageId?: string;
+  agent: AgentProvider;
+}
+export interface HarnessControlReply {
+  requestId: string;
+  action: HarnessControlAction;
+  ok: boolean;
+  message: string;
+  output?: string;
+}
+
 export interface TokenMetrics {
   outputTokens: number;
   inputTokens: number;
@@ -120,7 +162,8 @@ export interface CompactChatResponse {
 export class LocalAgentChatService extends BaseService {
 
   // Streaming state
-  private streamingContentRaw$ = new Subject<string>();
+  private streamingContentRaw$ = new Subject<{ content: string; epoch: number }>();
+  private contentEpoch = 0;
   private streamingContent$ = new BehaviorSubject<string>('');
   private streamingComplete$ = new Subject<LocalAgentMessage>();
   private streamingError$ = new Subject<string>();
@@ -151,6 +194,196 @@ export class LocalAgentChatService extends BaseService {
   // Current process ID for backend cancellation
   private currentProcessId: string | null = null;
 
+  harnessActivity: HarnessActivity | null = null;
+  liveControlsReady = false;
+  liveInputHistory: string[] = [];
+  private liveTurnTexts: string[] = []; // compatibility with pre-turn_started harnesses
+  private liveTurnId = 0;
+  private lastEventId = 0;
+  private reconnectable = false;
+  private browserSessionId = '';
+  private reconnectSeed: LocalAgentSession | null = null;
+  private lastCheckpointAt = 0;
+
+  getReconnectBookmark(browserSessionId: string): HarnessReconnectBookmark | null {
+    try {
+      const value = JSON.parse(sessionStorage.getItem('kompile-live-run:' + browserSessionId) || 'null');
+      return value && value.backendUrl === this.backendUrl && value.expiresAt > Date.now()
+        && typeof value.runId === 'string' && value.runId.startsWith('harness-')
+        && Array.isArray(value.seed?.messages) && value.agent && Number.isInteger(value.messageStart)
+        && value.messageStart >= 0 && value.messageStart + 2 <= value.seed.messages.length
+        && (value.cursor === undefined || (Number.isSafeInteger(value.cursor) && value.cursor >= 0))
+        ? value as HarnessReconnectBookmark : null;
+    } catch { return null; }
+  }
+
+  private saveReconnectBookmark(session = this.reconnectSeed): void {
+    if (!this.currentProcessId || !session || !this.liveAgent) return;
+    this.lastCheckpointAt = Date.now();
+    const value: HarnessReconnectBookmark = { runId: this.currentProcessId, browserSessionId: this.browserSessionId,
+      backendUrl: this.backendUrl, expiresAt: Date.now() + 33 * 60_000, seed: session,
+      messageStart: this.liveMessageStart, agent: this.liveAgent, cursor: this.lastEventId, turnId: this.liveTurnId,
+      currentMessageId: this.currentStreamingMessage?.id, lastMessageId: this.lastLiveMessage?.id };
+    try {
+      const json = JSON.stringify(value, (key, field) => key === 'agent' && field
+        ? { name: field.name, displayName: field.displayName, agentType: field.agentType }
+        : key === 'environment' ? undefined : field);
+      if (json.length <= 1_048_576) sessionStorage.setItem('kompile-live-run:' + this.browserSessionId, json);
+    } catch { /* storage is optional; in-page replay still works */ }
+  }
+
+  private forgetReconnectBookmark(): void {
+    try { sessionStorage.removeItem('kompile-live-run:' + this.browserSessionId); } catch { }
+  }
+
+  async stopReconnectRun(browserSessionId: string): Promise<void> {
+    const saved = this.getReconnectBookmark(browserSessionId);
+    if (!saved) return;
+    const response = await fetch(`${this.backendUrl}/agents/chat/cancel/${encodeURIComponent(saved.runId)}`, { method: 'POST' });
+    if (!response.ok) throw new Error('Could not stop the saved run');
+    try { sessionStorage.removeItem('kompile-live-run:' + browserSessionId); } catch { }
+  }
+
+  async resumeRun(browserSessionId: string): Promise<void> {
+    if (this.currentAbortController) throw new Error('A run is already connected');
+    const saved = this.getReconnectBookmark(browserSessionId);
+    if (!saved) throw new Error('No reconnectable run saved in this tab');
+    const session = saved.seed;
+    this.browserSessionId = browserSessionId;
+    this.reconnectSeed = JSON.parse(JSON.stringify(saved.seed));
+    this.liveAgent = saved.agent;
+    this.liveMessageStart = saved.messageStart;
+    this.liveTurnId = saved.turnId || 0; this.liveTurnTexts = [];
+    this.lastLiveMessage = session.messages.find(message => message.id === saved.lastMessageId) || null;
+    this.lastEventId = saved.cursor || 0; this.reconnectable = true;
+    this.currentProcessId = saved.runId;
+    this.currentStreamingMessage = saved.cursor !== undefined
+      ? session.messages.find(message => message.id === saved.currentMessageId) || null
+      : session.messages[session.messages.length - 1];
+    this.resetContentBuffer();
+    this.accumulateContent(this.currentStreamingMessage?.content || '');
+    this.streamingContent$.next(this.getCurrentContent());
+    this.currentAbortController = new AbortController(); this.isStreaming$.next(true);
+    try {
+      const response = await this.fetchReplay(saved.runId);
+      this.publishLiveMessages(session);
+      await this.consumeWithReconnect(session, response);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError'))
+        this.handleStreamError(session, error instanceof Error ? error.message : 'Reconnect failed');
+    }
+  }
+
+  private async fetchReplay(runId: string): Promise<Response> {
+    const response = await fetch(`${this.backendUrl}/agents/chat/events/${encodeURIComponent(runId)}?after=${this.lastEventId}`, {
+      headers: { Accept: 'text/event-stream' }, signal: this.currentAbortController?.signal
+    });
+    if (!response.ok) throw new Error(`Cannot replay run (${response.status}). Stop the saved run or inspect its transcript; no work was restarted.`);
+    return response;
+  }
+
+  private async consumeWithReconnect(session: LocalAgentSession, initial: Response): Promise<void> {
+    let response = initial;
+    const owner = this.currentAbortController;
+    for (let attempt = 0; ; attempt++) {
+      try { if (await this.readSseStream(session, response)) return; }
+      catch (error) {
+        if (owner?.signal.aborted || this.currentAbortController !== owner) return;
+        if (!this.reconnectable || !(error instanceof TypeError || (error instanceof DOMException && error.name === 'NetworkError'))) throw error;
+      }
+      if (owner?.signal.aborted || this.currentAbortController !== owner) return;
+      if (!this.reconnectable || !this.currentProcessId || attempt >= 3 || owner?.signal.aborted
+          || this.currentAbortController !== owner) throw new Error('Connection lost. Reconnect the saved run; it was not restarted.');
+      await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
+      if (owner?.signal.aborted || this.currentAbortController !== owner) return;
+      response = await this.fetchReplay(this.currentProcessId);
+    }
+  }
+  private liveMessageStart = 0;
+  private liveAgent: AgentProvider | null = null;
+  private lastLiveMessage: LocalAgentMessage | null = null;
+  private liveMessages$ = new Subject<LocalAgentMessage[]>();
+  getLiveMessages(): Observable<LocalAgentMessage[]> { return this.liveMessages$.asObservable(); }
+
+  private publishLiveMessages(session: LocalAgentSession): void {
+    this.storageService.updateSession(session);
+    this.liveMessages$.next(session.messages.slice(this.liveMessageStart).map(message => ({ ...message })));
+  }
+
+  private startLiveTurn(session: LocalAgentSession, data: { turnId: number; source: string; text: string }): void {
+    if (!Number.isSafeInteger(data.turnId) || data.turnId <= this.liveTurnId || !this.liveAgent) return;
+    if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
+    if (data.source !== 'initial') {
+      const input = createUserMessage(session.id, data.text || '');
+      input.id = `${this.currentProcessId}-turn-${data.turnId}-input`;
+      if (data.source === 'system') input.role = 'SYSTEM';
+      session.messages.push(input);
+      this.currentStreamingMessage = createAssistantMessage(session.id, this.liveAgent);
+      session.messages.push(this.currentStreamingMessage);
+    }
+    this.liveTurnId = data.turnId;
+    if (this.currentStreamingMessage) this.currentStreamingMessage.id = `${this.currentProcessId}-turn-${data.turnId}-assistant`;
+    this.streamStartTime = Date.now();
+    this.resetContentBuffer();
+    this.streamingContent$.next('');
+    this.publishLiveMessages(session);
+  }
+  private controlSequence = 0;
+  private pendingControls = new Map<string, { resolve: (reply: HarnessControlReply) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  /** Transport acceptance is not execution success: resolve only on the correlated SSE acknowledgement. */
+  async sendHarnessControl(action: HarnessControlAction, targetId?: string, text?: string): Promise<HarnessControlReply> {
+    const runId = this.currentProcessId;
+    if (!runId || !this.liveControlsReady) throw new Error('No live harness run');
+    if (this.pendingControls.size >= 8) throw new Error('Wait for pending controls');
+    if ((action === 'input' || action === 'subagent_input') && (!text?.trim() || text.trimStart().startsWith('/'))) 
+      throw new Error('Send slash commands after the live run finishes');
+    const requestId = `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${++this.controlSequence}`;
+    const reply = new Promise<HarnessControlReply>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingControls.delete(requestId);
+        reject(new Error('Harness acknowledgement timed out; execution state is unknown. Check activity before retrying.'));
+      }, 15000);
+      this.pendingControls.set(requestId, { resolve, reject, timer });
+    });
+    // Attach the rejection handler immediately, including while fetch is pending.
+    const delivery = fetch(`${this.backendUrl}/agents/chat/control/${encodeURIComponent(runId)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: 1, requestId, action, ...(targetId ? { targetId } : {}), ...(text !== undefined ? { text } : {}) })
+    }).then(async response => {
+      const result = await response.json();
+      if (!response.ok || !result.accepted) throw new Error(result.message || 'Control was not accepted');
+    }).catch(error => {
+      const pending = this.pendingControls.get(requestId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingControls.delete(requestId);
+        pending.reject(error instanceof Error ? error : new Error('Control delivery failed'));
+      }
+    });
+    void delivery;
+    const result = await reply;
+    if (action === 'input' && result.ok && text) this.liveInputHistory.push(text);
+    return result;
+  }
+
+  private closeHarnessControls(): void {
+    this.liveControlsReady = false;
+    if (this.harnessActivity) {
+      const terminalView = (entry: HarnessActivityEntry): HarnessActivityEntry =>
+        ['RUNNING', 'BACKGROUNDED'].includes(entry.state) ? { ...entry, state: 'UNKNOWN (run ended)' } : entry;
+      this.harnessActivity = { ...this.harnessActivity, backgroundable: false, turnActive: false,
+        processes: this.harnessActivity.processes.map(terminalView), tasks: this.harnessActivity.tasks.map(terminalView),
+        subagents: this.harnessActivity.subagents?.map(child => ({ ...child,
+          state: child.running ? 'UNKNOWN (run ended)' : child.state, running: false, canSend: false, canCancel: false })) };
+    }
+    for (const pending of this.pendingControls.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Run ended before control acknowledgement; check retained activity'));
+    }
+    this.pendingControls.clear();
+  }
+
   constructor(
     private http: HttpClient,
     private ngZone: NgZone,
@@ -170,7 +403,8 @@ export class LocalAgentChatService extends BaseService {
   private setupThrottledStreaming(): void {
     this.streamingContentRaw$.pipe(
       throttleTime(this.THROTTLE_INTERVAL, undefined, { leading: true, trailing: true })
-    ).subscribe(content => {
+    ).subscribe(({ content, epoch }) => {
+      if (epoch !== this.contentEpoch) return;
       if (content.length - this.lastEmittedLength > 0) {
         this.lastEmittedLength = content.length;
         this.ngZone.run(() => {
@@ -192,6 +426,7 @@ export class LocalAgentChatService extends BaseService {
    * Reset content buffer for new streaming session.
    */
   private resetContentBuffer(): void {
+    this.contentEpoch++;
     this.contentChunks = [];
     this.lastEmittedLength = 0;
   }
@@ -243,6 +478,10 @@ export class LocalAgentChatService extends BaseService {
   ): Promise<void> {
     // Create and store user message
     const userMessage = createUserMessage(session.id, message);
+    this.liveMessageStart = session.messages.length;
+    this.liveAgent = agent;
+    this.liveTurnId = 0;
+    this.lastLiveMessage = null;
     session.messages.push(userMessage);
     this.storageService.updateSession(session);
 
@@ -338,6 +577,14 @@ export class LocalAgentChatService extends BaseService {
       // Create AbortController for cancellation support
       this.currentAbortController = new AbortController();
       this.currentProcessId = null;
+      this.lastEventId = 0;
+      this.reconnectable = false;
+      this.browserSessionId = request.sessionId || session.id;
+      this.reconnectSeed = JSON.parse(JSON.stringify(session));
+      this.closeHarnessControls();
+      this.harnessActivity = null;
+      this.liveTurnTexts = [];
+      this.liveInputHistory = [];
 
       const response = await fetch(`${this.backendUrl}/agents/chat/stream`, {
         method: 'POST',
@@ -356,7 +603,7 @@ export class LocalAgentChatService extends BaseService {
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      await this.readSseStream(session, response);
+      await this.consumeWithReconnect(session, response);
 
     } catch (error: any) {
       // Handle AbortError gracefully (user cancelled)
@@ -369,9 +616,9 @@ export class LocalAgentChatService extends BaseService {
         if (this.currentStreamingMessage) {
           this.handleStreamError(session, message);
         } else {
+          this.finalizeStreaming();
           this.streamingError$.next(message);
         }
-        this.finalizeStreaming();
       }
     }
   }
@@ -379,18 +626,20 @@ export class LocalAgentChatService extends BaseService {
   /**
    * Read and process an SSE response stream. Shared by both JSON and multipart endpoints.
    */
-  private async readSseStream(session: LocalAgentSession, response: Response): Promise<void> {
+  private async readSseStream(session: LocalAgentSession, response: Response): Promise<boolean> {
+      const ownedAbortController = this.currentAbortController;
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
 
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEventType = 'message';
+      let eventId = 0;
       let sawTerminalEvent = false;
 
       const emitContentUpdate = () => {
         const fullContent = this.getCurrentContent();
-        this.streamingContentRaw$.next(fullContent);
+        this.streamingContentRaw$.next({ content: fullContent, epoch: this.contentEpoch });
 
         // Update message in session
         if (this.currentStreamingMessage) {
@@ -399,6 +648,12 @@ export class LocalAgentChatService extends BaseService {
       };
 
       const processLine = (line: string) => {
+        if (sawTerminalEvent || this.currentAbortController !== ownedAbortController) return;
+        if (line.startsWith('id:')) {
+          eventId = Number(line.substring(3).trim());
+          if (!Number.isSafeInteger(eventId) || eventId <= 0) throw new Error('Invalid replay event id');
+          return;
+        }
         if (line.startsWith('event:')) {
           currentEventType = line.substring(6).trim();
           return;
@@ -407,10 +662,14 @@ export class LocalAgentChatService extends BaseService {
         if (line.startsWith('data:')) {
           const data = line.substring(5).trim();
           if (!data) return;
+          if (eventId && eventId <= this.lastEventId) { currentEventType = 'message'; eventId = 0; return; }
+          if (eventId && eventId !== this.lastEventId + 1) throw new Error('Replay event gap; reconnect from saved history');
 
           try {
             const parsed = JSON.parse(data);
-
+            // Advance before terminal observers can synchronously start a different run.
+            if (eventId) this.lastEventId = eventId;
+            eventId = 0;
             switch (currentEventType) {
               case 'harness_session':
                 session.metadata = {
@@ -423,11 +682,57 @@ export class LocalAgentChatService extends BaseService {
                 this.storageService.updateSession(session);
                 break;
 
+              case 'queued':
+                this.reconnectable = parsed.reconnectable === true;
+                if (typeof parsed.processId === 'string') this.currentProcessId = parsed.processId;
+                this.saveReconnectBookmark(session);
+                break;
+
               case 'start':
                 // Capture processId from start event for cancellation
                 if (parsed.processId) {
                   this.currentProcessId = parsed.processId;
                   console.debug('[LocalAgentChat] Process started:', this.currentProcessId);
+                }
+                break;
+
+              case 'activity':
+                if (Array.isArray(parsed.processes) && Array.isArray(parsed.tasks)) {
+                  this.harnessActivity = parsed as HarnessActivity;
+                  this.liveControlsReady = true;
+                }
+                break;
+
+              case 'control': {
+                const pending = this.pendingControls.get(parsed.requestId);
+                if (pending) {
+                  clearTimeout(pending.timer);
+                  this.pendingControls.delete(parsed.requestId);
+                  pending.resolve(parsed as HarnessControlReply);
+                }
+                break;
+              }
+
+              case 'turn_started':
+                this.startLiveTurn(session, parsed);
+                break;
+
+              case 'turn_complete':
+                // A turn boundary is not the end of background work or the SSE connection.
+                if (this.liveTurnId > 0) {
+                  if (parsed.turnId === this.liveTurnId && this.currentStreamingMessage) {
+                    this.currentStreamingMessage.content = parsed.text || '';
+                    this.currentStreamingMessage.streaming = false;
+                    this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
+                    this.lastLiveMessage = this.currentStreamingMessage;
+                    this.currentStreamingMessage = null;
+                    this.publishLiveMessages(session);
+                  }
+                } else if (typeof parsed.text === 'string') {
+                  this.liveTurnTexts.push(parsed.text);
+                  this.resetContentBuffer();
+                  this.accumulateContent(this.liveTurnTexts.join('\n\n') + '\n\n');
+                  emitContentUpdate();
                 }
                 break;
 
@@ -443,8 +748,15 @@ export class LocalAgentChatService extends BaseService {
                 }
                 break;
 
+              case 'superseded':
+                sawTerminalEvent = true;
+                this.reconnectable = false; // don't fight the replacement subscriber with automatic reconnects
+                this.handleStreamError(session, 'Run connected in another view. Work continues there.');
+                break;
+
               case 'cancelled':
                 sawTerminalEvent = true;
+                this.forgetReconnectBookmark();
                 // Process was cancelled by user
                 console.debug('[LocalAgentChat] Process cancelled:', parsed);
                 if (this.currentStreamingMessage) {
@@ -546,12 +858,14 @@ export class LocalAgentChatService extends BaseService {
 
               case 'complete':
                 sawTerminalEvent = true;
+                this.forgetReconnectBookmark();
                 console.debug('[LocalAgentChat] Complete message received');
                 this.handleStreamComplete(session, parsed);
                 break;
 
               case 'error':
                 sawTerminalEvent = true;
+                this.forgetReconnectBookmark();
                 console.error('[LocalAgentChat] Error event:', parsed);
                 this.handleStreamError(session, typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
                 break;
@@ -563,8 +877,11 @@ export class LocalAgentChatService extends BaseService {
                 }
             }
 
+            if (this.reconnectable && !sawTerminalEvent && (Date.now() - this.lastCheckpointAt >= 250
+                || currentEventType === 'turn_started' || currentEventType === 'turn_complete')) this.saveReconnectBookmark(session);
             currentEventType = 'message';
-          } catch {
+          } catch (error) {
+            if (currentEventType !== 'chunk' && currentEventType !== 'message') throw error;
             // Plain text content
             if (currentEventType === 'chunk' || currentEventType === 'message') {
               this.accumulateContent(data + '\n');
@@ -603,11 +920,13 @@ export class LocalAgentChatService extends BaseService {
         }
       }
 
+      reader.releaseLock();
       if (!sawTerminalEvent) {
+        if (this.reconnectable) return false;
         throw new Error('Kompile harness stream ended without a terminal event');
       }
-
-      this.finalizeStreaming();
+      if (this.currentAbortController === ownedAbortController) this.finalizeStreaming();
+      return true;
   }
 
   /**
@@ -619,7 +938,9 @@ export class LocalAgentChatService extends BaseService {
       this.currentStreamingMessage.streaming = false;
       this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
 
-      if (data.content) {
+      if (this.liveTurnTexts.length) {
+        this.currentStreamingMessage.content = this.liveTurnTexts.join('\n\n');
+      } else if (data.content) {
         this.currentStreamingMessage.content = data.content;
       }
       if (data.rawResponse) {
@@ -627,11 +948,15 @@ export class LocalAgentChatService extends BaseService {
       }
 
       this.storageService.updateSession(session);
-      this.streamingComplete$.next(this.currentStreamingMessage);
+      const completed = this.currentStreamingMessage;
+      // Release ownership before notifying listeners that may immediately start another run.
+      this.finalizeStreaming();
+      this.streamingComplete$.next(completed);
+    } else {
+      const completed = this.lastLiveMessage;
+      this.finalizeStreaming();
+      if (completed) this.streamingComplete$.next(completed);
     }
-
-    this.isStreaming$.next(false);
-    this.currentStreamingMessage = null;
   }
 
   private handleCommandOutcome(session: LocalAgentSession, outcome: CommandOutcome): void {
@@ -671,13 +996,13 @@ export class LocalAgentChatService extends BaseService {
       this.storageService.updateSession(session);
     }
 
+    this.finalizeStreaming();
     this.streamingError$.next(errorMessage);
-    this.isStreaming$.next(false);
-    this.currentStreamingMessage = null;
   }
 
   /** Clear request-scoped transport state after a terminal event or handled failure. */
   private finalizeStreaming(): void {
+    this.closeHarnessControls();
     this.isStreaming$.next(false);
     this.currentStreamingMessage = null;
     this.currentProcessId = null;
@@ -688,7 +1013,15 @@ export class LocalAgentChatService extends BaseService {
    * Cancel current streaming.
    * Aborts the fetch request and sends cancel signal to backend.
    */
+  /** Leave the socket without cancelling owned work; the existing timeout still applies. */
+  detachStreaming(): void {
+    this.currentAbortController?.abort();
+    this.finalizeStreaming();
+  }
+
   cancelStreaming(): void {
+    this.forgetReconnectBookmark();
+    this.closeHarnessControls();
     console.debug('[LocalAgentChat] Cancel streaming requested');
 
     // Abort the fetch request

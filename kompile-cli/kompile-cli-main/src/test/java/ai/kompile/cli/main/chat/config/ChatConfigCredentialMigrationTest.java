@@ -208,6 +208,77 @@ class ChatConfigCredentialMigrationTest {
         });
     }
 
+    @Test
+    void explicitActivationReplacesOpenPinsAcrossStoreInstancesButNotClosedChats() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("openai", "first", "secret-first", true);
+            store.putApiKey("openai", "second", "secret-second", false);
+            store.putApiKey("openai", "third", "secret-third", false);
+            store.putApiKey("anthropic", "other", "other-secret", true);
+            ChatConfig first = new ChatConfig("openai", null, "model-a", null);
+            first.bindSession("open-first");
+            ChatConfig second = new ChatConfig("openai", null, "model-b", null);
+            second.setCredentialName("second");
+            second.bindSession("open-second");
+            ChatConfig other = new ChatConfig("anthropic", null, "other-model", null);
+            other.bindSession("other-vendor");
+            new ChatConfig("openai", null, "closed-model", null).bindSession("closed");
+            ChatConfig child = first.copy();
+
+            assertTrue(CredentialStore.create().switchCredential("openai", "third", true));
+            // Ordinary default changes must not alter which account was broadcast.
+            store.switchCredential("openai", "second");
+            assertEquals("secret-third", first.getApiKey());
+            assertEquals("secret-third", second.getApiKey());
+            assertEquals("secret-third", child.getApiKey());
+            assertEquals("other-secret", other.getApiKey());
+            assertEquals("secret-first", ChatConfig.loadSession("closed").getApiKey());
+            assertEquals("third", ChatConfig.loadSession("open-first").getCredentialName());
+            assertEquals("model-a", first.getModel());
+            assertEquals("model-b", second.getModel());
+            assertFalse(Files.readString(ChatConfig.sessionConfigPath("open-first")).contains("secret-third"));
+
+            // A later per-session choice wins, even before the next request consumes a broadcast.
+            store.switchCredential("openai", "third", true);
+            first.setCredentialName("first");
+            assertEquals("secret-first", first.getApiKey());
+            assertEquals("secret-third", second.getApiKey());
+            store.switchCredential("openai", "third", true);
+            assertEquals("secret-third", first.getApiKey());
+
+            ChatConfig setup = new ChatConfig("openai", null, "new-model", null);
+            setup.setCredentialName("first");
+            first.applyLlmSettingsFrom(setup);
+            assertEquals("secret-first", first.getApiKey());
+            store.switchCredential("openai", "second", true);
+            assertEquals("secret-second", first.getApiKey());
+            assertEquals("new-model", first.getModel());
+        });
+    }
+
+    @Test
+    void activationReplacesOldAuthenticationRouteAndRetainsOauthHeaders() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("anthropic", "key", "api-secret", true);
+            store.putOAuth("anthropic", "subscription", "oauth-access", "refresh",
+                    System.currentTimeMillis() + 3_600_000, false);
+            ChatConfig config = new ChatConfig("anthropic", null, "model", null);
+            config.setAuthenticationMethod("api-key");
+            config.bindSession("route-change");
+            store.switchCredential("anthropic", "subscription", true);
+            var oauth = config.resolveRequestAuth();
+            assertTrue(oauth.oauth());
+            assertEquals("Bearer oauth-access", oauth.headers().get("Authorization"));
+            assertEquals("subscription", config.getCredentialName());
+            assertTrue(ChatConfig.loadSession("route-change").resolveRequestAuth().oauth());
+            store.switchCredential("anthropic", "key", true);
+            assertFalse(config.resolveRequestAuth().oauth());
+            assertEquals("api-secret", config.getApiKey());
+        });
+    }
+
     private void withTemporaryHome(ThrowingRunnable body) throws Exception {
         String originalHome = System.getProperty("user.home");
         String originalDir = System.getProperty("user.dir");

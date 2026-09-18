@@ -60,7 +60,7 @@ public class AuthCommand implements Callable<Integer> {
         String credentialName;
 
         @Option(names = "--no-switch",
-                description = "Store a named credential without making it active.")
+                description = "Store a named credential without making it active or updating open chats.")
         boolean noSwitch;
 
         @Option(names = "--stdin",
@@ -315,6 +315,7 @@ public class AuthCommand implements Callable<Integer> {
                         options,
                         interaction);
                 String savedName = store.credentialName(providerId, credential);
+                if (activate) store.switchCredential(providerId, savedName, true);
                 boolean active = savedName.equals(store.activeCredentialName(providerId));
                 System.out.println("Saved " + credential.getType() + " credential for "
                         + providerId + " as '" + savedName + "'"
@@ -395,6 +396,7 @@ public class AuthCommand implements Callable<Integer> {
             String savedName = credentialName == null || credentialName.isBlank()
                     ? store.activeCredentialName(providerId)
                     : credentialName.trim().toLowerCase(java.util.Locale.ROOT);
+            if (activate) store.switchCredential(providerId, savedName, true);
             boolean active = savedName.equals(store.activeCredentialName(providerId));
             System.out.println("Saved API key for " + providerId + " as '" + savedName + "'"
                     + (active ? " (active)" : "") + " to " + store.getAuthPath());
@@ -544,7 +546,7 @@ public class AuthCommand implements Callable<Integer> {
     }
 
     @Command(name = "switch", aliases = "use", mixinStandardHelpOptions = true,
-            description = "Select the active named credential for a provider.")
+            description = "Select a provider credential, including for currently open chats.")
     static class SwitchCommand implements Callable<Integer> {
         @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER")
         String providerId;
@@ -572,12 +574,13 @@ public class AuthCommand implements Callable<Integer> {
                     return 1;
                 }
             }
-            if (!store.switchCredential(providerId, credentialName)) {
+            if (!store.switchCredential(providerId, credentialName, true)) {
                 System.err.println("No credential named '" + credentialName
                         + "' exists for provider " + providerId + ".");
                 return 1;
             }
-            System.out.println("Using credential '" + credentialName + "' for " + providerId + ".");
+            System.out.println("Using credential '" + credentialName + "' for " + providerId
+                    + "; open chats use it on their next request.");
             return 0;
         }
     }

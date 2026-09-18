@@ -1633,6 +1633,11 @@ kompile_assemble_dist() {
   if [ -n "${KOMPILE_ACTIVE_SDX_ASSETS_DIR:-}" ]; then
     args+=(--sdx-assets "${KOMPILE_ACTIVE_SDX_ASSETS_DIR}")
   fi
+  # Release lanes need both formats (installer tar.gz fallback + update ZIP);
+  # local/platform-lane runs can halve packaging disk with one format.
+  if [ -n "${KOMPILE_ARCHIVE_FORMAT:-}" ]; then
+    args+=(--archive-format "${KOMPILE_ARCHIVE_FORMAT}")
+  fi
   case "${platform}" in
     *cuda-12.6*) args+=(--cuda-version 12.6) ;;
     *cuda-12.9*) args+=(--cuda-version 12.9) ;;

@@ -64,12 +64,14 @@ import java.util.regex.Pattern;
  *
  * <h3>What stays allowed (deliberate, to protect legitimate work)</h3>
  * <ul>
- *   <li><b>Filtering a piped stream</b> — {@code mvn test | grep ERROR},
- *       {@code ps aux | awk '{print $2}'}, {@code git log | head -20}. The stream source
- *       (a build, a process list, git) is not a project file, so nothing was searched or
- *       read via shell. A banned reader reading a FILE and piping onward
- *       ({@code cat build.log | grep error}) is still a violation — it is semantically
- *       {@code grep error build.log}.</li>
+     *   <li><b>Filtering a piped stream</b> — {@code mvn test | grep ERROR},
+     *       {@code ps aux | awk '{print $2}'}. The stream source
+     *       (a build, a process list, git) is not a project file, so nothing was searched or
+     *       read via shell. A banned reader reading a FILE and piping onward
+     *       ({@code cat build.log | grep error}) is still a violation — it is semantically
+     *       {@code grep error build.log}. The exception is stream slicing: {@code head}/{@code tail}
+     *       as pipeline filters are banned too — page results with {@code fetch_result},
+     *       {@code process action=output} + {@code tail_lines}, or native flags ({@code git log -5}).</li>
  *   <li><b>Stdin sources</b> — {@code <} redirects, herestrings/heredocs, {@code -} stdin
  *       placeholders.</li>
  *   <li><b>Null-device redirects</b> — {@code 2>/dev/null} and equivalent forms suppress
@@ -114,6 +116,32 @@ public final class ShellMandatePolicy {
     private static final Map<String, String> FILE_WRITERS = Map.ofEntries(
             Map.entry("tee", "write"), Map.entry("touch", "write"),
             Map.entry("truncate", "write"), Map.entry("patch", "patch"));
+
+    /**
+     * Timing/delay commands that are banned outright: a model that wants to wait must use
+     * the {@code process} tool's completion {@code monitor} (or {@code status}/{@code output}/{@code stream}),
+     * not burn a turn sleeping. "watch" is excluded because it has a legitimate
+     * file-observation sense the mandate would mislabel, and it is not part of the sleep loop pattern.
+     */
+    private static final Map<String, String> SLEEP_COMMANDS = Map.of(
+            "sleep", "process monitor",
+            "usleep", "process monitor",
+            "snooze", "process monitor",
+            "at", "process monitor");
+
+    /** One-or-more GNU sleep duration terms: 5, 0.5, 30s, 5ms, 1h30m. */
+    private static final Pattern SLEEP_SUFFIX =
+            Pattern.compile("^(?:[0-9]+(?:\\.[0-9]+)?(?:ms|us|s|m|h|d)?)+$");
+
+    private static final Pattern AT_TIME = Pattern.compile("^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$|^(?:[01]?[0-9]|2[0-3])(?:am|pm)$");
+
+    /**
+     * Stream slicers banned even as pipeline filters: output paging has dedicated harness paths
+     * ({@code fetch_result} offset/limit for cached results, {@code process action=output} +
+     * {@code tail_lines} or {@code action=stream} for command output, native flags such as
+     * {@code git log -5}). {@code tac}/{@code less}/{@code more} stay file-readers only.
+     */
+    private static final Set<String> STREAM_SLICERS = Set.of("head", "tail");
 
     /** Argument keys (checked in order) that carry the shell command text. */
     private static final List<String> COMMAND_FIELDS =
@@ -263,6 +291,20 @@ public final class ShellMandatePolicy {
         }
 
         String head = headCommand(tokens);
+        if (head != null && SLEEP_COMMANDS.containsKey(head) && isSleepInvocation(head, tokens)) {
+            violations.add("Shell `" + head + "` just burns a turn waiting — use the `process` tool instead: "
+                    + "launch with `process action=launch`, then `process action=monitor` (wake me on exit), "
+                    + "or poll `process action=status`/`output` — never `sleep`"
+                    + (text.length() > 120 ? "" : ": `" + text + "`"));
+            return;
+        }
+        if (head != null && NESTED_SHELL_HEADS.contains(head)) {
+            for (String embedded : collectNestedShellBodies(tokens)) {
+                for (Segment nested : splitPipeline(embedded)) {
+                    analyzeSegment(nested, violations);
+                }
+            }
+        }
         if (head != null && FILE_WRITERS.containsKey(head)) {
             violations.add("Shell `" + head + "` mutates files directly — use the kompile `"
                     + FILE_WRITERS.get(head) + "` tool instead"
@@ -273,6 +315,16 @@ public final class ShellMandatePolicy {
             return;
         }
         if (segment.pipedFromPrevious || hasStdinSource(tokens)) {
+            // Slicing a stream (or a redirected file) with head/tail is the exact misuse the
+            // dedicated result-paging and process-output paths exist for — block it; other
+            // filters (grep/awk over a pipe) remain allowed.
+            if (STREAM_SLICERS.contains(head) && !consumesInlinedText(tokens)) {
+                violations.add("Shell `" + head + "` output slicing is banned — page large results with"
+                        + " `fetch_result` (offset/limit), read command output via `process action=output`"
+                        + " + `tail_lines` (or `action=stream`), limit sources natively (`git log -5`),"
+                        + " and search with the `grep` tool"
+                        + (text.length() > 120 ? "" : ": `" + text + "`"));
+            }
             return; // filtering a stream, not reading a file
         }
         violations.add("Shell `" + head + "` reads files/directories directly — use the kompile `"
@@ -328,6 +380,86 @@ public final class ShellMandatePolicy {
         }
     }
 
+    /**
+     * Interpreter heads whose {@code -c} script argument executes as a shell: a mandate-relevant
+     * command hidden in the script must be analyzed as if written inline.
+     */
+    private static final Set<String> NESTED_SHELL_HEADS = Set.of("bash", "sh", "zsh");
+
+    /**
+     * Extract quoted script bodies passed to a nested shell ({@code bash -c '<script>'}).
+     * The tokenizer never stores an opening quote and keeps the closing one, so stripping
+     * a trailing quote character is enough to recover the raw script text.
+     */
+    private static List<String> collectNestedShellBodies(List<Token> tokens) {
+        List<String> bodies = new ArrayList<>();
+        String head = null;
+        boolean expectScript = false;
+        for (Token token : tokens) {
+            if (head == null) {
+                if (!token.quotedStart && NESTED_SHELL_HEADS.contains(basename(token.text))) {
+                    head = basename(token.text);
+                }
+                continue;
+            }
+            if (expectScript) {
+                if (token.quotedStart) {
+                    String body = token.text;
+                    if (body.endsWith("'") || body.endsWith("\"")) {
+                        body = body.substring(0, body.length() - 1);
+                    }
+                    if (body.startsWith("'") || body.startsWith("\"")) {
+                        body = body.substring(1);
+                    }
+                    bodies.add(body);
+                }
+                expectScript = false;
+                head = null;
+                continue;
+            }
+            if ((token.text.equals("-c") || token.text.equals("-lc") || token.text.equals("-cl"))) {
+                expectScript = true;
+                continue;
+            }
+            if (!token.text.startsWith("-")) {
+                head = null; // recognizable `shell -c '<script>'` form ended
+            }
+        }
+        return bodies;
+    }
+
+    /**
+     * True when a {@code sleep}-family head really is a delay invocation: a duration argument
+     * for sleep/usleep/snooze, or a time spec for {@code at}. A bare head with no duration
+     * (e.g. a different binary on PATH) stays allowed — the mandate blocks the pattern, not names.
+     */
+    private static boolean isSleepInvocation(String head, List<Token> tokens) {
+        boolean seenHead = false;
+        for (Token token : tokens) {
+            if (!seenHead) {
+                if (basename(token.text).equals(head) && !token.quotedStart) {
+                    seenHead = true;
+                }
+                continue;
+            }
+            String arg = token.text;
+            if (arg.startsWith("-")) {
+                continue; // flags like -f, -q, -M for `at`
+            }
+            if (head.equals("at")) {
+                if (AT_TIME.matcher(arg).matches() || arg.startsWith("now")) {
+                    return true;
+                }
+                continue;
+            }
+            if (SLEEP_SUFFIX.matcher(arg).matches()) {
+                return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
     /** Resolve the head command of a token list, skipping env assignments and wrappers. */
     private static String headCommand(List<Token> tokens) {
         String head = stripPrefixes(tokens);
@@ -360,6 +492,21 @@ public final class ShellMandatePolicy {
     private static String basename(String command) {
         int slash = command.lastIndexOf('/');
         return (slash >= 0 ? command.substring(slash + 1) : command).toLowerCase(Locale.ROOT);
+    }
+
+    /** True when the slicer's input is text the model wrote inline (herestring/heredoc or `-`),
+     * not a stream or file being fished through. `<<`-prefixed tokens cover both herestring
+     * ({@code <<<}) and heredoc ({@code <<'EOF'}) markers. */
+    private static boolean consumesInlinedText(List<Token> tokens) {
+        for (Token token : tokens) {
+            if (token.quotedStart) {
+                continue;
+            }
+            if (token.text.startsWith("<<") || token.text.equals("-")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** True when the reader's input comes from a redirect, herestring, heredoc, or `-`. */
@@ -720,6 +867,9 @@ public final class ShellMandatePolicy {
         correction.append("\n## How to Re-Comply\n");
         correction.append("1. Re-issue the operation with the dedicated tool named above.\n");
         correction.append("2. Do NOT retry the shell form or an equivalent shell workaround.\n");
+        correction.append("3. NEVER wait with `sleep`: launch work with `process action=launch` and add\n");
+        correction.append("   `action=monitor` (or rely on the default completion monitor) so the harness wakes you\n");
+        correction.append("   when the process exits; poll `action=status`/`output`/`stream` between other work instead.\n");
         return new EnforcerToolCallDecision(
                 EnforcerToolCallDecision.Action.BLOCK, reason, list, correction.toString(), null);
     }

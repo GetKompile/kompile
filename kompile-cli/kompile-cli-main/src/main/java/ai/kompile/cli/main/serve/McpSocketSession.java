@@ -574,7 +574,7 @@ public class McpSocketSession implements Runnable {
                 args -> { try { return postFeedbackTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));
 
         var taskTool = new StdioTaskTool(
-                pool.agentRegistry(), subagentRunner, om, pool.roleManager());
+                pool.agentRegistry(), subagentRunner, om, pool.roleManager(), wd);
         map.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
                 McpToolAnnotations.DELEGATION,
                 args -> { try { return taskTool.execute(args); } catch (Exception e) { return ToolResult.error(e.getMessage()); } }));

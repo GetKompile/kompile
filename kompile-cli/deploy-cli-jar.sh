@@ -47,6 +47,19 @@ deploy_one() {
         exit 1
     fi
 
+    # Guard against the thin-jar mixup: the launcher execs `java -jar`, so a jar
+    # without a Main-Class (e.g. the thin kompile-cli-main artifact that sits beside
+    # the -shaded one in target/) would brick every new CLI session. Third-party
+    # deps (picocli etc.) only exist in the shaded uber-jar; require both signals.
+    local main_class third_party
+    main_class=$(unzip -p "$jar" META-INF/MANIFEST.MF 2>/dev/null | grep -c '^Main-Class:' || true)
+    third_party=$(unzip -l "$jar" 2>/dev/null | grep -cE 'info/picocli/|ch/qos/logback/' || true)
+    if [ "${main_class:-0}" -lt 1 ] || [ "${third_party:-0}" -lt 1 ]; then
+        echo "ERROR: $jar looks like a THIN jar (main-class=$main_class, third-party entries=$third_party)" >&2
+        echo "       refusing to deploy — the launcher needs the SHADED uber-jar (*-shaded.jar)" >&2
+        exit 1
+    fi
+
     backup="/tmp/${name}.bak-$(date +%H%M%S)"
     if [ -f "$LIB_DIR/$name" ]; then
         cp "$LIB_DIR/$name" "$backup"

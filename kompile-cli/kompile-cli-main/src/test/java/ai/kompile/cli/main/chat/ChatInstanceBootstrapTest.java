@@ -158,6 +158,32 @@ class ChatInstanceBootstrapTest {
         assertFalse(services.started);
     }
 
+    @Test
+    void corruptInstalledChatJarFailsWithPreciseReinstallGuidance(@TempDir Path tempDir)
+            throws Exception {
+        Path lib = Files.createDirectories(tempDir.resolve("lib"));
+        // Production failure signature: PK-prefixed truncated zip from a disk-full install.
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(
+                lib.resolve("kompile-chat.jar").toFile())) {
+            out.write(new byte[]{0x50, 0x4B, 0x03, 0x04});
+            out.write(new byte[100]);
+        }
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        CapturingServiceManager services = new CapturingServiceManager(false);
+
+        var error = org.junit.jupiter.api.Assertions.assertThrows(
+                ChatInstanceBootstrap.BootstrapException.class,
+                () -> ChatInstanceBootstrap.ensureReady(
+                        "http://localhost:9181", 7, registry, services, tempDir.toFile()));
+
+        assertTrue(error.getMessage().contains("corrupt"), error.getMessage());
+        assertTrue(error.getMessage().contains("disk-full"), error.getMessage());
+        assertTrue(error.getMessage().contains("kompile install "
+                + ComponentRegistry.KOMPILE_APP_CHAT), error.getMessage());
+        assertFalse(services.started, "a corrupt jar must never be launched");
+    }
+
     private static final class CapturingServiceManager extends ServiceManager {
         private final boolean initiallyHealthy;
         private boolean started;

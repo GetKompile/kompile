@@ -529,6 +529,39 @@ class PipelineToolTest {
     }
 
     @Test
+    void statusExposesStreamedOutputMetadataAndProgressForHostRuns() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = chatServer(requests, null, null);
+        try {
+            configureChat(server);
+            success(request("create", chatDefinition()));
+            ObjectNode run = mapper.createObjectNode().put("action", "run").put("pipelineId", "host-chat");
+            run.putObject("input").put("text", "streamed status source");
+            String runId = success(run).path("runId").asText();
+            JsonNode terminal = assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+                while (true) {
+                    JsonNode status = success(mapper.createObjectNode().put("action", "status").put("runId", runId));
+                    if (status.path("terminal").asBoolean()) return status;
+                    Thread.sleep(10);
+                }
+            });
+            assertEquals("COMPLETED", terminal.path("status").asText(), terminal.toString());
+            assertEquals("host response", terminal.path("output").path("text").asText(), terminal.toString());
+            assertTrue(terminal.has("progress"), "Status must expose the last stage progress event: " + terminal);
+            assertEquals("REMOTE_CHAT_MODEL", terminal.path("progress").path("phase").asText());
+            JsonNode streaming = terminal.path("streaming");
+            assertTrue(streaming.isObject(), "CHAT_MODEL runs must report streamed output metadata: " + terminal);
+            assertTrue(streaming.path("chunkCount").asLong() >= 1, terminal.toString());
+            assertEquals("host response".length(), streaming.path("charCount").asLong(), terminal.toString());
+            assertEquals("host response", streaming.path("outputPreview").asText());
+            assertTrue(streaming.path("startedAt").asLong() > 0, terminal.toString());
+            assertTrue(streaming.path("lastChunkAt").asLong() >= streaming.path("startedAt").asLong());
+            assertTrue(streaming.toString().length() < "host response".length() + 4096,
+                    "The preview must stay bounded");
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void cancellingHostRunInterruptsItsNativeOwnerAndNeverPublishesLateOutput() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);

@@ -4,13 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -76,15 +76,26 @@ class OpenCodeServeClientTest {
             exchange.close();
         });
         server.createContext("/session/session-1/message", exchange -> {
-            byte[] response = """
-                    [{"parts":[{"type":"compaction","summary":"native session summary"}]}]
-                    """.getBytes(StandardCharsets.UTF_8);
+            byte[] response;
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                response = "true".getBytes(StandardCharsets.UTF_8);
+            } else {
+                response = """
+                        {"info":{"id":"m2","role":"assistant"},
+                         "parts":[{"type":"compaction","summary":"native session summary"}]}
+                        """.getBytes(StandardCharsets.UTF_8);
+            }
             exchange.sendResponseHeaders(200, response.length);
             exchange.getResponseBody().write(response);
             exchange.close();
         });
         server.createContext("/session/session-1", exchange -> {
-            exchange.sendResponseHeaders(200, 0);
+            byte[] body = """
+                    {"info":{"id":"m2","role":"assistant"},
+                     "parts":[{"type":"compaction","summary":"native session summary"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
             exchange.close();
         });
         server.start();
@@ -105,60 +116,155 @@ class OpenCodeServeClientTest {
     }
 
     @Test
-    void normalizesNativeTextToolsAndUsageWithoutMixingToolOutputIntoAssistantText() {
-        OpenCodeServeClient client = new OpenCodeServeClient(
-                objectMapper, Path.of("."), HttpClient.newHttpClient(),
-                "http://127.0.0.1:1", "session-1");
-        StringBuilder assistant = new StringBuilder();
+    void restTurnPostsProviderModelVariantPromptAndReturnsAssistantText() throws Exception {
+        AtomicReference<String> turnBody = new AtomicReference<>();
+        AtomicReference<String> turnPath = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            // Keep the SSE lane open for a bounded window; the client closes it on
+            // turn end. The POST future is authoritative, so silence is expected.
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                for (int i = 0; i < 60; i++) {
+                    sse.write(' ');  // SSE comment-free keepalive byte
+                    sse.flush();
+                    Thread.sleep(100);
+                }
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-9/message", exchange -> {
+            turnPath.set(exchange.getRequestURI().getPath());
+            turnBody.set(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            byte[] response = """
+                    {"info":{"id":"m-final","role":"assistant","tokens":
+                      {"input":7,"output":2,"cache":{"read":0,"write":0}}},
+                     "parts":[{"type":"step-start"},{"type":"text","text":"rest answer"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-9")) {
+                String text = client.send("opencode-go/deepseek-v4-pro", "xhigh",
+                        "system instructions", "hello", ignored -> { });
+
+                assertEquals("rest answer", text);
+                assertEquals("/session/session-9/message", turnPath.get());
+                String body = turnBody.get();
+                assertTrue(body.contains("\"providerID\":\"opencode-go\""), body);
+                assertTrue(body.contains("\"modelID\":\"deepseek-v4-pro\""), body);
+                assertTrue(body.contains("\"variant\":\"xhigh\""), body);
+                assertTrue(body.contains("system instructions"), body);
+                assertTrue(body.contains("hello"), body);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void restTurnSurfacesToolActivityFromTheEventBus() throws Exception {
+        List<String> streamed = new ArrayList<>();
         List<String> activity = new ArrayList<>();
-        OpenCodeServeClient.ActivityListener listener =
-                new OpenCodeServeClient.ActivityListener() {
-                    @Override
-                    public void onToolStart(String callId, String name, String input) {
-                        activity.add("start:" + callId + ":" + name);
-                    }
-
-                    @Override
-                    public void onToolComplete(String callId, String name, String output,
-                                               int exitCode, boolean error) {
-                        activity.add("complete:" + callId + ":" + output);
-                    }
-
-                    @Override
-                    public void onTokenUsage(long input, long output,
-                                             long cacheRead, long cacheCreation) {
-                        activity.add("usage:" + input + ":" + output + ":" + cacheRead);
-                    }
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                // Tool lifecycle + streamed text delta for this session.
+                String[] frames = {
+                        "data: {\"type\":\"message.part.delta\",\"properties\":{"
+                                + "\"sessionID\":\"session-tool\",\"field\":\"text\","
+                                + "\"delta\":\"stream\"}}",
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"session-tool\",\"part\":{\"type\":\"tool\","
+                                + "\"callID\":\"call-1\",\"tool\":\"bash\","
+                                + "\"state\":{\"status\":\"pending\","
+                                + "\"input\":{\"command\":\"pwd\"}}}}}",
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"session-tool\",\"part\":{\"type\":\"tool\","
+                                + "\"callID\":\"call-1\",\"tool\":\"bash\","
+                                + "\"state\":{\"status\":\"completed\","
+                                + "\"output\":\"pwd out\","
+                                + "\"metadata\":{\"exit\":0}}}}}",
+                        "data: {\"type\":\"message.updated\",\"properties\":{"
+                                + "\"sessionID\":\"session-tool\",\"info\":{\"role\":\"assistant\","
+                                + "\"tokens\":{\"input\":12,\"output\":3,"
+                                + "\"cache\":{\"read\":4,\"write\":0}}}}}",
+                        // Other-session traffic must be filtered out.
+                        "data: {\"type\":\"message.part.updated\",\"properties\":{"
+                                + "\"sessionID\":\"other-session\",\"part\":{\"type\":\"tool\","
+                                + "\"callID\":\"call-x\",\"tool\":\"bash\","
+                                + "\"state\":{\"status\":\"completed\",\"output\":\"x\"}}}}"
                 };
-        var parser = new ai.kompile.cli.main.chat.PassthroughStreamParser();
-        var started = new HashSet<String>();
-        var completed = new HashSet<String>();
+                for (String frame : frames) {
+                    sse.write((frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    sse.flush();
+                    Thread.sleep(50);
+                }
+                Thread.sleep(4000); // keep lane open through the POST, then end
+            } catch (IOException | InterruptedException expected) {
+                // client stop() closed the stream or the window elapsed
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-tool/message", exchange -> {
+            byte[] response = """
+                    {"info":{"id":"m1"},"parts":[{"type":"text","text":"tool answer"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            try (OpenCodeServeClient client = new OpenCodeServeClient(
+                    objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "session-tool")) {
+                OpenCodeServeClient.ActivityListener listener =
+                        new OpenCodeServeClient.ActivityListener() {
+                            @Override
+                            public void onToolStart(String callId, String name, String input) {
+                                activity.add("start:" + callId + ":" + name);
+                            }
 
-        client.processProviderLine(
-                "{\"type\":\"text\",\"part\":{\"text\":\"answer\"}}",
-                parser, assistant, ignored -> { }, listener, started, completed);
-        client.processProviderLine(
-                "{\"type\":\"tool_use\",\"part\":{\"callID\":\"call-1\","
-                        + "\"tool\":\"bash\",\"state\":{\"status\":\"running\","
-                        + "\"input\":{\"command\":\"pwd\"}}}}",
-                parser, assistant, ignored -> { }, listener, started, completed);
-        client.processProviderLine(
-                "{\"type\":\"tool_use\",\"part\":{\"callID\":\"call-1\","
-                        + "\"tool\":\"bash\",\"state\":{\"status\":\"completed\","
-                        + "\"input\":{\"command\":\"pwd\"},"
-                        + "\"output\":[{\"type\":\"text\",\"text\":\"tool output\"}],"
-                        + "\"metadata\":{\"exit\":0}}}}",
-                parser, assistant, ignored -> { }, listener, started, completed);
-        client.processProviderLine(
-                "{\"type\":\"step_finish\",\"part\":{\"tokens\":{"
-                        + "\"input\":12,\"output\":3,\"cache\":{\"read\":4}}}}",
-                parser, assistant, ignored -> { }, listener, started, completed);
+                            @Override
+                            public void onToolComplete(String callId, String name, String output,
+                                                       int exitCode, boolean error) {
+                                activity.add("complete:" + callId + ":" + output
+                                        + ":" + exitCode + ":" + error);
+                            }
 
-        assertEquals("answer", assistant.toString());
-        assertEquals(List.of(
-                "start:call-1:bash",
-                "complete:call-1:tool output",
-                "usage:12:3:4"), activity);
+                            @Override
+                            public void onTokenUsage(long input, long output,
+                                                     long cacheRead, long cacheCreation) {
+                                activity.add("usage:" + input + ":" + output + ":" + cacheRead);
+                            }
+                        };
+                String text = client.send("opencode-go/deepseek-v4-pro", null,
+                        null, "run pwd", streamed::add, listener);
+
+                assertEquals("tool answer", text);
+                assertEquals("stream", String.join("", streamed));
+                assertEquals(List.of(
+                        "start:call-1:bash",
+                        "complete:call-1:pwd out:0:false",
+                        "usage:12:3:4"), activity);
+            }
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -170,7 +276,7 @@ class OpenCodeServeClientTest {
         java.net.ServerSocket occupied;
         try {
             occupied = new java.net.ServerSocket(0);
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             return; // no loopback available in this environment
         }
         int deadPort = occupied.getLocalPort();
@@ -221,71 +327,10 @@ class OpenCodeServeClientTest {
     }
 
     @Test
-    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
-    void serverBootSpawnSeesStdinAtEofImmediately() throws Exception {
-        // Zero-byte regression #1: opencode blocks on a never-EOF stdin pipe.
-        // The serve boot has nothing to say to the child, so its spawn template
-        // (NativeCliProcess) must give it a closed stdin. The turn spawn is
-        // deliberately piped instead — it delivers the prompt through stdin —
-        // covered by promptPipedToTurnProcess.
-        try (OpenCodeServeClient client = new OpenCodeServeClient(
-                objectMapper, Path.of("."), HttpClient.newHttpClient(),
-                "http://127.0.0.1:1", "session-1")) {
-            ProcessBuilder builder = ai.kompile.cli.common.util.NativeCliProcess
-                    .processBuilder(List.of("/bin/sh", "-c",
-                            // read -t distinguishes a live pipe (timeout exit > 128)
-                            // from EOF (exit 1), so a regression reports PIPED_OPEN
-                            // within seconds instead of hanging the suite.
-                            "read -t 3 -r _ < /proc/self/fd/0; rc=$?; "
-                                    + "if [ $rc -gt 128 ]; then echo PIPED_OPEN; "
-                                    + "else echo EOF_IMMEDIATE; fi"), Path.of("."));
-            Process process = builder.start();
-            String output;
-            try (java.io.InputStream in = process.getInputStream()) {
-                output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
-
-            assertEquals("EOF_IMMEDIATE",
-                    output.strip(),
-                    "native OpenCode server boot must see stdin at EOF immediately");
-        }
-    }
-
-    @Test
-    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
-    void turnSpawnAcceptsLargePromptViaStdinWithoutArgLimitFailure() throws Exception {
-        // Zero-byte regression #3: composePrompt exceeded MAX_ARG_STRLEN (128 KiB)
-        // as a single argv element -> exec error=7 "Argument list too long". The
-        // turn must deliver the prompt through piped stdin instead. This probe
-        // mirrors the turn spawn shape: piped stdin, oversized single write.
-        char[] big = new char[200_000];
-        java.util.Arrays.fill(big, 'x');
-        String oversizedPrompt = new String(big);
-
-        ProcessBuilder builder = new ProcessBuilder("/bin/sh", "-c",
-                "tr -d '\\n' < /proc/self/fd/0 | wc -c")
-                .redirectErrorStream(true);
-        Process process = builder.start();
-        try (java.io.OutputStream stdin = process.getOutputStream()) {
-            stdin.write(oversizedPrompt.getBytes(StandardCharsets.UTF_8));
-            stdin.flush();
-        }
-        String output;
-        try (java.io.InputStream in = process.getInputStream()) {
-            output = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
-
-        assertEquals(String.valueOf(oversizedPrompt.length()), output.strip(),
-                "a 200k-char prompt must survive stdin delivery intact");
-    }
-
-    @Test
     void stdinRedirectTargetsThePlatformNullDevice() {
         String expected = System.getProperty("os.name").toLowerCase()
                 .contains("win") ? "NUL" : "/dev/null";
-        ProcessBuilder.Redirect redirect =
+        java.lang.ProcessBuilder.Redirect redirect =
                 ai.kompile.cli.common.util.NativeCliProcess.nullDeviceRedirect();
         assertTrue(redirect.file() != null
                         && expected.equals(redirect.file().getPath()),

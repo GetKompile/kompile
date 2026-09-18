@@ -2709,6 +2709,16 @@ public class ResumeTool implements CliTool {
     private void launchStandardChatResume(String sessionId, Path workingDirectory) {
         boolean terminalClosed = false;
         try {
+            // Resolve/refresh saved auth while the browser still owns its working TTY.
+            // Missing/revoked pins must not tear down the picker just to fail in ChatCommand.
+            var saved = ai.kompile.cli.main.chat.config.ChatConfig.loadSession(sessionId);
+            if (saved != null) {
+                saved.resolveRequestAuth();
+                if (!saved.isValid()) {
+                    throw new IllegalStateException("Saved chat configuration is incomplete. "
+                            + "Run kompile auth login or kompile chat --setup, then retry.");
+                }
+            }
             terminal.writer().println(GREEN + "Resuming Kompile standard chat "
                     + sessionId + "..." + RESET);
             terminal.writer().flush();
@@ -2732,8 +2742,10 @@ public class ResumeTool implements CliTool {
             terminalClosed = false;
 
             newTerminal.writer().println();
-            newTerminal.writer().println(GREEN + "✓ Standard chat ended (exit code: "
-                    + exitCode + ")" + RESET);
+            newTerminal.writer().println(exitCode == 0
+                    ? GREEN + "✓ Standard chat ended" + RESET
+                    : RED + "Standard chat could not continue (exit code: " + exitCode
+                            + "). Returning to the resume browser." + RESET);
             newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
             newTerminal.writer().flush();
             try {
@@ -2745,7 +2757,9 @@ public class ResumeTool implements CliTool {
             boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
             if (restored) {
                 terminal.writer().println(RED + "Error resuming standard chat: " + errorMsg + RESET);
+                terminal.writer().println(DIM + "Press Enter to return to the resume browser..." + RESET);
                 terminal.writer().flush();
+                try { lineReader.readLine(); } catch (UserInterruptException | EndOfFileException ignored) {}
             } else {
                 System.err.println("Error resuming standard chat: " + errorMsg);
             }

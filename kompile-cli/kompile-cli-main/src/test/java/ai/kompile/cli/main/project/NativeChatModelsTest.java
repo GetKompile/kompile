@@ -346,6 +346,52 @@ class NativeChatModelsTest {
     }
 
     @Test
+    void streamedChunksAreForwardedAndLimitsAndObserversStaySafe() throws Exception {
+        List<String> chunks = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n"
+                    + "data: {\"choices\":[{\"delta\":{\"content\":\"lo world\"},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n");
+        });
+        try {
+            configure("custom", url(server));
+            String result = NativeChatModels.call(root, NativeChatModels.resolve(root, null, null),
+                    "input", "system", List.of(), null, Duration.ofSeconds(5), 1000, chunks::add);
+            assertEquals("hello world", result, "The final answer must stay complete");
+            assertEquals(List.of("hel", "lo world"), chunks, "Each answer chunk must reach the consumer in order");
+        } finally { server.stop(0); }
+
+        HttpServer throwingObserver = server(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, "data: {\"choices\":[{\"delta\":{\"content\":\"abc\"}}]}\n\n"
+                    + "data: {\"choices\":[{\"delta\":{\"content\":\"def\"},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n");
+        });
+        try {
+            configure("custom", url(throwingObserver));
+            String result = NativeChatModels.call(root, NativeChatModels.resolve(root, null, null),
+                    "input", "system", List.of(), null, Duration.ofSeconds(5), 1000,
+                    chunk -> { throw new IllegalStateException("observer boom"); });
+            assertEquals("abcdef", result, "A throwing observer must not corrupt the captured text");
+        } finally { throwingObserver.stop(0); }
+
+        HttpServer verbose = server(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, chatResponse("x".repeat(2000)));
+        });
+        try {
+            configure("custom", url(verbose));
+            List<String> oversized = new CopyOnWriteArrayList<>();
+            Exception failure = assertThrows(Exception.class, () -> NativeChatModels.call(root,
+                    NativeChatModels.resolve(root, null, null), "input", "system", List.of(), null,
+                    Duration.ofSeconds(2), 100, oversized::add));
+            assertTrue(failure.getMessage().contains("maxResponseChars"), failure.toString());
+            assertTrue(oversized.size() < 2000, "Over-limit content must not stream to the consumer");
+        } finally { verbose.stop(0); }
+    }
+
+    @Test
     void providerFailureCannotReturnPartialTextOrEchoSecrets() throws Exception {
         HttpServer server = server(exchange -> {
             exchange.getRequestBody().readAllBytes();

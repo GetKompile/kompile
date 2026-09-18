@@ -1013,6 +1013,28 @@ class BuildPlatformParityTest(unittest.TestCase):
             model_cli.parent.mkdir(parents=True)
             model_cli.write_bytes(b"native-model-cli")
             model_cli.chmod(0o755)
+            agent_cli = (
+                root / "kompile-cli" / "kompile-agent-cli" / "target" /
+                "kompile-agent"
+            )
+            agent_cli.parent.mkdir(parents=True)
+            agent_cli.write_bytes(b"native-agent-cli")
+            agent_cli.chmod(0o755)
+            # cli-only packaging fail-closes on lib/kompile-chat.jar; provide the
+            # handoff exec JAR the same way the persona verifier fixture does.
+            chat_target = (
+                root / "kompile-app" / "kompile-app-parent" / "kompile-app-chat" /
+                "target"
+            )
+            chat_target.mkdir(parents=True)
+            chat_jar = chat_target / "kompile-app-chat-0.1.0-SNAPSHOT-exec.jar"
+            with zipfile.ZipFile(chat_jar, "w") as archive:
+                archive.writestr(
+                    "META-INF/MANIFEST.MF",
+                    "Manifest-Version: 1.0\n"
+                    "Start-Class: ai.kompile.app.chat.ChatApplication\n\n",
+                )
+                archive.writestr("BOOT-INF/classes/example.class", b"class")
             output = root / "output"
             repository = root / "m2"
             env = os.environ.copy()
@@ -1045,6 +1067,133 @@ class BuildPlatformParityTest(unittest.TestCase):
             )
             self.assertTrue((installed / f"{base}.zip").is_file())
             self.assertTrue((installed / f"{base}.tar.gz").is_file())
+
+    def test_archive_format_zip_opt_out_halves_maven_assemblies(self):
+        """--archive-format zip skips the tar.gz: output, checksum, and Maven copy."""
+        maven = shutil.which("mvn")
+        configured_maven = pathlib.Path("/home/agibsonccc/dev-apps/mvn/bin/mvn")
+        if maven is None and configured_maven.is_file():
+            maven = str(configured_maven)
+        if maven is None:
+            self.skipTest("Maven is required to verify classified distribution installation")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
+            (root / "build-dist.sh").chmod(0o755)
+            (root / "pom.xml").write_text(
+                "<project><modelVersion>4.0.0</modelVersion>"
+                "<groupId>ai.kompile</groupId><artifactId>synthetic-root</artifactId>"
+                "<version>0.1.0-SNAPSHOT</version></project>\n",
+                encoding="utf-8",
+            )
+            build_helpers = root / "kompile-dist" / "src" / "main" / "build"
+            build_helpers.mkdir(parents=True)
+            normalizer = build_helpers / "normalize-elf-portability.sh"
+            normalizer.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            normalizer.chmod(0o755)
+            native_stager = build_helpers / "stage-native-libs.sh"
+            shutil.copy2(
+                REPOSITORY / "kompile-dist" / "src" / "main" / "build" /
+                "stage-native-libs.sh",
+                native_stager,
+            )
+            native_stager.chmod(0o755)
+            (root / "kompile-dist" / "pom.xml").write_text(
+                "<project><modelVersion>4.0.0</modelVersion>"
+                "<groupId>ai.kompile</groupId><artifactId>kompile-dist</artifactId>"
+                "<version>0.1.0-SNAPSHOT</version><packaging>pom</packaging></project>\n",
+                encoding="utf-8",
+            )
+            cli = root / "kompile-cli" / "kompile-cli-main" / "target" / "kompile-cli-main"
+            cli.parent.mkdir(parents=True)
+            cli.write_bytes(b"native-cli")
+            cli.chmod(0o755)
+            (cli.parent / "native-libs").mkdir()
+            model_cli = (
+                root / "kompile-cli" / "kompile-model-cli" / "target" /
+                "kompile-model"
+            )
+            model_cli.parent.mkdir(parents=True)
+            model_cli.write_bytes(b"native-model-cli")
+            model_cli.chmod(0o755)
+            agent_cli = (
+                root / "kompile-cli" / "kompile-agent-cli" / "target" /
+                "kompile-agent"
+            )
+            agent_cli.parent.mkdir(parents=True)
+            agent_cli.write_bytes(b"native-agent-cli")
+            agent_cli.chmod(0o755)
+            # cli-only packaging fail-closes on lib/kompile-chat.jar; provide the
+            # handoff exec JAR the same way the persona verifier fixture does.
+            chat_target = (
+                root / "kompile-app" / "kompile-app-parent" / "kompile-app-chat" /
+                "target"
+            )
+            chat_target.mkdir(parents=True)
+            chat_jar = chat_target / "kompile-app-chat-0.1.0-SNAPSHOT-exec.jar"
+            with zipfile.ZipFile(chat_jar, "w") as archive:
+                archive.writestr(
+                    "META-INF/MANIFEST.MF",
+                    "Manifest-Version: 1.0\n"
+                    "Start-Class: ai.kompile.app.chat.ChatApplication\n\n",
+                )
+                archive.writestr("BOOT-INF/classes/example.class", b"class")
+            output = root / "output"
+            repository = root / "m2"
+            env = os.environ.copy()
+            env.update({
+                "KOMPILE_MAVEN_REPO": str(repository),
+                "MVN": maven,
+            })
+            result = subprocess.run(
+                [
+                    "bash", "./build-dist.sh", "cli-only",
+                    "--skip-java-build", "--skip-native",
+                    "--platform", "linux-x86_64",
+                    "--output-dir", str(output),
+                    "--version", "0.1.0-SNAPSHOT",
+                    "--archive-format", "zip",
+                ],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            classifier = "cli-only-linux-x86_64"
+            base = f"kompile-dist-0.1.0-SNAPSHOT-{classifier}"
+            self.assertTrue((output / f"{base}.zip").is_file())
+            self.assertFalse((output / f"{base}.tar.gz").exists(),
+                             "zip opt-out must not produce the tar.gz")
+            self.assertFalse((output / f"{base}.tar.gz.sha256").exists())
+            installed = (
+                repository / "ai" / "kompile" / "kompile-dist" /
+                "0.1.0-SNAPSHOT"
+            )
+            self.assertTrue((installed / f"{base}.zip").is_file(),
+                            "the classified ZIP stays in the Maven lane")
+            self.assertFalse((installed / f"{base}.tar.gz").exists(),
+                             "zip opt-out must not install the tar.gz copy")
+
+    def test_archive_format_targz_with_maven_lane_is_rejected(self):
+        """tar.gz-only cannot silently drop the classified ZIP the install lane needs."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
+            result = subprocess.run(
+                [
+                    "bash", "./build-dist.sh", "cli-only",
+                    "--platform", "linux-x86_64",
+                    "--archive-format", "tar.gz",
+                ],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("--skip-maven-install", result.stderr)
 
     def test_native_stager_preserves_manifest_owned_rocm_kernel_packs(self):
         with tempfile.TemporaryDirectory() as temporary:

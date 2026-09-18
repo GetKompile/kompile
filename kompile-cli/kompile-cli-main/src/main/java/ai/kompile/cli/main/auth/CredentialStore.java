@@ -372,6 +372,12 @@ public final class CredentialStore {
     }
 
     public boolean switchCredential(String providerId, String credentialName) throws IOException {
+        return switchCredential(providerId, credentialName, false);
+    }
+
+    /** Explicit user activation may also replace the pins of currently open chats. */
+    public boolean switchCredential(String providerId, String credentialName, boolean updateOpenSessions)
+            throws IOException {
         String normalizedProvider = normalizeProviderId(providerId);
         String normalizedName = normalizeCredentialName(credentialName);
         return withMutation(store -> {
@@ -380,9 +386,25 @@ public final class CredentialStore {
                 return false;
             }
             provider.activeName = normalizedName;
+            if (updateOpenSessions) {
+                provider.sessionSelection = new SessionSelection(UUID.randomUUID().toString(), normalizedName);
+            }
             return true;
         });
     }
+
+    /** Non-secret activation markers, re-read under the cross-process store lock. */
+    public Map<String, SessionSelection> sessionSelections() throws IOException {
+        return withLock(store -> {
+            Map<String, SessionSelection> selections = new LinkedHashMap<>();
+            store.providers.forEach((id, provider) -> {
+                if (provider.sessionSelection != null) selections.put(id, provider.sessionSelection);
+            });
+            return selections;
+        });
+    }
+
+    public record SessionSelection(String revision, String credentialName) {}
 
     public int deleteAll() throws IOException {
         return withMutation(store -> {
@@ -595,6 +617,12 @@ public final class CredentialStore {
                         + "' does not exist for provider " + providerId);
             }
             provider.activeName = activeName;
+            JsonNode selection = providerNode.get("sessionSelection");
+            if (selection != null && !selection.isNull()) {
+                provider.sessionSelection = new SessionSelection(
+                        requiredText(selection, "revision", providerId),
+                        normalizeCredentialName(requiredText(selection, "credentialName", providerId)));
+            }
             store.providers.put(providerId, provider);
         }
     }
@@ -657,6 +685,11 @@ public final class CredentialStore {
         store.providers.forEach((providerId, provider) -> {
             ObjectNode providerNode = providersNode.putObject(providerId);
             providerNode.put("active", provider.activeName);
+            if (provider.sessionSelection != null) {
+                ObjectNode selection = providerNode.putObject("sessionSelection");
+                selection.put("revision", provider.sessionSelection.revision());
+                selection.put("credentialName", provider.sessionSelection.credentialName());
+            }
             ObjectNode credentialsNode = providerNode.putObject("credentials");
             provider.credentials.forEach((credentialName, credential) ->
                     writeCredential(credentialsNode.putObject(credentialName), credential));
@@ -828,6 +861,7 @@ public final class CredentialStore {
 
     private static final class ProviderCredentials {
         private String activeName;
+        private SessionSelection sessionSelection;
         private final LinkedHashMap<String, ManagedCredential> credentials = new LinkedHashMap<>();
 
         private ManagedCredential activeCredential() {

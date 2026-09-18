@@ -7,10 +7,16 @@ import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -25,15 +31,25 @@ public class StdioTaskTool {
     private final DirectSubagentRunnerStdio subagentRunner;
     private final ObjectMapper objectMapper;
     private final RoleManager roleManager;
+    private final Path workDir;
 
     public StdioTaskTool(AgentRegistry agentRegistry,
                          DirectSubagentRunnerStdio subagentRunner,
                          ObjectMapper objectMapper,
                          RoleManager roleManager) {
+        this(agentRegistry, subagentRunner, objectMapper, roleManager, null);
+    }
+
+    public StdioTaskTool(AgentRegistry agentRegistry,
+                         DirectSubagentRunnerStdio subagentRunner,
+                         ObjectMapper objectMapper,
+                         RoleManager roleManager,
+                         Path workDir) {
         this.agentRegistry = agentRegistry;
         this.subagentRunner = subagentRunner;
         this.objectMapper = objectMapper;
         this.roleManager = roleManager;
+        this.workDir = workDir;
     }
 
     /**
@@ -115,6 +131,30 @@ public class StdioTaskTool {
         if (prompt == null || prompt.isEmpty()) {
             return ToolResult.error("prompt is required");
         }
+
+        // ── Workflow team enforcement (harness-owned identity) ─────────────
+        WorkflowTeamEnforcement workflow = workflowEnforcement(workDir, roleManager);
+        if (workflow != null) {
+            WorkflowTeamEnforcement.ToolDecision toolDecision =
+                    workflow.evaluateToolUse("task");
+            if (!toolDecision.allowed()) {
+                return ToolResult.error(toolDecision.reason());
+            }
+            String purpose = (String) arguments.get("purpose");
+            WorkflowTeamEnforcement.DelegationDecision decision =
+                    workflow.evaluateDelegation(purpose, roleName);
+            if (decision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied denied) {
+                return ToolResult.error(denied.reason());
+            }
+            WorkflowTeamEnforcement.DelegationDecision.Allowed allowed =
+                    (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision;
+            // The workflow owns the destination: apply the resolved participant's role
+            // and drop model/thinking selectors that would contradict it.
+            roleName = allowed.resolvedRole();
+            model = null;
+            thinking = null;
+        }
+
         if (!isSupportedAgent(requestedAgent)) {
             return ToolResult.error("Agent '" + requestedAgent
                 + "' is not available. Available agents: " + String.join(", ", SUPPORTED_AGENTS) + ".");
@@ -163,6 +203,10 @@ public class StdioTaskTool {
             metadata.put("thinking", effectiveThinking == null ? "" : effectiveThinking);
             metadata.put("policy", "FULL_ACCESS");
             metadata.put("fallbacksUsed", "0");
+            if (workflow != null) {
+                metadata.put("workflow", workflow.team().name());
+                metadata.put("workflowParticipant", workflow.callerParticipant());
+            }
             return ToolResult.success("task:" + requestedAgent, result, metadata);
         } catch (RateLimitException e) {
             System.err.println("\u001B[33m  \u26a0 " + displayName + " rate limited; provider fallback is disabled.\u001B[0m");
@@ -221,6 +265,52 @@ public class StdioTaskTool {
 
     static boolean isSupportedAgent(String agentName) {
         return agentName != null && SUPPORTED_AGENTS.contains(agentName.toLowerCase(Locale.ROOT));
+    }
+
+    // ── Workflow team support ───────────────────────────────────────────────
+
+    /**
+     * Resolves the active workflow enforcement for this process. Identity comes
+     * from the environment (set by the harness), never from tool arguments; a
+     * participant variable without a matching workflow file means the session
+     * was started outside a workflow and enforcement stays off.
+     */
+    static WorkflowTeamEnforcement workflowEnforcement(Path workDir, RoleManager roleManager) {
+        if (workDir == null) return null;
+        String workflowName = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
+        if (workflowName == null || workflowName.isBlank()) return null;
+        try {
+            WorkflowTeam team = WorkflowTeamStore.get(workDir, workflowName);
+            if (team == null) return null;
+            return workflowEnforcementWith(workDir, roleManager, team);
+        } catch (IOException e) {
+            // A configured workflow that cannot be read must fail closed, not open.
+            throw new IllegalStateException("Workflow '" + workflowName
+                    + "' is configured but could not be read: " + e.getMessage(), e);
+        }
+    }
+
+    /** Enforcement for an already-resolved team; shared by the env-driven path and tests. */
+    static WorkflowTeamEnforcement workflowEnforcementWith(Path workDir, RoleManager roleManager,
+                                                           WorkflowTeam team) {
+        // Fail closed: every referenced role must exist before any delegation runs.
+        team.participants().values().forEach(participant -> {
+            if (roleManager != null && roleManager.getRole(participant.role()) == null) {
+                throw new IllegalStateException("Workflow '" + team.name() + "' participant '"
+                        + participant.id() + "' references unknown role '" + participant.role()
+                        + "'. Create the role or fix the workflow before delegating.");
+            }
+        });
+        return WorkflowTeamEnforcement.forCaller(
+                new WorkflowTeamSnapshot(team, resolveRoles(team), null),
+                WorkflowTeamEnforcement.resolveCallerParticipant(team));
+    }
+
+    private static Map<String, String> resolveRoles(WorkflowTeam team) {
+        Map<String, String> roles = new LinkedHashMap<>();
+        team.participants().values().forEach(participant ->
+                roles.put(participant.id(), participant.role()));
+        return roles;
     }
 
     static boolean isAgentMissing(String result) {

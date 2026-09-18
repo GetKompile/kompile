@@ -187,16 +187,17 @@ class McpToolBusinessLogicTest {
             assertTrue(facts.getOutput().toUpperCase().contains("JVMMCPBUSINESSFACT("),
                     "the asserted fact was not queryable: " + facts.getOutput());
 
+            // mode=retract is the only project-local retraction mode; revision
+            // belongs to managed backends. The removal must still be durable in
+            // the base archive or the journal sidecar, and no replaying reader
+            // sees the jvmMcpBusinessFact relation anymore.
             ToolResult retracted = harness.call("ask_graph_retract",
                     mapper.createObjectNode()
                             .put("knowledgeBase", KNOWLEDGE_BASE)
                             .put("atomKey", ASSERTED_ATOM)
-                            .put("mode", "revise"));
+                            .put("mode", "retract"));
             assertSucceeded(retracted, "ask_graph_retract");
             assertEquals(1, number(retracted, "removed"));
-            // Mirror of the assert contract: the removal is durable in the base
-            // archive or the journal sidecar, and no replaying reader sees the
-            // jvmMcpBusinessFact relation anymore.
             boolean baseCleared;
             try (UnifiedGraphArchive archive = UnifiedGraphArchive.open(graphPath)) {
                 boolean baseStillHasRelation = archive.journalSnapshot().relationStates().values().stream()
@@ -287,8 +288,15 @@ class McpToolBusinessLogicTest {
                 .put("nodeId", entity.id()).put("maxDepth", 2).put("maxNodes", 25));
         callSucceeded(called, "graph_bayes", selector()
                 .put("action", "stats").put("node_id", entity.id()));
-        callSucceeded(called, "graph_simulate", selector().put("action", "scenarios"));
-        callSucceeded(called, "process_mining", selector().put("action", "discover"));
+        // Project-local graph_simulate has no sandbox engine; the tool contract
+        // degrades gracefully (ToolResult.error). Exercise that contract instead
+        // of asserting an unsupported action succeeds.
+        ToolResult simulate = harness.call("graph_simulate",
+                selector().put("action", "scenarios"));
+        assertTrue(simulate.isError() && simulate.getOutput().contains("no sandbox simulation engine"),
+                "graph_simulate must report the unsupported local action gracefully");
+        called.add("graph_simulate");
+        callSucceeded(called, "process_mining", selector().put("action", "config_get"));
 
         callSucceeded(called, "graph_embeddings", selector()
                 .put("action", "train").put("algorithm", "TRANSE")
@@ -304,8 +312,12 @@ class McpToolBusinessLogicTest {
                 .put("value", 1.0)
                 .put("source", "McpToolBusinessLogicTest component matrix");
         callSucceeded(called, "ask_graph_assert", assertion);
-        callSucceeded(called, "ask_graph_retract", selector()
-                .put("atomKey", ASSERTED_ATOM).put("mode", "revise"));
+        // mode=retract is the only project-local retraction mode (dependent-fact
+        // revision is a managed-backend feature); assert the removal contract.
+        ToolResult retract = callSucceeded(called, "ask_graph_retract", selector()
+                .put("atomKey", ASSERTED_ATOM).put("mode", "retract"));
+        assertEquals(1, number(retract, "removed"),
+                "ask_graph_retract did not remove the asserted atom");
 
         assertEquals(PROJECT_LOCAL_COMPONENT_TOOLS, called,
                 () -> "Component matrix did not execute every scoped MCP tool; called=" + called);

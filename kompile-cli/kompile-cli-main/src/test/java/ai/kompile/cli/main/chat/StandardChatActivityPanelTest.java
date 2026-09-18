@@ -12,6 +12,7 @@ import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -22,8 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class StandardChatActivityPanelTest {
 
     @Test
-    void completedRowsExpireOnIdleCallbackWithoutRemovingHistoryOrRunningWork() {
-        BackgroundTaskManager tasks = new BackgroundTaskManager();
+    void completedRowsExpireOnIdleCallbackWithoutRemovingHistoryOrRunningWork() {        BackgroundTaskManager tasks = new BackgroundTaskManager();
         try (BackgroundProcessManager processes = new BackgroundProcessManager("activity-expiry")) {
             StatusBar bar = new StatusBar(tasks, processes, null, new TerminalRenderer(true));
             AtomicReference<java.time.Instant> now = new AtomicReference<>(java.time.Instant.now());
@@ -559,12 +559,17 @@ class StandardChatActivityPanelTest {
 
             String foreground = panel.inlineSubagentTranscript("research-1");
             assertTrue(foreground.contains("Subagent [research-1] researcher"));
-            assertTrue(foreground.contains("Searching docs"));
-            assertTrue(foreground.contains("searched provider docs"));
-            assertTrue(foreground.contains("live answer chunk"));
+            assertTrue(foreground.contains("Searching docs"),
+                    "one-line steps stay in the collapsed block");
+            assertFalse(foreground.contains("searched provider docs"),
+                    "raw tool detail must stay out of the main-window block");
+            assertFalse(foreground.contains("live answer chunk"),
+                    "streamed model text must stay out of the main-window block");
             assertTrue(foreground.contains("Ctrl+B background this invocation"));
             assertTrue(foreground.contains("Delete to stop"));
             assertTrue(foreground.contains("Enter to inspect"));
+            assertFalse(panel.inlineSubagentTranscript("research-1").contains("live answer chunk"),
+                    "the collapsed main-window block never repaints raw output");
 
             assertNotNull(tasks.requestBackground());
             blockingSubagentInvocation.set(false);
@@ -617,6 +622,63 @@ class StandardChatActivityPanelTest {
             assertTrue(panel.trySendMessageToViewedSubagent("after row eviction"));
             assertEquals("research-1:after row eviction", backgroundFollowUp.get(),
                     "opening the literal task row must not fall through to Main");
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void inlineSubagentBlockCollapsesToAFewOneLineStepsWithRunningIndicator() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("standard-activity-inline-collapse-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 4);
+
+            bar.registerSubagent("busy-1", "general", "Run the long task");
+            for (int i = 0; i < 9; i++) {
+                bar.appendSubagentActivity("busy-1", "Grep pattern #" + i + " …", null);
+                bar.appendSubagentActivity("busy-1", "Grep pattern #" + i + " ✓ 12 matches", null);
+            }
+            bar.appendSubagentActivity("busy-1", "Bash mvn test …", null);
+
+            String block = panel.inlineSubagentTranscript("busy-1");
+            List<String> lines = block.lines().toList();
+            assertTrue(lines.size() <= 7,
+                    "the collapsed block stays within about five rows, got " + lines.size());
+            assertTrue(block.contains("10 steps"),
+                    "the hidden-step count must be preserved: " + block);
+            assertTrue(block.contains("… +7 earlier steps"),
+                    "earlier steps collapse into a count: " + block);
+            assertTrue(block.contains("⟳ Bash mvn test …"),
+                    "the in-flight command gets the running indicator: " + block);
+            assertTrue(block.contains("⎿ Grep pattern #8 ✓ 12 matches"),
+                    "the last finished step keeps its outcome: " + block);
+            assertFalse(block.contains("Grep pattern #5"),
+                    "older steps must collapse out: " + block);
+            assertFalse(block.contains("[older activity omitted]"),
+                    "the raw transcript marker must never appear inline: " + block);
+
+            bar.appendSubagentActivity("busy-1", "Bash mvn test ✓ 64/64 green", null);
+            String settled = panel.inlineSubagentTranscript("busy-1");
+            assertTrue(settled.contains("⎿ Bash mvn test ✓ 64/64 green"),
+                    "a finished call replaces its in-flight row: " + settled);
+            assertFalse(settled.contains("Bash mvn test …"),
+                    "the provisional in-flight row must not stack beside its result: " + settled);
+
+            bar.registerSubagent("fresh-1", "explore", "Just spawned");
+            String fresh = panel.inlineSubagentTranscript("fresh-1");
+            assertTrue(fresh.contains("⟳ running"),
+                    "before any step the live status becomes the running row: " + fresh);
+            assertFalse(fresh.lines().count() > 4, "a fresh child stays minimal: " + fresh);
+
+            bar.unregisterSubagent("busy-1");
+            String recent = panel.inlineSubagentTranscript("busy-1");
+            assertTrue(recent.contains("completed") || recent.contains("⎿ Bash mvn test ✓ 64/64 green"),
+                    "a retained child still shows its collapsed steps: " + recent);
         } finally {
             processes.close();
         }
@@ -911,6 +973,117 @@ class StandardChatActivityPanelTest {
                     .contains("No auxiliary chats, active processes, or subagents")));
         } finally {
             processes.close();
+        }
+    }
+
+    @Test
+    void sharedMirrorRowsCarryOwnerLabelOpenLiveOutputAndNeverTouchOwnerProcess() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager(
+                "standard-activity-shared-mirror-test", java.nio.file.Files.createTempDirectory(
+                "shared-mirror-test"));
+        java.nio.file.Path ownerLog = java.nio.file.Path.of(
+                System.getProperty("java.io.tmpdir"), "shared-mirror-owner.log");
+        java.nio.file.Files.write(ownerLog, ("compile step 1\n").getBytes(
+                java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 6);
+            processes.upsertShared(
+                    "shared-owner-session-proc-001",
+                    "mvn -o test",
+                    "Maven test run · codex",
+                    999999L,
+                    java.time.Instant.now(),
+                    BackgroundProcessManager.ProcessState.RUNNING,
+                    null,
+                    null,
+                    ownerLog,
+                    Map.of("ownerSessionId", "owner-session",
+                            "sharedProcessId", "proc-001",
+                            "ownerAgent", "codex",
+                            "source", "coordination"));
+            panel.refresh();
+
+            var row = panel.activityItems().stream()
+                    .filter(item -> item.id().startsWith("shared-"))
+                    .filter(item -> item.kind() == StandardChatActivityPanel.ActivityKind.PROCESS)
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(row.label().contains("codex"),
+                    "shared row must carry the owner label: " + row.label());
+            assertTrue(row.label().contains("Maven test run"),
+                    "shared row keeps the description: " + row.label());
+            assertFalse(row.killable(),
+                    "mirror must not offer Del-stop: the owner session owns the PID");
+
+            // Opening the row shows the live owner log FIRST, metadata as a
+            // footer, and never just the output-file path.
+            assertTrue(panel.selectNext(), "shared row should be selectable");
+            var view = panel.openSelectedView();
+            assertNotNull(view);
+            assertTrue(view.content().contains("compile step 1"),
+                    "detail must show the live owner log tail: " + view.content());
+            assertTrue(view.content().contains("owner: codex"),
+                    "detail must identify the owner: " + view.content());
+            assertTrue(view.content().indexOf("compile step 1")
+                            < view.content().indexOf("log: "),
+                    "the log body must come before the log-path footer");
+            assertTrue(view.content().contains("output captured") == false
+                            || view.content().indexOf("compile step 1") >= 0,
+                    "an existing log must never render as only a path placeholder");
+
+            // Kill routing must refuse mirrors: the OS PID belongs to another session.
+            assertFalse(processes.kill(row.id()),
+                    "kill must refuse a shared mirror instead of signaling the owner PID");
+            assertTrue(processes.listAll().stream()
+                            .filter(entry -> entry.getKind() == ProcessKind.SHARED)
+                            .findFirst().orElseThrow().isRunning(),
+                    "refused kill leaves the mirror following the owner's true state");
+        } finally {
+            processes.close();
+            java.nio.file.Files.deleteIfExists(ownerLog);
+        }
+    }
+
+    @Test
+    void emptyProcessLogStillShowsStreamedPlaceholderNotJustPath() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager(
+                "standard-activity-empty-log-test", java.nio.file.Files.createTempDirectory(
+                "empty-log-test"));
+        java.nio.file.Path ownerLog = java.nio.file.Path.of(
+                System.getProperty("java.io.tmpdir"), "shared-mirror-empty.log");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 6);
+            java.nio.file.Files.write(ownerLog, new byte[0]);
+            processes.upsertShared(
+                    "shared-owner-session-proc-002",
+                    "sleep-runner",
+                    "empty log mirror",
+                    999998L,
+                    java.time.Instant.now(),
+                    BackgroundProcessManager.ProcessState.RUNNING,
+                    null,
+                    null,
+                    ownerLog,
+                    Map.of("ownerSessionId", "owner-session"));
+            panel.refresh();
+            assertTrue(panel.selectNext(), "shared row should be selectable");
+            var view = panel.openSelectedView();
+            assertNotNull(view);
+            String content = view.content();
+            assertTrue(content.contains("no output") || content.contains("No output"),
+                    "an empty log must say so instead of rendering only the path: "
+                            + content);
+        } finally {
+            processes.close();
+            java.nio.file.Files.deleteIfExists(ownerLog);
         }
     }
 }

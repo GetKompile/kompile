@@ -38,7 +38,8 @@ public final class ResourcePolicy {
         var rules = config.putArray("rules");
         // Editable defaults, not special cases in the evaluator.
         for (String tool : List.of("bash", "process")) {
-            for (String executable : List.of("git", "ps", "pwd", "cd", "true", "false", "sleep",
+            // `sleep` deliberately excluded: harness waiting must go through process monitors.
+            for (String executable : List.of("git", "ps", "pwd", "cd", "true", "false",
                     "printf", "echo", "date", "uname", "hostname", "whoami", "id", "which",
                     "free", "df", "uptime", "nvidia-smi", "kill")) {
                 ObjectNode rule = rules.addObject();

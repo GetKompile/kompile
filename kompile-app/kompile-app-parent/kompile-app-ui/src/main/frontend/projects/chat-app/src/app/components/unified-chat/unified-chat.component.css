@@ -2888,9 +2888,47 @@
 }
 
 .input-container {
+  position: relative;
   display: flex;
   gap: 12px;
   align-items: flex-end;
+}
+
+.slash-command-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.slash-command-menu button {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-command-menu button.selected,
+.slash-command-menu button:hover {
+  background: var(--bg-surface-elevated);
+  outline: 1px solid var(--border-color);
+}
+
+.slash-command-menu span {
+  color: var(--text-secondary);
 }
 
 .attachment-input {

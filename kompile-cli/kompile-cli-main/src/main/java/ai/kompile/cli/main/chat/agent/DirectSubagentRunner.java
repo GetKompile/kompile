@@ -36,6 +36,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Runs subagents directly using the configured LLM API (no kompile-app server needed).
@@ -63,6 +64,8 @@ public class DirectSubagentRunner implements SubagentRunner {
     private volatile ReminderManager reminderManager;
     private final Map<String, DirectSession> sessions = new ConcurrentHashMap<>();
     private static final int MAX_RETAINED_SESSIONS = 16;
+    /** Bounded compact-and-retry attempts per child session after an overflow. */
+    private static final int MAX_OVERFLOW_RECOVERIES = 2;
 
     private static final class DirectSession {
         private final String id;
@@ -72,6 +75,8 @@ public class DirectSubagentRunner implements SubagentRunner {
         private final String systemPrompt;
         private final String modelOverride;
         private final DirectSubagentSupervision supervision;
+        private final DirectSubagentCompactor compactor;
+        private final AtomicInteger overflowRecoveryCount = new AtomicInteger();
         private final ConcurrentLinkedQueue<String> followUps = new ConcurrentLinkedQueue<>();
         private final AtomicBoolean running = new AtomicBoolean(false);
         private final AtomicBoolean cancelled;
@@ -83,7 +88,8 @@ public class DirectSubagentRunner implements SubagentRunner {
         private DirectSession(String id, AgentConfig agent, ToolContext parentContext,
                               DirectLlmClient client, String systemPrompt,
                               String modelOverride, AtomicBoolean cancelled,
-                              DirectSubagentSupervision supervision) {
+                              DirectSubagentSupervision supervision,
+                              DirectSubagentCompactor compactor) {
             this.id = id;
             this.agent = agent;
             this.parentContext = parentContext;
@@ -92,6 +98,7 @@ public class DirectSubagentRunner implements SubagentRunner {
             this.modelOverride = modelOverride;
             this.cancelled = cancelled;
             this.supervision = supervision;
+            this.compactor = compactor;
         }
     }
 
@@ -142,6 +149,10 @@ public class DirectSubagentRunner implements SubagentRunner {
         AtomicBoolean subagentCancelled = new AtomicBoolean(false);
         subClient.setCancellationCheck(
                 () -> subagentCancelled.get() || parentContext.isAborted());
+        DirectSubagentCompactor compactor = new DirectSubagentCompactor(objectMapper);
+        compactor.configure(childConfig, agent.getModelOverride());
+        subClient.setContextWindowTokens(compactor.contextWindowTokens());
+        subClient.setWireMaxOutputTokens(compactor.wireMaxOutputTokens());
         String systemPrompt = agent.getSystemPrompt();
         if (systemPrompt == null) systemPrompt = "";
         ProjectChatContext projectContext = ProjectChatContext.load(parentContext.getWorkingDirectory());
@@ -168,7 +179,7 @@ public class DirectSubagentRunner implements SubagentRunner {
         DirectSession session = new DirectSession(
                 subagentId, agent, parentContext, subClient,
                 systemPrompt, agent.getModelOverride(), subagentCancelled,
-                new DirectSubagentSupervision(contract, toolRegistry, objectMapper));
+                new DirectSubagentSupervision(contract, toolRegistry, objectMapper), compactor);
         if (lifecycleListener != null) {
             subClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> emitOutput(subagentId, chunk)));
         }
@@ -236,13 +247,44 @@ public class DirectSubagentRunner implements SubagentRunner {
                 if (!session.supervision.permitsTool(toolDefinitions.get(i).path("name").asText()))
                     toolDefinitions.remove(i);
             }
+            // Model-aware auto-compaction, mirroring main chat: when the next request
+            // would cross the trigger, Tier 1 shrinks old tool/assistant bodies in
+            // place first — it is legal mid-exchange and keeps call/result ids intact.
             String outboundMessage = reminderManager == null
                     ? currentMessage : reminderManager.prependTo(currentMessage);
+            if (session.compactor.preventiveNeeded(outboundMessage)) {
+                int shrunkBodies = session.compactor.shrinkInPlace(session.client);
+                emitActivity(session.id, "compacting",
+                        renderer.renderSubagentStatus(session.agent.getName(),
+                                shrunkBodies > 0
+                                        ? "context nearing the model limit; pruned " + shrunkBodies + " old bodies"
+                                        : "context nearing the model limit"),
+                        session.parentContext);
+                if (session.compactor.preventiveNeeded(outboundMessage)) {
+                    DirectSubagentCompactor.CommitResult committed =
+                            session.compactor.compactAtBoundary(session.client,
+                                    session.modelOverride,
+                                    "Free context before the next subagent step");
+                    if (committed.committed()) {
+                        emitActivity(session.id, "compacted",
+                                renderer.renderCompactionNotice(
+                                        committed.tokensBefore(), committed.tokensAfter()),
+                                session.parentContext);
+                    }
+                }
+            }
+            // The pending outbound participates in overflow handling, but a rejected
+            // request must not keep it in the projection: failed requests commit no
+            // client history, and the retry re-sends the message exactly once.
+            int requestStart = session.compactor.markRequestStart();
+            session.compactor.appendUser(outboundMessage);
             DirectLlmClient.StreamResult result = session.client.streamChat(
                     outboundMessage, session.systemPrompt + "\n\n" + session.supervision.systemPrompt(), toolDefinitions,
                     pendingToolResults, session.modelOverride);
+            session.compactor.recordReportedTokens(result.contextInputTokens());
             if (result.cancelled || session.cancelled.get()
                     || session.parentContext.isAborted()) {
+                session.compactor.rollbackTo(requestStart);
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
                         renderer.renderSubagentError(session.agent.getName(), "Aborted"),
@@ -250,6 +292,45 @@ public class DirectSubagentRunner implements SubagentRunner {
                 return fullResponse + "\n[Subagent aborted]";
             }
 
+            // Provider context-window rejection: the failed request committed no
+            // history, so a Tier-2 rewrite plus a same-turn retry cannot duplicate
+            // anything. Each recovery must strictly shrink the history (the compactor
+            // refuses to commit otherwise), and a per-session cap bounds the worst case.
+            if (result.isContextOverflow()) {
+                session.compactor.rollbackTo(requestStart);
+                if (session.overflowRecoveryCount.incrementAndGet()
+                        > MAX_OVERFLOW_RECOVERIES) {
+                    notifyStatus(session.id, "failed · context overflow");
+                    emitActivity(session.id, "failed · context overflow",
+                            renderer.renderSubagentError(session.agent.getName(),
+                                    "Context still exceeded after compaction"),
+                            session.parentContext);
+                    throw new IllegalStateException(
+                            "Subagent context exceeded the model window after compaction");
+                }
+                DirectSubagentCompactor.CommitResult committed =
+                        session.compactor.compactAtBoundary(session.client,
+                                session.modelOverride,
+                                "Recover from a provider context-window rejection");
+                emitActivity(session.id, "compacting",
+                        renderer.renderSubagentStatus(session.agent.getName(),
+                                committed.committed()
+                                        ? "provider rejected the request as too long; compacted child context"
+                                        : "provider rejected the request as too long; no reduction possible: "
+                                                + committed.rejection()),
+                        session.parentContext);
+                if (!committed.committed()) {
+                    throw new IllegalStateException(
+                            "Subagent history cannot be reduced below the provider context limit: "
+                                    + committed.rejection());
+                }
+                continue;
+            }
+
+            // Accepted response: the adapter has committed the previous pending tool
+            // results, the outbound user message, and this response to the history.
+            session.compactor.appendAssistant(result.text);
+            session.compactor.commitThroughPendingOutbound();
             if (result.text != null && !result.text.isEmpty()) {
                 if (fullResponse.length() > 0) fullResponse.append('\n');
                 fullResponse.append(result.text);
@@ -275,6 +356,14 @@ public class DirectSubagentRunner implements SubagentRunner {
                 pendingToolResults = null;
                 continue;
             }
+
+            // Mirror the assistant tool-call envelope this response just committed,
+            // then advance the committed mark before execution appends results.
+            for (DirectLlmClient.ToolCallOutput tc : result.toolCalls) {
+                session.compactor.appendToolCall(tc.name, tc.id,
+                        tc.arguments == null ? null : tc.arguments.toString());
+            }
+            session.compactor.commitThroughPendingOutbound();
 
             session.supervision.beginToolBatch();
             List<DirectLlmClient.ToolCallResultInput> toolResults = new ArrayList<>();
@@ -314,11 +403,17 @@ public class DirectSubagentRunner implements SubagentRunner {
                         output = output.substring(0, 50_000) + "\n... (truncated, " + output.length() + " chars total)";
                     }
 
+                    session.compactor.appendToolResult(tc.name, tc.id, output);
+
                     toolResults.add(new DirectLlmClient.ToolCallResultInput(
                             tc.id, tc.name, output, toolResult.isError()));
                 } catch (DirectSubagentSupervision.SupervisionFailure failure) {
+                    session.compactor.appendToolResult(tc.name, tc.id,
+                            "Error: " + failure.getMessage());
                     throw failure;
                 } catch (ToolExecutionException e) {
+                    session.compactor.appendToolResult(tc.name, tc.id,
+                            "Error: " + e.getMessage());
                     ToolResult failed = ToolResult.error(e.getMessage());
                     emitActivity(session.id, callSummary + " ✗ "
                                     + TerminalRenderer.truncatePreview(e.getMessage(), 72),
@@ -330,6 +425,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                     // Same contract as the main loop: an uncaught LinkageError must not
                     // unwind the subagent turn silently — surface it as a tool error.
                     String failure = AgenticChatLoop.describeThrowable(unexpectedToolFailure);
+                    session.compactor.appendToolResult(tc.name, tc.id, "Error: " + failure);
                     ToolResult failed = ToolResult.error(failure);
                     emitActivity(session.id, callSummary + " ✗ "
                                     + TerminalRenderer.truncatePreview(failure, 72),

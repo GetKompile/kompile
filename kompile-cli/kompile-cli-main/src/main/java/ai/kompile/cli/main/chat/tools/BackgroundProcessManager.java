@@ -82,12 +82,15 @@ public class BackgroundProcessManager implements AutoCloseable {
     /**
      * Category of tracked work. COMMAND entries are real launched OS subprocesses;
      * JUDGE and ENFORCER entries can be lightweight watcher registrations backed
-     * by another component's lifecycle.
+     * by another component's lifecycle; SHARED entries mirror processes owned by
+     * another session (published through coordination state, e.g. the MCP process
+     * tool) and are refreshed by {@code SharedProcessMirror}.
      */
     public enum ProcessKind {
         COMMAND,
         JUDGE,
-        ENFORCER;
+        ENFORCER,
+        SHARED;
 
         public String label() { return name().toLowerCase(Locale.ROOT); }
     }
@@ -103,11 +106,13 @@ public class BackgroundProcessManager implements AutoCloseable {
         private volatile Instant endTime;
         private volatile Integer exitCode;
         private volatile ProcessState state;
-        private final Path outputFile;
+        private volatile Path outputFile;
         private volatile String description;
         private final Process process;
         private final ProcessKind kind;
         private volatile Map<String, String> metadata;
+        /** Last observed size of a shared mirror's owner log; drives live refresh. */
+        private volatile long sharedOutputSize = -1L;
         private final AtomicBoolean exitNotified = new AtomicBoolean(false);
         private final AtomicBoolean killRequested = new AtomicBoolean(false);
 
@@ -334,6 +339,103 @@ public class BackgroundProcessManager implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Create or refresh a mirror of a process owned by ANOTHER session (published
+     * through coordination state, e.g. the MCP process tool's own JVM). Repeated
+     * polls with the same {@code localId} update the entry in place. The output
+     * file is the owner's durable log: this manager only reads it for tails and
+     * never deletes it. A locally killed mirror stays KILLED until the owner
+     * publishes a terminal state, and terminal owner state always wins so a stale
+     * RUNNING snapshot cannot resurrect a finished row.
+     *
+     * @return the mirrored entry
+     */
+    public ProcessEntry upsertShared(String localId, String command, String description,
+                                     long pid, Instant startTime, ProcessState state,
+                                     Integer exitCode, Instant endTime, Path outputFile,
+                                     Map<String, String> metadata) {
+        ProcessState resolvedState = state != null ? state : ProcessState.RUNNING;
+        Map<String, String> resolvedMetadata = metadata != null ? Map.copyOf(metadata) : Map.of();
+        ProcessEntry entry = processes.get(localId);
+        boolean changed;
+        if (entry == null || entry.getKind() != ProcessKind.SHARED) {
+            entry = new ProcessEntry(localId,
+                    command != null ? command : "shared process",
+                    pid,
+                    startTime != null ? startTime : Instant.now(),
+                    outputFile,
+                    description != null && !description.isBlank() ? description : "shared process",
+                    null, ProcessKind.SHARED, resolvedMetadata);
+            if (resolvedState != ProcessState.RUNNING) {
+                entry.state = resolvedState;
+                entry.exitCode = exitCode;
+                entry.endTime = endTime != null ? endTime : Instant.now();
+            }
+            processes.put(localId, entry);
+            changed = true;
+        } else {
+            changed = false;
+            if (description != null && !description.isBlank()
+                    && !description.equals(entry.description)) {
+                entry.description = description;
+                changed = true;
+            }
+            if (!resolvedMetadata.equals(entry.metadata)) {
+                entry.metadata = resolvedMetadata;
+                changed = true;
+            }
+            if (outputFile != null && !outputFile.equals(entry.outputFile)) {
+                entry.outputFile = outputFile;
+                changed = true;
+            }
+            if (resolvedState != ProcessState.RUNNING) {
+                Instant newEnd = endTime != null ? endTime
+                        : (entry.endTime != null ? entry.endTime : Instant.now());
+                if (entry.state != resolvedState
+                        || !Objects.equals(entry.exitCode, exitCode)
+                        || !newEnd.equals(entry.endTime)) {
+                    entry.state = resolvedState;
+                    entry.exitCode = exitCode;
+                    entry.endTime = newEnd;
+                    changed = true;
+                }
+            }
+            // RUNNING snapshots keep the current state: they must not resurrect a
+            // locally killed or already terminal mirror.
+        }
+        long size = -1L;
+        if (entry.outputFile != null) {
+            try {
+                size = Files.size(entry.outputFile);
+            } catch (IOException ignored) {
+                size = -1L;
+            }
+        }
+        if (size != entry.sharedOutputSize) {
+            entry.sharedOutputSize = size;
+            changed = true;
+        }
+        if (changed) fireChange();
+        return entry;
+    }
+
+    /**
+     * Remove shared mirrors whose coordination entries are gone. Output files are
+     * never deleted — they belong to the owning session.
+     */
+    public void pruneShared(Set<String> keepLocalIds) {
+        boolean changed = false;
+        for (ProcessEntry entry : processes.values()) {
+            if (entry.getKind() == ProcessKind.SHARED
+                    && (keepLocalIds == null || !keepLocalIds.contains(entry.getId()))) {
+                if (processes.remove(entry.getId()) != null) {
+                    changed = true;
+                }
+            }
+        }
+        if (changed) fireChange();
+    }
+
     private void fireOutput(ProcessEntry entry, String line) {
         for (OutputCallback listener : outputListeners) {
             try {
@@ -549,6 +651,11 @@ public class BackgroundProcessManager implements AutoCloseable {
     public boolean kill(String processId) {
         ProcessEntry entry = processes.get(processId);
         if (entry == null) return false;
+        if (entry.getKind() == ProcessKind.SHARED) {
+            // Another session owns this OS process; a local refusal keeps the
+            // mirror following the owner's true state instead of faking one.
+            return false;
+        }
         return killProcess(entry);
     }
 
@@ -560,6 +667,10 @@ public class BackgroundProcessManager implements AutoCloseable {
     public boolean killByPid(long pid) {
         for (ProcessEntry entry : processes.values()) {
             if (entry.pid == pid && entry.isRunning()) {
+                if (entry.getKind() == ProcessKind.SHARED) {
+                    // A PID match alone does not confer ownership.
+                    return false;
+                }
                 return killProcess(entry);
             }
         }
@@ -695,6 +806,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         String prefix = switch (kind != null ? kind : ProcessKind.COMMAND) {
             case JUDGE -> "judge";
             case ENFORCER -> "enforcer";
+            case SHARED -> "shared";
             case COMMAND -> "proc";
         };
         return prefix + "-" + String.format("%03d", counter.incrementAndGet());
@@ -814,6 +926,11 @@ public class BackgroundProcessManager implements AutoCloseable {
         Iterator<Map.Entry<String, ProcessEntry>> it = processes.entrySet().iterator();
         while (it.hasNext()) {
             ProcessEntry entry = it.next().getValue();
+            // Shared mirrors own nothing: their logs belong to the owning session
+            // and their removal is driven by coordination eviction, not retention.
+            if (entry.getKind() == ProcessKind.SHARED) {
+                continue;
+            }
             if (!entry.isRunning() && entry.endTime != null && entry.endTime.isBefore(cutoff)) {
                 it.remove();
                 monitors.remove(entry.getId());

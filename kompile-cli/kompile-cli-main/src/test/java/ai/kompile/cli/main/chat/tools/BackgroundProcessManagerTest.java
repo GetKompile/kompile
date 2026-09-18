@@ -511,12 +511,14 @@ class BackgroundProcessManagerTest {
 
             ObjectNode firstLaunch = mapper.createObjectNode();
             firstLaunch.put("action", "launch");
-            firstLaunch.put("command", "exec sleep 10");
+            // Builtin blocking read: killable long-runner that is neither
+            // sleep-family nor a file reader, so the harness mandate passes.
+            firstLaunch.put("command", "read -t 60");
             firstLaunch.put("description", "first concurrent process");
             firstLaunch.put("monitor", false);
             ObjectNode secondLaunch = mapper.createObjectNode();
             secondLaunch.put("action", "launch");
-            secondLaunch.put("command", "exec sleep 10");
+            secondLaunch.put("command", "read -t 60");
             secondLaunch.put("description", "second concurrent process");
 
             ToolResult first = tool.execute(firstLaunch, context);

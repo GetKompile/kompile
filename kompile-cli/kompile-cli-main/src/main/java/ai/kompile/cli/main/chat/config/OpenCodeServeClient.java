@@ -16,20 +16,26 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.ConnectException;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -82,7 +88,7 @@ final class OpenCodeServeClient implements AutoCloseable {
     private final StringBuilder serverOutput = new StringBuilder();
 
     private Process serverProcess;
-    private volatile Process activeTurnProcess;
+    private volatile CompletableFuture<HttpResponse<String>> activeTurnRequest;
     private String baseUrl;
     private String sessionId;
     private boolean closed;
@@ -136,163 +142,238 @@ final class OpenCodeServeClient implements AutoCloseable {
         }
         ModelReference modelReference = parseModelReference(model);
 
-        List<String> command = new ArrayList<>();
-        AgentProvider definition = opencodeDefinition();
-        command.add(definition != null && definition.getCommand() != null
-                ? definition.getCommand() : "opencode");
-        command.add("run");
-        command.add("--attach");
-        command.add(baseUrl);
-        command.add("--session");
-        command.add(sessionId);
-        command.add("--model");
-        command.add(modelReference.asWireValue());
-        command.add("--format");
-        command.add("json");
-        if (variant != null && !variant.isBlank()) {
-            command.add("--variant");
-            command.add(variant.trim());
-        }
-
-        // The composed prompt (system instructions + user message) can exceed the
-        // kernel's per-argument limit (MAX_ARG_STRLEN, 128 KiB on Linux), which
-        // surfaces as exec error=7 "Argument list too long" and kills the turn
-        // before it starts. opencode reads its prompt from piped stdin, so deliver
-        // it there and close the pipe — the child then sees the EOF it waits for.
-        // The turn keeps the pipe stdin (prompt delivery), so this spawn bypasses
-        // NativeCliProcess's null-device redirect deliberately.
+        // Turns run through the REST message endpoint instead of an
+        // `opencode run --attach` child process. The CLI turn process boots its
+        // location eagerly and intermittently strands there before submitting the
+        // prompt (upstream anomalyco/opencode #48669), while this serve path boots
+        // lazily and does not hang. The POST is synchronous: its response body is
+        // the finished assistant message. The /event bus subscribed below carries
+        // the live progress that the child's stdout used to provide — streaming
+        // text deltas, tool start/complete activity and token usage — and doubles
+        // as the turn's liveness signal for the idle watchdog.
         String prompt = composePrompt(systemPrompt, userMessage);
-        ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(workingDirectory.toFile());
-        if (definition != null) {
-            builder.environment().putAll(definition.safeEnvironment());
-        }
-        Process turn;
-        try {
-            turn = builder.start();
-            // Write-then-close in a bounded thread: opencode blocks reading stdin
-            // until EOF, so the pipe must close even if it stops consuming early.
-            Thread promptWriter = new Thread(sessionContext.wrap(() -> {
-                try (java.io.OutputStream stdin = turn.getOutputStream()) {
-                    stdin.write(prompt.getBytes(StandardCharsets.UTF_8));
-                    stdin.flush();
-                } catch (IOException ignored) {
-                    // Child exited before consuming the prompt; its exit code
-                    // and stderr surface below.
-                }
-            }), "kompile-opencode-prompt");
-            promptWriter.setDaemon(true);
-            promptWriter.start();
-        } catch (IOException e) {
-            throw new TurnNotStartedException(
-                "OpenCode turn process could not start: " + e.getMessage(), e);
-        }
-        activeTurnProcess = turn;
-        StringBuilder rawOutput = new StringBuilder();
-        StringBuilder assistantText = new StringBuilder();
-        StringBuilder errorOutput = new StringBuilder();
-        PassthroughStreamParser streamParser = new PassthroughStreamParser();
-        Set<String> startedCalls = new HashSet<>();
-        Set<String> completedCalls = new HashSet<>();
-        AtomicLong lastActivityNanos = new AtomicLong(System.nanoTime());
-        Thread stderrReader = readLines(turn.getErrorStream(), errorOutput,
-                ignored -> lastActivityNanos.set(System.nanoTime()));
-        Thread stdoutReader = readLines(
-                turn.getInputStream(), rawOutput, line -> {
-                    lastActivityNanos.set(System.nanoTime());
-                    processProviderLine(line, streamParser, assistantText, output,
-                            activityListener, startedCalls, completedCalls);
-                }, Integer.MAX_VALUE);
+        EventBusListener listener = new EventBusListener(sessionId, output, activityListener);
+        listener.start();
 
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("providerID", modelReference.providerId());
+        body.put("modelID", modelReference.modelId());
+        if (variant != null && !variant.isBlank()) {
+            body.put("variant", variant.trim());
+        }
+        body.putArray("parts").addObject()
+                .put("type", "text")
+                .put("text", prompt);
+
+        HttpRequest request = HttpRequest.newBuilder(
+                        URI.create(baseUrl + "/session/" + sessionId + "/message"))
+                .header("content-type", "application/json")
+                .timeout(TURN_TIMEOUT)
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        objectMapper.writeValueAsString(body), StandardCharsets.UTF_8))
+                .build();
+        activeTurnRequest = httpClient.sendAsync(request,
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        long turnDeadline = System.nanoTime() + TURN_TIMEOUT.toNanos();
         try {
-            long turnDeadline = System.nanoTime() + TURN_TIMEOUT.toNanos();
-            while (!turn.waitFor(250, TimeUnit.MILLISECONDS)) {
+            while (!activeTurnRequest.isDone()) {
                 long now = System.nanoTime();
-                if (now - lastActivityNanos.get()
+                if (!listener.isDegraded() && now - listener.lastActivityNanos()
                         >= connectivityPolicy.subprocessIdleTimeout().toNanos()) {
-                    turn.destroyForcibly();
+                    activeTurnRequest.cancel(true);
                     throw new IllegalStateException("OpenCode provider connection was idle for "
                             + connectivityPolicy.subprocessIdleTimeout().toMinutes() + " minutes");
                 }
                 if (now >= turnDeadline) {
-                    turn.destroyForcibly();
+                    activeTurnRequest.cancel(true);
                     throw new IllegalStateException("OpenCode turn timed out");
                 }
+                Thread.sleep(250);
             }
-            stdoutReader.join(TimeUnit.SECONDS.toMillis(2));
-            stderrReader.join(TimeUnit.SECONDS.toMillis(2));
-            if (turn.exitValue() != 0) {
-                throw new IllegalStateException("OpenCode turn failed (exit " + turn.exitValue()
-                        + "): " + trimForError(errorOutput.toString()));
+            HttpResponse<String> response = activeTurnRequest.join();
+            if (response.statusCode() / 100 != 2) {
+                // The server received and ran (or rejected) the turn: its native
+                // session may hold partial state, so this is not replay-safe.
+                throw new IllegalStateException("OpenCode turn failed (HTTP "
+                        + response.statusCode() + "): " + trimForError(response.body()));
             }
+            String text = extractText(objectMapper, response.body());
+            if (text.isBlank()) {
+                throw new IllegalStateException("OpenCode returned no assistant text");
+            }
+            return text;
+        } catch (CompletionException e) {
+            // Classification mirrors the old process semantics: a failure to
+            // reach the server is a turn that never started (replay-safe); any
+            // failure after the request reached the server is not.
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (cause instanceof HttpConnectTimeoutException
+                    || cause instanceof ConnectException) {
+                throw new TurnNotStartedException(
+                        "OpenCode turn could not reach the server: " + cause.getMessage(), cause);
+            }
+            if (cause instanceof CancellationException) {
+                throw new IllegalStateException("OpenCode turn was cancelled");
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("OpenCode turn request failed", cause);
         } catch (InterruptedException e) {
-            turn.destroyForcibly();
+            activeTurnRequest.cancel(true);
             Thread.currentThread().interrupt();
             throw e;
         } finally {
-            activeTurnProcess = null;
-        }
-
-        String text = assistantText.toString().trim();
-        if (text.isBlank()) {
-            throw new IllegalStateException("OpenCode returned no assistant text"
-                    + (errorOutput.isEmpty() ? "" : ": " + trimForError(errorOutput.toString())));
-        }
-        return text;
-    }
-
-    void processProviderLine(
-            String line,
-            PassthroughStreamParser parser,
-            StringBuilder assistantText,
-            Consumer<String> output,
-            ActivityListener activity,
-            Set<String> startedCalls,
-            Set<String> completedCalls) {
-        List<PassthroughStreamParser.PassthroughEvent> events =
-                parser.parseOpenCodeLineMulti(line);
-        String callId = openCodeCallId(line);
-        for (PassthroughStreamParser.PassthroughEvent event : events) {
-            if (event instanceof PassthroughStreamParser.TextChunk text) {
-                assistantText.append(text.text());
-                if (output != null && !text.text().isEmpty()) output.accept(text.text());
-            } else if (event instanceof PassthroughStreamParser.ToolUse tool && activity != null) {
-                String effectiveCallId = callId.isBlank() ? tool.name() : callId;
-                if (startedCalls.add(effectiveCallId)) {
-                    activity.onToolStart(effectiveCallId, tool.name(), tool.input());
-                }
-            } else if (event instanceof PassthroughStreamParser.ToolComplete tool
-                    && activity != null) {
-                String effectiveCallId = callId.isBlank() ? tool.name() : callId;
-                if (completedCalls.add(effectiveCallId)) {
-                    activity.onToolComplete(effectiveCallId, tool.name(), tool.output(),
-                            tool.exitCode(), tool.error());
-                }
-            } else if (event instanceof PassthroughStreamParser.TokenUsage usage
-                    && activity != null) {
-                activity.onTokenUsage(usage.inputTokens(), usage.outputTokens(),
-                        usage.cacheReadTokens(), usage.cacheCreationTokens());
-            } else if (event instanceof PassthroughStreamParser.TurnComplete complete
-                    && activity != null
-                    && (complete.inputTokens() > 0 || complete.outputTokens() > 0
-                    || complete.cacheReadTokens() > 0 || complete.cacheCreationTokens() > 0)) {
-                activity.onTokenUsage(complete.inputTokens(), complete.outputTokens(),
-                        complete.cacheReadTokens(), complete.cacheCreationTokens());
-            }
+            activeTurnRequest = null;
+            listener.stop();
         }
     }
 
-    private String openCodeCallId(String line) {
-        try {
-            JsonNode part = objectMapper.readTree(line).path("part");
-            for (String field : List.of("callID", "call_id", "id")) {
-                String id = part.path(field).asText("");
-                if (!id.isBlank()) return id;
-            }
-        } catch (Exception ignored) {
-            // Non-JSON output has no provider call id.
+    /**
+     * Live progress lane for a REST turn. Subscribes to the serve's /event SSE
+     * stream, filters to this transport's session, and translates the native
+     * event shapes into the same callbacks the CLI-line transport produced:
+     * streamed text deltas on the output consumer, tool start/complete on the
+     * activity listener, token usage from assistant message updates. Losing the
+     * bus only removes live progress; the POST future and the hard turn timeout
+     * remain authoritative.
+     */
+    private final class EventBusListener implements Runnable {
+        private final String sessionId;
+        private final Consumer<String> output;
+        private final ActivityListener activity;
+        private final AtomicLong lastActivity = new AtomicLong(System.nanoTime());
+        private final Set<String> startedCalls = new HashSet<>();
+        private final Set<String> completedCalls = new HashSet<>();
+        private final AtomicBoolean degraded = new AtomicBoolean(false);
+        private volatile InputStream eventStream;
+
+        EventBusListener(String sessionId, Consumer<String> output, ActivityListener activity) {
+            this.sessionId = sessionId;
+            this.output = output;
+            this.activity = activity;
         }
-        return "";
+
+        void start() {
+            Thread thread = new Thread(sessionContext.wrap(this), "kompile-opencode-events");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        void stop() {
+            try {
+                InputStream stream = eventStream;
+                if (stream != null) stream.close();
+            } catch (IOException ignored) {
+                // Closing an already-dead stream is harmless.
+            }
+        }
+
+        long lastActivityNanos() {
+            return lastActivity.get();
+        }
+
+        /** True once the event stream ended: idle detection degrades to the hard turn timeout. */
+        boolean isDegraded() {
+            return degraded.get();
+        }
+
+        @Override
+        public void run() {
+            try {
+                HttpResponse<InputStream> response = httpClient.send(
+                        HttpRequest.newBuilder(URI.create(baseUrl + "/event")).GET().build(),
+                        HttpResponse.BodyHandlers.ofInputStream());
+                eventStream = response.body();
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(eventStream, StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        lastActivity.set(System.nanoTime());
+                        if (line.startsWith("data:")) {
+                            handleEvent(line.substring(5).trim());
+                        }
+                    }
+                }
+            } catch (IOException | InterruptedException ignored) {
+                // The turn future and turn deadline remain authoritative.
+            } finally {
+                degraded.set(true);
+            }
+        }
+
+        private void handleEvent(String payload) {
+            if (payload.isEmpty()) return;
+            JsonNode node;
+            try {
+                node = objectMapper.readTree(payload);
+            } catch (IOException ignored) {
+                return;
+            }
+            JsonNode properties = node.path("properties");
+            String eventSession = properties.path("sessionID").asText(
+                    node.path("sessionID").asText(""));
+            if (!sessionId.equals(eventSession)) {
+                return;
+            }
+            switch (node.path("type").asText("")) {
+                case "message.part.delta" -> {
+                    if (!"text".equals(properties.path("field").asText("text"))) return;
+                    String delta = properties.path("delta").asText("");
+                    if (!delta.isEmpty() && output != null) {
+                        output.accept(delta);
+                    }
+                }
+                case "message.part.updated" -> handlePartUpdated(properties.path("part"));
+                case "message.updated" -> handleTokens(properties.path("info"));
+                default -> {
+                    // session.updated / session.status / session.idle and friends
+                    // carry no turn payload; their arrival already refreshed the
+                    // liveness timestamp.
+                }
+            }
+        }
+
+        private void handlePartUpdated(JsonNode part) {
+            if (activity == null || !"tool".equals(part.path("type").asText(""))) return;
+            String callId = part.path("callID").asText("");
+            String tool = part.path("tool").asText("");
+            if (callId.isEmpty() || tool.isEmpty()) return;
+            JsonNode state = part.path("state");
+            String status = state.path("status").asText("");
+            if ("pending".equals(status) || "running".equals(status)) {
+                if (startedCalls.add(callId)) {
+                    JsonNode input = state.path("input");
+                    String inputText;
+                    try {
+                        inputText = input.isMissingNode() || input.isNull()
+                                ? "" : objectMapper.writeValueAsString(input);
+                    } catch (IOException e) {
+                        inputText = String.valueOf(input);
+                    }
+                    activity.onToolStart(callId, tool, inputText);
+                }
+            } else if ("completed".equals(status) || "error".equals(status)) {
+                if (completedCalls.add(callId)) {
+                    String outputText = state.path("output").asText("");
+                    int exit = state.path("metadata").path("exit").asInt(0);
+                    boolean error = "error".equals(status) || exit != 0;
+                    activity.onToolComplete(callId, tool, outputText, exit, error);
+                }
+            }
+        }
+
+        private void handleTokens(JsonNode info) {
+            if (activity == null || !"assistant".equals(info.path("role").asText(""))) return;
+            JsonNode tokens = info.path("tokens");
+            long input = tokens.path("input").asLong(0);
+            long outputTokens = tokens.path("output").asLong(0);
+            long cacheRead = tokens.path("cache").path("read").asLong(0);
+            long cacheWrite = tokens.path("cache").path("write").asLong(0);
+            if (input > 0 || outputTokens > 0 || cacheRead > 0 || cacheWrite > 0) {
+                activity.onTokenUsage(input, outputTokens, cacheRead, cacheWrite);
+            }
+        }
     }
 
     /** Ask the provider-owned OpenCode session to compact itself. */
@@ -334,8 +415,8 @@ final class OpenCodeServeClient implements AutoCloseable {
 
     @Override
     public void close() {
-        Process active = activeTurnProcess;
-        if (active != null && active.isAlive()) active.destroyForcibly();
+        CompletableFuture<HttpResponse<String>> active = activeTurnRequest;
+        if (active != null) active.cancel(true);
         synchronized (this) {
             if (closed) return;
             closed = true;

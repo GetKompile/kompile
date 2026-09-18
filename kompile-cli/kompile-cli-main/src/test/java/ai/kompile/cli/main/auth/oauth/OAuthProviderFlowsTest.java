@@ -214,6 +214,23 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
+    void googleLoginFailureIncludesConsentScreenScopeHint() {
+        // A consent-time failure (e.g. Google's "Error 400: invalid_request" page) never
+        // yields a code; the error must tell the user which console settings to fix.
+        TestInteraction interaction = new TestInteraction(
+                "http://127.0.0.1:1456/oauth/callback?error=invalid_request&error_description=nope");
+        GoogleOAuthFlow flow = new GoogleOAuthFlow(request -> {
+            throw new AssertionError("no HTTP without an authorization code");
+        }, "test-client");
+
+        IOException error = assertThrows(IOException.class,
+                () -> flow.login(MANUAL_BROWSER, interaction));
+
+        assertTrue(error.getMessage().contains("consent screen"));
+        assertTrue(error.getMessage().contains("KOMPILE_GOOGLE_SCOPES"));
+    }
+
+    @Test
     void googleBrowserPkceStoresRefreshTokenAndClientMetadata() throws Exception {
         QueueTransport transport = new QueueTransport(json(200, """
                 {"access_token":"ya29.google-access","refresh_token":"1//google-refresh",

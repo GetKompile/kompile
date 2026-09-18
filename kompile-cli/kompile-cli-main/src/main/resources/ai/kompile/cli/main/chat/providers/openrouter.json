@@ -8,5 +8,14 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "structuredOutput": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://openrouter.ai/docs/features/structured-outputs",
+      "verifiedAt": "2026-09-17",
+      "notice": "OpenRouter documents structured outputs via response_format json_schema; underlying model support varies by routed model."
+    },
+    "jsonSchema": true
+  },
   "profiles": []
 }

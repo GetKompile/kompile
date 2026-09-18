@@ -264,6 +264,24 @@ public class DoctorCommand implements Callable<Integer> {
 
         for (String id : all) {
             try {
+                List<File> corrupt = reg.corruptJarCandidates(id);
+                if (!corrupt.isEmpty()) {
+                    List<String> paths = new ArrayList<>();
+                    for (File bad : corrupt) {
+                        paths.add(bad.getAbsolutePath());
+                    }
+                    String corruptDetail = "corrupt jar: " + String.join(", ", paths);
+                    if (required.contains(id)) {
+                        out.add(CheckResult.fail(id, corruptDetail + " — the JVM will refuse to launch it",
+                                "Free disk space and reinstall with: kompile install " + id
+                                        + "  — or reinstall the " + contract.variant()
+                                        + " distribution (install.sh)"));
+                    } else {
+                        out.add(CheckResult.warn(id, corruptDetail,
+                                "Reinstall with: kompile install " + id));
+                    }
+                    continue;
+                }
                 File artifact = reg.findInstalledJar(id);
                 if (artifact == null) {
                     String fix = "Install with: kompile install " + id

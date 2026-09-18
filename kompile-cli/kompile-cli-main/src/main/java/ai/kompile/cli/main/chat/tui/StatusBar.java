@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -103,6 +104,9 @@ public class StatusBar {
         private final String description;
         private final Instant startedAt;
         private final StringBuilder transcript = new StringBuilder();
+        /** Bounded one-line activity tail for the collapsed inline block (oldest first). */
+        private final List<String> recentSummaries = new ArrayList<>();
+        private int totalSteps = 0;
         private volatile Instant completedAt;
         private volatile String status;
 
@@ -126,9 +130,20 @@ public class StatusBar {
             return transcript.toString().stripTrailing();
         }
 
+        /** Bounded chronological tail of one-line activity summaries (oldest first). */
+        public synchronized List<String> getRecentSummaries() {
+            return new ArrayList<>(recentSummaries);
+        }
+
+        /** Total retained activity steps, including ones rolled out of the summary tail. */
+        public synchronized int getTotalSteps() {
+            return totalSteps;
+        }
+
         private synchronized void appendActivity(String summary, String detail) {
             if (summary != null && !summary.isBlank()) {
                 this.status = summary;
+                rememberSummary(summary);
             }
             if (detail == null || detail.isBlank()) return;
             if (transcript.length() > 0) transcript.append('\n');
@@ -175,6 +190,39 @@ public class StatusBar {
             this.status = "starting follow-up";
         }
 
+        /**
+         * Keep a bounded one-line tail for the collapsed inline block. Full detail
+         * still lands in {@link #transcript}; consecutive duplicates and pure
+         * progress words ("responding", ...) never become rows.
+         */
+        private void rememberSummary(String summary) {
+            String step = summary.strip();
+            if (step.isEmpty()
+                    || TRANSIENT_SUMMARIES.contains(step.toLowerCase(java.util.Locale.ROOT))) {
+                return;
+            }
+            if (!recentSummaries.isEmpty()) {
+                String last = recentSummaries.get(recentSummaries.size() - 1);
+                if (step.equals(last)) return;
+                // A finished call summary replaces its provisional "in flight" row
+                // instead of adding a second entry for the same command.
+                if (last.endsWith(" …")) {
+                    String action = last.substring(0, last.length() - 2);
+                    if (step.length() >= action.length() && step.startsWith(action)
+                            && (step.length() == action.length()
+                                || step.charAt(action.length()) == ' ')) {
+                        recentSummaries.set(recentSummaries.size() - 1, step);
+                        return;
+                    }
+                }
+            }
+            recentSummaries.add(step);
+            totalSteps++;
+            while (recentSummaries.size() > MAX_SUBAGENT_SUMMARY_ROWS) {
+                recentSummaries.remove(0);
+            }
+        }
+
         public String getElapsed() {
             Duration d = Duration.between(startedAt,
                     completedAt != null ? completedAt : Instant.now());
@@ -188,6 +236,11 @@ public class StatusBar {
     private final CopyOnWriteArrayList<SubagentEntry> recentSubagents = new CopyOnWriteArrayList<>();
     private static final int MAX_RECENT_SUBAGENTS = 8;
     private static final int MAX_SUBAGENT_TRANSCRIPT_CHARS = 250_000;
+    /** Summary rows retained per subagent for the collapsed inline block; the panel shows the last few. */
+    static final int MAX_SUBAGENT_SUMMARY_ROWS = 6;
+    /** One-line steps that only signal progress: they update the status but never become summary rows. */
+    private static final Set<String> TRANSIENT_SUMMARIES = Set.of(
+            "starting", "thinking", "responding", "responded", "connecting", "completed", "aborted");
 
     // ========================================================================
     // Menu items — navigable activity items shown below the status line.
@@ -1046,6 +1099,13 @@ public class StatusBar {
 
     private static String formatProcessDetails(ProcessEntry p) {
         List<String> parts = new ArrayList<>();
+        if (p.getKind() == BackgroundProcessManager.ProcessKind.SHARED) {
+            String owner = p.getMetadata().getOrDefault("ownerAgent", "");
+            if (owner.isBlank()) {
+                owner = p.getMetadata().getOrDefault("ownerSessionId", "shared");
+            }
+            parts.add("owner: " + owner + " (shared mirror)");
+        }
         if (p.getPid() > 0) {
             parts.add("PID: " + p.getPid());
         }
@@ -1053,7 +1113,8 @@ public class StatusBar {
             parts.add("Output: " + p.getOutputFile());
         }
         p.getMetadata().forEach((key, value) -> {
-            if (value != null && !value.isBlank()) {
+            if (value != null && !value.isBlank()
+                    && !key.equals("ownerAgent") && !key.equals("ownerSessionId")) {
                 parts.add(key + ": " + value);
             }
         });

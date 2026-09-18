@@ -76,7 +76,8 @@ class DirectSubagentRunnerStdioTest {
                         "--effort", "max",
                         "-p", "review",
                         "--output-format", "stream-json",
-                        "--verbose"),
+                        "--verbose",
+                        "--include-partial-messages"),
                 SubprocessAgentRunner.buildManagedCommand(
                         "claude", "/tmp/claude", "review", false, null,
                         false, tempDir, null, "claude-opus", "max"));

@@ -9,6 +9,7 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 | PROHIBITED                               | REQUIRED (kompile tool)        |
 |------------------------------------------|--------------------------------|
 | `cat`, `head`, `tail`, `less`, `more`    | `read`                         |
+| `\| head`, `\| tail` stream slicing       | `fetch_result` offset/limit, `process action=output` + `tail_lines`, native flags (`git log -5`) |
 | `echo >`, heredoc, `tee`, write to file  | `write`                        |
 | Managed memory (`.kompile/memory/**`)     | `memory` (`todowrite` for tasks) |
 | `sed -i`, `awk`, `perl -pi -e`           | `edit`                         |
@@ -18,7 +19,9 @@ You MUST use kompile MCP tools for ALL file I/O, search, and web operations. Thi
 | `curl`, `wget`, `httpie`                 | `webfetch`                     |
 | Web search via shell                     | `websearch`                    |
 
-The `bash` and `process` tools are RESTRICTED to system commands only: compiling, testing, git operations, package managers, and starting services. Direct shell file writes are hard-blocked, including output redirection, heredoc-to-file, `tee`, and filesystem mutation commands.
+The `bash` and `process` tools are RESTRICTED to system commands only: compiling, testing, git operations, package managers, and starting services. Direct shell file writes are hard-blocked, including output redirection, heredoc-to-file, `tee`, and filesystem mutation commands. `head`/`tail` are banned as bash commands — on files (use `read`) and as pipeline filters (`| head`/`| tail` hard-blocked); page with `fetch_result`, use `process action=output` + `tail_lines`/`stream`, native flags (`git log -5`), and the `grep` tool.
+
+Waiting is monitor-only. NEVER block on `sleep`/`usleep`/`at` in `bash`/`process` — the harness hard-blocks them. Launch work with `process action=launch` (completion monitor installed automatically) or `action=monitor` for an existing process; the harness wakes you on exit. Poll `action=status`/`output`/`stream` between other work.
 
 Managed memory is hard-routed. NEVER target `.kompile/memory/**` or provider memory directories with generic `write`, `edit`, `edit_batch`, `edit_patch`, or `patch`; use `memory` for Kompile memory (`todowrite` for task state). Provider memory is read-only through the `memory` scan/read actions.
 

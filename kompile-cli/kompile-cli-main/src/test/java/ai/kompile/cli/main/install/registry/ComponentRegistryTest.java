@@ -163,14 +163,14 @@ public class ComponentRegistryTest {
                 "kompile-test-registry-" + System.nanoTime());
         registry.setInstallBaseDir(tempDir);
 
-        // Create a fake exec JAR in the version directory
+        // Create a fake exec JAR (PK header + EOCD so the integrity probe accepts it)
         String version = registry.getVersion();
         java.io.File installDir = new java.io.File(tempDir,
                 "components/kompile-model-staging/" + version);
         installDir.mkdirs();
         java.io.File execJar = new java.io.File(installDir,
                 "kompile-model-staging-" + version + "-exec.jar");
-        execJar.createNewFile();
+        writeMinimalZip(execJar);
 
         java.io.File found = registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
         assertNotNull(found, "Should find the exec JAR");
@@ -199,10 +199,10 @@ public class ComponentRegistryTest {
         // Create both canonical and exec JARs
         java.io.File canonicalJar = new java.io.File(installDir,
                 "kompile-model-staging-" + version + ".jar");
-        canonicalJar.createNewFile();
+        writeMinimalZip(canonicalJar);
         java.io.File execJar = new java.io.File(installDir,
                 "kompile-model-staging-" + version + "-exec.jar");
-        execJar.createNewFile();
+        writeMinimalZip(execJar);
 
         java.io.File found = registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
         assertNotNull(found, "Should find a JAR");
@@ -215,5 +215,65 @@ public class ComponentRegistryTest {
         installDir.getParentFile().delete();
         new java.io.File(tempDir, "components").delete();
         tempDir.delete();
+    }
+
+    /** Empty file = corrupt, PK-prefixed text = foreign payload (usable), zip = usable. */
+    @Test
+    public void testFindInstalledJarSkipsTruncatedAndEmptyJars() throws Exception {
+        ComponentRegistry registry = new ComponentRegistry();
+        java.io.File tempDir = new java.io.File(System.getProperty("java.io.tmpdir"),
+                "kompile-test-registry-" + System.nanoTime());
+        registry.setInstallBaseDir(tempDir);
+
+        String version = registry.getVersion();
+        java.io.File installDir = new java.io.File(tempDir,
+                "components/kompile-model-staging/" + version);
+        installDir.mkdirs();
+
+        java.io.File empty = new java.io.File(installDir,
+                "kompile-model-staging-" + version + ".jar");
+        empty.createNewFile();
+        java.io.File truncated = new java.io.File(installDir,
+                "kompile-model-staging-" + version + "-exec.jar");
+        writeTruncatedZip(truncated);
+
+        assertNull(registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING),
+                "Empty and truncated zips must not count as installed");
+        assertEquals(2, registry.corruptJarCandidates(ComponentRegistry.KOMPILE_MODEL_STAGING).size(),
+                "Both candidates should be reported as corrupt");
+
+        // Writing a valid jar alongside must make resolution succeed again.
+        java.io.File valid = new java.io.File(installDir,
+                "kompile-model-staging-" + version + "-fallback.jar");
+        writeMinimalZip(valid);
+        assertNotNull(registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING));
+        assertEquals(valid.getName(), registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING).getName());
+
+        empty.delete();
+        truncated.delete();
+        valid.delete();
+        installDir.delete();
+        installDir.getParentFile().delete();
+        new java.io.File(tempDir, "components").delete();
+        tempDir.delete();
+    }
+
+    private static void writeMinimalZip(java.io.File target) throws Exception {
+        // Local header (PK\003\004) + central directory + EOCD (PK\005\006), no entries.
+        byte[] local = {0x50, 0x4B, 0x03, 0x04, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        byte[] eocd = {0x50, 0x4B, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(target)) {
+            out.write(local);
+            out.write(eocd);
+        }
+    }
+
+    private static void writeTruncatedZip(java.io.File target) throws Exception {
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(target)) {
+            out.write(new byte[]{0x50, 0x4B, 0x03, 0x04});
+            out.write(new byte[4096]);
+        }
     }
 }

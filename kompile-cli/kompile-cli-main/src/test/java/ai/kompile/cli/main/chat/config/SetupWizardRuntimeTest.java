@@ -54,14 +54,15 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
-    void chatModeMenuOffersSingleAndBatchResumeActions() {
+    void chatModeMenuOffersWorkflowAndSingleAndBatchResumeActions() {
         List<String> options = SetupWizard.chatModeOptions();
 
-        assertEquals(4, options.size());
-        assertTrue(options.get(2).contains("Resume Previous"));
-        assertTrue(options.get(3).contains("Resume All"));
+        assertEquals(5, options.size());
+        assertTrue(options.get(2).contains("Workflow"));
+        assertTrue(options.get(3).contains("Resume Previous"));
+        assertTrue(options.get(4).contains("Resume All"));
         assertEquals("--active-within 30", SetupWizard.resumeAllArguments());
-        assertEquals(List.of("standard", "passthrough", "resume", "resume-all"),
+        assertEquals(List.of("standard", "passthrough", "workflow", "resume", "resume-all"),
                 SetupWizard.chatModeValues());
     }
 

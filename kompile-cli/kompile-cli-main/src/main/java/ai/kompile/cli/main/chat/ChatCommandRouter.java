@@ -511,6 +511,10 @@ public class ChatCommandRouter {
                 }
                 return true;
 
+            case "/workflow":
+                handleWorkflowTeamCommand(rest);
+                return true;
+
             case "/model":
                 handleModelCommand(rest.trim());
                 return true;
@@ -914,6 +918,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/role")).append("               Show current active role\n");
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Workflow"))).append("\n");
+            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active workflow team, purposes, and gates\n");
+            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a new workflow team (interactive)\n");
+            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved workflow teams\n");
+            body.append("  ").append(renderer.cyan("/workflow delete <name>")).append(" Remove a saved workflow\n");
+            body.append("\n");
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
@@ -985,6 +995,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/roles")).append("              Open role management wizard\n");
             body.append("  ").append(renderer.cyan("/role")).append("               Show current active role\n");
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Workflow"))).append("\n");
+            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active workflow team, purposes, and gates\n");
+            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a new workflow team (interactive)\n");
+            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved workflow teams\n");
+            body.append("  ").append(renderer.cyan("/workflow delete <name>")).append(" Remove a saved workflow\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/status")).append("             Connection and session info\n");
@@ -2217,6 +2233,121 @@ public class ChatCommandRouter {
     private void manageRoles() {
         RoleWizard wizard = new RoleWizard(roleManager);
         wizard.run();
+    }
+
+    /**
+     * `/workflow [create|list|delete <name>|show]` — workflow TEAM management
+     * (participants, delegation edges, gates). Distinct from `/judge workflow`,
+     * which configures the enforcer's turn-discipline profile.
+     */
+    private void handleWorkflowTeamCommand(String args) {
+        String op = args.isBlank() ? "show" : args.trim().split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
+        String rest = args.trim().substring(Math.min(op.length(), args.trim().length())).trim();
+        switch (op) {
+            case "show" -> showWorkflowStatus();
+            case "create" -> createWorkflowInteractive();
+            case "list" -> listWorkflows();
+            case "delete", "remove" -> deleteWorkflow(rest);
+            default -> {
+                System.out.println(renderer.yellow("Unknown /workflow control: " + op));
+                System.out.println(renderer.dim("Use /workflow [show|create|list|delete <name>]"));
+            }
+        }
+    }
+
+    private void createWorkflowInteractive() {
+        ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
+                ai.kompile.cli.main.chat.workflow.WorkflowWizard.create(workingDirectoryOrDot());
+        if (created != null) {
+            System.out.println("  " + renderer.dim("Start a chat with it: `kompile chat --workflow "
+                    + created.name() + "`"));
+        }
+    }
+
+    private void listWorkflows() {
+        try {
+            var workflows = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.list(workingDirectoryOrDot());
+            System.out.println();
+            System.out.println(ascii.sectionHeader("Saved Workflow Teams"));
+            System.out.println();
+            if (workflows.isEmpty()) {
+                System.out.println(renderer.dim("  None. Create one with /workflow create"));
+                return;
+            }
+            for (var team : workflows) {
+                System.out.println("  " + renderer.cyan(team.name())
+                        + renderer.dim(" — " + team.participants().size() + " participants"
+                        + (team.routing().isEmpty() ? "" : ", purposes: " + team.routing().keySet())));
+            }
+            System.out.println();
+            System.out.println(renderer.dim("  Details: /workflow show · Create: /workflow create"));
+        } catch (Exception e) {
+            System.out.println(renderer.yellow("  Could not list workflows: " + e.getMessage()));
+        }
+    }
+
+    private void deleteWorkflow(String name) {
+        if (name == null || name.isBlank()) {
+            System.out.println(renderer.dim("  Usage: /workflow delete <name>"));
+            return;
+        }
+        try {
+            boolean removed = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.delete(
+                    workingDirectoryOrDot(), name);
+            System.out.println(removed
+                    ? "  Deleted workflow '" + name + "'."
+                    : renderer.yellow("  No workflow named '" + name + "'."));
+        } catch (Exception e) {
+            System.out.println(renderer.yellow("  Could not delete workflow: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Shows the active workflow team for this session: participants, purposes,
+     * and outstanding gates. Reads the harness-owned environment, so it reflects
+     * the process identity rather than anything a model could have asserted.
+     */
+    private void showWorkflowStatus() {
+        System.out.println();
+        System.out.println(ascii.sectionHeader("Workflow Team"));
+        System.out.println();
+        String workflowName = System.getenv(
+                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
+        if (workflowName == null || workflowName.isBlank()) {
+            System.out.println(renderer.dim("  No workflow active for this session."));
+            System.out.println(renderer.dim("  Start one with `kompile chat --workflow <name>` or via the setup wizard."));
+            return;
+        }
+        String participant = System.getenv(
+                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
+        try {
+            var team = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.get(
+                    workingDirectoryOrDot(), workflowName);
+            if (team == null) {
+                System.out.println(renderer.yellow("  Workflow '" + workflowName
+                        + "' is active but its definition could not be loaded."));
+                return;
+            }
+            var enforcement = ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.forCaller(
+                    new ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot(
+                            team, team.participants().keySet().stream().collect(
+                                    java.util.stream.Collectors.toMap(
+                                            id -> id,
+                                            id -> team.participant(id).role(),
+                                            (a, b) -> a,
+                                            java.util.LinkedHashMap::new)),
+                            null),
+                    participant == null || participant.isBlank()
+                            ? team.lead() : ai.kompile.cli.main.chat.workflow.WorkflowTeam.key(participant));
+            System.out.println(enforcement.statusLine());
+        } catch (Exception e) {
+            System.out.println(renderer.yellow("  Could not load workflow '" + workflowName + "': " + e.getMessage()));
+        }
+    }
+
+    private Path workingDirectoryOrDot() {
+        return repl != null && repl.getWorkingDirectory() != null
+                ? repl.getWorkingDirectory() : Path.of(".");
     }
 
     private void showCurrentRole() {

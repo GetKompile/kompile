@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tui.KompileTui;
@@ -16,11 +17,16 @@ import org.jline.widget.AutosuggestionWidgets;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -468,6 +474,89 @@ class ChatCompleterTtyTest {
         }
     }
 
+    @ParameterizedTest
+    @CsvSource({"false,true", "true,true", "false,false", "true,false"})
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void resumedTranscriptCanBeSelectedAndCopiedWithBufferedMouseReports(
+            boolean buffered, boolean sgr, @TempDir Path home) throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", home.toString());
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager("resume-selection-test");
+        MessageQueue queue = new MessageQueue("resume-selection-" + UUID.randomUUID());
+        TerminalRenderer renderer = new TerminalRenderer(true);
+        KompileTui tui = new KompileTui(tasks, processes, queue, renderer);
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), () -> 3);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicReference<String> copied = new AtomicReference<>();
+        try {
+            String sessionId = "resume-selection";
+            ChatHistory history = new ChatHistory(sessionId);
+            history.open("", "standard", false, home);
+            history.logUserMessage("Prior question");
+            history.logAssistantMessage("Saved **answer** with `code`", 0, 0);
+            history.close();
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.enableAutoTrigger(reader);
+            ChatRepl.bindStandardChatActivityKeys((LineReaderImpl) reader, queue,
+                    activityPanel, tui, ignored -> { }, () -> "unexpected paste", copied::set);
+            tui.start(terminal);
+            ChatRepl.enableTranscriptMouse(terminal);
+            new SessionLifecycleManager(null, sessionId, false, history, null, renderer,
+                    new AsciiRenderer(renderer, 120),
+                    null, null, null).restoreSession(tui::printInScrollRegion);
+
+            // Find the actual rendered resume row, not a hand-built live-output surrogate.
+            List<String> visible = tui.getVisibleContentLines();
+            int answerRow = -1;
+            for (int i = 0; i < visible.size(); i++) {
+                if (AsciiRenderer.stripAnsi(visible.get(i))
+                        .contains("Saved answer with `code`")) answerRow = tui.scrollTop() + i;
+            }
+            assertTrue(answerRow > 0, () -> "the restored answer must be visible: " + visible);
+            String reports = String.format(Locale.ROOT,
+                    "\033[<0;3;%dM\033[<32;26;%dM\033[<0;26;%dm\033[<2;3;%dM",
+                    answerRow, answerRow, answerRow, answerRow);
+            if (!sgr) {
+                char row = (char) (answerRow + 32);
+                reports = "\033[M" + (char) 32 + (char) 35 + row
+                        + "\033[M" + (char) 64 + (char) 58 + row
+                        + "\033[M" + (char) 35 + (char) 58 + row
+                        + "\033[M" + (char) 34 + (char) 35 + row;
+            }
+            if (buffered) {
+                // JLine can push input read during terminal queries back into its
+                // BindingReader. Mouse bodies must use that same input owner.
+                reader.runMacro(reports);
+            }
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            if (!buffered) {
+                keyboardPipe.write(reports.getBytes(StandardCharsets.UTF_8));
+                keyboardPipe.flush();
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (copied.get() == null && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals("Saved answer with `code`", copied.get());
+            assertEquals("Saved answer with `code`", tui.getSelectedTranscriptText());
+            assertEquals("", reader.getBuffer().toString(), "mouse reports must not become draft text");
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            queue.clear();
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
+    }
+
     @Test
     void sgrDragHighlightsRightClickCopiesAndWheelStillScrolls() throws Exception {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
@@ -528,6 +617,19 @@ class ChatCompleterTtyTest {
             assertEquals("alpha\nbravo", copied.get());
             assertEquals("", reader.getBuffer().toString(),
                     "copying transcript text must not modify the composer");
+
+            // Shift+Ctrl+C (modifyOtherKeys encoding) copies the same retained
+            // selection; the composer must stay untouched and wheel scrolling
+            // must keep working afterwards (asserted below).
+            copied.set(null);
+            keyboardPipe.write("\033[27;6;67~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (copied.get() == null && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals("alpha\nbravo", copied.get(),
+                    "Shift+Ctrl+C must copy the retained transcript selection");
+            assertEquals("", reader.getBuffer().toString(),
+                    "the copy hotkey must not modify the composer");
 
             // Copying must not turn off wheel scrolling in the same prompt.
             for (int i = 0; i < 80; i++) tui.recordInScrollRegion("history " + i);
@@ -1596,6 +1698,57 @@ class ChatCompleterTtyTest {
     }
 
     @Test
+    void resizeDuringStreamingTurnErasesReflowedThinkingFromInputPane() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-resize-turn-stream-test");
+        MessageQueue queue = new MessageQueue("chat-resize-stream-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        try {
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            // A turn is streaming: transcript lines (e.g. thinking output) arrive while
+            // no readLine owns the prompt, so async frames fall back past the widget.
+            tui.recordInScrollRegion("✻ thinking");
+            tui.recordInScrollRegion("diagnosing layout drift");
+            // Shrink, grow, and width-only changes: exactly the refolws that move
+            // transcript cells into the input pane mid-turn.
+            for (Size size : List.of(new Size(72, 24), new Size(140, 48), new Size(60, 48))) {
+                terminalOutput.reset();
+                terminal.setSize(size);
+                tui.handleResize();
+                String clearedInputPane = "\033[" + tui.scrollBottom() + ";1H\033[2K";
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!terminalOutput.toString(StandardCharsets.UTF_8).contains(clearedInputPane)
+                        && System.nanoTime() < deadline) Thread.sleep(10);
+                assertTrue(terminalOutput.toString(StandardCharsets.UTF_8)
+                                .contains(clearedInputPane),
+                        "resize repaint must erase the input pane while the turn owns the surface");
+                // Seed the emulator with reflow debris, then replay the captured frame:
+                // the repaint must erase those cells, not paint around them.
+                VirtualTerminal frame = new VirtualTerminal(size.getRows(), size.getColumns());
+                for (int row = tui.inputTop(); row <= tui.scrollBottom(); row++) {
+                    frame.feed("\033[" + row + ";1Hstale thinking fragment");
+                }
+                frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+                for (int row = tui.inputTop(); row <= tui.scrollBottom(); row++) {
+                    assertTrue(frame.getRow(row).isBlank(), frame::screenDump);
+                }
+                assertFalse(frame.screenDump().contains("stale thinking fragment"),
+                        frame::screenDump);
+                assertTrue(tui.getContentViewLines().stream()
+                                .anyMatch(row -> row.contains("diagnosing layout drift")),
+                        "transcript must keep the streamed thinking lines across resize");
+            }
+        } finally {
+            tui.detachLineReader();
+            tui.stop();
+            processes.close();
+            queue.clear();
+        }
+    }
+
+    @Test
     void burstToolOutputIsBatchedWithoutFlickeringThePrompt() throws Exception {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("chat-completer-burst-redraw-test");
@@ -1793,17 +1946,24 @@ class ChatCompleterTtyTest {
             assertTrue(tui.getVisibleContentLines().get(1).contains("effort-1"),
                     "a new picker step must start at the top");
             tui.closeTemporaryWindow();
-            assertEquals(List.of("retained chat before picker", "background output while picking",
-                            "authentication progress"),
-                    tui.getContentViewLines(), "picker frames must never enter the retained transcript");
+            assertEquals(List.of("retained chat before picker", "background output while picking"),
+                    tui.getContentViewLines(),
+                    "picker frames and authentication prompts must never enter the retained transcript");
         } finally {
             tui.stop();
             processes.close();
         }
     }
 
+    /**
+     * Inside the mid-session /model modal, Up/Down scroll the picker content
+     * instead of recalling history — previously Up pulled "previous model"
+     * (or earlier menu answers) into the picker's input, which is the reported
+     * bug: menu selection keys were "captured by history". Scroll state must
+     * also survive the arrow navigation, and the modal must repaint intact.
+     */
     @Test
-    void modelPickerRepaintsAfterJlineHistoryNavigation() throws Exception {
+    void modelPickerArrowsScrollTheModalInsteadOfRecallingHistory() throws Exception {
         terminal.setSize(new Size(80, 24));
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("model-picker-jline-test");
@@ -1823,32 +1983,56 @@ class ChatCompleterTtyTest {
                     tasks, processes, tui.getStatusBar(), tui::getReservedMiddleRows);
             ChatRepl.bindStandardChatActivityKeys((LineReaderImpl) reader, queue, panel, tui);
             tui.start(terminal);
-            assertEquals("previous model", readLineResult("previous model" + CR));
+            // The chat history holds a real message; it must never surface
+            // inside the picker's input via Up/Down.
+            reader.getHistory().add("previous model");
             queue.enqueue("queued chat must not become picker input");
             ChatCompleter.setTemporaryWindowActive(true);
-            tui.showTemporaryWindow("Provider and model", List.of("first model", "second model"));
+            // Many options so the list exceeds one viewport and can actually scroll.
+            List<String> options = new ArrayList<>();
+            for (int i = 1; i <= 40; i++) options.add("model-option-" + String.format("%02d", i));
+            tui.showTemporaryWindow("Provider and model", options);
             Future<String> picker = executor.submit(() -> reader.readLine("picker model: "));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("picker model: ")
                     && System.nanoTime() < deadline) Thread.sleep(10);
-            keyboardPipe.write("\033[A".getBytes(StandardCharsets.UTF_8));
+
+            // Down arrow: scrolls the picker toward later options, never recalls
+            // history into the input. (The modal opens at its top, offset 0.)
+            keyboardPipe.write("\033[B".getBytes(StandardCharsets.UTF_8));
             keyboardPipe.flush();
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (!"previous model".equals(reader.getBuffer().toString())
-                    && System.nanoTime() < deadline) Thread.sleep(10);
-            assertEquals("previous model", reader.getBuffer().toString(), "history widget must run");
-            Thread.sleep(50);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) Thread.sleep(10);
+            assertTrue(tui.getContentScrollOffset() > 0,
+                    "Down must scroll the picker toward later options");
+            assertEquals("", reader.getBuffer().toString(),
+                    "Down inside the picker must not recall history into the input");
             VirtualTerminal frame = new VirtualTerminal(24, 80);
             frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
             assertTrue(frame.getRow(tui.scrollTop() - 1).contains("Provider and model"),
-                    () -> "JLine redisplay must restore the modal instead of erasing it\n" + frame.screenDump());
-            assertTrue(frame.getRow(tui.inputTop() - 1).contains("picker model: previous model"),
-                    () -> "history navigation must keep the picker input anchor\n" + frame.screenDump());
+                    () -> "arrow scrolling must keep the modal title\n" + frame.screenDump());
+            assertFalse(frame.screenDump().contains("model-option-01"),
+                    () -> "the first option must have scrolled out of view\n" + frame.screenDump());
+
+            // Up arrow scrolls back toward the top; the input stays clean.
+            keyboardPipe.write("\033[A".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals("", reader.getBuffer().toString(),
+                    "Up inside the picker must not recall history into the input");
+
+            // A typed number still selects a menu option normally.
+            keyboardPipe.write("7".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!"7".equals(reader.getBuffer().toString()) && System.nanoTime() < deadline) Thread.sleep(10);
             keyboardPipe.write(CR);
             keyboardPipe.flush();
-            assertEquals("previous model", picker.get(5, TimeUnit.SECONDS));
+            assertEquals("7", picker.get(5, TimeUnit.SECONDS),
+                    "number selection must still reach the picker prompt");
             assertEquals(MessageQueue.QueuedMessage.QueuedMessageStatus.PENDING,
-                    queue.getAll().get(0).getStatus(), "picker history must not edit the chat queue");
+                    queue.getAll().get(0).getStatus(), "picker input must not edit the chat queue");
         } finally {
             queue.clear();
             ChatCompleter.clearTerminalRef(reader);
@@ -1983,6 +2167,55 @@ class ChatCompleterTtyTest {
         } finally {
             tui.detachLineReader();
             executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"success", "cancel", "eof"})
+    void resumeDialogClosesBeforeCommandResultsArePrinted(String exit) throws Exception {
+        BackgroundProcessManager processes = new BackgroundProcessManager("resume-dialog-output-test");
+        KompileTui tui = new KompileTui(new BackgroundTaskManager(), processes,
+                new MessageQueue("resume-dialog-output-" + UUID.randomUUID()), new TerminalRenderer(true));
+        ChatRepl repl = org.mockito.Mockito.mock(ChatRepl.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        LineReader promptReader = org.mockito.Mockito.mock(LineReader.class);
+        for (Map.Entry<String, Object> entry : Map.<String, Object>of(
+                "activeReader", promptReader, "tui", tui,
+                "activityPanel", org.mockito.Mockito.mock(StandardChatActivityPanel.class)).entrySet()) {
+            var field = ChatRepl.class.getDeclaredField(entry.getKey());
+            field.setAccessible(true);
+            field.set(repl, entry.getValue());
+        }
+        org.mockito.Mockito.when(promptReader.readLine("Resume? ")).thenAnswer(invocation -> {
+            assertTrue(tui.isTemporaryWindowActive());
+            assertTrue(ChatCompleter.isTemporaryWindowActive());
+            System.out.print("TRANSIENT RESUME PROMPT");
+            if (exit.equals("cancel")) throw new UserInterruptException("");
+            if (exit.equals("eof")) throw new EndOfFileException();
+            return "yes";
+        });
+        try (var command = org.mockito.Mockito.mockStatic(ResumeAllCommand.class)) {
+            command.when(() -> ResumeAllCommand.executeInline(org.mockito.ArgumentMatchers.eq(""),
+                    org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+                java.util.function.BiFunction<List<String>, String, String> prompt = invocation.getArgument(1);
+                try {
+                    prompt.apply(List.of("Pick sessions"), "Resume? ");
+                } catch (UserInterruptException | EndOfFileException ignored) {
+                    // The real resume command reports cancellation after its callback returns/throws.
+                }
+                assertFalse(tui.isTemporaryWindowActive());
+                assertFalse(ChatCompleter.isTemporaryWindowActive());
+                System.out.println("RESUME RESULT " + exit);
+                return 0;
+            });
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            assertTrue(tui.runCommandOutput(() -> repl.executeResumeAll("") == 0));
+            assertEquals(List.of("RESUME RESULT " + exit), tui.getContentViewLines());
+        } finally {
+            ChatCompleter.setTemporaryWindowActive(false);
+            tui.detachLineReader();
             tui.stop();
             processes.close();
         }
@@ -2127,6 +2360,9 @@ class ChatCompleterTtyTest {
             assertSame(originalErr, System.err,
                     "failed slash dispatch must restore System.err");
             List<String> retainedOutput = tui.getContentViewLines();
+            assertFalse(retainedOutput.stream().anyMatch(line ->
+                            line.contains("AUTHORIZATION URL VISIBLE") || line.contains("NEW PAGE INSTRUCTIONS")),
+                    "closed dialog instructions must not be retained as chat output");
             assertTrue(retainedOutput.indexOf("COMMAND OUTPUT ONE")
                             < retainedOutput.indexOf("COMMAND ERROR TWO"),
                     "stdout/stderr must retain command-thread emission order");
@@ -2181,6 +2417,8 @@ class ChatCompleterTtyTest {
             assertTrue(frame.getRow(tui.inputTop() - 1).contains("kompile >"),
                     () -> "the next slash-command prompt must return to its anchor\n"
                             + frame.screenDump());
+            assertFalse(frame.screenDump().contains("AUTHORIZATION URL VISIBLE"), frame::screenDump);
+            assertFalse(frame.screenDump().contains("NEW PAGE INSTRUCTIONS"), frame::screenDump);
             assertTrue(frame.screenDump().contains("COMMAND OUTPUT ONE"),
                     () -> "multiline slash stdout must survive the next prompt\n"
                             + frame.screenDump());

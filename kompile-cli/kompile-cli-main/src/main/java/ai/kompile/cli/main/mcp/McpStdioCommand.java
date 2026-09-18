@@ -1680,7 +1680,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new DictationTool(), om, wd);
 
         // ── Delegation tools ───────────────────────────────────────────────
-        var taskTool = new StdioTaskTool(agentRegistry, subagentRunner, om, roleManager, coordinator);
+        var taskTool = new StdioTaskTool(agentRegistry, subagentRunner, om, roleManager, wd);
         var quorumTool = new StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
         tools.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
             McpToolAnnotations.DELEGATION,

@@ -186,6 +186,7 @@ public class ChatRepl implements AutoCloseable {
     private final AtomicBoolean auxiliarySupervisionActive = new AtomicBoolean(false);
     private final BackgroundProcessManager processManager;
     private final CoordinationStateManager coordinationManager;
+    private final SharedProcessMirror sharedProcessMirror;
     private final ProjectActivityController projectActivityController;
     private final ConversationActivityService conversationActivityService;
     private final AtomicBoolean acceptingProcessWakeups = new AtomicBoolean(false);
@@ -261,6 +262,7 @@ public class ChatRepl implements AutoCloseable {
             "txt", "md", "java", "py", "js", "ts", "json", "xml", "yaml", "yml",
             "toml", "ini", "cfg", "conf", "sh", "bash", "zsh", "fish", "ps1",
             "c", "cpp", "h", "hpp", "cs", "go", "rs", "rb", "kt", "scala",
+            "cu", "cuh", "cuda",
             "html", "css", "scss", "less", "sql", "graphql", "proto",
             "dockerfile", "makefile", "cmake", "gradle", "properties", "csv", "log");
 
@@ -388,6 +390,9 @@ public class ChatRepl implements AutoCloseable {
         // Create background process manager for this session
         this.processManager = new BackgroundProcessManager(sessionId, workDir);
         this.coordinationManager = new CoordinationStateManager(workDir, sessionId, objectMapper);
+        // Mirror processes owned by other sessions (the MCP process tool runs in its
+        // own JVM) into processManager so the activity panel shows the real trail.
+        this.sharedProcessMirror = new SharedProcessMirror(processManager, coordinationManager, sessionId);
 
         this.toolRegistry = ToolRegistryFactory.create(
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,
@@ -1359,6 +1364,7 @@ public class ChatRepl implements AutoCloseable {
             dashboardController.close();
             mcpBundleTools.close();
             projectActivityController.close();
+            sharedProcessMirror.close();
             processManager.close();
             coordinationManager.shutdown();
         }
@@ -1379,6 +1385,7 @@ public class ChatRepl implements AutoCloseable {
                 processManager.removeMonitorListener(processExitWakeListener);
                 tui.stop();
                 if (directClient != null) directClient.close();
+                sharedProcessMirror.close();
                 processManager.close();
                 coordinationManager.shutdown();
             }
@@ -1746,6 +1753,9 @@ public class ChatRepl implements AutoCloseable {
                 activityRedraw.run();
             }));
         });
+        // The mirror mutates shared rows in place; its change listener makes the
+        // panel, status bar, and an opened log view follow MCP-tool launches live.
+        sharedProcessMirror.start();
         tui.addResizeListener(activityRedraw);
         projectActivityController.start(activityRedraw);
 
@@ -2009,6 +2019,9 @@ public class ChatRepl implements AutoCloseable {
             // Close project MCP children before the general process manager.
             dashboardController.close();
             mcpBundleTools.close();
+
+            // Stop mirroring before closing the manager it feeds.
+            sharedProcessMirror.close();
 
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
@@ -2663,6 +2676,7 @@ public class ChatRepl implements AutoCloseable {
     static final String STANDARD_CHAT_SCROLL_TOP_WIDGET = "standard-chat-transcript-top";
     static final String STANDARD_CHAT_SCROLL_BOTTOM_WIDGET = "standard-chat-transcript-bottom";
     static final String STANDARD_CHAT_SCROLL_MOUSE_WIDGET = "standard-chat-transcript-mouse";
+    static final String STANDARD_CHAT_COPY_WIDGET = "standard-chat-transcript-copy";
 
     static void bindBackgroundKey(Map<String, KeyMap<Binding>> keyMaps) {
         Reference background = new Reference("background-task");
@@ -2795,7 +2809,14 @@ public class ChatRepl implements AutoCloseable {
             Supplier<String> clipboardTextSupplier) {
         bindStandardChatActivityKeys(
                 reader, queue, activityPanel, tui, queueEditStarted, clipboardTextSupplier,
-                text -> ClipboardUtil.copyToClipboardAsync(text, reader.getTerminal()));
+                text -> {
+                    ClipboardUtil.copyToClipboardAsync(text, reader.getTerminal());
+                    // Copy used to be silent: with OSC 52 unsupported (or the
+                    // selection already gone) the user could not tell copy from
+                    // the paste fallback. Mirror the queued/backgrounded notices.
+                    ChatCompleter.showNotice("  ✓ Copied " + text.length()
+                            + " characters to the clipboard");
+                });
     }
 
     static void bindStandardChatActivityKeys(
@@ -2859,6 +2880,23 @@ public class ChatRepl implements AutoCloseable {
         });
         reader.getWidgets().put(STANDARD_CHAT_SCROLL_BOTTOM_WIDGET, () -> {
             boolean changed = tui != null && tui.scrollToBottom();
+            redisplayWithContent(reader, tui);
+            return changed;
+        });
+        // Shift+Ctrl+C copies the retained transcript selection. Only the
+        // modified-key encodings are bound: terminals that reserve the shortcut
+        // (xterm/VTE keep Shift+Ctrl chords for themselves) simply never send
+        // them, and plain Ctrl+C's modifyOtherKeys form (27;5;67) is deliberately
+        // NOT bound so cancellation behavior can never be hijacked.
+        reader.getWidgets().put(STANDARD_CHAT_COPY_WIDGET, () -> {
+            boolean changed = false;
+            if (tui != null) {
+                String selected = tui.getSelectedTranscriptText();
+                if (!selected.isEmpty()) {
+                    clipboardCopyConsumer.accept(selected);
+                    changed = true;
+                }
+            }
             redisplayWithContent(reader, tui);
             return changed;
         });
@@ -2944,6 +2982,8 @@ public class ChatRepl implements AutoCloseable {
                     keySequences(reader, InfoCmp.Capability.key_mouse,
                             "\033[M", "\033[<")
                             .toArray(String[]::new));
+            activityKeys.bind(new Reference(STANDARD_CHAT_COPY_WIDGET),
+                    "\033[27;6;67~", "\033[99;6u", "\033[67;6u");
         }
 
         Widget originalAccept = reader.getWidgets().get(LineReader.ACCEPT_LINE);
@@ -3052,12 +3092,12 @@ public class ChatRepl implements AutoCloseable {
     private static MouseEvent readStandardChatMouseEvent(
             LineReaderImpl reader, MouseEvent previous) {
         if ("\033[<".equals(reader.getLastBinding())) {
-            return readSgrMouseEvent(reader.getTerminal(), previous);
+            return readSgrMouseEvent(reader, previous);
         }
-        return reader.getTerminal().readMouseEvent();
+        return reader.readMouseEvent();
     }
 
-    private static MouseEvent readSgrMouseEvent(Terminal terminal, MouseEvent previous) {
+    private static MouseEvent readSgrMouseEvent(LineReaderImpl reader, MouseEvent previous) {
         StringBuilder report = new StringBuilder(24);
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
         try {
@@ -3066,17 +3106,21 @@ public class ChatRepl implements AutoCloseable {
                 if (remainingNanos <= 0) return null;
                 long timeoutMillis = Math.max(1L,
                         TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-                int next = terminal.reader().read(timeoutMillis);
+                // The prefix was consumed by JLine's BindingReader. Coordinates
+                // may already be in its pushback buffer (e.g. after a terminal
+                // query), so reading the raw terminal here loses the report and
+                // leaks its remaining bytes into the composer instead of selecting.
+                int next = reader.peekCharacter(timeoutMillis);
                 if (next == NonBlockingReader.READ_EXPIRED || next < 0) return null;
-                char value = (char) next;
+                char value = (char) reader.readCharacter();
                 report.append(value);
                 if (value == 'M' || value == 'm') {
                     return parseSgrMouseEvent(report.toString(), previous);
                 }
                 if (value != ';' && (value < '0' || value > '9')) return null;
             }
-        } catch (IOException ignored) {
-            // A terminal can disappear between the bound prefix and report body.
+        } catch (IOError ignored) {
+            // JLine wraps I/O failures when the terminal disappears mid-report.
         }
         return null;
     }
@@ -3448,7 +3492,14 @@ public class ChatRepl implements AutoCloseable {
             return ResumeAllCommand.executeInline(args, (lines, question) -> {
                 ChatCompleter.setTemporaryWindowActive(true);
                 tui.updateTemporaryWindow("Resume recent sessions", lines);
-                return reader.readLine(question);
+                try {
+                    return reader.readLine(question);
+                } finally {
+                    // Only the question is transient. Launch results and cancellation
+                    // messages emitted after the answer belong in the main transcript.
+                    ChatCompleter.setTemporaryWindowActive(false);
+                    tui.closeTemporaryWindow();
+                }
             });
         } finally {
             ChatCompleter.setTemporaryWindowActive(false);

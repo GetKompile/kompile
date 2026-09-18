@@ -263,10 +263,17 @@ public class SyntaxHighlighter {
                     + "native new object open operator out override package params private protected pub public "
                     + "readonly record ref register reified require return sealed self set sizeof static strictfp "
                     + "struct super suspend switch synchronized template this throw throws trait transient try "
-                    + "typealias typeof union unsafe unsized use using val var virtual volatile where while with yield"),
+                    + "typealias typeof union unsafe unsized use using val var virtual volatile where while with yield "
+                    // CUDA execution-space and memory-space qualifiers: keyword-styled
+                    + "__global__ __device__ __host__ __noinline__ __forceinline__ "
+                    + "__shared__ __constant__ __managed__ __restrict__"),
             set("bool boolean byte char double f32 f64 float i16 i32 i64 i8 int integer long short "
                     + "size_t ssize_t str string uint usize void any bigint never number symbol u16 u32 u64 u8 "
-                    + "array arraylist boolean hashmap linkedhashmap list map optional pair set stringbuilder thread"),
+                    + "array arraylist boolean hashmap linkedhashmap list map optional pair set stringbuilder thread "
+                    // CUDA runtime/device API: type-styled (cyan); matched lowercased
+                    + "blockidx blockdim griddim threadidx warpsize "
+                    + "uint2 uint3 uint4 int2 int3 int4 float2 float3 float4 "
+                    + "dim3 half2 nv_bfloat16"),
             set("true false null nil none undefined"),
             false, true, false, true, false);
 

@@ -27,7 +27,7 @@ import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/co
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService, ContextBudget, CompactChatResponse } from '@shared/services/local-agent-chat.service';
+import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '@shared/services/chat-history.service';
@@ -140,6 +140,7 @@ interface ChatSession {
   source?: string; // Source badge: kompile, claude-code, opencode, codex, qwen
   synced?: boolean; // True if loaded from backend (not localStorage)
   messageCount?: number; // Message count from backend (avoids loading full messages)
+  harnessRunStartIndex?: number; // replay replaces only this run's messages
 }
 
 @Component({
@@ -552,6 +553,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   ngOnDestroy(): void {
+    this.harnessViewDestroyed = true;
+    this.unsubscribeStreamingSubs();
+    if (this.isStreaming) {
+      if (this.agentChatService.detachStreaming) this.agentChatService.detachStreaming();
+      else this.agentChatService.cancelStreaming();
+    }
     this.subscriptions.forEach(sub => sub.unsubscribe());
     if (this.streamingSubscription) {
       this.streamingSubscription.unsubscribe();
@@ -585,7 +592,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * to refresh.
    */
   private updateMonitorSubscription(): void {
-    const sessionId = this.currentSession?.id ?? null;
+    const sessionId = this.transcriptReadOnly ? null : this.currentSession?.id ?? null;
     if (sessionId === this.monitorSubscribedSessionId) {
       return;
     }
@@ -987,15 +994,47 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.cdr.markForCheck();
   }
 
+  private lifecycleRevision = 0;
+
+  get lifecycleBusy(): boolean {
+    return this.isStreaming || this.isLoading || this.isCompacting || this.harnessControlPending;
+  }
+
+  get transcriptReadOnly(): boolean {
+    return this.currentSession?.synced === true;
+  }
+
+  private invalidateLifecycle(): number {
+    return this.lifecycleRevision = (this.lifecycleRevision || 0) + 1;
+  }
+
+  private lifecycleIsCurrent(revision: number): boolean {
+    return revision === this.lifecycleRevision && !this.lifecycleBusy && !this.harnessViewDestroyed;
+  }
+
+  continueAsNewConversation(): void {
+    if (this.lifecycleBusy || !this.transcriptReadOnly) return;
+    // Copy text, not database IDs, tool state, attachments or a native session identity.
+    const context = this.messages.filter(m => !m.commandOnly && (m.role === 'user' || m.role === 'assistant'))
+      .map(m => ({ id: this.generateId(), role: m.role, content: m.content, timestamp: new Date(m.timestamp) }));
+    this.newChat();
+    this.messages = context;
+    this.updateCurrentSession();
+  }
+
   loadSyncedSession(session: ChatSession): void {
+    if (this.lifecycleBusy) return;
     if (!session.synced) {
       this.loadSession(session);
       return;
     }
 
-    // Load messages from backend for synced sessions
+    const revision = this.invalidateLifecycle();
+    // Imported transcript IDs are read-only, not browser harness identities.
     this.chatHistoryService.getSessionMessages(session.id).subscribe({
       next: (msgs) => {
+        if (!this.lifecycleIsCurrent(revision)) return;
+        this.resetHarnessDisplay();
         const messages: UnifiedMessage[] = msgs.map(m => ({
           id: 'synced-' + (m.id || Math.random().toString(36).substring(2)),
           dbId: m.id,
@@ -1015,6 +1054,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.cdr.markForCheck();
       },
       error: (err) => {
+        if (!this.lifecycleIsCurrent(revision)) return;
         console.error('Failed to load synced session:', err);
         this.snackBar.open('Failed to load session', 'Dismiss', { duration: 4000 });
       }
@@ -1026,6 +1066,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   newChat(): void {
+    if (this.lifecycleBusy) return; // one live transport owns this view
+    this.invalidateLifecycle();
+    this.resetHarnessDisplay();
     const session: ChatSession = {
       id: this.generateId(),
       name: 'New Chat',
@@ -1047,6 +1090,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   loadSession(session: ChatSession): void {
+    if (this.lifecycleBusy) return; // never forward controls/input into another session
+    if (session.synced) { this.loadSyncedSession(session); return; }
+    this.invalidateLifecycle();
+    this.resetHarnessDisplay();
     this.currentSession = session;
     this.messages = [...session.messages];
     this.currentConversationId = session.conversationId || null;
@@ -1064,6 +1111,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   deleteSession(session: ChatSession): void {
+    if (this.lifecycleBusy || session.synced) return;
+    const revision = this.invalidateLifecycle();
     const dialogData: ConfirmDialogData = {
       title: 'Delete Session',
       message: `Are you sure you want to delete "${session.name}"?`,
@@ -1076,6 +1125,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       .afterClosed()
       .pipe(filter(confirmed => confirmed === true))
       .subscribe(() => {
+        if (!this.lifecycleIsCurrent(revision)) return;
+        this.invalidateLifecycle();
         this.sessions = this.sessions.filter(s => s.id !== session.id);
         if (this.currentSession?.id === session.id) {
           this.currentSession = null;
@@ -1205,9 +1256,99 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   // MESSAGING
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  sendMessage(): void {
-    if (!this.userInput.trim() || this.isLoading || this.isStreaming) return;
+  trackHarnessEntry(_index: number, entry: { id: string }): string { return entry.id; }
+  get reconnectBookmark() {
+    return this.currentSession ? this.agentChatService.getReconnectBookmark?.(this.currentSession.id) : null;
+  }
+  reconnectCurrentRun(): void {
+    const saved = this.reconnectBookmark;
+    if (!saved || this.lifecycleBusy) return;
+    this.selectedAgent = this.agents.find(agent => agent.name === saved.agent.name) || saved.agent;
+    void this.sendAgentMessage('', undefined, true);
+  }
+  async stopSavedRun(): Promise<void> {
+    if (!this.currentSession || this.lifecycleBusy) return;
+    try { await this.agentChatService.stopReconnectRun(this.currentSession.id); }
+    catch (error) { this.harnessControlMessage = error instanceof Error ? error.message : 'Stop failed'; }
+    this.cdr.detectChanges();
+  }
+  get harnessActivity() { return this.agentChatService.harnessActivity; }
+  get liveControlsReady(): boolean { return this.isStreaming && !!this.agentChatService.liveControlsReady; }
+  get liveInputHistory(): string[] { return this.agentChatService.liveInputHistory || []; }
+  harnessControlPending = false;
+  harnessControlMessage = '';
+  harnessProcessOutput = '';
+  subagentInputs: Partial<Record<string, string>> = Object.create(null);
+  private harnessViewDestroyed = false;
 
+  private resetHarnessDisplay(): void {
+    this.agentChatService.harnessActivity = null;
+    this.agentChatService.liveInputHistory = [];
+    this.harnessControlMessage = '';
+    this.harnessProcessOutput = '';
+    this.subagentInputs = Object.create(null);
+  }
+
+  handleSubagentKey(event: KeyboardEvent, id: string, composer: boolean): void {
+    if (event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const child = this.harnessActivity?.subagents?.find(entry => entry.id === id);
+    if (!this.liveControlsReady || !child) return;
+    if (composer && event.key === 'Enter' && child.canSend && this.subagentInputs[id]?.trim()) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.sendHarnessControl('subagent_input', id, this.subagentInputs[id]);
+    } else if (!composer && event.key === 'Delete' && child.canCancel) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.sendHarnessControl('subagent_cancel', id);
+    }
+  }
+
+  async sendHarnessControl(action: HarnessControlAction, targetId?: string, text?: string): Promise<void> {
+    if (!this.liveControlsReady || this.harnessControlPending) return;
+    this.harnessControlPending = true;
+    this.harnessControlMessage = 'Sending control…';
+    try {
+      const reply = await this.agentChatService.sendHarnessControl(action, targetId, text);
+      this.harnessControlMessage = reply.message;
+      if (reply.output !== undefined) this.harnessProcessOutput = reply.output;
+      if (action === 'input' && reply.ok && this.userInput === text) this.userInput = '';
+      if (action === 'subagent_input' && reply.ok && targetId && this.subagentInputs[targetId] === text)
+        this.subagentInputs[targetId] = '';
+    } catch (error) {
+      this.harnessControlMessage = error instanceof Error ? error.message : 'Control failed';
+    } finally {
+      this.harnessControlPending = false;
+      if (!this.harnessViewDestroyed) this.cdr.detectChanges();
+    }
+  }
+
+  @HostListener('document:keydown', ['$event'])
+  handleHarnessHotkey(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || event.metaKey) return;
+    // Do not capture keystrokes inside dialogs or steal Ctrl+C text selection/copy.
+    if ((event.target as HTMLElement | null)?.closest?.('[role="dialog"], .cdk-overlay-pane')) return;
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'b' && this.liveControlsReady) {
+      event.preventDefault();
+      if (this.harnessActivity?.backgroundable) void this.sendHarnessControl('background');
+      else this.harnessControlMessage = 'No blocking subagent invocation to background';
+    } else if (event.key === 'Escape' && !event.ctrlKey && !event.shiftKey && this.isStreaming) {
+      event.preventDefault();
+      this.cancelStreaming();
+    }
+  }
+
+  sendMessage(): void {
+    if (!this.userInput.trim() || this.isLoading || this.isCompacting || this.transcriptReadOnly) return;
+    if (this.isStreaming) {
+      if (this.liveControlsReady) void this.sendHarnessControl('input', undefined, this.userInput);
+      return;
+    }
+
+    if (this.reconnectBookmark) {
+      this.harnessControlMessage = 'Reconnect or stop the saved run before starting another.';
+      return;
+    }
     const content = this.userInput;
     this.userInput = '';
 
@@ -1238,9 +1379,21 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.sendAgentMessage(content, attachments);
   }
 
-  private async sendAgentMessage(content: string, attachments?: MessageAttachment[]): Promise<void> {
-    if (!this.selectedAgent) return;
+  private async sendAgentMessage(content: string, attachments?: MessageAttachment[], reconnect = false): Promise<void> {
+    if (!this.selectedAgent || this.transcriptReadOnly || this.lifecycleBusy) return;
+    const saved = reconnect ? this.reconnectBookmark : null;
+    if (!reconnect && this.reconnectBookmark) {
+      this.harnessControlMessage = 'Reconnect or stop the saved run before starting another.';
+      return;
+    }
+    if (reconnect && !saved) return;
+    const runStartIndex = reconnect
+      ? (this.currentSession?.harnessRunStartIndex ?? this.messages.length)
+      : Math.max(0, this.messages.length - 1);
+    if (this.currentSession) this.currentSession.harnessRunStartIndex = runStartIndex;
+    if (saved) this.agentSession = saved.seed;
 
+    const revision = this.invalidateLifecycle();
     this.isStreaming = true;
 
     // Create a session for agent chat if needed
@@ -1249,6 +1402,13 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.currentSession?.name || 'Chat',
         this.selectedAgent
       );
+      // The visible last user message is the current turn; the service appends it
+      // itself and excludes that pair when building history. Never duplicate it.
+      this.agentSession.messages = this.messages.slice(0, -1)
+        .filter(m => !m.commandOnly && (m.role === 'user' || m.role === 'assistant'))
+        .map(m => ({ id: m.id, sessionId: this.agentSession!.id,
+          role: m.role === 'user' ? 'USER' as const : 'ASSISTANT' as const,
+          content: m.content, timestamp: new Date(m.timestamp).toISOString(), streaming: false }));
     }
 
     // Model-aware auto-compaction: shrink the wire history BEFORE this turn when it
@@ -1256,9 +1416,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     // local models, catalog window for CLI/API models). Threshold-checked
     // synchronously so the send path only yields when a compaction round-trip is
     // actually needed.
-    if (this.needsCompactionBeforeSend()) {
+    if (!reconnect && this.needsCompactionBeforeSend()) {
       await this.compactContext(false);
     }
+    if (revision !== this.lifecycleRevision || !this.isStreaming || this.harnessViewDestroyed) return;
 
     const startTime = Date.now();
 
@@ -1275,6 +1436,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
     // Clean up any stale streaming subs from a previous run
     this.unsubscribeStreamingSubs();
+
+    const liveMessagesSub = this.agentChatService.getLiveMessages?.().subscribe(messages => {
+      if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
+      this.messages = this.messages.slice(0, runStartIndex).concat(messages.map(msg => ({
+        ...msg, role: msg.role === 'USER' ? 'user' as const : msg.role === 'SYSTEM' ? 'system' as const : 'assistant' as const,
+        timestamp: new Date(msg.timestamp), isStreaming: msg.streaming,
+        kind: msg.role === 'SYSTEM' ? 'notice' as const : undefined
+      })));
+      this.updateCurrentSession();
+      this.shouldScrollToBottom = true;
+    });
 
     // Subscribe to streaming content updates
     const contentSub = this.agentChatService.getStreamingContent().subscribe((content: string) => {
@@ -1347,11 +1519,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
     const errorSub = this.agentChatService.getStreamingError().subscribe((errorMsg: string) => {
       const lastMsg = this.messages[this.messages.length - 1];
-      if (lastMsg && lastMsg.role === 'assistant') {
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isStreaming) {
         lastMsg.error = true;
-        lastMsg.content = errorMsg || 'Agent request failed';
+        lastMsg.content = (lastMsg.content ? lastMsg.content + '\n\n' : '') + (errorMsg || 'Agent request failed');
         lastMsg.isStreaming = false;
+      } else {
+        this.messages.push({ id: this.generateId(), role: 'system', kind: 'notice',
+          content: errorMsg || 'Agent request failed', timestamp: new Date(), error: true });
       }
+      this.updateCurrentSession();
       this.isStreaming = false;
 
       // Clean up and reattach change detection
@@ -1362,6 +1538,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
     // Store subs so cancelStreaming() can clean them up
     this.activeStreamingSubs = [contentSub, completeSub, errorSub, statsSub];
+    if (liveMessagesSub) this.activeStreamingSubs.push(liveMessagesSub);
 
     // Add placeholder assistant message
     const assistantMessage: UnifiedMessage = {
@@ -1372,11 +1549,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       isStreaming: true,
       agent: this.selectedAgent
     };
-    this.messages.push(assistantMessage);
+    if (!reconnect) this.messages.push(assistantMessage);
+    this.updateCurrentSession();
 
     // Send the message using LocalAgentChatService
     try {
-      await this.agentChatService.sendMessage(
+      if (reconnect && this.currentSession) {
+        await this.agentChatService.resumeRun(this.currentSession.id);
+        this.agentSession = null; // rebuild wire history from the replayed visible turns next time
+      } else await this.agentChatService.sendMessage(
         this.agentSession,
         content,
         this.selectedAgent,
@@ -1398,6 +1579,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         }
       );
     } catch (error: unknown) {
+      if (revision !== this.lifecycleRevision || this.harnessViewDestroyed) return;
       assistantMessage.error = true;
       assistantMessage.content = error instanceof Error ? error.message : 'Agent request failed';
       assistantMessage.isStreaming = false;
@@ -1455,7 +1637,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * Removes all messages from the errored message onwards, then re-sends.
    */
   retryMessage(messageIndex: number): void {
-    if (this.isStreaming || this.isLoading) return;
+    if (this.lifecycleBusy || this.transcriptReadOnly) return;
 
     // Find the preceding user message
     let userIdx = messageIndex - 1;
@@ -1515,6 +1697,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private updateCurrentSession(): void {
+    if (this.transcriptReadOnly) return;
     if (this.currentSession) {
       this.currentSession.messages = [...this.messages];
       this.currentSession.updatedAt = new Date().toISOString();
@@ -1532,6 +1715,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   cancelStreaming(): void {
+    this.invalidateLifecycle();
     console.log('[UnifiedChat] Cancel streaming requested');
 
     // Cancel via the service (this aborts fetch and kills backend process)
@@ -1569,49 +1753,22 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   clearConversation(): void {
-    if (this.messages.length === 0) return;
+    if (this.lifecycleBusy) return;
+    const revision = this.invalidateLifecycle();
 
     const dialogData: ConfirmDialogData = {
-      title: 'Clear Conversation',
-      message: 'Are you sure you want to clear this conversation? This cannot be undone.',
-      confirmText: 'Clear',
-      confirmColor: 'warn',
-      icon: 'delete_forever'
+      title: 'Start fresh',
+      message: 'Start a new conversation? This conversation will be preserved in recent conversations.',
+      confirmText: 'Start fresh',
+      icon: 'add'
     };
 
     this.dialog.open(ConfirmDialogComponent, { data: dialogData })
       .afterClosed()
       .pipe(filter(confirmed => confirmed === true))
       .subscribe(() => {
-        const previous = this.currentSession;
-        const now = new Date().toISOString();
-        const freshSession: ChatSession = {
-          id: this.generateId(),
-          name: 'New Chat',
-          messages: [],
-          createdAt: now,
-          updatedAt: now,
-          agentName: this.selectedAgent?.name || previous?.agentName
-        };
-        if (previous) {
-          const index = this.sessions.findIndex(
-            session => session === previous || session.id === previous.id);
-          if (index >= 0) {
-            this.sessions[index] = freshSession;
-          } else {
-            this.sessions.unshift(freshSession);
-          }
-        } else {
-          this.sessions.unshift(freshSession);
-        }
-        this.currentSession = freshSession;
-        this.messages = [];
-        this.currentConversationId = null;
-        this.agentSession = null;
-        this.pendingAttachments = [];
-        this.saveSessions();
-        this.updateMonitorSubscription();
-        this.cdr.detectChanges();
+        if (!this.lifecycleIsCurrent(revision)) return;
+        this.newChat();
       });
   }
 
@@ -1998,6 +2155,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * stays intact — only what is SENT to the model shrinks.
    */
   async compactContext(manual: boolean = true): Promise<void> {
+    if (this.transcriptReadOnly || (manual && this.lifecycleBusy)) return;
     const agent = this.selectedAgent;
     const session = this.agentSession;
     if (!agent || this.isCompacting) return;
@@ -2432,6 +2590,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   loadCliTranscriptIntoChat(detail: CliTranscriptDetail): void {
+    if (this.lifecycleBusy) return;
     // Create a new session from the CLI transcript
     this.newChat();
     if (this.currentSession) {
@@ -3009,8 +3168,61 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.cdr.markForCheck();
   }
 
+  // Web-supported builtins from ChatCommandCatalog, not an execution allowlist. Unknown commands and skills
+  // still go through sendMessage unchanged; the CLI owns validation and dispatch.
+  readonly slashCommands = [
+    { command: '/help', description: 'Show available commands' },
+    { command: '/model', description: 'Show or switch model' },
+    { command: '/skills', description: 'List available skills' }
+  ];
+  slashMenuOpen = false;
+  slashSelectedIndex = 0;
+
+  get slashSuggestions(): typeof this.slashCommands {
+    if (!this.slashMenuOpen || this.isLoading || !this.selectedAgent
+        || (this.isStreaming && !this.liveControlsReady)
+        || !/^\/[a-z-]*$/i.test(this.userInput)) return [];
+    const prefix = this.userInput.toLowerCase();
+    return this.slashCommands.filter(item => item.command.startsWith(prefix));
+  }
+
+  dismissSlashMenu(): void {
+    this.slashMenuOpen = false;
+    this.cdr.markForCheck();
+  }
+
+  selectSlashCommand(command: string): void {
+    this.userInput = command + ' ';
+    this.dismissSlashMenu();
+  }
+
   handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.isComposing || event.repeat) return;
+    const suggestions = this.slashSuggestions;
+    if (suggestions.length && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        this.dismissSlashMenu();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        this.slashSelectedIndex = (this.slashSelectedIndex
+          + (event.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length;
+        this.cdr.detectChanges();
+        const input = event.target as HTMLElement | null;
+        input?.parentElement?.querySelector('[role="option"][aria-selected="true"]')
+          ?.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        this.selectSlashCommand(suggestions[this.slashSelectedIndex].command);
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault();
       this.sendMessage();
     } else if (event.key === 'Escape' && this.isStreaming) {
@@ -3021,6 +3233,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   onUserInputChange(value: string): void {
     this.userInput = value;
+    this.slashMenuOpen = true;
+    this.slashSelectedIndex = 0;
     this.cdr.markForCheck();
   }
 
@@ -3108,6 +3322,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * @param messageIndex Index of message to fork from
    */
   forkFromMessage(messageIndex: number): void {
+    if (this.lifecycleBusy || this.transcriptReadOnly) return;
+    const revision = this.invalidateLifecycle();
     const message = this.messages[messageIndex];
 
     // Validate message has been saved
@@ -3126,10 +3342,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     // Fetch full messages from backend up to fork point
     this.chatHistoryService.getMessagesUntil(this.currentSession.id, message.dbId).subscribe({
       next: (fullMessages) => {
+        if (!this.lifecycleIsCurrent(revision)) return;
         this.createForkFromBackendMessages(fullMessages);
       },
       error: (err) => {
         console.error('Failed to fetch messages for fork:', err);
+        if (!this.lifecycleIsCurrent(revision)) return;
         // Fallback to local messages
         this.createForkFromLocalMessages(messageIndex);
       }
@@ -3137,6 +3355,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private createForkFromBackendMessages(backendMessages: ChatMessageDto[]): void {
+    this.invalidateLifecycle();
     // Create new session with messages from backend
     const forkSession: ChatSession = {
       id: this.generateId(),
@@ -3163,6 +3382,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   private createForkFromLocalMessages(messageIndex: number): void {
+    this.invalidateLifecycle();
     // Fork using local messages up to the specified index
     const forkedMessages = this.messages.slice(0, messageIndex + 1).map(msg => ({
       ...msg,
@@ -3194,6 +3414,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * @param messageIndex Index of assistant message to regenerate
    */
   regenerateMessage(messageIndex: number): void {
+    if (this.lifecycleBusy || this.transcriptReadOnly) return;
     const message = this.messages[messageIndex];
 
     if (message.role !== 'assistant') {
@@ -3230,6 +3451,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * @param newContent New content for the message
    */
   editMessage(messageIndex: number, newContent: string): void {
+    if (this.lifecycleBusy || this.transcriptReadOnly) return;
+    newContent = newContent.trim();
     const message = this.messages[messageIndex];
 
     if (message.role !== 'user') {

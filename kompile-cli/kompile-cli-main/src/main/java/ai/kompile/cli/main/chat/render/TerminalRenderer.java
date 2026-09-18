@@ -539,6 +539,14 @@ public class TerminalRenderer {
     }
 
     /**
+     * Render a mid-run subagent status line (compaction, recovery, retries) inside
+     * the subagent transcript block.
+     */
+    public String renderSubagentStatus(String agentType, String message) {
+        return "  " + magenta("│") + "  " + dim("⟳ " + agentType + ": " + message);
+    }
+
+    /**
      * Render a subagent tool call (indented under the subagent block).
      */
     public String renderSubagentToolCall(String toolName, boolean isError) {
@@ -557,6 +565,7 @@ public class TerminalRenderer {
      * nested call actually returned, so keep the summary and add the result below it.
      */
     public String renderSubagentToolCall(String toolName, String rawInput, ToolResult result) {
+        String cleanName = stripMcpPrefix(toolName);
         String rendered = renderToolCallComplete(toolName, rawInput, result, false).stripLeading();
         StringBuilder detailed = new StringBuilder("  ").append(magenta("│")).append("  ")
                 .append(rendered.replace("\n", "\n  │  "));
@@ -601,8 +610,40 @@ public class TerminalRenderer {
         }
 
         detailed.append("\n  ").append(magenta("│")).append("  ").append(dim("↳ output:"));
+        // Style the output body exactly like the main transcript path does:
+        // file-naming tools get their input-derived language; grep-style tools
+        // infer the filename per line (with read_batch section inheritance).
+        // Before this, subagent tool output printed raw and unstyled — the
+        // 2026-08-29 grep_batch fix only landed in the main path.
+        String languageHint = isContentTool(cleanName) ? languageFromRawInput(rawInput) : null;
+        boolean hintUsable = languageHint != null
+                && SyntaxHighlighter.familyForFilename(languageHint)
+                        != SyntaxHighlighter.Family.NONE;
+        boolean perLineHints = !hintUsable && isContentTool(cleanName);
+        boolean batchSectionHints = "read_batch".equals(cleanName);
+        String sectionHint = null;
+        boolean insideBatchSection = false;
         for (String line : visibleOutput.split("\\R", -1)) {
-            detailed.append("\n  ").append(magenta("│")).append("    ").append(line);
+            String renderedLine = line;
+            if (ansiEnabled) {
+                String hint = languageHint;
+                if (perLineHints) {
+                    String plain = AsciiRenderer.stripAnsi(line == null ? "" : line).strip();
+                    if (batchSectionHints && plain.startsWith("== ")) {
+                        insideBatchSection = true;
+                        sectionHint = languageFromBatchSectionHeader(plain);
+                        // Section headers themselves stay unstyled.
+                    } else if (batchSectionHints && insideBatchSection) {
+                        hint = sectionHint;
+                    } else {
+                        hint = SyntaxHighlighter.filenameFromToolResultLine(line);
+                    }
+                }
+                if (hint != null) {
+                    renderedLine = highlighter.highlight(renderedLine, hint);
+                }
+            }
+            detailed.append("\n  ").append(magenta("│")).append("    ").append(renderedLine);
         }
         if (truncated) {
             detailed.append("\n  ").append(magenta("│")).append("    ")

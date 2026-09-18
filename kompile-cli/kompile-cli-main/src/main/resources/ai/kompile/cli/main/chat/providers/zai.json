@@ -8,6 +8,15 @@
     "verifiedAt": "2026-09-14",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata and the CLI catalog carries none either."
   },
+  "structuredOutput": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://docs.z.ai/api-reference/llm/chat-completion",
+      "verifiedAt": "2026-09-17",
+      "notice": "Z.AI chat-completion accepts response_format json_schema for GLM models; model-level support still varies."
+    },
+    "jsonSchema": true
+  },
   "profiles": [
     {
       "modelPatterns": [

@@ -197,6 +197,9 @@ public class KompileTui {
 
     /** True while a short-lived modal (for example the provider/model picker) owns the content area. */
     private volatile boolean temporaryWindowActive = false;
+    /** Identity changes on every modal page transition, including returning to chat. */
+    private record CommandOutputPage(boolean temporary) {}
+    private volatile CommandOutputPage commandOutputPage = new CommandOutputPage(false);
     private volatile String temporaryWindowTitle = "";
     private volatile List<String> temporaryWindowLines = List.of();
     private final LinkedHashMap<String, String> temporaryCommandOutputBlocks =
@@ -778,10 +781,6 @@ public class KompileTui {
     }
 
     private boolean runCommandOutputLocked(BooleanSupplier command) {
-        synchronized (drawLock) {
-            temporaryCommandOutputBlocks.clear();
-        }
-
         // readLine has returned, so the accepted command no longer belongs to
         // a live editor. Clear it before any handler output is emitted.
         renderFrame(false, true);
@@ -832,12 +831,8 @@ public class KompileTui {
                     }
                 });
             }
-            cleanupFailure = runCleanup(cleanupFailure, () -> {
-                synchronized (drawLock) {
-                    temporaryCommandOutputBlocks.clear();
-                }
-                renderFrame(false, true);
-            });
+            // Modal output belongs to the page, not to a (possibly nested) command.
+            cleanupFailure = runCleanup(cleanupFailure, () -> renderFrame(false, true));
             if (cleanupFailure != null) {
                 if (commandFailure != null) {
                     commandFailure.addSuppressed(cleanupFailure);
@@ -910,6 +905,7 @@ public class KompileTui {
         private final PrintStream fallback;
         private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
         private String currentKey;
+        private CommandOutputPage page;
         private boolean partialTruncated;
         private boolean afterCarriageReturn;
 
@@ -930,6 +926,7 @@ public class KompileTui {
                     fallback.write(value);
                     return;
                 }
+                preparePageLocked();
                 transaction.activate(this);
                 appendByteLocked(value);
                 if (value != '\n' && value != '\r') {
@@ -951,6 +948,7 @@ public class KompileTui {
                     fallback.write(bytes, offset, length);
                     return;
                 }
+                preparePageLocked();
                 transaction.activate(this);
                 int end = offset + length;
                 for (int index = offset; index < end; index++) {
@@ -968,12 +966,23 @@ public class KompileTui {
             if (routesToTransaction()) {
                 synchronized (transaction) {
                     if (!transaction.closed) {
+                        preparePageLocked();
                         transaction.activate(this);
                         if (pending.size() > 0) publishLocked(false);
                     }
                 }
             }
             fallback.flush();
+        }
+
+        private void preparePageLocked() {
+            CommandOutputPage next = transaction.tui.commandOutputPage;
+            if (page != next) {
+                // Finish against the original destination. A dismissed modal rejects
+                // this last flush rather than resurrecting its prompt in the next view.
+                finishPartialLocked();
+                page = next;
+            }
         }
 
         private boolean routesToTransaction() {
@@ -1042,7 +1051,7 @@ public class KompileTui {
             if (target == null) return;
             String text = new String(bytes, 0, length, StandardCharsets.UTF_8);
             target.recordCommandOutputBlock(
-                    currentKey, partialTruncated ? "…" + text : text);
+                    page, currentKey, partialTruncated ? "…" + text : text);
             if (complete) {
                 pending.reset();
                 currentKey = null;
@@ -1052,10 +1061,13 @@ public class KompileTui {
         }
     }
 
-    private void recordCommandOutputBlock(String key, String text) {
-        upsertMainTranscriptBlock(key, text);
+    private void recordCommandOutputBlock(CommandOutputPage page, String key, String text) {
+        if (!page.temporary()) {
+            upsertMainTranscriptBlock(key, text);
+            return;
+        }
         synchronized (drawLock) {
-            if (temporaryWindowActive) {
+            if (page == commandOutputPage) {
                 temporaryCommandOutputBlocks.put(key, text);
                 while (temporaryCommandOutputBlocks.size()
                         > MAX_TEMPORARY_COMMAND_OUTPUT_LINES) {
@@ -1169,7 +1181,13 @@ public class KompileTui {
                         // Never clear after releasing JLine's reader lock: the next
                         // readLine may already be painting. Modal/command transitions
                         // perform their destructive clear synchronously between reads.
-                        if (started) renderFrame(true);
+                        if (started) {
+                            // Resize/reflow debris (foreign transcript cells inside the
+                            // input pane) needs the erasing frame, not the cursor-
+                            // preserving one; JLine is not reading, so its draft is
+                            // already absent from the surface.
+                            renderFrame(redisplayInput, true);
+                        }
                     }
                 } else if (started) {
                     renderFrame();
@@ -1215,6 +1233,7 @@ public class KompileTui {
             // this page's output; only an explicit page transition discards it.
             temporaryCommandOutputBlocks.clear();
             temporaryWindowActive = true;
+            commandOutputPage = new CommandOutputPage(true);
             temporaryWindowTitle = title == null ? "" : title;
             temporaryWindowLines = List.copyOf(window);
             contentViewKey = "__temporary__";
@@ -1254,6 +1273,7 @@ public class KompileTui {
         synchronized (drawLock) {
             if (!temporaryWindowActive) return;
             temporaryWindowActive = false;
+            commandOutputPage = new CommandOutputPage(false);
             contentViewKey = savedContentViewKey == null ? MAIN_CONTENT_VIEW : savedContentViewKey;
             contentViewTitle = savedContentViewTitle == null ? "Main chat" : savedContentViewTitle;
             if (MAIN_CONTENT_VIEW.equals(contentViewKey)) {

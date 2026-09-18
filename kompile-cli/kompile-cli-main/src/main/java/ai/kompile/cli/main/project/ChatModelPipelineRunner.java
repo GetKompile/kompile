@@ -71,6 +71,18 @@ public final class ChatModelPipelineRunner {
     public static String executeDefinition(Path root, UnifiedPipelineDefinition definition,
                                             Map<String, Object> input,
                                             Consumer<Map<String, Object>> progress) throws Exception {
+        return executeDefinition(root, definition, input, progress, null);
+    }
+
+    /**
+     * Execute the host subset, preflighting every stage before any provider request, and
+     * optionally forward streamed answer-text chunks from every stage to {@code chunkConsumer}.
+     * The returned string remains the complete final output.
+     */
+    public static String executeDefinition(Path root, UnifiedPipelineDefinition definition,
+                                            Map<String, Object> input,
+                                            Consumer<Map<String, Object>> progress,
+                                            Consumer<String> chunkConsumer) throws Exception {
         var validation = PipelineDefinitionValidator.validate(definition);
         if (!validation.valid() || !PipelineDefinitionValidator.isChatModel(definition)) {
             throw new IllegalArgumentException("Invalid host chat definition: " + String.join("; ", validation.errors()));
@@ -112,8 +124,8 @@ public final class ChatModelPipelineRunner {
                 progress.accept(tagged);
             };
             String text = selectedInput.containsKey("text")
-                    ? extractText(root, (String) selectedInput.get("text"), pipeline, stageProgress)
-                    : extract(root, inputFile(root, selectedInput), pipeline, null, stageProgress);
+                    ? extractText(root, (String) selectedInput.get("text"), pipeline, stageProgress, chunkConsumer)
+                    : extract(root, inputFile(root, selectedInput), pipeline, null, stageProgress, chunkConsumer);
             checkInterrupted();
             if (text == null || text.isBlank()) throw new IOException("CHAT_MODEL stage returned no text: " + stage.name());
             retained += text.length();
@@ -158,6 +170,16 @@ public final class ChatModelPipelineRunner {
                                  LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                  String loadedText,
                                  Consumer<Map<String, Object>> progress) throws Exception {
+        return extract(projectRoot, file, pipeline, loadedText, progress, null);
+    }
+
+    /** Adapt a crawl's already-loaded text or original media, forwarding streamed answer chunks. */
+    public static String extract(Path projectRoot,
+                                 Path file,
+                                 LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                 String loadedText,
+                                 Consumer<Map<String, Object>> progress,
+                                 Consumer<String> chunkConsumer) throws Exception {
         Path root = projectRoot == null
                 ? Path.of("").toAbsolutePath().normalize()
                 : projectRoot.toAbsolutePath().normalize();
@@ -167,9 +189,9 @@ public final class ChatModelPipelineRunner {
         validateOperation(pipeline, selection, kind);
 
         return switch (kind) {
-            case PDF -> extractPdf(root, document, pipeline, selection, progress);
-            case IMAGE -> extractImage(root, document, pipeline, selection, progress);
-            case TEXT -> extractText(root, document, pipeline, loadedText, selection, progress);
+            case PDF -> extractPdf(root, document, pipeline, selection, progress, chunkConsumer);
+            case IMAGE -> extractImage(root, document, pipeline, selection, progress, chunkConsumer);
+            case TEXT -> extractText(root, document, pipeline, loadedText, selection, progress, chunkConsumer);
             case UNSUPPORTED -> throw new IOException(
                     "CHAT_MODEL does not yet support input type " + mimeType(document)
                             + " for " + document.getFileName()
@@ -207,10 +229,18 @@ public final class ChatModelPipelineRunner {
     public static String extractText(Path root, String text,
                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                      Consumer<Map<String, Object>> progress) throws Exception {
+        return extractText(root, text, pipeline, progress, null);
+    }
+
+    /** Inline input for standalone host pipelines, forwarding streamed answer chunks. */
+    public static String extractText(Path root, String text,
+                                     LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                     Consumer<Map<String, Object>> progress,
+                                     Consumer<String> chunkConsumer) throws Exception {
         if (text == null || text.isBlank()) throw new IOException("CHAT_MODEL requires non-empty text");
         NativeChatModels.Selection selection = resolveChatSelection(root, pipeline);
         validateOperation(pipeline, selection, MediaKind.TEXT);
-        return extractText(root, root.resolve("inline.txt"), pipeline, text, selection, progress);
+        return extractText(root, root.resolve("inline.txt"), pipeline, text, selection, progress, chunkConsumer);
     }
 
     private static void validateOperation(LocalCrawlCapabilities.ResolvedPipeline pipeline,
@@ -237,7 +267,8 @@ public final class ChatModelPipelineRunner {
                                       LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                       String loadedText,
                                       NativeChatModels.Selection selection,
-                                      Consumer<Map<String, Object>> progress) throws Exception {
+                                      Consumer<Map<String, Object>> progress,
+                                      Consumer<String> chunkConsumer) throws Exception {
         String text = loadedText;
         if (text == null || text.isBlank()) {
             if (LocalDocumentLoaderRegistry.supports(pipeline.loaderName())) {
@@ -261,7 +292,7 @@ public final class ChatModelPipelineRunner {
         String prompt = renderPrompt(pipeline, file, 1, 1, "text")
                 + "\n\n<document name=\"" + file.getFileName() + "\">\n"
                 + text + "\n</document>";
-        String response = call(root, pipeline, selection, prompt, List.of());
+        String response = call(root, pipeline, selection, prompt, List.of(), chunkConsumer);
         report(progress, "REMOTE_CHAT_MODEL", 100,
                 "Remote chat document extraction completed", Map.of(
                         "inputKind", "text", "responseChars", response.length()));
@@ -272,14 +303,15 @@ public final class ChatModelPipelineRunner {
                                        Path file,
                                        LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                        NativeChatModels.Selection selection,
-                                       Consumer<Map<String, Object>> progress) throws Exception {
+                                       Consumer<Map<String, Object>> progress,
+                                       Consumer<String> chunkConsumer) throws Exception {
         DirectLlmClient.AttachmentInput image = imageAttachment(
                 file.getFileName().toString(), mimeType(file), Files.readAllBytes(file), pipeline);
         report(progress, "REMOTE_CHAT_MODEL", 20,
                 "Sending image to the configured chat provider", Map.of(
                         "inputKind", "image", "mimeType", image.mimeType()));
         String response = call(root, pipeline, selection,
-                renderPrompt(pipeline, file, 1, 1, "image"), List.of(image));
+                renderPrompt(pipeline, file, 1, 1, "image"), List.of(image), chunkConsumer);
         report(progress, "REMOTE_CHAT_MODEL", 100,
                 "Remote image extraction completed", Map.of(
                         "inputKind", "image", "responseChars", response.length()));
@@ -290,7 +322,8 @@ public final class ChatModelPipelineRunner {
                                      Path file,
                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                      NativeChatModels.Selection selection,
-                                     Consumer<Map<String, Object>> progress) throws Exception {
+                                     Consumer<Map<String, Object>> progress,
+                                     Consumer<String> chunkConsumer) throws Exception {
         int maxPages = intOption(pipeline, "maxPages", DEFAULT_MAX_PAGES, 1, Integer.MAX_VALUE);
         int batchSize = intOption(
                 pipeline, "pageBatchSize", DEFAULT_PAGE_BATCH_SIZE, 1, 20);
@@ -338,7 +371,7 @@ public final class ChatModelPipelineRunner {
                         + "\nThe supplied images are original PDF page(s) " + pageRange
                         + " of " + selectionPlan.totalPages() + ". Process only those original pages.";
                 String response = call(root, pipeline, selection,
-                        prompt, attachments);
+                        prompt, attachments, chunkConsumer);
                 outputs.add((selectionPlan.totalPages() > 1 || selectedPageCount > 1
                         ? "## Pages " + pageRange + "\n\n" : "") + response);
             }
@@ -436,13 +469,15 @@ public final class ChatModelPipelineRunner {
                                LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                NativeChatModels.Selection selection,
                                String prompt,
-                               List<DirectLlmClient.AttachmentInput> attachments) throws Exception {
+                               List<DirectLlmClient.AttachmentInput> attachments,
+                               Consumer<String> chunkConsumer) throws Exception {
         Object schema = firstObject(pipeline.processor().get("jsonSchema"), pipeline.chunkerOptions().get("jsonSchema"));
         return NativeChatModels.call(root, selection, prompt,
                 stringOption(pipeline, "systemPrompt", DEFAULT_SYSTEM_PROMPT), attachments,
                 schema == null ? null : MAPPER.valueToTree(schema),
                 Duration.ofMinutes(longOption(pipeline, "timeoutMinutes", 30, 1, 1440)),
-                intOption(pipeline, "maxResponseChars", DEFAULT_MAX_RESPONSE_CHARS, 1_000, 20_000_000));
+                intOption(pipeline, "maxResponseChars", DEFAULT_MAX_RESPONSE_CHARS, 1_000, 20_000_000),
+                chunkConsumer);
     }
 
     private static NativeChatModels.Selection resolveChatSelection(

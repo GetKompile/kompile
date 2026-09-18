@@ -66,6 +66,11 @@ public class RoleManager {
         loadAgentRoles();
     }
 
+    /** The project directory this manager resolves project-scoped roles against. */
+    public Path workingDirectory() {
+        return workingDirectory;
+    }
+
     /**
      * Load all roles from built-in defaults, user directory, and project directory.
      * Project roles override user roles, which override built-in roles.

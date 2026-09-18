@@ -643,6 +643,45 @@ class ToolCallFormattingTest {
             assertTrue(output.contains("\n"));
         }
 
+        /**
+         * Regression: subagent tool output used to print raw and unstyled while
+         * the main transcript path styled the same payloads. File-naming inputs
+         * (read over a .java file) must keyword-style their body, and grep-style
+         * outputs must style through per-line filename inference.
+         */
+        @Test
+        void completedToolCall_highlightsReadOutputByInputFile() {
+            String output = new TerminalRenderer(true).renderSubagentToolCall(
+                    "read", "{\"file_path\":\"src/App.java\"}",
+                    ToolResult.success("src/App.java", "public class Foo {"));
+
+            assertTrue(output.contains("↳ output:"), "output body must remain visible: " + output);
+            assertTrue(output.contains("\033[1;34mpublic\033[0m"),
+                    "subagent read body should be keyword-styled via the input path: " + output);
+        }
+
+        @Test
+        void completedToolCall_highlightsGrepOutputPerEmbeddedLine() {
+            String output = new TerminalRenderer(true).renderSubagentToolCall(
+                    "grep", "{\"pattern\":\"class Foo\"}",
+                    ToolResult.success("src/App.java:42:public class Foo {"));
+
+            assertTrue(output.contains("\033[1;34mpublic\033[0m"),
+                    "subagent grep body should be styled via the embedded filename: " + output);
+        }
+
+        @Test
+        void completedToolCall_cudaReadOutputHighlightsCudaQualifiers() {
+            String output = new TerminalRenderer(true).renderSubagentToolCall(
+                    "read", "{\"file_path\":\"src/kernels.cu\"}",
+                    ToolResult.success("src/kernels.cu", "__global__ void k(float* x) {"));
+
+            assertTrue(output.contains("\033[1;34m__global__\033[0m"),
+                    "CUDA execution-space qualifier should be keyword-styled: " + output);
+            assertTrue(output.contains("\033[36mvoid\033[0m"),
+                    "C types should stay type-styled: " + output);
+        }
+
         @Test
         void completedToolCall_shouldBoundLargeResultDetails() {
             String output = renderer.renderSubagentToolCall(

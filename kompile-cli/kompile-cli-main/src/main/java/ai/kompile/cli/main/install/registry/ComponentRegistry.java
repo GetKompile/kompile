@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.install.registry;
 
+import ai.kompile.cli.common.JarIntegrity;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.util.OSResolver;
@@ -307,6 +308,11 @@ public class ComponentRegistry {
     /**
      * Get the JAR path from a distribution-style install (lib/ directory).
      * Returns null if no matching JAR is found.
+     *
+     * <p>Candidates that fail the {@link JarIntegrity} probe (truncated or empty
+     * zips — the classic disk-full casualty of an install/extract) are skipped so
+     * callers fall through to a valid artifact instead of launching a jar the JVM
+     * will reject with {@code Error: Invalid or corrupt jarfile}.</p>
      */
     public File getDistributionJarPath(String componentId) {
         File libDir = new File(installBaseDir, "lib");
@@ -315,18 +321,61 @@ public class ComponentRegistry {
         // prefix (kompile-chat.jar vs kompile-chat-local.jar) a prefix match is a coin flip.
         for (String alias : aliasesFor(componentId)) {
             File exact = new File(libDir, alias + ".jar");
-            if (exact.isFile()) {
+            if (exact.isFile() && JarIntegrity.isUsableJar(exact)) {
                 return exact;
             }
         }
         for (String alias : aliasesFor(componentId)) {
             File[] jars = libDir.listFiles((dir, name) ->
                     name.startsWith(alias) && name.endsWith(".jar"));
-            if (jars != null && jars.length > 0) {
-                return jars[0];
+            if (jars != null) {
+                for (File jar : jars) {
+                    if (JarIntegrity.isUsableJar(jar)) {
+                        return jar;
+                    }
+                }
             }
         }
         return null;
+    }
+
+    /**
+     * Installed jar candidates for the component that exist on disk but fail the
+     * {@link JarIntegrity} probe. Empty when every installed artifact is either
+     * healthy or absent; used by doctor/bootstrap to report truncation precisely
+     * instead of masking it as "not installed" or a generic launch failure.
+     */
+    public List<File> corruptJarCandidates(String componentId) {
+        List<File> corrupt = new ArrayList<>();
+        File libDir = new File(installBaseDir, "lib");
+        if (libDir.isDirectory()) {
+            for (String alias : aliasesFor(componentId)) {
+                File exact = new File(libDir, alias + ".jar");
+                if (exact.isFile() && !JarIntegrity.isUsableJar(exact)) {
+                    corrupt.add(exact);
+                }
+                File[] jars = libDir.listFiles((dir, name) ->
+                        name.startsWith(alias) && name.endsWith(".jar")
+                                && !name.equals(exact.getName()));
+                if (jars != null) {
+                    for (File jar : jars) {
+                        if (!JarIntegrity.isUsableJar(jar)) {
+                            corrupt.add(jar);
+                        }
+                    }
+                }
+            }
+        }
+        File canonicalJar = getJarPath(componentId);
+        if (canonicalJar.isFile() && !JarIntegrity.isUsableJar(canonicalJar)) {
+            corrupt.add(canonicalJar);
+        }
+        File execJar = new File(getInstallDirectory(componentId),
+                componentId + "-" + version + "-exec.jar");
+        if (execJar.isFile() && !JarIntegrity.isUsableJar(execJar)) {
+            corrupt.add(execJar);
+        }
+        return corrupt;
     }
 
     /**
@@ -378,12 +427,12 @@ public class ComponentRegistry {
 
         // 2. Canonical name
         File canonicalJar = getJarPath(componentId);
-        if (canonicalJar.isFile()) return canonicalJar;
+        if (canonicalJar.isFile() && JarIntegrity.isUsableJar(canonicalJar)) return canonicalJar;
 
         // 3. Exec JAR in canonical version dir
         File installDir = getInstallDirectory(componentId);
         File execJar = new File(installDir, componentId + "-" + version + "-exec.jar");
-        if (execJar.isFile()) return execJar;
+        if (execJar.isFile() && JarIntegrity.isUsableJar(execJar)) return execJar;
 
         // 4. Any matching JAR in any version dir (newest first)
         File componentDir = new File(installBaseDir, "components/" + componentId);
@@ -394,7 +443,11 @@ public class ComponentRegistry {
                 for (File versionDir : versionDirs) {
                     File[] jars = versionDir.listFiles(
                             (dir, name) -> name.startsWith(componentId) && name.endsWith(".jar"));
-                    if (jars != null && jars.length > 0) return jars[0];
+                    if (jars != null) {
+                        for (File jar : jars) {
+                            if (JarIntegrity.isUsableJar(jar)) return jar;
+                        }
+                    }
                 }
             }
 

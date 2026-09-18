@@ -8,6 +8,15 @@
     "verifiedAt": "2026-08-20",
     "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
   },
+  "structuredOutput": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://docs.x.ai/docs/api-reference#schema",
+      "verifiedAt": "2026-09-17",
+      "notice": "xAI documents structured outputs via response_format json_schema on the chat-completions surface."
+    },
+    "jsonSchema": true
+  },
   "profiles": [
     {
       "modelPatterns": [

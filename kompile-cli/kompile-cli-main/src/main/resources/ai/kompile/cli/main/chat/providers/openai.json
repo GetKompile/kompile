@@ -21,6 +21,15 @@
       "^gpt-6-astra$"
     ]
   },
+  "structuredOutput": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://platform.openai.com/docs/guides/structured-outputs",
+      "verifiedAt": "2026-09-17",
+      "notice": "json_schema response_format is a documented transport capability on the chat-completions surface; model-level support still varies."
+    },
+    "jsonSchema": true
+  },
   "profiles": [
     {
       "modelPatterns": [

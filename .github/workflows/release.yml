@@ -275,6 +275,19 @@ jobs:
             -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
             package
 
+      - name: Build chat handoff JAR
+        if: steps.platform.outputs.selected == 'true'
+        shell: bash
+        # The CLI web handoff (ChatInstanceBootstrap) launches lib/kompile-chat.jar
+        # from the archive and refuses to run without an installed chat persona.
+        # Assembly below runs with --skip-java-build, so the chat exec JAR must
+        # already sit in target/ — build-dist.sh reuses it as-is.
+        run: |
+          mvn -B -ntp -pl :kompile-app-chat -am package -DskipTests \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}"
+
       - name: Install Linux packaging tools
         if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'linux'
         shell: bash
@@ -303,6 +316,7 @@ jobs:
             --version "${VERSION}"
             --platform "${PLATFORM}"
             --output-dir "${OUTPUT_DIR}"
+            --archive-format both
           )
           ./build-dist.sh "${DIST_ARGS[@]}"
 
@@ -405,7 +419,8 @@ jobs:
             --skip-maven-install \
             --version "${VERSION}" \
             --platform linux-x86_64 \
-            --output-dir "${OUTPUT_DIR}"
+            --output-dir "${OUTPUT_DIR}" \
+            --archive-format both
 
           cp "${OUTPUT_DIR}/${NAME}.zip" "${NAME}.zip"
           cp "${OUTPUT_DIR}/${NAME}.zip.sha256" "${NAME}.zip.sha256"

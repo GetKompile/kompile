@@ -146,10 +146,18 @@ public final class GoogleOAuthFlow implements OAuthProviderFlow {
                     throw new IOException("OAuth state mismatch");
                 }
             } else {
-                authorization = callback.await(Duration.ofMinutes(5));
+                try {
+                    authorization = callback.await(Duration.ofMinutes(5));
+                } catch (IOException failure) {
+                    // Google renders its own error page (e.g. "Error 400: invalid_request")
+                    // at consent time and never redirects back with error parameters, so
+                    // this only ever surfaces as a timeout. Point at the settings that
+                    // cause that page instead of an opaque failure.
+                    throw new IOException(failure.getMessage() + SCOPE_HINT, failure);
+                }
             }
             if (authorization.code() == null || authorization.code().isBlank()) {
-                throw new IOException("Google login returned no authorization code");
+                throw new IOException("Google login returned no authorization code" + SCOPE_HINT);
             }
             return requestToken(Map.of(
                     "grant_type", "authorization_code",
@@ -272,4 +280,16 @@ public final class GoogleOAuthFlow implements OAuthProviderFlow {
         // Google requires the identical redirect_uri value used in the authorization request.
         return callbackUri.toString();
     }
+
+    /**
+     * Guidance for Google's consent-time "Error 400: invalid_request" page, which never
+     * reaches the local callback: the requested scopes must be registered on the OAuth
+     * consent screen and the backing APIs enabled in the client's Cloud project.
+     */
+    private static final String SCOPE_HINT = ". If the browser showed an error page (for example "
+            + "'Error 400: invalid_request'), the requested scopes are likely not configured for this "
+            + "OAuth client: add " + DEFAULT_SCOPES + " on the Google Cloud consent screen (APIs & "
+            + "Services > OAuth consent screen > Data access), enable the Gmail and Drive APIs, add "
+            + "your account as a Test user while the app is in Testing, or request fewer scopes via "
+            + "KOMPILE_GOOGLE_SCOPES (e.g. \"email profile\")";
 }

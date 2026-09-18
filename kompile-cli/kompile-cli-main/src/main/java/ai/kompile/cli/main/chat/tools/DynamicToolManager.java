@@ -230,6 +230,139 @@ public class DynamicToolManager {
         return added;
     }
 
+    // ── Activation loop tracking ─────────────────────────────────────────────
+
+    /**
+     * Activation attempts per session: sessionId → (group → count). The group key uses the
+     * canonical name, with {@code "all"} for activate-all attempts. Bounds the harness state
+     * that backs the activate_tools loop guard; sessions are transcript-scoped and tiny.
+     */
+    private final Map<String, Map<String, Integer>> activationCounts = new ConcurrentHashMap<>();
+
+    private static final int MAX_TRACKED_SESSIONS = 1024;
+
+    /** Outcome of an activation attempt against a specific group. */
+    public enum ActivationStatus {
+        /** The group was inactive and is now active; {@code added} lists newly visible tools. */
+        ACTIVATED,
+        /** The group was already active (host-seeded or previously activated); no state changed. */
+        ALREADY_ACTIVE,
+        /** The group is known but registers no tools in this session; no state changed. */
+        NO_TOOLS_IN_SESSION,
+        /** The group name is not one of the known groups. */
+        UNKNOWN
+    }
+
+    /**
+     * Rich activation outcome. Distinguishing ALREADY_ACTIVE from ACTIVATED is what lets the
+     * activate_tools meta-tool answer honestly instead of re-announcing tools that were
+     * already visible — the false progress report that drove activation loops.
+     */
+    public record ActivationResult(ActivationStatus status, String groupName, List<String> added) {}
+
+    public boolean isGroupKnown(String groupName) {
+        return "other".equals(groupName) || GROUPS.containsKey(groupName);
+    }
+
+    public boolean isGroupActive(String groupName) {
+        return activatedGroups.contains(groupName);
+    }
+
+    /**
+     * Activate a group and report whether anything actually changed. Marks the group active as
+     * a side effect, exactly like {@link #activateGroup(String)}.
+     *
+     * <p>When dynamic mode is off (MCP stdio), every registered tool is already listed, so
+     * activation never changes the visible surface and is reported as {@link
+     * ActivationStatus#ALREADY_ACTIVE} instead of a false "Activated N tools" progress report.
+     */
+    public ActivationResult activateGroupWithStatus(String groupName) {
+        if (!isGroupKnown(groupName)) {
+            return new ActivationResult(ActivationStatus.UNKNOWN, groupName, List.of());
+        }
+        boolean wasActive = activatedGroups.contains(groupName);
+        List<String> added = activateGroup(groupName);
+        if (wasActive || !dynamicMode) {
+            return new ActivationResult(ActivationStatus.ALREADY_ACTIVE, groupName, List.of());
+        }
+        if (added.isEmpty()) {
+            return new ActivationResult(ActivationStatus.NO_TOOLS_IN_SESSION, groupName, List.of());
+        }
+        return new ActivationResult(ActivationStatus.ACTIVATED, groupName, added);
+    }
+
+    /**
+     * Activate every group and report whether anything actually changed.
+     *
+     * <p>When dynamic mode is off, the full catalog is always visible; this reports
+     * {@link ActivationStatus#ALREADY_ACTIVE} instead of a false progress report.
+     */
+    public ActivationResult activateAllWithStatus() {
+        if (!dynamicMode) {
+            activateAll();
+            return new ActivationResult(ActivationStatus.ALREADY_ACTIVE, "all", List.of());
+        }
+        boolean anyInactive = GROUPS.keySet().stream().anyMatch(g -> !activatedGroups.contains(g))
+                || !activatedGroups.contains("other");
+        List<String> added = activateAll();
+        if (!anyInactive) {
+            return new ActivationResult(ActivationStatus.ALREADY_ACTIVE, "all", List.of());
+        }
+        List<String> visible = new ArrayList<>(getActiveToolIds());
+        List<String> newlyAdded = added.stream().filter(visible::contains).toList();
+        if (newlyAdded.isEmpty()) {
+            return new ActivationResult(ActivationStatus.NO_TOOLS_IN_SESSION, "all", List.of());
+        }
+        return new ActivationResult(ActivationStatus.ACTIVATED, "all", newlyAdded);
+    }
+
+    /**
+     * Record one activation attempt for this session and return the session's new total
+     * activation count (across all groups). Called by the activate_tools meta-tool so the
+     * harness can block endless repeated activations.
+     */
+    public int recordActivation(String sessionId, String groupName) {
+        if (activationCounts.size() > MAX_TRACKED_SESSIONS) {
+            activationCounts.clear();
+        }
+        var counts = activationCounts.computeIfAbsent(
+                sessionId == null ? "(anonymous)" : sessionId, k -> new ConcurrentHashMap<>());
+        counts.merge(groupName == null || groupName.isBlank() ? "(unknown)" : groupName, 1, Integer::sum);
+        return counts.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    /** How many times this session has already activated the given group. */
+    public int activationCount(String sessionId, String groupName) {
+        var counts = activationCounts.get(sessionId == null ? "(anonymous)" : sessionId);
+        return counts == null ? 0 : counts.getOrDefault(groupName, 0);
+    }
+
+    /** Total activation attempts made by this session across all groups. */
+    public int totalActivations(String sessionId) {
+        var counts = activationCounts.get(sessionId == null ? "(anonymous)" : sessionId);
+        return counts == null ? 0 : counts.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    /** Sessions whose activation budget is spent; further activate calls are hard-blocked. */
+    private final Set<String> frozenActivationSessions = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Freeze all activation for this session. Called once the activate_tools meta-tool has
+     * sent its explicit stop instruction; afterwards the harness blocks the calls instead of
+     * trusting the model to obey.
+     */
+    public void freezeActivations(String sessionId) {
+        if (frozenActivationSessions.size() > MAX_TRACKED_SESSIONS) {
+            frozenActivationSessions.clear();
+        }
+        frozenActivationSessions.add(sessionId == null ? "(anonymous)" : sessionId);
+    }
+
+    /** True once this session ignored the activation stop instruction. */
+    public boolean isActivationFrozen(String sessionId) {
+        return frozenActivationSessions.contains(sessionId == null ? "(anonymous)" : sessionId);
+    }
+
     /**
      * Get descriptions of available (not yet activated) tool groups.
      */

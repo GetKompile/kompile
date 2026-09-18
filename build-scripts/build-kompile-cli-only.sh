@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Build the cli-only distribution: native CLI plus its delegated CLI images,
-# with NO web server, NO bundled runtime, and NO ND4J backend closure unless a
-# backend platform is selected.
+# with NO server personas beyond the chat handoff JAR, NO bundled runtime, and
+# NO ND4J backend closure unless a backend platform is selected.
 #
-# Ships bin/kompile, kompile-model, kompile-agent, kompile-app-cli and
-# kompile-component. This is the smallest payload that still supports every
-# CLI command; server components are absent by design.
+# Ships bin/kompile, kompile-model, kompile-agent, kompile-app-cli,
+# kompile-component, and lib/kompile-chat.jar for the CLI web handoff
+# (ChatInstanceBootstrap launches the installed chat persona and refuses to run
+# without it). This is the smallest payload that still supports every CLI
+# command; app-main, the crawl manager, the chat native image, and the bundled
+# runtime are absent by design.
 #
 # Usage:
 #   ./build-scripts/build-kompile-cli-only.sh [platform] [options...]

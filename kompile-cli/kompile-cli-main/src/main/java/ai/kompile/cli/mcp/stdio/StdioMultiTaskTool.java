@@ -5,6 +5,8 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -212,6 +214,57 @@ public class StdioMultiTaskTool {
                         + "' is not available. Available agents: " + String.join(", ", SUPPORTED_AGENTS) + ".");
                 }
             }
+        }
+
+        // ── Workflow team enforcement: validate the WHOLE batch before any launch ──
+        WorkflowTeamEnforcement workflow = StdioTaskTool.workflowEnforcement(workDir, roleManager);
+        if (workflow != null) {
+            WorkflowTeamEnforcement.ToolDecision toolDecision = workflow.evaluateToolUse("multi_task");
+            if (!toolDecision.allowed()) {
+                return ToolResult.error(toolDecision.reason());
+            }
+            List<String> batchErrors = new ArrayList<>();
+            List<Map<String, Object>> resolvedSubtasks = new ArrayList<>();
+            for (int i = 0; i < subtasks.size(); i++) {
+                Map<String, Object> subtask = subtasks.get(i);
+                String purpose = (String) subtask.get("purpose");
+                String subRole = (String) subtask.getOrDefault("role", defaultRole);
+                WorkflowTeamEnforcement.DelegationDecision decision =
+                        workflow.evaluateDelegation(purpose, subRole);
+                if (decision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied denied) {
+                    batchErrors.add("subtask[" + i + "] '" + subtask.getOrDefault("name", "?") + "': "
+                            + denied.reason());
+                    continue;
+                }
+                WorkflowTeamEnforcement.DelegationDecision.Allowed allowed =
+                        (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision;
+                WorkflowTeamEnforcement.DelegationDecision batchDecision =
+                        workflow.evaluateBatchSize(resolveAgentCount(subtask, defaultAgentCount));
+                if (batchDecision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied deniedBatch) {
+                    batchErrors.add("subtask[" + i + "] '" + subtask.getOrDefault("name", "?") + "': "
+                            + deniedBatch.reason());
+                    continue;
+                }
+                // The workflow owns the destination: force the resolved role and clear
+                // per-subtask selectors so the participant assignment is authoritative.
+                Map<String, Object> rewritten = new LinkedHashMap<>(subtask);
+                rewritten.put("role", allowed.resolvedRole());
+                rewritten.remove("model");
+                rewritten.remove("thinking");
+                rewritten.remove("agent");
+                rewritten.remove("agents");
+                rewritten.remove("agent_count");
+                rewritten.put("agent_count", 1);
+                rewritten.put("agent", SUPPORTED_AGENTS.get(0));
+                resolvedSubtasks.add(rewritten);
+            }
+            if (!batchErrors.isEmpty()) {
+                // One invalid assignment rejects the entire batch; nobody launches.
+                return ToolResult.error("Workflow '" + workflow.team().name()
+                        + "' rejected this batch before launch:\n- "
+                        + String.join("\n- ", batchErrors));
+            }
+            subtasks = resolvedSubtasks;
         }
 
         System.err.println("\u001B[32m  ⟳ Multi-task: " + desc + " (" + subtasks.size() + " subtasks)\u001B[0m");

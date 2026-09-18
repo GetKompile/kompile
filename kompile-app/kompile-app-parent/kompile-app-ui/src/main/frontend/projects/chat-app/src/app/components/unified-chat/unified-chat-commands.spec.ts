@@ -23,7 +23,7 @@ function createMenuTestBed() {
   const agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'sendMessage',
-    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction'
+    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction', 'getContextBudget'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
@@ -75,7 +75,10 @@ function createMenuTestBed() {
   });
   agentServiceSpy.getAllAgents.and.returnValue(of([]));
   agentServiceSpy.getAvailableAgents.and.returnValue(of([]));
-  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([]));
+  agentServiceSpy.getChatHarnessAgents.and.returnValue(of([
+    { name: 'coder', displayName: 'Coder', available: true, agentType: 'HARNESS' } as AgentProvider
+  ]));
+  agentChatServiceSpy.getContextBudget.and.returnValue(of(null));
   agentServiceSpy.refreshChatHarnessAgents.and.returnValue(of([]));
   chatStorageServiceSpy.getSessions.and.returnValue([]);
   chatHistoryServiceSpy.getSessions.and.returnValue(of([]));
@@ -150,6 +153,21 @@ describe('UnifiedChat command outcomes', () => {
     (component as any).unsubscribeStreamingSubs();
     if (savedStorage === null) localStorage.removeItem('unified_chat_sessions');
     else localStorage.setItem('unified_chat_sessions', savedStorage);
+  });
+
+  it('renders and persists each live turn separately without duplicating terminal text', async () => {
+    fetchSpy.and.resolveTo(response(event('start', { processId: 'harness-turns' })
+      + event('turn_started', { turnId: 1, source: 'initial', text: '' })
+      + event('chunk', 'first answer') + event('turn_complete', { turnId: 1, text: 'first answer' })
+      + event('turn_started', { turnId: 2, source: 'user', text: 'follow up' })
+      + event('chunk', 'second answer') + event('turn_complete', { turnId: 2, text: 'second answer' })
+      + event('complete', { content: 'second answer' })));
+    component.userInput = 'original'; component.sendMessage();
+    await send.calls.mostRecent().returnValue;
+    expect(component.messages.map(message => message.content)).toEqual(['original', 'first answer', 'follow up', 'second answer']);
+    expect(component.messages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(component.messages.every(message => !message.isStreaming)).toBeTrue();
+    expect(component.currentSession?.messages.length).toBe(4);
   });
 
   for (const [command, status] of [
@@ -351,6 +369,9 @@ describe('UnifiedChat command outcomes', () => {
         + event('complete', { content: menuOutcome.text, commandOutcome: menuOutcome })));
       await send.calls.mostRecent().returnValue;
       expect(component.isStreaming).toBeFalse();
+      // A second fetch needs a fresh body; reusing the consumed response hid a stream failure.
+      fetchSpy.and.resolveTo(response(event('command', appliedOutcome)
+        + event('complete', { content: appliedOutcome.text, commandOutcome: appliedOutcome })));
       component.selectModel('m-small'); // streaming done → dispatches now
       expect(send).toHaveBeenCalledTimes(2);
       await send.calls.mostRecent().returnValue;
@@ -415,15 +436,186 @@ describe('UnifiedChat /model menu rendering', () => {
     }).compileComponents();
     fixture = TestBed.createComponent(UnifiedChatComponent);
     component = fixture.componentInstance;
-    // Mirrors unified-chat-rag.spec.ts: set the persona BEFORE the first
-    // detectChanges so ngOnInit resolves the selected harness agent and the
-    // composer/messages region renders instead of the no-agents warning.
+    // The agent-list mock also supplies this persona, so ngOnInit keeps the
+    // composer enabled rather than clearing selectedAgent on an empty list.
     component.selectedAgent = { name: 'coder', displayName: 'Coder' } as AgentProvider;
   });
 
   afterEach(() => {
     if (savedStorage === null) localStorage.removeItem('unified_chat_sessions');
     else localStorage.setItem('unified_chat_sessions', savedStorage);
+  });
+
+  it('binds document Ctrl+B and renders safe process activity controls while the composer is live', () => {
+    fixture.detectChanges();
+    component.isStreaming = true;
+    const service = TestBed.inject(LocalAgentChatService);
+    service.liveControlsReady = true;
+    service.harnessActivity = { backgroundable: true, turnActive: true,
+      tasks: [], processes: [{ id: 'proc-1', description: 'build', state: 'RUNNING', output: '<script>unsafe</script>' }] };
+    const send = spyOn(component, 'sendHarnessControl').and.resolveTo();
+    (component as any).cdr.markForCheck();
+    fixture.detectChanges();
+    const input = fixture.nativeElement.querySelector('[data-testid="chat-input"]') as HTMLTextAreaElement;
+    expect(input.disabled).toBeFalse();
+    const event = new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBeTrue();
+    expect(send).toHaveBeenCalledOnceWith('background');
+    const panel = fixture.nativeElement.querySelector('[data-testid="harness-activity"]');
+    expect(panel.textContent).toContain('<script>unsafe</script>');
+    expect(panel.querySelector('script')).toBeNull();
+    const stop = Array.from(panel.querySelectorAll('button')).find((b: any) => b.textContent.includes('Stop process')) as HTMLButtonElement;
+    stop.click();
+    expect(send).toHaveBeenCalledWith('process_kill', 'proc-1');
+  });
+
+  it('retains child input DOM across snapshots and sends only to the selected child', () => {
+    fixture.detectChanges();
+    component.isStreaming = true;
+    const service = TestBed.inject(LocalAgentChatService);
+    service.liveControlsReady = true;
+    const child = { id: 'child-1', type: 'coder', description: 'review', state: 'thinking', running: true, canSend: true, canCancel: true };
+    service.harnessActivity = { backgroundable: false, turnActive: false, tasks: [], processes: [], subagents: [child] };
+    (component as any).cdr.markForCheck(); fixture.detectChanges();
+    const input = fixture.nativeElement.querySelector('[data-testid="subagent-activity"] textarea') as HTMLTextAreaElement;
+    input.value = 'child follow-up';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    service.harnessActivity = { ...service.harnessActivity, subagents: [{ ...child, output: 'updated output' }] };
+    (component as any).cdr.markForCheck(); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[data-testid="subagent-activity"] textarea')).toBe(input);
+    expect(input.value).toBe('child follow-up');
+    const send = spyOn(component, 'sendHarnessControl').and.resolveTo();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(send).toHaveBeenCalledWith('subagent_input', 'child-1', 'child follow-up');
+    const summary = fixture.nativeElement.querySelector('[data-testid="subagent-activity"] summary');
+    summary.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+    expect(send).toHaveBeenCalledWith('subagent_cancel', 'child-1');
+  });
+
+  function typeInput(value: string): HTMLTextAreaElement {
+    const input = fixture.nativeElement.querySelector('[data-testid="chat-input"]') as HTMLTextAreaElement;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    return input;
+  }
+
+  function key(input: HTMLTextAreaElement, name: string, options: KeyboardEventInit = {}): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...options });
+    input.dispatchEvent(event);
+    fixture.detectChanges();
+    return event;
+  }
+
+  const slashMenu = (f: ComponentFixture<UnifiedChatComponent>) =>
+    f.nativeElement.querySelector('[data-testid="slash-command-menu"]') as HTMLElement | null;
+
+  it('opens common command suggestions on bare slash and filters case-insensitively', () => {
+    fixture.detectChanges();
+    const input = typeInput('/');
+    expect(slashMenu(fixture)).not.toBeNull();
+    expect(slashMenu(fixture)!.querySelectorAll('[role="option"]').length).toBe(component.slashCommands.length);
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(component.slashCommands.map(item => item.command)).toEqual(['/help', '/model', '/skills']);
+    typeInput('/Mo');
+    const options = slashMenu(fixture)!.querySelectorAll('[role="option"]');
+    expect(options.length).toBe(1);
+    expect(options[0].textContent).toContain('/model');
+    expect(input.getAttribute('aria-activedescendant')).toBe(options[0].id);
+  });
+
+  it('wraps arrow navigation, resets selection on filtering and completes with Enter without sending', () => {
+    fixture.detectChanges();
+    const send = spyOn(component, 'sendMessage');
+    const input = typeInput('/');
+    expect(key(input, 'ArrowUp').defaultPrevented).toBeTrue();
+    expect(component.slashSelectedIndex).toBe(component.slashCommands.length - 1);
+    key(input, 'ArrowDown');
+    expect(component.slashSelectedIndex).toBe(0);
+    key(input, 'ArrowDown');
+    expect(component.slashSelectedIndex).toBe(1);
+    typeInput('/mo');
+    expect(component.slashSelectedIndex).toBe(0);
+    expect(key(input, 'Enter').defaultPrevented).toBeTrue();
+    expect(component.userInput).toBe('/model ');
+    expect(slashMenu(fixture)).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    key(input, 'Enter');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('completes with Tab or pointer selection without executing a command', () => {
+    fixture.detectChanges();
+    const send = spyOn(component, 'sendMessage');
+    const input = typeInput('/ski');
+    expect(key(input, 'Tab').defaultPrevented).toBeTrue();
+    expect(component.userInput).toBe('/skills ');
+    typeInput('/mo');
+    const option = slashMenu(fixture)!.querySelector('button')!;
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    option.dispatchEvent(down);
+    expect(down.defaultPrevented).toBeTrue(); // keep textarea focus; blur must not eat the click
+    option.click();
+    fixture.detectChanges();
+    expect(component.userInput).toBe('/model ');
+    expect(slashMenu(fixture)).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('dismisses on Escape before stopping a live run, and on blur', () => {
+    fixture.detectChanges();
+    component.isStreaming = true;
+    TestBed.inject(LocalAgentChatService).liveControlsReady = true;
+    const cancel = spyOn(component, 'cancelStreaming');
+    const input = typeInput('/');
+    expect(key(input, 'Escape').defaultPrevented).toBeTrue();
+    expect(slashMenu(fixture)).toBeNull();
+    expect(component.userInput).toBe('/');
+    expect(cancel).not.toHaveBeenCalled();
+    key(input, 'Escape');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    typeInput('/');
+    input.dispatchEvent(new FocusEvent('blur'));
+    fixture.detectChanges();
+    expect(slashMenu(fixture)).toBeNull();
+  });
+
+  it('leaves arguments, paths, multiline text, and unknown skills alone', () => {
+    fixture.detectChanges();
+    const send = spyOn(component, 'sendMessage');
+    for (const value of ['', 'ordinary text', 'a /mo', '/model value', '/tmp/file', '/mo\ntext', '/custom-skill']) {
+      typeInput(value);
+      expect(slashMenu(fixture)).withContext(value).toBeNull();
+      expect(component.userInput).toBe(value);
+    }
+    const input = typeInput('/custom-skill');
+    key(input, 'Enter');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(component.userInput).toBe('/custom-skill');
+  });
+
+  it('preserves modified Enter, IME and repeat keys and hides suggestions when the composer is disabled', () => {
+    fixture.detectChanges();
+    const send = spyOn(component, 'sendMessage');
+    const input = typeInput('/');
+    for (const options of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true },
+      { altKey: true }, { isComposing: true }, { repeat: true }]) {
+      expect(key(input, 'Enter', options).defaultPrevented).toBeFalse();
+    }
+    expect(send).not.toHaveBeenCalled();
+    expect(component.userInput).toBe('/');
+    component.isLoading = true;
+    typeInput('/');
+    expect(slashMenu(fixture)).toBeNull();
+    component.isLoading = false;
+    component.isStreaming = true;
+    typeInput('/');
+    expect(slashMenu(fixture)).toBeNull();
+    component.isStreaming = false;
+    component.selectedAgent = null;
+    typeInput('/');
+    expect(slashMenu(fixture)).toBeNull();
   });
 
   it('renders the model picker with entries and flags the current model', () => {
