@@ -54,8 +54,53 @@ class DirectLlmClientToolSchemaTest {
                 assertEquals(new PatchTool().parameterSchema(), parameters,
                         "subscription Responses keeps the full MCP schema, as Codex does");
                 assertTrue(patch.path("strict").isNull());
+                assertFalse(request.has("max_tokens"));
+                assertFalse(request.has("max_completion_tokens"),
+                        "Chat Completions parameters must not leak into subscription Responses");
             }
             assertEquals(original, definitions, "serialization must not mutate registry schemas");
+        }
+    }
+
+    @Test
+    void openAiTokenLimitUsesCompletionParameterRegardlessOfModelName() throws Exception {
+        // Include an unknown alias/future family: provider behavior must not depend on a prefix list.
+        for (String model : List.of("gpt-4o", "gpt-5", "o3", "gpt-6", "deployment-alias")) {
+            JsonNode request = captureRequest("openai", model, null, true, 8192, 0, "hello");
+            assertEquals(model, request.path("model").asText());
+            assertEquals(8192, request.path("max_completion_tokens").asInt(), model);
+            assertFalse(request.has("max_tokens"), model);
+            assertFalse(request.has("max_output_tokens"), model);
+        }
+    }
+
+    @Test
+    void openAiCompletionLimitRetainsContextWindowBudgeting() throws Exception {
+        JsonNode request = captureRequest("openai", "deployment-alias", null, true,
+                8192, 16384, "x".repeat(48000));
+        int expected = DirectLlmClient.wireMaxTokens(8192, 16384,
+                request.path("messages").toString().length() / 4);
+        assertTrue(expected < 8192);
+        assertEquals(expected, request.path("max_completion_tokens").asInt());
+        assertFalse(request.has("max_tokens"));
+    }
+
+    @Test
+    void unsetOpenAiOutputLimitDoesNotAddAnyTokenCap() throws Exception {
+        for (int ceiling : List.of(0, -1)) {
+            JsonNode request = captureRequest("openai", "gpt-5", null, true, ceiling, 0, "hello");
+            assertFalse(request.has("max_tokens"));
+            assertFalse(request.has("max_completion_tokens"));
+            assertFalse(request.has("max_output_tokens"));
+        }
+    }
+
+    @Test
+    void compatibleProvidersKeepTheirLegacyTokenParameter() throws Exception {
+        for (String provider : List.of("zai", "deepseek", "ollama", "custom")) {
+            JsonNode request = captureRequest(provider, "test-model", null, false, 8192, 0, "hello");
+            assertEquals(8192, request.path("max_tokens").asInt(), provider);
+            assertFalse(request.has("max_completion_tokens"), provider);
         }
     }
 
@@ -112,6 +157,12 @@ class DirectLlmClientToolSchemaTest {
     }
 
     private JsonNode captureRequest(String provider, ArrayNode definitions, boolean validate) throws Exception {
+        return captureRequest(provider, "gpt-5", definitions, validate, 8192, 0, "hello");
+    }
+
+    private JsonNode captureRequest(String provider, String model, ArrayNode definitions,
+                                    boolean validate, int outputCeiling, int contextWindow,
+                                    String userMessage) throws Exception {
         boolean codex = provider.equals("openai-codex");
         String endpoint = codex ? "/codex/responses" : "/chat/completions";
         AtomicReference<JsonNode> captured = new AtomicReference<>();
@@ -128,7 +179,10 @@ class DirectLlmClientToolSchemaTest {
                             || parameters.has("anyOf") || parameters.has("oneOf") || parameters.has("allOf");
                 }
             }
-            String response = invalid
+            boolean invalidTokenParameter = "openai".equals(provider) && request.has("max_tokens");
+            String response = invalidTokenParameter
+                    ? "{\"error\":{\"message\":\"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead.\",\"code\":\"unsupported_parameter\"}}"
+                    : invalid
                     ? "{\"error\":{\"message\":\"Invalid schema for function 'patch'\",\"code\":\"invalid_function_parameters\"}}"
                     : codex
                     ? "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
@@ -136,18 +190,25 @@ class DirectLlmClientToolSchemaTest {
                     : "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
                       + "data: [DONE]\n\n";
             byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", invalid ? "application/json" : "text/event-stream");
-            exchange.sendResponseHeaders(invalid ? 400 : 200, bytes.length);
+            boolean rejected = invalid || invalidTokenParameter;
+            exchange.getResponseHeaders().set("Content-Type", rejected ? "application/json" : "text/event-stream");
+            exchange.sendResponseHeaders(rejected ? 400 : 200, bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();
         });
         server.start();
-        try (DirectLlmClient client = new DirectLlmClient(new ChatConfig(provider, "test-key", "gpt-5",
+        try (DirectLlmClient client = new DirectLlmClient(new ChatConfig(provider, "test-key", model,
                 "http://127.0.0.1:" + server.getAddress().getPort()), mapper)) {
             client.setOutputConsumer(ignored -> { });
-            DirectLlmClient.StreamResult result = client.streamChat("hello", "system", definitions, null);
+            client.setWireMaxOutputTokens(outputCeiling);
+            client.setContextWindowTokens(contextWindow);
+            DirectLlmClient.StreamResult result = client.streamChat(userMessage, "system", definitions, null);
             assertFalse(result.failed, result.text);
             assertEquals("ok", result.text);
+            if ("openai".equals(provider) && outputCeiling > 0) {
+                assertTrue(captured.get().has("max_completion_tokens"),
+                        "OpenAI output budget must be sent, not silently dropped");
+            }
             return captured.get();
         } finally {
             server.stop(0);

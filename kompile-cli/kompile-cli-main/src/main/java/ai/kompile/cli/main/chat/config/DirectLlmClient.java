@@ -467,7 +467,8 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * Output ceiling carried as {@code max_tokens} on OpenAI-compatible chat requests.
+     * Output ceiling carried as {@code max_completion_tokens} on OpenAI chat requests,
+     * or {@code max_tokens} on compatible providers that support the legacy field.
      * Derived from the active model's real output limit (see
      * {@code CompactionService#wireMaxOutputTokens}); zero leaves the request without
      * an explicit cap, as before.
@@ -477,7 +478,7 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * Active model's context window; lets the request size {@code max_tokens} against
+     * Active model's context window; lets the request size the output token limit against
      * the input actually being sent (reasoning tokens bill against that cap on GLM-class
      * models, so a static slice of the window truncates thinking turns). Zero leaves
      * the ceiling unscaled by the window.
@@ -487,7 +488,7 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * Per-request {@code max_tokens}: the output ceiling while the window has room,
+     * Per-request output token limit: the output ceiling while the window has room,
      * shrinking to what fits only as the input approaches the window. The 1% margin
      * (floored at 1,024) absorbs the chars/4 input estimate's error.
      */
@@ -1356,11 +1357,9 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * OpenAI's reasoning models (o-series, gpt-5+) reject {@code max_tokens} on chat
-     * completions and require {@code max_completion_tokens}; they ride the Responses
-     * route in this client, so the generic chat path simply omits the cap for them.
-     * Every other chat-completions provider (zai, deepseek, groq, ollama, xai, …)
-     * accepts {@code max_tokens} natively.
+     * Legacy compatibility guard for non-OpenAI chat-completions providers. Keep
+     * their existing behavior for known reasoning model names. OpenAI itself uses
+     * max_completion_tokens for every model and must not pass through this guard.
      */
     private static boolean acceptsMaxTokens(String model) {
         if (model == null || model.isBlank()) return true;
@@ -3081,8 +3080,12 @@ public class DirectLlmClient implements AutoCloseable {
         applyOpenAiFastMode(request, effectiveModel);
         applyOpenAiCompatiblePromptCacheControls(request, effectiveModel);
         applyChatCompletionsJsonOutput(request);
-        if (wireMaxOutputTokens > 0 && acceptsMaxTokens(effectiveModel)) {
-            request.put("max_tokens", wireMaxTokens(
+        boolean openAi = "openai".equals(config.getProvider());
+        if (wireMaxOutputTokens > 0 && (openAi || acceptsMaxTokens(effectiveModel))) {
+            // API-key OpenAI uses Chat Completions, not the subscription Responses
+            // route. Select the supported field by provider, never a model prefix:
+            // aliases and future model families must not fall back to max_tokens.
+            request.put(openAi ? "max_completion_tokens" : "max_tokens", wireMaxTokens(
                     wireMaxOutputTokens, contextWindowTokens,
                     estimateRequestInputTokens(messages, toolDefs)));
         }
