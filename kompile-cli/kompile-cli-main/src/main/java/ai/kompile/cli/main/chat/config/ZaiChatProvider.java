@@ -5,16 +5,18 @@
  */
 package ai.kompile.cli.main.chat.config;
 
-/** Direct standard-chat provider for the Z.AI GLM Coding Plan. */
+/** Z.AI API-key provider with subscription and credit-based endpoints. */
 public final class ZaiChatProvider extends StaticChatProvider {
+    public static final String SUBSCRIPTION_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+    public static final String CREDITS_BASE_URL = "https://api.z.ai/api/paas/v4";
+
     public ZaiChatProvider() {
-        super("zai", "Z.AI GLM Coding Plan",
-                "https://api.z.ai/api/coding/paas/v4", "ZAI_API_KEY");
+        super("zai", "Z.AI", SUBSCRIPTION_BASE_URL, "ZAI_API_KEY");
     }
 
     @Override
     public String apiKeyAuthLabel() {
-        return "GLM Coding Plan subscription API key";
+        return "API key (subscription)";
     }
 
     @Override

@@ -367,10 +367,10 @@ class ChatConfigTest {
         ChatProvider provider = ChatProviderRegistry.find("zai");
 
         assertNotNull(provider);
-        assertEquals("Z.AI GLM Coding Plan", provider.displayName());
+        assertEquals("Z.AI", provider.displayName());
         assertEquals("https://api.z.ai/api/coding/paas/v4", provider.defaultBaseUrl());
         assertEquals("ZAI_API_KEY", provider.environmentVariable());
-        assertEquals("GLM Coding Plan subscription API key", provider.apiKeyAuthLabel());
+        assertEquals("API key (subscription)", provider.apiKeyAuthLabel());
     }
 
     @Test

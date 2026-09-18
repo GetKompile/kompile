@@ -84,8 +84,16 @@ public class SetupWizard {
         NONE,
         OAUTH,
         API_KEY,
+        /** Same credential as API_KEY; selects the provider's metered endpoint. */
+        API_KEY_CREDITS,
         /** Authentication is owned by the provider CLI (OAuth/API selection stays native). */
-        NATIVE
+        NATIVE;
+
+        /** Billing mode is persisted in baseUrl; both key choices use API-key auth. */
+        public String configValue() {
+            return this == API_KEY_CREDITS ? "api-key"
+                    : name().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+        }
     }
 
     record ProviderSelection(String vendor, String provider, AuthMethod authMethod) {}
@@ -361,7 +369,8 @@ public class SetupWizard {
                 provider = authentication.provider();
                 apiKey = authentication.apiKey();
                 credentialName = authentication.credentialName();
-                baseUrl = promptBaseUrl(reader, provider);
+                baseUrl = baseUrlForAuth(provider, authentication.authMethod());
+                if (baseUrl == null) baseUrl = promptBaseUrl(reader, provider);
                 if (existingConfig != null
                         && provider.equalsIgnoreCase(existingConfig.getProvider())
                         && (baseUrl == null || baseUrl.isBlank())) {
@@ -409,8 +418,7 @@ public class SetupWizard {
             config.setAuthenticationScope(authScope);
             if (credentialName != null) config.setCredentialName(credentialName);
             if (providerSelection != null) {
-                config.setAuthenticationMethod(providerSelection.authMethod().name()
-                        .toLowerCase(java.util.Locale.ROOT).replace('_', '-'));
+                config.setAuthenticationMethod(providerSelection.authMethod().configValue());
             }
             config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
             if ("standard".equals(chatMode) && config.supportsFastMode()) {
@@ -450,7 +458,7 @@ public class SetupWizard {
                     if (providerSelection != null
                             && providerSelection.authMethod() != AuthMethod.NONE) {
                         System.out.println("  Auth:     " + BOLD
-                                + authMethodLabel(providerSelection.authMethod()) + RESET);
+                                + authMethodLabel(providerSelection.vendor(), providerSelection.authMethod()) + RESET);
                     }
                     if (model != null) {
                         System.out.println("  Model:    " + BOLD + model + RESET);
@@ -812,7 +820,10 @@ public class SetupWizard {
                 }
                 yield oauthProvider;
             }
-            case API_KEY -> {
+            case API_KEY, API_KEY_CREDITS -> {
+                if (authMethod == AuthMethod.API_KEY_CREDITS && !"zai".equalsIgnoreCase(vendor)) {
+                    throw new IllegalArgumentException(vendor + " does not offer a credits endpoint choice");
+                }
                 if (!supportsApiKey(vendor)) {
                     throw new IllegalArgumentException(vendor + " does not support API-key authentication");
                 }
@@ -952,6 +963,27 @@ public class SetupWizard {
         return methods.isEmpty() ? AuthMethod.NONE : methods.get(0);
     }
 
+    /** Distinguish billing routes that share a provider and managed API key. */
+    public static AuthMethod authMethodForProvider(String provider, ChatConfig config) {
+        if ("zai".equalsIgnoreCase(provider) && config != null
+                && provider.equalsIgnoreCase(config.getProvider())
+                && config.getBaseUrl() != null
+                && ZaiChatProvider.CREDITS_BASE_URL.equals(config.getBaseUrl().strip().replaceAll("/+$", ""))) {
+            return AuthMethod.API_KEY_CREDITS;
+        }
+        return authMethodForProvider(provider);
+    }
+
+    /** An explicit billing choice overrides a previous URL before discovery and saving. */
+    public static String baseUrlForAuth(String provider, AuthMethod method) {
+        if (!"zai".equalsIgnoreCase(provider)) return null;
+        return switch (method) {
+            case API_KEY -> ZaiChatProvider.SUBSCRIPTION_BASE_URL;
+            case API_KEY_CREDITS -> ZaiChatProvider.CREDITS_BASE_URL;
+            default -> null;
+        };
+    }
+
     /**
      * Reuse the startup authentication flow for any provider/model selector.
      * This selects an existing managed credential, performs subscription OAuth
@@ -1066,7 +1098,7 @@ public class SetupWizard {
         return new ProviderSelection(vendor, resolveProviderForAuth(vendor, authMethod), authMethod);
     }
 
-    private static AuthMethod selectAuthMethod(LineReader reader, String vendor) {
+    static AuthMethod selectAuthMethod(LineReader reader, String vendor) {
         List<AuthMethod> methods = authMethods(vendor);
         if (methods.isEmpty()) {
             throw new IllegalArgumentException("No authentication method is configured for " + vendor);
@@ -1089,6 +1121,9 @@ public class SetupWizard {
     }
 
     private static List<AuthMethod> authMethods(String vendor) {
+        if ("zai".equalsIgnoreCase(vendor)) {
+            return List.of(AuthMethod.API_KEY, AuthMethod.API_KEY_CREDITS);
+        }
         if ("custom".equalsIgnoreCase(vendor)) {
             return List.of(AuthMethod.NONE, AuthMethod.API_KEY);
         }
@@ -1151,6 +1186,7 @@ public class SetupWizard {
         return switch (authMethod) {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "API key";
+            case API_KEY_CREDITS -> "API key (credits)";
             case NATIVE -> "Native CLI authentication (requires installed provider CLI)";
             case NONE -> "None";
         };

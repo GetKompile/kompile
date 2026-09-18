@@ -127,7 +127,7 @@ class SetupWizardRuntimeTest {
         assertEquals(1, vendors.stream().filter("openai"::equals).count());
         assertTrue(vendors.contains("anthropic"));
         assertTrue(vendors.contains("zai"));
-        assertEquals("Z.AI GLM Coding Plan", SetupWizard.vendorLabel("zai"));
+        assertEquals("Z.AI", SetupWizard.vendorLabel("zai"));
         assertTrue(vendors.contains("opencode"));
         assertTrue(SetupWizard.vendorLabel("opencode")
                 .contains("requires installed 'opencode' CLI"));
@@ -151,7 +151,7 @@ class SetupWizardRuntimeTest {
         assertEquals(List.of("OAuth / subscription sign-in"),
                 SetupWizard.authOptions("github-copilot"));
         assertEquals(List.of("API key"), SetupWizard.authOptions("gemini"));
-        assertEquals(List.of("GLM Coding Plan subscription API key"),
+        assertEquals(List.of("API key (subscription)", "API key (credits)"),
                 SetupWizard.authOptions("zai"));
         assertEquals("zai",
                 SetupWizard.resolveProviderForAuth("zai", SetupWizard.AuthMethod.API_KEY));

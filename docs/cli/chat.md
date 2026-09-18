@@ -42,7 +42,9 @@ The CLI prefers the installed app-native executable and falls back to the instal
 
 The external-local option is deliberately separate. Choose Ollama to accept its default URL, or choose OpenAI-compatible to enter another endpoint such as one started by `kompile run ... --serve`.
 
-The direct-provider path lists each vendor once. After selecting a vendor, the wizard asks for OAuth/subscription sign-in or an API key only when both are supported; OAuth-only and API-key-only vendors proceed with their single available method. Internal provider routes such as OpenAI's ChatGPT OAuth endpoint are not shown as duplicate vendors.
+The direct-provider path lists each vendor once. After selecting a vendor, the wizard offers its available authentication and billing routes; vendors with a single route proceed directly. Internal provider routes such as OpenAI's ChatGPT OAuth endpoint are not shown as duplicate vendors.
+
+For Z.AI, choose **API key (subscription)** for `https://api.z.ai/api/coding/paas/v4`, or **API key (credits)** for `https://api.z.ai/api/paas/v4`. Both choices reuse the same Z.AI API key. The selected endpoint is saved with the chat configuration and used for model discovery and chat requests. Use `/provider` to switch back to subscription usage when desired. Existing configurations without an explicit endpoint continue using the subscription endpoint. See [Z.AI's API endpoint documentation](https://docs.z.ai/api-reference/introduction).
 
 Inside an active external/direct standard-chat session, run `/provider` (or `/setup`) to choose a different vendor, authentication method, model, and thinking effort. The switch applies to subsequent messages without changing the session ID or transcript; provider-specific wire envelopes are rebuilt from the same canonical text conversation so the new provider retains context. Selecting the first-party local subprocess or a Kompile instance is saved for the next session because either changes the underlying runtime.
 

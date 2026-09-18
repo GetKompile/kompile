@@ -3523,20 +3523,19 @@ public class ChatRepl implements AutoCloseable {
                 }
                 SetupWizard.AuthMethod selectedAuth =
                         selectedVendor.equalsIgnoreCase(SetupWizard.vendorForProvider(selectedProvider))
-                                ? SetupWizard.authMethodForProvider(selectedProvider)
+                                ? SetupWizard.authMethodForProvider(selectedProvider, chatConfig)
                                 : authMethods.get(0);
                 if (!authMethods.contains(selectedAuth)) {
                     selectedAuth = authMethods.get(0);
                 }
                 if (authMethods.size() > 1) {
-                    List<String> authChoices = authMethods.stream()
-                            .map(SetupWizard::authMethodLabel).toList();
+                    List<String> authChoices = SetupWizard.authOptions(selectedVendor);
                     boolean backToProvider = false;
                     while (true) {
                         tui.updateTemporaryWindow("Provider and model", pickerLines(
                                 "Choose authentication for " + SetupWizard.vendorLabel(selectedVendor),
                                 authChoices,
-                                SetupWizard.authMethodLabel(selectedAuth),
+                                SetupWizard.authMethodLabel(selectedVendor, selectedAuth),
                                 selectedVendor, selectedProvider, selectedModel));
                         String authInput = reader.readLine(
                                 "picker auth (number/name, back, Esc cancels): ");
@@ -3565,7 +3564,7 @@ public class ChatRepl implements AutoCloseable {
                 // Give them a short page instead of appending below the provider list.
                 tui.updateTemporaryWindow("Provider authentication", List.of(
                         SetupWizard.vendorLabel(selectedVendor) + " · "
-                                + SetupWizard.authMethodLabel(selectedAuth)));
+                                + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
                 SetupWizard.AuthenticationSelection authentication =
                         "global".equals(chatConfig.getAuthenticationScope())
                                 ? SetupWizard.authenticate(reader, selectedVendor, selectedAuth)
@@ -3578,7 +3577,7 @@ public class ChatRepl implements AutoCloseable {
                     continue;
                 }
                 selectedProvider = authentication.provider();
-                String selectedBaseUrl = null;
+                String selectedBaseUrl = SetupWizard.baseUrlForAuth(selectedProvider, selectedAuth);
                 if ("custom".equalsIgnoreCase(selectedProvider)) {
                     selectedBaseUrl = SetupWizard.promptBaseUrl(reader, selectedProvider);
                     if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) {
@@ -3597,8 +3596,7 @@ public class ChatRepl implements AutoCloseable {
                         selectedBaseUrl);
                 discoveryConfig.setAuthenticationScope(chatConfig.getAuthenticationScope());
                 discoveryConfig.setCredentialName(authentication.credentialName());
-                discoveryConfig.setAuthenticationMethod(authentication.authMethod().name()
-                        .toLowerCase(Locale.ROOT).replace('_', '-'));
+                discoveryConfig.setAuthenticationMethod(authentication.authMethod().configValue());
                 if (sameProvider && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
                     discoveryConfig.setBaseUrl(chatConfig.getBaseUrl());
                 }
@@ -3717,8 +3715,7 @@ public class ChatRepl implements AutoCloseable {
                     ChatConfig candidate = buildModelProviderCandidate(
                             selectedProvider, selectedModel, selectedBaseUrl);
                     candidate.setCredentialName(authentication.credentialName());
-                    candidate.setAuthenticationMethod(authentication.authMethod().name()
-                            .toLowerCase(Locale.ROOT).replace('_', '-'));
+                    candidate.setAuthenticationMethod(authentication.authMethod().configValue());
                     candidate.setThinking(selectedThinking);
                     if (candidate.supportsFastMode()) {
                         List<String> fastChoices = SetupWizard.fastModeOptions(selectedProvider, selectedModel);
@@ -4039,7 +4036,8 @@ public class ChatRepl implements AutoCloseable {
         }
         if (choices.isEmpty()) lines.add("  (type a value at the prompt)");
         lines.add("");
-        String auth = SetupWizard.authMethodLabel(SetupWizard.authMethodForProvider(provider));
+        String auth = SetupWizard.authMethodLabel(vendor,
+                SetupWizard.authMethodForProvider(provider, chatConfig));
         lines.add("Provider: " + SetupWizard.vendorLabel(vendor)
                 + " (" + provider + ")   Auth: " + auth + "   Model: " + model);
         String commands = heading.startsWith("Choose reasoning effort")

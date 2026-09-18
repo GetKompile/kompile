@@ -3286,7 +3286,12 @@ public class DirectLlmClient implements AutoCloseable {
             fn.put("description", tool.path("description").asText());
 
             JsonNode params = tool.path("inputSchema");
-            if (params != null && !params.isMissingNode()) {
+            if ("openai".equalsIgnoreCase(config.getProvider())) {
+                // Chat Completions rejects root composition; the subscription
+                // Responses route (like the Codex client) keeps the MCP schema.
+                fn.set("parameters", OpenAiToolSchema.parameters(params));
+                fn.put("strict", false);
+            } else if (params != null && !params.isMissingNode()) {
                 fn.set("parameters", params);
             } else {
                 ObjectNode emptyParams = objectMapper.createObjectNode();
