@@ -123,7 +123,13 @@ class CorpusSchemaUnifierTest {
                 typeRequests.get(2).tools().get(0).parameters().get("properties")).get("nodeTypes")).get("items"));
         assertEquals(Set.of("label", "parentType"), asMap(consolidationNode.get("properties")).keySet());
         assertFalse(typeRequests.get(1).tools().get(0).description().contains("triples, ids"));
-        assertEquals("^[A-Z][A-Z0-9_]*$", asMap(nodeFields.get("label")).get("pattern"));
+        String labelPattern = (String) asMap(nodeFields.get("label")).get("pattern");
+        assertEquals("^[A-Z][A-Z0-9_]*(?![\\s\\S])", labelPattern);
+        var identifier = java.util.regex.Pattern.compile(labelPattern);
+        assertTrue(identifier.matcher("FORECAST_DOCUMENT").find());
+        for (String invalid : List.of("PERSON\n", "PERSON\r\n", "PERSON\u2028", "PERSON x")) {
+            assertFalse(identifier.matcher(invalid).find(), "Identifier must reject trailing characters");
+        }
         assertEquals(48, asMap(nodeFields.get("label")).get("maxLength"));
         assertEquals(SchemaHierarchyVocabulary.BASE_ENTITY_TYPES,
                 asMap(nodeFields.get("parentType")).get("enum"));
@@ -136,7 +142,7 @@ class CorpusSchemaUnifierTest {
                 asMap(relationshipProperties.get("relationshipTypes")).get("items"));
         assertEquals("object", relationshipType.get("type"));
         Map<String, Object> relationFields = asMap(relationshipType.get("properties"));
-        assertEquals("^[A-Z][A-Z0-9_]*$", asMap(relationFields.get("type")).get("pattern"));
+        assertEquals(labelPattern, asMap(relationFields.get("type")).get("pattern"));
         assertEquals(48, asMap(relationFields.get("type")).get("maxLength"));
         assertEquals(SchemaHierarchyVocabulary.CONNECTION_FAMILIES,
                 asMap(relationFields.get("connectionFamily")).get("enum"));
@@ -147,6 +153,187 @@ class CorpusSchemaUnifierTest {
                 "UNTRUSTED BATCH PROPOSALS"));
         assertTrue(typeRequests.get(4).messages().get(1).content().contains(
                 "UNTRUSTED BATCH PROPOSALS"));
+    }
+
+    @Test
+    void degenerateRelationBatchFailsAttemptAndRepairsOnRetry() {
+        // Same shape as the recorded r7 production failure: a structurally valid batch whose
+        // rows are all HIERARCHY-family CONTAINER prefix chains (sampled repetition loop).
+        // The batch must be treated as a failed attempt and repaired with validator feedback,
+        // not silently accepted and then dropped by the lexical gate (which froze zero
+        // relationship types and left extraction without a predicate enum).
+        List<Map<String, Object>> degenerate = List.of(
+                Map.of("type", "CONTAINER", "connectionFamily", "HIERARCHY"),
+                Map.of("type", "CONTAINER_CHILD", "connectionFamily", "HIERARCHY"),
+                Map.of("type", "CONTAINER_ROOT", "connectionFamily", "HIERARCHY"),
+                Map.of("type", "CONTAINER_CHILD_CHILD", "connectionFamily", "HIERARCHY"));
+        StructuredChatLanguageModel.Response degenerateBatch = structuredSchemaResponse(
+                CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME, Map.of("relationshipTypes", degenerate));
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("degenerate-relation");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(1).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        ArgumentCaptor<StructuredChatLanguageModel.Request> relationRequests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        when(dispatcher.promptStructuredWithCapacityFallback(relationRequests.capture(),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME, Map.of("classifications",List.of())))
+                .thenReturn(nodeTypes())
+                .thenReturn(degenerateBatch)
+                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
+                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
+                .thenAnswer(invocation -> endpointSignatureResponse(invocation.getArgument(0)));
+        var schema = new CorpusSchemaUnifier().unify(Map.of("window", "The observation uses an instrument."),
+                new CorpusSchemaCandidates.Inventory(List.of(),List.of()),null,job,"degenerate-relation",dispatcher);
+        assertTrue(schema.getAllRelationshipTypes().contains("USES_INSTRUMENT"),
+                "Repaired batch must be retained after the degenerate attempt");
+        assertFalse(schema.getAllRelationshipTypes().contains("CONTAINER"),
+                "Degenerate prefix-chain labels must not freeze into the schema");
+        boolean sawDegeneracyFeedback = relationRequests.getAllValues().stream()
+                .skip(2)
+                .limit(2)
+                .anyMatch(value -> value.messages().get(1).content()
+                        .contains("SCHEMA_DEGENERATE_RELATION_BATCH"));
+        assertTrue(sawDegeneracyFeedback,
+                "Repair prompt must carry the degeneracy diagnostic for the retry");
+    }
+
+    @Test
+    void invalidGenericRelationshipDoesNotDiscardValidSibling() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("partial-relationship");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(0).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME, Map.of("classifications",List.of())))
+                .thenReturn(nodeTypes())
+                .thenReturn(relationshipTypes("ASSOCIATION", "USES_INSTRUMENT"))
+                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
+                .thenAnswer(invocation -> endpointSignatureResponse(invocation.getArgument(0)));
+        var schema = new CorpusSchemaUnifier().unify(Map.of("window", "The observation uses an instrument."),
+                new CorpusSchemaCandidates.Inventory(List.of(),List.of()),null,job,"partial-relationship",dispatcher);
+        assertTrue(schema.getAllRelationshipTypes().contains("USES_INSTRUMENT"));
+        assertFalse(schema.getAllRelationshipTypes().contains("ASSOCIATION"));
+    }
+
+    @Test
+    void nonLexicalAbstractionRequiresExplicitSemanticSelectionAndCannotFallback() {
+        for (String decision : List.of("accept", "abstain", "invalid")) {
+            CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+            UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+            when(job.getJobId()).thenReturn("abstraction-review");
+            when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(0).build());
+            when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+            Map<String,Object> definition = Map.of("label", "FINANCIAL_DOCUMENT", "parentType", "DOCUMENT");
+            var review = decision.equals("abstain") ? nodeTypes()
+                    : structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(
+                            decision.equals("accept") ? definition : Map.of("label", "RENAMED_DOCUMENT", "parentType", "DOCUMENT"))));
+            when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                    eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                    .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME, Map.of("classifications", List.of())))
+                    .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(Map.of(
+                            "label", "FINANCIAL_DOCUMENT", "parentType", "DOCUMENT", "evidence", List.of(Map.of(
+                                    "sourceId", "s1", "quote", "The finance team submitted a forecast.")))))))
+                    .thenAnswer(invocation -> {
+                        StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                        String prompt = request.messages().get(1).content();
+                        assertTrue(prompt.contains("The finance team submitted a forecast."));
+                        assertTrue(prompt.contains("\"labelWordsPresent\" : false"));
+                        assertTrue(prompt.contains("Distinguish a category from a named instance"));
+                        return review;
+                    }).thenReturn(relationshipTypes());
+            if (decision.equals("invalid")) {
+                assertThrows(IllegalStateException.class, () -> new CorpusSchemaUnifier().unify(
+                        Map.of("window", "The finance team submitted a forecast."), new CorpusSchemaCandidates.Inventory(List.of(),List.of()),
+                        null, job, "abstraction-review", dispatcher));
+            } else {
+                var schema = new CorpusSchemaUnifier().unify(Map.of("window", "The finance team submitted a forecast."),
+                        new CorpusSchemaCandidates.Inventory(List.of(),List.of()), null, job, "abstraction-review", dispatcher);
+                assertEquals(decision.equals("accept"),schema.getAllNodeLabels().contains("FINANCIAL_DOCUMENT"));
+            }
+        }
+    }
+
+    @Test
+    void retainsValidNovelCandidatesWhenSiblingFailsOrRetryOmitsThem() {
+        for (boolean corrected : List.of(false, true)) {
+            CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+            UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+            when(job.getJobId()).thenReturn("partial-novel");
+            when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(corrected ? 1 : 0).build());
+            when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+            var responses = when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                    eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                    .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                            Map.of("classifications", List.of())))
+                    .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(
+                            Map.of("label", "OBSERVATION", "parentType", "ACTIVITY", "evidence",
+                                    List.of(Map.of("sourceId", "s1", "quote", "observation"))),
+                            Map.of("label", "PUBLICATION", "parentType", "DOCUMENT", "evidence",
+                                    List.of(Map.of("sourceId", "s1", "quote", "invented")))))));
+            if (corrected) responses = responses.thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                    Map.of("nodeTypes", List.of(Map.of("label", "PUBLICATION", "parentType", "DOCUMENT", "evidence",
+                            List.of(Map.of("sourceId", "s1", "quote", "publication")))))));
+            responses.thenReturn(corrected ? nodeTypes("OBSERVATION", "PUBLICATION") : nodeTypes("OBSERVATION"))
+                    .thenReturn(relationshipTypes());
+            GraphSchema frozen = new CorpusSchemaUnifier().unify(Map.of("window", "An observation and publication were recorded."),
+                    new CorpusSchemaCandidates.Inventory(List.of(), List.of()), null, job, "partial-novel", dispatcher);
+            assertEquals("ACTIVITY", frozen.getNodeTypeMap().get("OBSERVATION").getParentType());
+            assertEquals(corrected, frozen.getAllNodeLabels().contains("PUBLICATION"));
+            verify(dispatcher, times(corrected ? 5 : 4)).promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                    eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
+        }
+    }
+
+    @Test
+    void incompleteToolEnvelopeCannotContributeCandidates() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("incomplete-envelope");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(0).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        var complete = structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(
+                Map.of("label", "OBSERVATION", "parentType", "ACTIVITY", "evidence",
+                        List.of(Map.of("sourceId", "s1", "quote", "observation"))))));
+        when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
+                .thenReturn(new StructuredChatLanguageModel.Response("partial", "", complete.toolCalls(),
+                        List.of("incomplete XML tool-call envelope")));
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new CorpusSchemaUnifier().unify(
+                Map.of("window", "An observation was recorded."), new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "incomplete-envelope", dispatcher));
+        assertTrue(error.getMessage().contains("incomplete XML"));
+    }
+
+    @Test
+    void authoritativeRestatementCannotOverwriteParentOrDiscardNovelType() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("baseline-noop");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(0).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME, Map.of("nodeTypes", List.of(
+                        Map.of("label", "DOCUMENT", "parentType", "PERSON", "evidence",
+                                List.of(Map.of("sourceId", "missing", "quote", "fabricated"))),
+                        Map.of("label", "OBSERVATION", "parentType", "ACTIVITY", "evidence",
+                                List.of(Map.of("sourceId", "s1", "quote", "observation")))))))
+                .thenReturn(nodeTypes("OBSERVATION"))
+                .thenReturn(relationshipTypes());
+        GraphSchema frozen = new CorpusSchemaUnifier().unify(Map.of("window", "An observation was recorded."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()), null, job, "baseline-noop", dispatcher);
+        assertEquals("CREATIVE_WORK", frozen.getNodeTypeMap().get("DOCUMENT").getParentType());
+        assertEquals("ACTIVITY", frozen.getNodeTypeMap().get("OBSERVATION").getParentType());
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
     }
 
     @Test
@@ -172,13 +359,19 @@ class CorpusSchemaUnifierTest {
         ArgumentCaptor<StructuredChatLanguageModel.Request> requests = ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(requests.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains("SCHEMA_NODE_EVIDENCE"));
+        String repair = requests.getAllValues().get(2).messages().get(1).content();
+        assertTrue(repair.contains("SCHEMA_NODE_EVIDENCE"));
+        assertTrue(repair.contains("nodeTypes[0].evidence[0]"));
+        assertTrue(repair.contains("label=\"OBSERVATION\""));
+        assertTrue(repair.contains("quote=\"fabricated evidence\""));
+        assertTrue(repair.contains("QUOTE_NOT_IN_CITED_WINDOW"));
+        assertTrue(repair.contains("untrusted diagnostic data"));
         assertTrue(requests.getAllValues().get(3).messages().get(1).content().contains("UNTRUSTED BATCH PROPOSALS"));
         assertTrue(requests.getAllValues().get(4).messages().get(1).content().contains("OBSERVATION"));
     }
 
     @Test
-    void repeatedEvidenceDoesNotInflateBatchSupportOrBypassPassageThreshold() {
+    void repeatedEvidenceCountsOnceAndLexicalSupportIsVisibleToSemanticReview() {
         for (int supportCase : List.of(0, 1, 2)) {
             boolean supported = supportCase != 0;
             boolean topicException = supportCase == 2;
@@ -199,7 +392,8 @@ class CorpusSchemaUnifierTest {
                         }
                         String prompt = request.messages().get(1).content();
                         if (prompt.contains("UNTRUSTED BATCH PROPOSALS")) {
-                            assertTrue(supported);
+                            assertTrue(prompt.contains("\"labelWordsPresent\" : " + supported), prompt);
+                            assertTrue(prompt.contains("UNTRUSTED SOURCE EXAMPLES"), prompt);
                             assertTrue(prompt.contains("\"batchSupport\" : 1"), prompt);
                             assertFalse(prompt.contains("\"batchSupport\" : 2"), prompt);
                             return nodeTypes("OBSERVATION");
@@ -221,9 +415,9 @@ class CorpusSchemaUnifierTest {
                             Map.of("en", 1), Map.of("en", List.of("observation"))))) : CorpusTopicEvidence.empty();
             GraphSchema frozen = new CorpusSchemaUnifier().unify(passages,
                     new CorpusSchemaCandidates.Inventory(List.of(), List.of()), configured, null, topics, job, "duplicates", dispatcher);
-            assertEquals(supported, frozen.getAllNodeLabels().contains("OBSERVATION"));
+            assertTrue(frozen.getAllNodeLabels().contains("OBSERVATION"), "Reviewer explicitly selected the source-backed category");
             assertEquals(Set.of("ARCHIVE"), configured.getAllNodeLabels());
-            verify(dispatcher, times(topicException ? 5 : supported ? 4 : 3)).promptStructuredWithCapacityFallback(
+            verify(dispatcher, times(topicException ? 5 : 4)).promptStructuredWithCapacityFallback(
                     any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
         }
     }
@@ -846,9 +1040,10 @@ class CorpusSchemaUnifierTest {
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
         verify(dispatcher, times(7)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job), scopes.capture());
-        assertFalse(requests.getAllValues().get(2).messages().get(1).content().contains(
-                "ASTRONOMICAL_OBSERVATION_2024_FINAL"),
-                "partially grounded compound labels must be removed before consolidation");
+        assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains(
+                "ASTRONOMICAL_OBSERVATION_2024_FINAL"), "Reviewer must see candidates rather than lose abstractions to a word gate");
+        assertFalse(schema.getAllNodeLabels().contains("ASTRONOMICAL_OBSERVATION_2024_FINAL"),
+                "Reviewer did not select the over-specific artifact label");
         assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains(
                 "OBSERVATION"));
         assertTrue(requests.getAllValues().get(2).messages().get(1).content().contains(

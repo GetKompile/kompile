@@ -34,6 +34,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CorpusSchemaPromptBuilderTest {
 
     @Test
+    void promptJsonIgnoresNestedMapInsertionOrderButPreservesArrays() throws Exception {
+        var serialize = CorpusSchemaPromptBuilder.class.getDeclaredMethod("serializeValue", Object.class);
+        serialize.setAccessible(true);
+        Map<String,Object> first = new LinkedHashMap<>();
+        Map<String,Object> reverseNested = new LinkedHashMap<>();
+        reverseNested.put("b", "B"); reverseNested.put("a", "A");
+        first.put("z", reverseNested);
+        first.put("a", List.of("s2", "s1"));
+        Map<String,Object> nested = new LinkedHashMap<>();
+        nested.put("a", "A"); nested.put("b", "B");
+        Map<String,Object> second = new LinkedHashMap<>();
+        second.put("a", List.of("s2", "s1")); second.put("z", nested);
+        String left = (String) serialize.invoke(null, first);
+        String right = (String) serialize.invoke(null, second);
+        assertEquals(left, right);
+        assertTrue(left.indexOf("\"a\"") < left.indexOf("\"z\""));
+        assertTrue(left.indexOf("\"s2\"") < left.indexOf("\"s1\""));
+        String prompt = CorpusSchemaPromptBuilder.build(Map.of("window", "A forecast document."),
+                null, CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);
+        assertTrue(prompt.indexOf("\"baseEntityParents\"") < prompt.indexOf("\"baseEntityTypes\""));
+    }
+
+    @Test
     void nodeDiscoveryRequiresEvidenceWithoutConflictingProhibitions() {
         String prompt = CorpusSchemaPromptBuilder.build(Map.of("window", "A researcher catalogued a specimen."),
                 null, CorpusSchemaPromptBuilder.TypePass.NODE_TYPES);

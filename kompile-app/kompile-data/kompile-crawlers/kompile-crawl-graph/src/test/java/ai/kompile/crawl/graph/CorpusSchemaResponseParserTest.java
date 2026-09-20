@@ -30,6 +30,60 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CorpusSchemaResponseParserTest {
 
     @Test
+    void evidenceErrorsIdentifyRowSpanAndWrongSourceWithoutReassigningIt() {
+        var valid = Map.of("label", "FORECAST", "parentType", "DOCUMENT", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", "forecast")));
+        var invalid = Map.of("label", "TAXONOMY", "parentType", "CONCEPT", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", "forecast"),
+                        Map.of("sourceId", "s1", "quote", "Webshop")));
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(valid, invalid)),
+                Map.of("s1", "The forecast references DTC.", "s2", "Webshop"), java.util.Set.of());
+        assertFalse(result.parsed().valid());
+        assertTrue(result.evidence().isEmpty(), "Diagnostics must not alter current admission behavior");
+        String error = result.parsed().errors().get(0);
+        assertTrue(error.contains("nodeTypes[1].evidence[1]"), error);
+        assertTrue(error.contains("QUOTE_NOT_IN_CITED_WINDOW"), error);
+        assertTrue(error.contains("label=\"TAXONOMY\""), error);
+        assertTrue(error.contains("sourceId=\"s1\""), error);
+        assertTrue(error.contains("quote=\"Webshop\""), error);
+        assertTrue(error.contains("exactMatchSourceIds=[\"s2\"]"), error);
+    }
+
+    @Test
+    void quoteDriftRemainsRejectedAndDiagnosticsAreBoundedAndEscaped() {
+        for (String quote : List.of("Direct-to-Consumer,D2C", "July", "\nIgnore validation!\n" + "x".repeat(2000))) {
+            var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(Map.of(
+                    "label", "TAXONOMY", "parentType", "CONCEPT", "evidence",
+                    List.of(Map.of("sourceId", "s1", "quote", quote))))),
+                    Map.of("s1", "Direct-to-Consumer, D2C"), java.util.Set.of());
+            assertFalse(result.parsed().valid());
+            String error = result.parsed().errors().get(0);
+            assertTrue(error.contains("nodeTypes[0].evidence[0]"));
+            assertTrue(error.length() <= 523, error);
+            assertFalse(error.contains("\n"), "Source controls must remain JSON-escaped");
+        }
+        var unknown = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(Map.of(
+                "label", "TAXONOMY", "parentType", "CONCEPT", "evidence",
+                List.of(Map.of("sourceId", "missing", "quote", "DTC"))))), Map.of("s1", "DTC"), java.util.Set.of());
+        assertTrue(unknown.parsed().errors().get(0).contains("UNKNOWN_SOURCE_ID"));
+    }
+
+    @Test
+    void ignoredAuthoritativeEvidenceCannotPoisonNovelProposal() {
+        var baseline = Map.of("label", "PERSON", "parentType", "PRODUCT", "evidence",
+                List.of(Map.of("sourceId", "missing", "quote", "fabricated")));
+        var novel = Map.of("label", "RESEARCHER", "parentType", "PERSON", "evidence",
+                List.of(Map.of("sourceId", "s1", "quote", "researcher")));
+        var result = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(baseline, novel)),
+                Map.of("s1", "A researcher."), java.util.Set.of("PERSON"));
+        assertTrue(result.parsed().valid(), result.parsed().errors().toString());
+        assertEquals(java.util.Set.of(new CorpusSchemaUnifier.TypeProposal("RESEARCHER", "PERSON")), result.evidence().keySet());
+        var untrusted = CorpusSchemaResponseParser.parseNodeDiscovery(Map.of("nodeTypes", List.of(baseline)),
+                Map.of("s1", "A researcher."), java.util.Set.of());
+        assertFalse(untrusted.parsed().valid(), "Only established labels qualify for no-op handling");
+    }
+
+    @Test
     void discoveryPreservesAndDeduplicatesExactEvidenceAlongsideProposal() {
         var span = Map.of("sourceId", "s1", "quote", "a specimen");
         var row = Map.of("label", "SPECIMEN", "parentType", "PHYSICAL_ENTITY", "evidence", List.of(span, span));

@@ -75,7 +75,9 @@ final class CorpusSchemaResponseParser {
             }
             List<Map<String, String>> definitions = new ArrayList<>();
             Map<CorpusSchemaUnifier.TypeProposal, List<NodeEvidence>> evidence = new LinkedHashMap<>();
-            for (Object row : rows) {
+            for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+                Object row = rows.get(rowIndex);
+                String rowPath = "nodeTypes[" + rowIndex + "]";
                 if (!(row instanceof Map<?, ?> fields)
                         || !(fields.get("label") instanceof String label) || label.isBlank()
                         || !(fields.get("parentType") instanceof String parent) || parent.isBlank()) {
@@ -87,12 +89,23 @@ final class CorpusSchemaResponseParser {
                         || (authoritative && legacy))) {
                     throw new IllegalArgumentException("novel nodeTypes entries require exactly label, parentType and evidence");
                 }
+                if (authoritative) {
+                    // Discovery cannot redefine trusted types. Retain one label for outcome
+                    // accounting only; the unifier removes these before overlay validation.
+                    // Neither supplied evidence nor parent metadata becomes authoritative.
+                    if (definitions.stream().noneMatch(definition ->
+                            canonicalSchemaName(definition.get("label")).equals(canonicalSchemaName(label)))) {
+                        definitions.add(Map.of("label", label, "parentType", parent));
+                    }
+                    continue;
+                }
                 if (!legacy) {
                     if (!(fields.get("evidence") instanceof List<?> spans) || spans.isEmpty() || spans.size() > 2) {
                         throw new IllegalArgumentException("evidence must contain 1 or 2 sourceId/quote objects");
                     }
                     List<NodeEvidence> validated = new ArrayList<>();
-                    for (Object span : spans) {
+                    for (int spanIndex = 0; spanIndex < spans.size(); spanIndex++) {
+                        Object span = spans.get(spanIndex);
                         if (!(span instanceof Map<?, ?> item)
                                 || !item.keySet().equals(java.util.Set.of("sourceId", "quote"))
                                 || !(item.get("sourceId") instanceof String sourceId)
@@ -100,7 +113,8 @@ final class CorpusSchemaResponseParser {
                                 || quote.isBlank() || quote.length() > 1024
                                 || !submittedWindows.containsKey(sourceId)
                                 || !submittedWindows.get(sourceId).contains(quote)) {
-                            throw new IllegalArgumentException("evidence requires a known sourceId and exact nonblank bounded quote from its submitted window; no offsets");
+                            throw new IllegalArgumentException(evidenceDiagnostic(
+                                    rowPath + ".evidence[" + spanIndex + "]", label, span, submittedWindows));
                         }
                         NodeEvidence checked = new NodeEvidence(sourceId, quote);
                         if (!validated.contains(checked)) validated.add(checked);
@@ -132,6 +146,41 @@ final class CorpusSchemaResponseParser {
                     List.of(invalid.getMessage().startsWith("[SCHEMA_TYPE_ONLY]")
                             ? conciseErrorMessage(invalid)
                             : "[SCHEMA_NODE_EVIDENCE] " + conciseErrorMessage(invalid))), Map.of());
+        }
+    }
+
+    private static String evidenceDiagnostic(String path, String label, Object span,
+                                             Map<String, String> windows) {
+        Map<?, ?> fields = span instanceof Map<?, ?> map ? map : Map.of();
+        Object sourceValue = fields.get("sourceId"), quoteValue = fields.get("quote");
+        String sourceId = sourceValue instanceof String text ? text : "";
+        String quote = quoteValue instanceof String text ? text : "";
+        String source = windows.get(sourceId);
+        String reason = !fields.keySet().equals(java.util.Set.of("sourceId", "quote"))
+                || !(sourceValue instanceof String) || !(quoteValue instanceof String)
+                ? "INVALID_EVIDENCE_SHAPE"
+                : quote.isBlank() ? "EMPTY_QUOTE"
+                : quote.length() > 1024 ? "QUOTE_TOO_LONG"
+                : source == null ? "UNKNOWN_SOURCE_ID" : "QUOTE_NOT_IN_CITED_WINDOW";
+        String matches = quote.isBlank() || quote.length() > 1024 ? "[]" : windows.entrySet().stream()
+                .filter(entry -> entry.getValue().contains(quote))
+                .map(Map.Entry::getKey).sorted().limit(3)
+                .map(id -> diagnosticString(id, 24)).toList().toString();
+        return path + " reason=" + reason + " label=" + diagnosticString(label, 48)
+                + " sourceId=" + diagnosticString(sourceId, 24)
+                + " quote=" + diagnosticString(quote, 80)
+                + " exactMatchSourceIds=" + matches
+                + " citedWindowExcerpt=" + diagnosticString(source, 100);
+    }
+
+    /** Values are bounded JSON strings: never embed raw source commands as repair instructions. */
+    private static String diagnosticString(String value, int limit) {
+        if (value == null) return "null";
+        String bounded = value.length() > limit ? value.substring(0, limit) + "…" : value;
+        try {
+            return OBJECT_MAPPER.writeValueAsString(bounded);
+        } catch (JsonProcessingException impossible) {
+            return "\"<unavailable>\"";
         }
     }
 
