@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.graphrag.format.LlmJsonExtractor;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -273,6 +274,92 @@ final class CorpusSchemaResponseParser {
             errors.add("[SCHEMA_ENTITY_CLASSIFICATION] " + conciseErrorMessage(invalidCall));
         }
         return new EntityClassificationResult(accepted, errors);
+    }
+
+    /** One consolidated relationship predicate with its host-verified witness citations. */
+    record SupportedRelationship(RelationshipType type, List<String> witnessIds) {
+        SupportedRelationship {
+            witnessIds = witnessIds == null ? List.of() : List.copyOf(witnessIds);
+        }
+    }
+
+    /**
+     * Parses a witness-aware consolidation response. Each row needs exactly type,
+     * connectionFamily, and witnessIds; identifiers and families still satisfy the existing
+     * structural validators, and every cited witness id must exist in the request inventory.
+     * Structural citation checks prove reference integrity only, never semantic truth.
+     */
+    static WitnessConsolidationResult parseWitnessConsolidation(
+            Map<String, Object> arguments,
+            java.util.Set<String> knownWitnessIds,
+            java.util.Set<String> trustedFamilies,
+            java.util.Set<String> authoritativeLabels) {
+        List<SupportedRelationship> supported = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        if (arguments == null || !arguments.keySet().equals(java.util.Set.of("relationshipTypes"))
+                || !(arguments.get("relationshipTypes") instanceof List<?> rows)) {
+            return new WitnessConsolidationResult(List.of(), List.of(
+                    "[WITNESS_CONSOLIDATION] relationshipTypes must be the only field and an array"));
+        }
+        if (rows.size() > 32) {
+            return new WitnessConsolidationResult(List.of(), List.of(
+                    "[WITNESS_CONSOLIDATION] relationshipTypes must contain at most 32 objects"));
+        }
+        for (int index = 0; index < rows.size(); index++) {
+            String path = "relationshipTypes[" + index + "]";
+            try {
+                if (!(rows.get(index) instanceof Map<?, ?> fields)) {
+                    throw new IllegalArgumentException("row must be an object");
+                }
+                if (!fields.keySet().equals(java.util.Set.of("type", "connectionFamily", "witnessIds"))) {
+                    throw new IllegalArgumentException("row must contain exactly type, connectionFamily and witnessIds");
+                }
+                String type = fields.get("type") == null ? "" : fields.get("type").toString().trim();
+                if (!type.matches("^[A-Z][A-Z0-9_]*$") || type.length() > 48) {
+                    throw new IllegalArgumentException("type must be UPPER_SNAKE_CASE of at most 48 characters: " + type);
+                }
+                String family = fields.get("connectionFamily") == null
+                        ? "" : fields.get("connectionFamily").toString().trim();
+                if (!trustedFamilies.contains(family)) {
+                    throw new IllegalArgumentException("connectionFamily must be one of the trusted families: " + family);
+                }
+                if (!(fields.get("witnessIds") instanceof List<?> citedRaw) || citedRaw.isEmpty()) {
+                    throw new IllegalArgumentException("witnessIds must be a nonempty array");
+                }
+                List<String> cited = new ArrayList<>();
+                for (Object witnessValue : citedRaw) {
+                    if (!(witnessValue instanceof String witnessId) || witnessId.isBlank()) {
+                        throw new IllegalArgumentException("witnessIds entries must be nonblank strings");
+                    }
+                    if (!knownWitnessIds.contains(witnessId)) {
+                        throw new IllegalArgumentException("[WITNESS_UNKNOWN] cited witness id does not exist in this request: " + witnessId);
+                    }
+                    if (!cited.contains(witnessId)) {
+                        cited.add(witnessId);
+                    }
+                }
+                if (authoritativeLabels.contains(type)) {
+                    // Discovery cannot redefine trusted types; accounting only.
+                    continue;
+                }
+                var relationship = new RelationshipType(type,
+                        "Corpus-supported relationship " + type + ".", null, List.of(), family);
+                supported.add(new SupportedRelationship(relationship, List.copyOf(cited)));
+            } catch (IllegalArgumentException invalidRow) {
+                errors.add(path + ": " + conciseErrorMessage(invalidRow));
+            }
+        }
+        return new WitnessConsolidationResult(List.copyOf(supported), List.copyOf(errors));
+    }
+
+    /** Witness-aware consolidation result: supported predicates plus per-row diagnostics. */
+    record WitnessConsolidationResult(
+            List<SupportedRelationship> supported,
+            List<String> errors) {
+        WitnessConsolidationResult {
+            supported = supported == null ? List.of() : List.copyOf(supported);
+            errors = errors == null ? List.of() : List.copyOf(errors);
+        }
     }
 
     static ParseResult parse(String rawResponse) {

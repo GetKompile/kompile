@@ -156,47 +156,112 @@ class CorpusSchemaUnifierTest {
     }
 
     @Test
-    void degenerateRelationBatchFailsAttemptAndRepairsOnRetry() {
-        // Same shape as the recorded r7 production failure: a structurally valid batch whose
-        // rows are all HIERARCHY-family CONTAINER prefix chains (sampled repetition loop).
-        // The batch must be treated as a failed attempt and repaired with validator feedback,
-        // not silently accepted and then dropped by the lexical gate (which froze zero
-        // relationship types and left extraction without a predicate enum).
-        List<Map<String, Object>> degenerate = List.of(
-                Map.of("type", "CONTAINER", "connectionFamily", "HIERARCHY"),
-                Map.of("type", "CONTAINER_CHILD", "connectionFamily", "HIERARCHY"),
-                Map.of("type", "CONTAINER_ROOT", "connectionFamily", "HIERARCHY"),
-                Map.of("type", "CONTAINER_CHILD_CHILD", "connectionFamily", "HIERARCHY"));
-        StructuredChatLanguageModel.Response degenerateBatch = structuredSchemaResponse(
-                CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME, Map.of("relationshipTypes", degenerate));
+    void witnessRepetitionReceivesBoundedRepairAndValidEmptinessTerminatesCleanly() {
+        // Supersedes the r7 CONTAINER repetition test: repetition is now detected directly on
+        // witness rows (same pair / single predicate repeated), not via canonical-label tokens.
+        // Case A: repetition on attempt 1, valid witnesses on attempt 2 -> repaired output wins.
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
-        when(job.getJobId()).thenReturn("degenerate-relation");
+        when(job.getJobId()).thenReturn("witness-repetition");
         when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(1).build());
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        ArgumentCaptor<StructuredChatLanguageModel.Request> relationRequests =
-                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        when(dispatcher.promptStructuredWithCapacityFallback(relationRequests.capture(),
-                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME, Map.of("classifications",List.of())))
-                .thenReturn(nodeTypes())
-                .thenReturn(degenerateBatch)
-                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
-                .thenReturn(relationshipTypes("USES_INSTRUMENT"))
+        StructuredChatLanguageModel.Response repeated = structuredSchemaResponse(
+                CorpusSchemaUnifier.WITNESS_TOOL_NAME, Map.of("witnesses", List.of(
+                        witnessRow("s1", "Sarah Chen", "June forecast"),
+                        witnessRow("s1", "Sarah Chen", "June forecast"),
+                        witnessRow("s1", "Sarah Chen", "June forecast"),
+                        witnessRow("s1", "Sarah Chen", "June forecast"),
+                        witnessRow("s1", "Sarah Chen", "June forecast"),
+                        witnessRow("s1", "Sarah Chen", "June forecast"))));
+        String window = "Sarah Chen submitted the June forecast. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review. "
+                + "Sarah Chen submitted the June forecast for the June forecast review.";
+        Map<String, Object> goodWitness = Map.of(
+                "sourceId", "s1", "subject", "Sarah Chen", "predicateText", "submitted",
+                "object", "June forecast", "quote", "Sarah Chen submitted the June forecast.", "qualifier", "");
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
+                .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes()))
+                .thenReturn(repeated)
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.WITNESS_TOOL_NAME,
+                        Map.of("witnesses", List.of(goodWitness))))
+                .thenAnswer(invocation -> witnessConsolidationResponse(
+                        invocation.getArgument(0), relationshipTypes("SUBMITTED")))
                 .thenAnswer(invocation -> endpointSignatureResponse(invocation.getArgument(0)));
-        var schema = new CorpusSchemaUnifier().unify(Map.of("window", "The observation uses an instrument."),
-                new CorpusSchemaCandidates.Inventory(List.of(),List.of()),null,job,"degenerate-relation",dispatcher);
-        assertTrue(schema.getAllRelationshipTypes().contains("USES_INSTRUMENT"),
-                "Repaired batch must be retained after the degenerate attempt");
-        assertFalse(schema.getAllRelationshipTypes().contains("CONTAINER"),
-                "Degenerate prefix-chain labels must not freeze into the schema");
-        boolean sawDegeneracyFeedback = relationRequests.getAllValues().stream()
-                .skip(2)
-                .limit(2)
-                .anyMatch(value -> value.messages().get(1).content()
-                        .contains("SCHEMA_DEGENERATE_RELATION_BATCH"));
-        assertTrue(sawDegeneracyFeedback,
-                "Repair prompt must carry the degeneracy diagnostic for the retry");
+
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("window", window),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "witness-repetition", dispatcher);
+
+        assertTrue(schema.getAllRelationshipTypes().contains("SUBMITTED"),
+                "Repaired witness batch must be consolidated");
+        assertTrue(schema.getAllRelationshipTypes().stream().noneMatch(label ->
+                        label.startsWith("CONTAINER")),
+                "Repeated junk observations must never freeze as predicates");
+    }
+
+    @Test
+    void validEmptyWitnessResponseIsNotRetriedAndFailsOpenWithoutPredicates() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("witness-valid-empty");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder().maxValidationRetries(1).build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
+                        Map.of("classifications", List.of())))
+                .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0), nodeTypes()))
+                .thenReturn(structuredSchemaResponse(CorpusSchemaUnifier.WITNESS_TOOL_NAME,
+                        Map.of("witnesses", List.of())));
+
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("window", "A quiet archive holds records."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "witness-valid-empty", dispatcher);
+
+        assertTrue(schema.getAllRelationshipTypes().isEmpty(),
+                "Valid empty discovery must freeze an explicitly empty vocabulary");
+        ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
+                requests.capture(), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+        assertEquals(1, requests.getAllValues().stream()
+                        .filter(request -> CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(
+                                request.tools().get(0).name())).count(),
+                "A valid empty witness response must terminate discovery without retry");
+    }
+
+    private static Map<String, Object> witnessRow(
+            String sourceId, String subject, String object) {
+        // Quote must be an exact substring of the submitted window for host anchoring.
+        // Distinct quotes with identical roles survive dedup (distinct observations of the
+        // same pair), which is exactly the repetition shape the guard must detect.
+        return Map.of("sourceId", sourceId, "subject", subject, "predicateText", "submitted",
+                "object", object,
+                "quote", subject + " submitted the " + object + " for the " + object + " review.",
+                "qualifier", "");
     }
 
     @Test
@@ -383,7 +448,8 @@ class CorpusSchemaUnifierTest {
                     eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
                     .thenAnswer(invocation -> {
                         StructuredChatLanguageModel.Request request = invocation.getArgument(0);
-                        if (request.tools().get(0).name().equals(CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME)) return relationshipTypes();
+                        if (request.tools().get(0).name().equals(CorpusSchemaUnifier.WITNESS_TOOL_NAME)) return witnessDiscoveryResponse(request);
+                        if (request.tools().get(0).name().equals(CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME)) return witnessConsolidationResponse(request, relationshipTypes());
                         if (request.tools().get(0).name().equals(CorpusSchemaUnifier.TOPIC_BINDING_TOOL_NAME)) {
                             // A valid zero binding is authoritative and skips discovery; this case
                             // deliberately exercises the existing unbound-topic discovery fallback.
@@ -499,7 +565,8 @@ class CorpusSchemaUnifierTest {
                         Map.of("classifications", List.of())))
                 .thenAnswer(invocation -> withDiscoveryEvidence(invocation.getArgument(0),
                         structuredSchemaResponse(CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
-                                Map.of("nodeTypes", responseTypes))));
+                                Map.of("nodeTypes", responseTypes))))
+                .thenAnswer(invocation -> witnessDiscoveryResponse(invocation.getArgument(0)));
         if (outcome.equals("MIXED_PROPOSALS")) calls = calls.thenReturn(nodeTypes("OBSERVATION"));
         calls.thenReturn(relationshipTypes());
 
@@ -540,7 +607,9 @@ class CorpusSchemaUnifierTest {
             List<String> diagnostics = appender.list.stream().map(ILoggingEvent::getFormattedMessage)
                     .filter(message -> message.contains("[SCHEMA_DISCOVERY_OUTCOME]"))
                     .toList();
-            assertEquals(outcome.equals("INVALID") ? 1 : 2, diagnostics.size());
+            // Relationship design-discovery is superseded by the witness pipeline; only the
+            // node pass emits SCHEMA_DISCOVERY_OUTCOME diagnostics now.
+            assertEquals(1, diagnostics.size());
             String diagnostic = diagnostics.get(0);
             assertTrue(diagnostic.contains("pass=NODE_TYPES"), diagnostic);
             assertTrue(diagnostic.contains("snapshot=snapshot-outcome"), diagnostic);
@@ -549,8 +618,8 @@ class CorpusSchemaUnifierTest {
                     + " repeatedAuthoritative=" + repeated + " novelCandidates=" + novel
                     + " bootstrapCandidates="), diagnostic);
             assertEquals(!outcome.equals("INVALID"), diagnostic.endsWith("validationErrors=[]"));
-            verify(dispatcher, times(outcome.equals("INVALID") ? 2
-                    : outcome.equals("MIXED_PROPOSALS") ? 4 : 3))
+            verify(dispatcher, times(outcome.equals("INVALID") ? 3
+                    : outcome.equals("MIXED_PROPOSALS") ? 5 : 4))
                     .promptStructuredWithCapacityFallback(any(StructuredChatLanguageModel.Request.class),
                             eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class));
         } finally {
@@ -1442,8 +1511,9 @@ class CorpusSchemaUnifierTest {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) return witnessDiscoveryResponse(request);
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
                         return structuredSchemaResponse(
@@ -1494,8 +1564,9 @@ class CorpusSchemaUnifierTest {
                     StructuredChatLanguageModel.Request request = invocation.getArgument(0);
                     String tool = request.tools().get(0).name();
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) return witnessDiscoveryResponse(request);
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     if (CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(tool)) {
                         return structuredSchemaResponse(
@@ -1622,8 +1693,9 @@ class CorpusSchemaUnifierTest {
                         return classificationSampleResponse(request);
                     }
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) return witnessDiscoveryResponse(request);
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes("WORKS_FOR");
+                        return witnessConsolidationResponse(request, relationshipTypes("WORKS_FOR"));
                     }
                     String relation = bindingOptionId(request, "relationshipIds", "WORKS_FOR");
                     String subtype = bindingOptionId(request, "endpointIds", "SPECIAL_PERSON");
@@ -1683,9 +1755,13 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return nodeTypes();
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
                         return prompt.contains("LATE_RELATION") || prompt.contains("LATE_RELATION_MARKER")
-                                ? relationshipTypes("LATE_RELATION") : relationshipTypes();
+                                ? witnessConsolidationResponse(request, relationshipTypes("LATE_RELATION"))
+                                : witnessConsolidationResponse(request, relationshipTypes());
                     }
                     if (CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(tool)) {
                         if (prompt.contains("ENDPOINT_TYPE_45")
@@ -1766,8 +1842,9 @@ class CorpusSchemaUnifierTest {
                         return classificationSampleResponse(request);
                     }
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) return nodeTypes();
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) return witnessDiscoveryResponse(request);
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes("WORKS_FOR");
+                        return witnessConsolidationResponse(request, relationshipTypes("WORKS_FOR"));
                     }
                     return structuredSchemaResponse(CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME,
                             Map.of("s", bindingOptionId(request, "relationshipIds", "WORKS_FOR")
@@ -1945,6 +2022,123 @@ class CorpusSchemaUnifierTest {
         };
     }
 
+    /**
+     * Deterministic witness discovery for the shared stub: emits one witness per window
+     * derived from that window's own text (subject/object lifted from the sentence, quoted
+     * verbatim). Witness ids are copied verbatim by the consolidation stub, so citations
+     * always validate.
+     */
+    @SuppressWarnings("unchecked")
+    private static StructuredChatLanguageModel.Response witnessDiscoveryResponse(
+            StructuredChatLanguageModel.Request request) {
+        String prompt = request.messages().get(request.messages().size() - 1).content();
+        String marker = "UNTRUSTED_CORPUS_PASSAGES_JSON=";
+        int start = prompt.indexOf(marker);
+        if (start < 0) {
+            // Not a witness discovery prompt; abstain so unrelated stub routing is untouched.
+            return structuredSchemaResponse(CorpusSchemaUnifier.WITNESS_TOOL_NAME,
+                    Map.of("witnesses", List.of()));
+        }
+        try {
+            int jsonStart = start + marker.length();
+            int jsonEnd = prompt.indexOf('\n', jsonStart);
+            List<Map<String, String>> windows = (List<Map<String, String>>) (List<?>) MAPPER.readValue(
+                    prompt.substring(jsonStart, jsonEnd < 0 ? prompt.length() : jsonEnd).trim(), List.class);
+            List<Map<String, Object>> witnesses = new java.util.ArrayList<>();
+            for (Map<String, String> window : windows) {
+                String content = window.get("content");
+                String[] sentences = content.split("(?<=[.!?])\\s+");
+                for (String sentence : sentences) {
+                    String trimmed = sentence.trim();
+                    String[] words = trimmed.split("\\s+");
+                    if (words.length < 3) continue;
+                    String predicate = words[1];
+                    if (!predicate.matches("[a-zA-Z]+(ed|s|es|by)")) continue;
+                    witnesses.add(Map.of(
+                            "sourceId", window.get("sourceId"),
+                            "subject", words[0],
+                            "predicateText", predicate,
+                            "object", words[words.length - 1].replaceAll("[.!?]+$", ""),
+                            "quote", trimmed.length() > 300 ? trimmed.substring(0, 300) : trimmed,
+                            "qualifier", ""));
+                    break;
+                }
+            }
+            return structuredSchemaResponse(CorpusSchemaUnifier.WITNESS_TOOL_NAME,
+                    Map.of("witnesses", witnesses));
+        } catch (java.io.IOException failure) {
+            throw new AssertionError("Unable to parse witness discovery prompt", failure);
+        }
+    }
+
+    /**
+     * Deterministic witness consolidation for the shared stub: derives one predicate per
+     * distinct predicateText from the CHECKED RELATIONSHIP OBSERVATIONS block, using the
+     * legacy relationshipResponse's first label when present, else a canonicalized verb.
+     */
+    @SuppressWarnings("unchecked")
+    private static StructuredChatLanguageModel.Response witnessConsolidationResponse(
+            StructuredChatLanguageModel.Request request,
+            StructuredChatLanguageModel.Response legacyRelationshipResponse) {
+        String prompt = request.messages().get(request.messages().size() - 1).content();
+        String marker = "CHECKED RELATIONSHIP OBSERVATIONS";
+        int start = prompt.indexOf(marker);
+        if (start < 0) {
+            // Not a witness consolidation prompt; abstain so unrelated stub routing is untouched.
+            return structuredSchemaResponse(CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                    Map.of("relationshipTypes", List.of()));
+        }
+        String witnessJson = prompt.substring(start)
+                .substring(prompt.substring(start).indexOf('['));
+        int jsonEnd = witnessJson.indexOf("\n\n");
+        try {
+            List<Map<String, Object>> witnesses = (List<Map<String, Object>>) (List<?>) MAPPER.readValue(
+                    witnessJson.substring(0, jsonEnd < 0 ? witnessJson.length() : jsonEnd).trim(), List.class);
+            String preferredLabel = null;
+            String preferredFamily = null;
+            try {
+                StructuredChatLanguageModel.ToolCall call = legacyRelationshipResponse.toolCalls().get(0);
+                Object raw = call.arguments().get("relationshipTypes");
+                if (raw instanceof List<?> rows && !rows.isEmpty()
+                        && rows.get(0) instanceof Map<?, ?> row) {
+                    preferredLabel = String.valueOf(row.get("type"));
+                    preferredFamily = String.valueOf(row.get("connectionFamily"));
+                }
+            } catch (RuntimeException ignored) {
+                // No legacy labels; canonicalize from predicateText below.
+            }
+            Map<String, List<String>> byPredicate = new LinkedHashMap<>();
+            for (Map<String, Object> witness : witnesses) {
+                String predicateText = String.valueOf(witness.get("predicateText"));
+                byPredicate.computeIfAbsent(predicateText.toLowerCase(java.util.Locale.ROOT),
+                        ignored -> new java.util.ArrayList<>())
+                        .add(String.valueOf(witness.get("witnessId")));
+            }
+            List<Map<String, Object>> rows = new java.util.ArrayList<>();
+            int index = 0;
+            for (Map.Entry<String, List<String>> entry : byPredicate.entrySet()) {
+                String label;
+                String family;
+                if (index == 0 && preferredLabel != null) {
+                    label = preferredLabel;
+                    family = preferredFamily != null ? preferredFamily : "REFERENCE";
+                } else {
+                    String[] words = entry.getKey().split("\\s+");
+                    label = String.join("_", words).toUpperCase(java.util.Locale.ROOT)
+                            .replaceAll("[^A-Z0-9_]", "");
+                    family = "REFERENCE";
+                }
+                rows.add(Map.of("type", label, "connectionFamily", family,
+                        "witnessIds", entry.getValue()));
+                index++;
+            }
+            return structuredSchemaResponse(CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                    Map.of("relationshipTypes", rows));
+        } catch (java.io.IOException failure) {
+            throw new AssertionError("Unable to parse witness consolidation prompt", failure);
+        }
+    }
+
     private static void stubTypePasses(
             CrawlLlmDispatcher dispatcher,
             UnifiedCrawlJob job,
@@ -1964,8 +2158,11 @@ class CorpusSchemaUnifierTest {
                                 CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                                 Map.of("classifications", List.of()));
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipResponse;
+                        return witnessConsolidationResponse(request, relationshipResponse);
                     }
                     if (CorpusSchemaUnifier.TOPIC_BINDING_TOOL_NAME.equals(tool)) {
                         return structuredSchemaResponse(
@@ -2117,8 +2314,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return withDiscoveryEvidence(request, nodeTypes("PERSON"));
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     throw new AssertionError("Unexpected schema tool: " + tool);
                 });
@@ -2176,8 +2376,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return withDiscoveryEvidence(request, nodeTypes("OBSERVATION"));
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     throw new AssertionError("Unexpected schema tool: " + tool);
                 });
@@ -2233,8 +2436,11 @@ class CorpusSchemaUnifierTest {
                     if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
                         return withDiscoveryEvidence(request, nodeTypes("OBSERVATION"));
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     throw new AssertionError("Unexpected schema tool: " + tool);
                 });
@@ -2299,8 +2505,11 @@ class CorpusSchemaUnifierTest {
                         // Batch discovery abstains (the Gemma failure mode).
                         return withDiscoveryEvidence(request, nodeTypes());
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        return witnessDiscoveryResponse(request);
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipTypes();
+                        return witnessConsolidationResponse(request, relationshipTypes());
                     }
                     throw new AssertionError("Unexpected schema tool: " + tool);
                 });
