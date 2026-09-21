@@ -426,6 +426,81 @@ class CorpusSchemaPrepassIntegrationTest {
                 config.getStandardizedSchema().getPatterns());
     }
 
+    @Test
+    void referenceSchemaControlBypassesInductionAndFreezesSeedPlusDeterministicInventory() {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+        orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
+        orchestrator.conceptExtractor = mock(ConceptExtractor.class);
+        orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
+        when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("reference-control");
+
+        List<Map<String, Object>> traces = new ArrayList<>();
+        orchestrator.extractionTraceSink = traces::add;
+
+        GraphSchema seed = new GraphSchema(
+                List.of(new NodeType("CALLER_SEED", "configured seed", null, null)),
+                List.of(),
+                List.of("(CALLER_SEED)-[:REFERENCES]->(CALLER_SEED)"));
+        Entity message = entity("message", "EXTRACTOR_MESSAGE");
+        Entity actor = entity("actor", "DETERMINISTIC_ACTOR");
+        Relationship emittedBy = new Relationship();
+        emittedBy.setSource("message");
+        emittedBy.setTarget("actor");
+        emittedBy.setType("EMITTED_BY");
+        Graph deterministicGraph = Graph.builder()
+                .entities(new ArrayList<>(List.of(message, actor)))
+                .relationships(new ArrayList<>(List.of(emittedBy)))
+                .build();
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .schemaMode(SchemaEnforcementMode.LENIENT)
+                .referenceSchemaControl(true)
+                .standardizedSchema(seed)
+                .build();
+        CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
+                "snapshot-reference-control",
+                List.of(new CrawlCorpusPassage(
+                        "ref-chunk", 0, "A passage that would otherwise induce schema.",
+                        "hash-ref", Map.of(), true)));
+
+        GraphSchema frozen = orchestrator.deriveCorpusSchema(job, corpus, config, deterministicGraph);
+
+        // Zero induction model calls: no entity classification, node/type or witness pass.
+        verify(orchestrator.llmDispatcher, times(0)).promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+        verify(orchestrator.conceptExtractor, times(0)).extractConceptsFromPassages(
+                anyMap(), any());
+
+        // Frozen schema = configured seed + deterministic inventory (plus baseline).
+        assertTrue(frozen.getAllNodeLabels().containsAll(List.of(
+                "CALLER_SEED", "EXTRACTOR_MESSAGE", "DETERMINISTIC_ACTOR")));
+        assertTrue(frozen.getAllRelationshipTypes().containsAll(List.of(
+                "REFERENCES", "EMITTED_BY")));
+
+        // The control arm is unambiguously identifiable in decision traces.
+        assertEquals(1, traces.size());
+        assertEquals("REFERENCE_SCHEMA_CONTROL", traces.get(0).get("eventType"));
+        assertEquals("SCHEMA_PREPASS", traces.get(0).get("phase"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> payload = (Map<String, Object>) traces.get(0).get("payload");
+        assertEquals("REFERENCE_SCHEMA_CONTROL", payload.get("control"));
+        @SuppressWarnings("unchecked")
+        List<String> tracedTypes = (List<String>) payload.get("relationshipTypes");
+        assertTrue(tracedTypes.contains("EMITTED_BY"));
+    }
+
+    @Test
+    void referenceSchemaControlDefaultsOffForLegacyConfigurations() throws Exception {
+        GraphExtractionConfig legacy = new GraphExtractionConfig();
+        assertFalse(legacy.isReferenceSchemaControl(),
+                "Reference control must never activate implicitly");
+        GraphExtractionConfig fromJson = MAPPER.readValue("{}", GraphExtractionConfig.class);
+        assertFalse(fromJson.isReferenceSchemaControl(),
+                "Reference control must never activate from legacy JSON configurations");
+    }
+
     private static StructuredChatLanguageModel.Response nodeResponse(List<String> labels) {
         List<Map<String, Object>> definitions = labels.stream()
                 .filter(label -> !SchemaHierarchyVocabulary.isBaseEntityType(label))

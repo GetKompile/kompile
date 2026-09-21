@@ -791,6 +791,22 @@ class GraphExtractionOrchestrator {
             GraphSchema configuredSchema = parseConfiguredSchema(config);
             GraphSchema establishedSeed = configuredSchema != null
                     ? configuredSchema : CrawlOntology.canonicalize(persistedSchemaSeed);
+            if (config != null && config.isReferenceSchemaControl()) {
+                // TEST-ONLY reference arm: zero induction model calls. The frozen schema is
+                // the configured seed plus the deterministic extractor inventory; extraction
+                // downstream still validates per schemaMode (unknown predicates rejected in
+                // STRICT). This isolates schema induction as an accuracy bottleneck.
+                GraphSchema reference = CrawlOntology.merge(
+                        SchemaHierarchyVocabulary.withBaseline(establishedSeed),
+                        DeterministicGraphSchemaInferencer.infer(deterministicGraph));
+                emitReferenceSchemaControlTrace(job, reference);
+                log.warn("[Job {}] REFERENCE-SCHEMA-CONTROL active: corpus schema frozen from "
+                                + "seed+deterministic inventory ({} node labels, {} relationship "
+                                + "types); LLM induction bypassed",
+                        jobId, reference.getAllNodeLabels().size(),
+                        reference.getAllRelationshipTypes().size());
+                return reference;
+            }
             if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
                 GraphSchema fallback = CrawlOntology.merge(
                         SchemaHierarchyVocabulary.withBaseline(establishedSeed),
@@ -3967,6 +3983,32 @@ class GraphExtractionOrchestrator {
             sink.accept(trace);
         } catch (RuntimeException e) {
             log.debug("[Job {}] Corpus topic trace sink failed: {}",
+                    job == null ? "?" : job.getJobId(), e.getMessage());
+        }
+    }
+
+    /** Emits the test-only reference-schema-control marker into the schema-prepass trace
+     * so a diagnostic arm is unambiguously identifiable in decision traces. */
+    private void emitReferenceSchemaControlTrace(UnifiedCrawlJob job, GraphSchema reference) {
+        Consumer<Map<String, Object>> sink = extractionTraceSink;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("control", "REFERENCE_SCHEMA_CONTROL");
+        payload.put("nodeLabels", reference == null ? List.of()
+                : List.copyOf(reference.getAllNodeLabels()));
+        payload.put("relationshipTypes", reference == null ? List.of()
+                : List.copyOf(reference.getAllRelationshipTypes()));
+        if (sink == null) {
+            return;
+        }
+        Map<String, Object> trace = new LinkedHashMap<>();
+        trace.put("eventType", "REFERENCE_SCHEMA_CONTROL");
+        trace.put("crawlJobId", job == null ? null : job.getJobId());
+        trace.put("phase", "SCHEMA_PREPASS");
+        trace.put("payload", payload);
+        try {
+            sink.accept(trace);
+        } catch (RuntimeException e) {
+            log.debug("[Job {}] Reference-control trace sink failed: {}",
                     job == null ? "?" : job.getJobId(), e.getMessage());
         }
     }

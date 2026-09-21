@@ -181,6 +181,16 @@ public class GraphExtractionConfig {
     @Builder.Default
     private SchemaEnforcementMode schemaMode = SchemaEnforcementMode.LENIENT;
 
+    /**
+     * TEST-ONLY diagnostic control for accuracy harnesses: bypasses the LLM corpus-schema
+     * pre-pass entirely and freezes the schema from the configured seed plus the
+     * deterministic extractor inventory (zero induction model calls). Unknown predicates
+     * are still rejected downstream per {@link #schemaMode}. Never enable in production
+     * configurations; exists to isolate schema induction as an accuracy bottleneck.
+     */
+    @Builder.Default
+    private boolean referenceSchemaControl = false;
+
     /** Accept the legacy "schemaEnforcement" JSON key and map it to schemaMode */
     @JsonSetter("schemaEnforcement")
     public void setSchemaEnforcementFromString(String value) {
