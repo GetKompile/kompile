@@ -108,19 +108,23 @@ class CorpusSchemaPrepassIntegrationTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scope =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
+        // This test's corpus window does not state a consolidation-declared predicate in
+        // stable wording, so witness discovery legitimately abstains (valid empty) and no
+        // consolidation call follows: 4 calls total.
         verify(orchestrator.llmDispatcher, times(4)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job), scope.capture());
         assertEquals(List.of(
                         CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
-                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
+                        CorpusSchemaUnifier.WITNESS_TOOL_NAME),
                 request.getAllValues().stream()
                         .map(value -> value.tools().get(0).name()).toList());
         assertTrue(scope.getAllValues().stream().allMatch(
                 value -> "SCHEMA_PREPASS".equals(value.phase())));
         assertEquals(List.of(
-                        "entity-classifications-1", "node-types-1", "node-types-consolidation", "relationship-types-1"),
+                        "entity-classifications-1", "node-types-1", "node-types-consolidation",
+                        "relationship-witness-discovery-1"),
                 scope.getAllValues().stream().map(
                         CrawlLlmDispatcher.LlmCallScope::passId).toList());
         assertTrue(request.getAllValues().stream().allMatch(value -> {
@@ -227,21 +231,39 @@ class CorpusSchemaPrepassIntegrationTest {
         verify(orchestrator.llmDispatcher, times(5)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
+        // Witness pipeline: discovery (witnesses) then evidence-backed consolidation (types);
+        // the legacy second design attempt and its repair are gone.
         assertEquals(List.of(
                         CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME,
                         CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
-                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.WITNESS_TOOL_NAME,
                         CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
                         CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME),
                 request.getAllValues().stream()
                         .map(value -> value.tools().get(0).name()).toList());
+        // The discovery prompt asks for observations, never for label design; the consolidation
+        // prompt carries the checked witness observations.
+        assertTrue(request.getAllValues().get(2).messages().get(0).content()
+                .contains("relationship observations"));
+        assertTrue(request.getAllValues().get(3).messages().get(1).content()
+                .contains("CHECKED RELATIONSHIP OBSERVATIONS"));
+        // Untrusted-data guards: node/witness prompts and consolidation prompts each carry an
+        // explicit treat-data-as-data instruction (witness prompts mark the corpus JSON as
+        // untrusted; consolidation marks the observations as inputs, not admitted facts).
         assertTrue(request.getAllValues().stream()
                 .filter(value -> !CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(
                         value.tools().get(0).name()))
                 .filter(value -> !CorpusSchemaUnifier.ENTITY_CLASSIFICATION_TOOL_NAME.equals(
                         value.tools().get(0).name()))
-                .allMatch(value -> value.messages().get(0).content().contains(
-                        "Do not extract entities or relations")));
+                .allMatch(value -> {
+                    String system = value.messages().get(0).content();
+                    String user = value.messages().get(1).content();
+                    return system.contains("Do not extract entities or relations")
+                            || system.contains("List source-supported relationship observations")
+                            || system.contains("Consolidate checked relationship observations")
+                            || user.contains("UNTRUSTED CORPUS DATA")
+                            || user.contains("provenance verified by the host");
+                }));
     }
 
     @Test
@@ -438,6 +460,108 @@ class CorpusSchemaPrepassIntegrationTest {
                 List.of());
     }
 
+    /**
+     * Derives one grounded witness row per declared consolidation row: the quote is the first
+     * actual window sentence containing the row's predicate wording (host anchoring requires
+     * an exact window substring), with subject/object lifted from that sentence around the
+     * predicate. Rows whose wording no window states produce nothing — the model cannot
+     * witness what its windows do not say.
+     */
+    private static List<Map<String, Object>> witnessesFor(
+            StructuredChatLanguageModel.Response relationshipResponse, String windowJson) {
+        if (relationshipResponse == null || relationshipResponse.toolCalls().isEmpty()
+                || windowJson.isBlank()) {
+            return List.of();
+        }
+        Object raw = relationshipResponse.toolCalls().get(0).arguments().get("relationshipTypes");
+        if (!(raw instanceof List<?> rows)) {
+            return List.of();
+        }
+        List<Map<String, Object>> witnesses = new java.util.ArrayList<>();
+        for (Object value : rows) {
+            if (!(value instanceof Map<?, ?> row)) continue;
+            String label = String.valueOf(row.get("type")).toLowerCase(java.util.Locale.ROOT)
+                    .replace('_', ' ').trim();
+            // Find the predicate wording directly in the raw window JSON block (ASCII corpus
+            // text passes through JSON unescaped) and lift the anchor sentence around it.
+            String lower = windowJson.toLowerCase(java.util.Locale.ROOT);
+            int at = lower.indexOf(label);
+            if (at <= 0) continue;
+            int start = Math.max(windowJson.lastIndexOf(".", at), windowJson.lastIndexOf("[", at));
+            int end = windowJson.indexOf(".", at + label.length());
+            if (end < 0) continue;
+            String quote = windowJson.substring(start + 1, end + 1).trim()
+                    .replaceFirst("^[^\"]*\"", "");
+            String suffix = "";
+            if (!quote.contains(label)) {
+                // Quote anchoring failed (escaping or boundary); retry on the raw text.
+                quote = windowJson.substring(Math.max(0, at - 40),
+                        Math.min(windowJson.length(), at + label.length() + 40));
+                suffix = "";
+            }
+            String subject = quote.substring(0, quote.toLowerCase(java.util.Locale.ROOT)
+                    .indexOf(label)).trim();
+            String object = quote.substring(quote.toLowerCase(java.util.Locale.ROOT)
+                    .indexOf(label) + label.length()).trim();
+            witnesses.add(Map.of(
+                    "sourceId", "s1",
+                    "subject", subject,
+                    "predicateText", label,
+                    "object", object,
+                    "quote", quote,
+                    "qualifier", suffix));
+        }
+        return witnesses;
+    }
+
+    /** Returns the UNTRUSTED_CORPUS_PASSAGES_JSON block from a discovery prompt. */
+    private static String windowJson(StructuredChatLanguageModel.Request request) {
+        String prompt = request.messages().get(request.messages().size() - 1).content();
+        int start = prompt.indexOf("UNTRUSTED_CORPUS_PASSAGES_JSON=");
+        return start < 0 ? "" : prompt.substring(start);
+    }
+
+    /** Extracts checked witness rows from a consolidation prompt. */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> checkedWitnesses(String prompt) {
+        int start = prompt.indexOf("CHECKED RELATIONSHIP OBSERVATIONS");
+        if (start < 0) return List.of();
+        String block = prompt.substring(start);
+        int from = block.indexOf('[');
+        int to = block.indexOf("\n\n");
+        try {
+            return (List<Map<String, Object>>) (List<?>) MAPPER.readValue(
+                    block.substring(from, to < 0 ? block.length() : to).trim(), List.class);
+        } catch (java.io.IOException failure) {
+            throw new AssertionError("Unable to parse checked witnesses", failure);
+        }
+    }
+
+    /** Adds resolved witnessIds to each declared consolidation row (first matching witness). */
+    private static List<Map<String, Object>> citeWitnesses(
+            StructuredChatLanguageModel.Response relationshipResponse,
+            List<Map<String, Object>> checked) {
+        Object raw = relationshipResponse.toolCalls().get(0).arguments().get("relationshipTypes");
+        if (!(raw instanceof List<?> rows)) return List.of();
+        List<Map<String, Object>> cited = new java.util.ArrayList<>();
+        for (Object value : rows) {
+            if (!(value instanceof Map<?, ?> row)) continue;
+            String label = String.valueOf(row.get("type"));
+            List<String> ids = checked.stream()
+                    .filter(witness -> String.valueOf(witness.get("predicateText"))
+                            .equalsIgnoreCase(label.toLowerCase(java.util.Locale.ROOT)
+                                    .replace('_', ' ').trim()))
+                    .map(witness -> String.valueOf(witness.get("witnessId")))
+                    .toList();
+            if (ids.isEmpty()) continue;
+            cited.add(Map.of(
+                    "type", label,
+                    "connectionFamily", String.valueOf(row.get("connectionFamily")),
+                    "witnessIds", ids));
+        }
+        return cited;
+    }
+
     private static void stubTypePasses(
             CrawlLlmDispatcher dispatcher,
             UnifiedCrawlJob job,
@@ -461,8 +585,33 @@ class CorpusSchemaPrepassIntegrationTest {
                                         Map.of("classifications", List.of()))),
                                 List.of());
                     }
+                    if (CorpusSchemaUnifier.WITNESS_TOOL_NAME.equals(tool)) {
+                        // Witness discovery precedes consolidation. When the test declares a
+                        // relationship response, emit one witness anchored in the actual window
+                        // sentence per consolidation row; otherwise abstain (valid empty).
+                        List<Map<String, Object>> declared =
+                                witnessesFor(relationshipResponse, windowJson(request));
+                        return new StructuredChatLanguageModel.Response(
+                                "<native-tool-call>", "",
+                                List.of(new StructuredChatLanguageModel.ToolCall(
+                                        "schema-call",
+                                        CorpusSchemaUnifier.WITNESS_TOOL_NAME,
+                                        Map.of("witnesses", declared))),
+                                List.of());
+                    }
                     if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
-                        return relationshipResponse;
+                        // Cite the checked witnesses for each declared predicate row so the
+                        // host citation validation passes (rows lack witnessIds otherwise).
+                        List<Map<String, Object>> checked =
+                                checkedWitnesses(request.messages().get(1).content());
+                        return new StructuredChatLanguageModel.Response(
+                                "<native-tool-call>", "",
+                                List.of(new StructuredChatLanguageModel.ToolCall(
+                                        "schema-call",
+                                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                                        Map.of("relationshipTypes",
+                                                citeWitnesses(relationshipResponse, checked)))),
+                                List.of());
                     }
                     if (CorpusSchemaUnifier.ENDPOINT_SIGNATURE_TOOL_NAME.equals(tool)) {
                         return endpointSignatureResponse(request);
