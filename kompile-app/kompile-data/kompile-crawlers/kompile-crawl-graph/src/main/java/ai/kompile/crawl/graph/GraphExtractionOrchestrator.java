@@ -858,6 +858,7 @@ class GraphExtractionOrchestrator {
                 job.setCorpusTopicEvidence(unification.topicEvidence().persistenceView());
             }
             emitCorpusTopicEvidenceTrace(job, unification.topicEvidence());
+            emitRelationshipDiscoveryTrace(job, unification.relationshipDiscovery());
             log.info("[Job {}] Derived and froze the corpus ontology through the dedicated "
                             + "topic-to-hierarchy schema pre-pass",
                     jobId);
@@ -3967,6 +3968,59 @@ class GraphExtractionOrchestrator {
         } catch (RuntimeException e) {
             log.debug("[Job {}] Corpus topic trace sink failed: {}",
                     job == null ? "?" : job.getJobId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Emits the relationship discovery outcome into the schema-prepass trace: status,
+     * unique witness count, consolidated/frozen predicate counts, dropped predicates, and
+     * unresolved failures. Witnesses remain discovery artifacts; only their counts and
+     * ids are traced, never inserted as graph facts.
+     */
+    private void emitRelationshipDiscoveryTrace(
+            UnifiedCrawlJob job, CorpusSchemaUnifier.RelationshipDiscoveryResult discovery) {
+        if (discovery == null) return;
+        String jobId = job == null ? "?" : job.getJobId();
+        switch (discovery.status()) {
+            case COMPLETED -> log.info(
+                    "[Job {}] Relationship witness discovery COMPLETED: {} unique witnesses, "
+                            + "{} frozen predicates, {} dropped at signature binding{}",
+                    jobId, discovery.witnesses().size(), discovery.consolidatedTypes(),
+                    discovery.droppedAtSignature().size(),
+                    discovery.failures().isEmpty() ? "" : "; recovered: "
+                            + discovery.failures());
+            case PARTIAL -> log.warn(
+                    "[Job {}] Relationship witness discovery PARTIAL: {} usable witnesses, "
+                            + "{} frozen predicates; unresolved failures: {}",
+                    jobId, discovery.witnesses().size(), discovery.consolidatedTypes(),
+                    discovery.failures());
+            case FAILED -> log.error(
+                    "[Job {}] Relationship witness discovery FAILED; no usable vocabulary "
+                            + "from this corpus; failures: {}",
+                    jobId, discovery.failures());
+            case SKIPPED -> log.debug(
+                    "[Job {}] Relationship witness discovery SKIPPED (topic coverage)", jobId);
+        }
+        Consumer<Map<String, Object>> sink = extractionTraceSink;
+        if (sink == null) return;
+        Map<String, Object> trace = new LinkedHashMap<>();
+        trace.put("eventType", "RELATIONSHIP_DISCOVERY_OUTCOME");
+        trace.put("crawlJobId", job == null ? null : job.getJobId());
+        trace.put("phase", "SCHEMA_PREPASS");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", discovery.status().name());
+        payload.put("uniqueWitnessCount", discovery.witnesses().size());
+        payload.put("witnessIds", discovery.witnesses().stream()
+                .map(CorpusSchemaUnifier::witnessId).toList());
+        payload.put("frozenPredicateCount", discovery.consolidatedTypes());
+        payload.put("droppedPredicates", discovery.droppedAtSignature());
+        payload.put("failures", discovery.failures());
+        trace.put("payload", payload);
+        try {
+            sink.accept(trace);
+        } catch (RuntimeException e) {
+            log.debug("[Job {}] Relationship discovery trace sink failed: {}",
+                    jobId, e.getMessage());
         }
     }
 

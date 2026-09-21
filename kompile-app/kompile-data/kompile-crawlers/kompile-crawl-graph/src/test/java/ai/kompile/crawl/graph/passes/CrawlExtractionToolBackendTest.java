@@ -991,6 +991,85 @@ class CrawlExtractionToolBackendTest {
     }
 
     @Test
+    void oversizedVocabularyOmitsInlineEnumButStillEnforcesMembership() throws Exception {
+        // A frozen vocabulary larger than the inline enum limit must not silently open the
+        // schema: the enum is omitted from the emitted tool schema, but runtime validation
+        // still rejects predicates outside the frozen set.
+        List<RelationshipType> oversized = java.util.stream.IntStream.rangeClosed(1, 64)
+                .mapToObj(index -> new RelationshipType("FROZEN_RELATION_" + index,
+                        "Frozen predicate " + index + ".", List.of(), List.of(), "REFERENCE"))
+                .toList();
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "chunk-1", "document-1", "lfm", "graph-1", null,
+                GraphExtractionValidationPolicy.defaults(),
+                new GraphSchema(
+                        List.of(new NodeType("PERSON", "A person", null)),
+                        oversized, null),
+                corpus(), null, null, UnifiedGraph::new,
+                new GraphReasoningQueryService(null), ExtractionTarget.FULL_GRAPH,
+                null, false);
+
+        JsonNode relationType = MAPPER.valueToTree(
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).get(0).parameters())
+                .path("properties").path("relations")
+                .path("items").path("properties").path("type");
+        assertFalse(relationType.has("enum"),
+                "over-limit vocabularies must omit the inline enum");
+
+        JsonNode unknown = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA,
+                """
+                {"format":"indexed","entities":[
+                  {"name":"Alice","type":"PERSON"},
+                  {"name":"Bob","type":"PERSON"}],
+                 "relations":[{"source":0,"target":1,"type":"NOT_IN_VOCABULARY"}]}
+                """);
+        assertFalse(unknown.path("accepted").asBoolean(),
+                "unknown predicates must be rejected even without an inline enum");
+
+        JsonNode known = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA,
+                """
+                {"format":"indexed","entities":[
+                  {"name":"Alice","type":"PERSON"},
+                  {"name":"Bob","type":"PERSON"}],
+                 "relations":[{"source":0,"target":1,"type":"FROZEN_RELATION_1"}]}
+                """);
+        assertTrue(known.path("accepted").asBoolean(),
+                "frozen-vocabulary predicates must still be admitted: " + known);
+    }
+
+    @Test
+    void ontologyUpdateModeAdmitsProposedTypesThroughExplicitValidation() throws Exception {
+        // In ontology-update mode an open relationship vocabulary accepts a proposed new
+        // predicate only through the explicit admission path (validated as an ordinary typed
+        // relation), not because the enum was absent.
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "chunk-1", "document-1", "lfm", "graph-1", null,
+                GraphExtractionValidationPolicy.defaults(),
+                null,
+                corpus(), null, null, UnifiedGraph::new,
+                new GraphReasoningQueryService(null), ExtractionTarget.FULL_GRAPH,
+                null, true);
+
+        JsonNode relationType = MAPPER.valueToTree(
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).get(0).parameters())
+                .path("properties").path("relations")
+                .path("items").path("properties").path("type");
+        assertFalse(relationType.has("enum"),
+                "ontology-update mode has an open vocabulary (no frozen closure)");
+
+        JsonNode admitted = execute(backend, CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA,
+                """
+                {"format":"indexed","entities":[
+                  {"name":"Alice","type":"PERSON"},
+                  {"name":"Bob","type":"PERSON"}],
+                 "relations":[{"source":0,"target":1,"type":"KNOWS"}]}
+                """);
+        assertTrue(admitted.path("accepted").asBoolean(),
+                "ontology-update mode admits the proposed predicate through validation: "
+                        + admitted);
+    }
+
+    @Test
     void compactOpenSchemaDiscoveryBoundsFreeTypeTokensWithoutInventingEnums() {
         CrawlExtractionToolBackend discovery = new CrawlExtractionToolBackend(
                 "chunk-1",

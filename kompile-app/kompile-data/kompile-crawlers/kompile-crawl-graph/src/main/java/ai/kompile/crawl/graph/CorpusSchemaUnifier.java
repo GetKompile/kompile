@@ -104,6 +104,11 @@ final class CorpusSchemaUnifier {
         }
     }
 
+    /** Trace accessor: witness identity for prepass outcome reporting, no graph insertion. */
+    static String witnessId(RelationshipWitness witness) {
+        return witness.witnessId();
+    }
+
     /**
      * Discovery outcome for the relationship pass, kept separate from vocabulary size.
      * COMPLETED means the bounded discovery-then-consolidate chain ran to a terminal state
