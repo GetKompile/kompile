@@ -106,43 +106,75 @@ final class CorpusSchemaUnifier {
 
     /**
      * Discovery outcome for the relationship pass, kept separate from vocabulary size.
-     * COMPLETED means the bounded discovery-then-consolidate chain ran; empty supported
-     * witnesses are a valid outcome, distinct from failure. FAILED means every batch
-     * attempt was malformed/exhausted (reported, never masked as success). SKIPPED means
+     * COMPLETED means the bounded discovery-then-consolidate chain ran to a terminal state
+     * (empty supported witnesses are a valid COMPLETED outcome). FAILED means every source
+     * batch exhausted without usable evidence. PARTIAL means some batches completed and
+     * others exhausted, or consolidation exhausted after partial discovery. SKIPPED means
      * topic-binding coverage legitimately replaced the pass.
      */
-    enum RelationshipDiscoveryStatus { COMPLETED, FAILED, SKIPPED }
+    enum RelationshipDiscoveryStatus { COMPLETED, FAILED, PARTIAL, SKIPPED }
 
     record RelationshipDiscoveryResult(
             RelationshipDiscoveryStatus status,
             List<RelationshipWitness> witnesses,
             List<String> failures,
             int consolidatedTypes,
-            List<String> droppedAtSignature) {
+            List<String> droppedAtSignature,
+            Map<String, List<String>> witnessSupport) {
         RelationshipDiscoveryResult {
             witnesses = witnesses == null ? List.of() : List.copyOf(witnesses);
             failures = failures == null ? List.of() : List.copyOf(failures);
             droppedAtSignature = droppedAtSignature == null
                     ? List.of() : List.copyOf(droppedAtSignature);
+            witnessSupport = witnessSupport == null
+                    ? Map.of() : java.util.Collections.unmodifiableMap(
+                            new LinkedHashMap<>(witnessSupport));
         }
 
         static RelationshipDiscoveryResult skipped() {
             return new RelationshipDiscoveryResult(
-                    RelationshipDiscoveryStatus.SKIPPED, List.of(), List.of(), 0, List.of());
+                    RelationshipDiscoveryStatus.SKIPPED, List.of(), List.of(), 0,
+                    List.of(), Map.of());
         }
 
         static RelationshipDiscoveryResult failed(List<String> failures) {
             return new RelationshipDiscoveryResult(
-                    RelationshipDiscoveryStatus.FAILED, List.of(), failures, 0, List.of());
+                    RelationshipDiscoveryStatus.FAILED, List.of(), failures, 0,
+                    List.of(), Map.of());
         }
 
-        RelationshipDiscoveryResult withFrozen(GraphSchema frozen) {
-            int retained = frozen == null || frozen.getRelationshipTypes() == null
-                    ? 0 : frozen.getRelationshipTypes().size();
+        /** Failure that still preserves the checked witness inventory for diagnostics. */
+        static RelationshipDiscoveryResult failed(
+                List<String> failures, List<RelationshipWitness> witnesses) {
             return new RelationshipDiscoveryResult(
-                    status, witnesses, failures, consolidatedTypes,
-                    droppedAtSignature.size() >= consolidatedTypes - retained
-                            ? droppedAtSignature : droppedAtSignature);
+                    RelationshipDiscoveryStatus.FAILED, witnesses, failures, 0,
+                    List.of(), Map.of());
+        }
+
+        /**
+         * Real freeze bookkeeping: compares the newly consolidated predicate labels with the
+         * frozen vocabulary and records which discovered labels did not survive (removed at
+         * signature binding or unbound-discovery cleanup), labelled per predicate.
+         */
+        RelationshipDiscoveryResult withFrozen(GraphSchema consolidatedBeforeFreeze,
+                GraphSchema frozen) {
+            Set<String> discoveredLabels = consolidatedBeforeFreeze == null
+                    || consolidatedBeforeFreeze.getRelationshipTypes() == null
+                    ? Set.of() : consolidatedBeforeFreeze.getRelationshipTypes().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(RelationshipType::getType)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            Set<String> frozenLabels = frozen == null || frozen.getRelationshipTypes() == null
+                    ? Set.of() : frozen.getRelationshipTypes().stream()
+                    .filter(java.util.Objects::nonNull)
+                    .map(RelationshipType::getType)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            List<String> dropped = discoveredLabels.stream()
+                    .filter(label -> !frozenLabels.contains(label))
+                    .map(label -> label + " (no supported endpoint signature or unbound)")
+                    .toList();
+            return new RelationshipDiscoveryResult(
+                    status, witnesses, failures, frozenLabels.size(), dropped, witnessSupport);
         }
     }
 
@@ -321,12 +353,14 @@ final class CorpusSchemaUnifier {
 
         // Preserve an explicit empty relationship vocabulary as closed. Null means unspecified/open;
         // an empty list means the prepass found no allowed predicates and later extraction must abstain.
+        GraphSchema consolidatedBeforeFreeze = ontology.snapshot();
         GraphSchema frozen = withoutUnboundDiscoveredRelationships(
-                ontology.snapshot(), establishedSchema);
+                consolidatedBeforeFreeze, establishedSchema);
         if (frozen.getRelationshipTypes() == null) {
             frozen.setRelationshipTypes(List.of());
         }
-        RelationshipDiscoveryResult finalDiscovery = relationshipDiscovery.withFrozen(frozen);
+        RelationshipDiscoveryResult finalDiscovery = relationshipDiscovery.withFrozen(
+                consolidatedBeforeFreeze, frozen);
         return new UnificationResult(frozen, boundTopicEvidence, finalDiscovery);
     }
 
@@ -1744,8 +1778,9 @@ final class CorpusSchemaUnifier {
         String jobId = hasText(job.getJobId()) ? job.getJobId() : "crawl";
         List<RelationshipWitness> witnesses = new ArrayList<>();
         List<String> failures = new ArrayList<>();
-        int repetitionRepairs = 0;
-        int invalidBatches = 0;
+        List<String> recoveredDiagnostics = new ArrayList<>();
+        int exhaustedBatches = 0;
+        int completedBatches = 0;
         for (int batchIndex = 0; batchIndex < batches.size(); batchIndex++) {
             Map<String, String> windows = CorpusSchemaPromptBuilder.discoveryWindows(
                     batches.get(batchIndex));
@@ -1756,15 +1791,16 @@ final class CorpusSchemaUnifier {
                     windows, ontology.snapshot(),
                     List.copyOf(SchemaHierarchyVocabulary.CONNECTION_FAMILIES));
             String validationErrors = null;
-            boolean batchRan = false;
+            // Explicit terminal outcome for this batch; the loop must set one of these.
+            boolean batchCompleted = false;
+            boolean batchExhausted = false;
             for (int attempt = 1; attempt <= maxValidationRetries + 1; attempt++) {
                 String prompt = attempt == 1
                         ? basePrompt
                         : schemaRepairPrompt(basePrompt, CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
                                 validationErrors, attempt, maxValidationRetries + 1);
-                CrawlLlmDispatcher.LlmCallScope callScope = schemaScope(
-                        job, corpusSnapshotId, CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
-                        batchIndex + 1, attempt);
+                CrawlLlmDispatcher.LlmCallScope callScope = witnessScope(
+                        job, corpusSnapshotId, "discovery", batchIndex + 1, attempt);
                 RelationshipWitnessAccumulator.BatchResult parsed;
                 try {
                     Map<String, Object> arguments = responseArgumentsAllowingMissingCall(
@@ -1772,94 +1808,126 @@ final class CorpusSchemaUnifier {
                                     witnessDiscoveryRequest(prompt, windows.keySet()),
                                     TASK_TYPE, job, callScope),
                             WITNESS_TOOL_NAME);
-                    parsed = arguments == null
-                            ? new RelationshipWitnessAccumulator.BatchResult(
-                            List.of(), List.of(), List.of(), 0)
-                            : accumulator.accept(arguments);
+                    if (arguments == null) {
+                        // Missing/wrong tool call or empty envelope: repairable, not abstention.
+                        parsed = new RelationshipWitnessAccumulator.BatchResult(
+                                List.of(), List.of(), List.of(
+                                        "[WITNESS_MISSING_CALL] required " + WITNESS_TOOL_NAME
+                                                + " tool call was absent from the response"),
+                                0, RelationshipWitnessAccumulator.AttemptStatus.MALFORMED_BATCH);
+                    } else {
+                        parsed = accumulator.accept(arguments);
+                    }
                 } catch (RuntimeException failure) {
+                    // Unsupported backend / infrastructure / programming errors are not
+                    // discovery outcomes: record and let exhaustion report them.
                     failures.add("batch " + (batchIndex + 1) + " attempt " + attempt + ": "
                             + conciseMessage(failure));
                     continue;
                 }
-                batchRan = true;
-                if (parsed.witnesses().isEmpty() && parsed.errors().isEmpty()) {
-                    // Valid empty: this window set states no relationships. Never retried.
-                    log.info("[SCHEMA_WITNESS_OUTCOME] job={} snapshot={} batch={} attempt={} "
-                                    + "outcome=EXPLICIT_EMPTY witnesses=0",
-                            jobId, corpusSnapshotId, batchIndex + 1, attempt);
-                    break;
-                }
-                if (isWitnessRepetition(parsed)) {
-                    if (repetitionRepairs < maxValidationRetries + 1) {
-                        repetitionRepairs++;
-                        validationErrors = "[WITNESS_REPETITION] observations repeat the same "
-                                + "subject/predicate pattern; propose only relationships the "
-                                + "windows actually state, at most one per distinct pair";
-                        log.warn("[Job {}] Witness repetition for snapshot {} batch {}/{} "
-                                        + "attempt {}/{}; retrying with repair feedback",
-                                jobId, corpusSnapshotId, batchIndex + 1, batches.size(),
-                                attempt, maxValidationRetries + 1);
-                        continue;
+                switch (parsed.status()) {
+                    case VALID_EMPTY -> {
+                        batchCompleted = true;
                     }
-                    // Exhausted repairs: keep the deduplicated valid rows this batch produced
-                    // (they are real observations), then stop retrying. They still must pass
-                    // consolidation before anything freezes.
-                    log.warn("[Job {}] Witness repetition exhausted for snapshot {} batch {}; "
-                                    + "keeping the {} deduplicated rows already retained",
-                            jobId, corpusSnapshotId, batchIndex + 1, accumulator.witnesses().size());
-                    break;
-                }
-                if (parsed.witnesses().isEmpty()) {
-                    // The model returned rows but the host dropped them all (unknown source,
-                    // unanchored quote, self-reference). Structural row failures, not valid
-                    // emptiness: retry with the row diagnostics, bounded by the existing budget.
-                    if (attempt <= maxValidationRetries) {
-                        validationErrors = conciseValidationErrors(parsed.errors());
-                        log.warn("[Job {}] All witness rows dropped for snapshot {} batch {}/{} "
-                                        + "attempt {}/{}; retrying with row diagnostics",
-                                jobId, corpusSnapshotId, batchIndex + 1, batches.size(),
-                                attempt, maxValidationRetries + 1);
-                        continue;
+                    case RETAINED_CLEAN -> {
+                        batchCompleted = true;
                     }
-                    log.error("[Job {}] All witness rows dropped on final attempt for "
-                                    + "snapshot {} batch {}/{}: {}",
-                            jobId, corpusSnapshotId, batchIndex + 1, batches.size(),
-                            parsed.errors());
-                    // The accumulator holds nothing; contribute nothing rather than failing
-                    // the whole corpus pass (remaining batches can still contribute).
-                    break;
+                    case RETAINED_WITH_ERRORS -> {
+                        // Valid siblings survive; dropped rows get one bounded repair.
+                        if (attempt <= maxValidationRetries
+                                && !isWitnessRepetition(parsed)) {
+                            validationErrors = conciseValidationErrors(parsed.errors());
+                            recoveredDiagnostics.addAll(parsed.errors());
+                            continue;
+                        }
+                        if (isWitnessRepetition(parsed)
+                                && attempt <= maxValidationRetries) {
+                            validationErrors = "[WITNESS_REPETITION] this response repeats the "
+                                    + "same observation; return at most one witness per "
+                                    + "distinct relationship stated in the windows";
+                            log.warn("[Job {}] Witness repetition for snapshot {} batch {}/{} "
+                                            + "attempt {}/{}; retrying with repair feedback",
+                                    jobId, corpusSnapshotId, batchIndex + 1, batches.size(),
+                                    attempt, maxValidationRetries + 1);
+                            continue;
+                        }
+                        recoveredDiagnostics.addAll(parsed.errors());
+                        batchCompleted = true;
+                    }
+                    case ALL_ROWS_DROPPED -> {
+                        if (isWitnessRepetition(parsed)
+                                && attempt <= maxValidationRetries) {
+                            validationErrors = "[WITNESS_REPETITION] this response repeats the "
+                                    + "same observation; return at most one witness per "
+                                    + "distinct relationship stated in the windows";
+                            log.warn("[Job {}] Witness repetition for snapshot {} batch {}/{} "
+                                            + "attempt {}/{}; retrying with repair feedback",
+                                    jobId, corpusSnapshotId, batchIndex + 1, batches.size(),
+                                    attempt, maxValidationRetries + 1);
+                            continue;
+                        }
+                        if (attempt <= maxValidationRetries) {
+                            validationErrors = conciseValidationErrors(parsed.errors());
+                            continue;
+                        }
+                        failures.add("batch " + (batchIndex + 1) + " exhausted: "
+                                + validationErrors);
+                        batchExhausted = true;
+                    }
+                    case MALFORMED_BATCH -> {
+                        if (attempt <= maxValidationRetries) {
+                            validationErrors = conciseValidationErrors(parsed.errors());
+                            continue;
+                        }
+                        failures.add("batch " + (batchIndex + 1) + " exhausted: "
+                                + validationErrors);
+                        batchExhausted = true;
+                    }
                 }
-                if (parsed.anyRetained() && parsed.errors().isEmpty()) {
-                    break;
-                }
-                validationErrors = conciseValidationErrors(parsed.errors());
+                break;
             }
-            if (!batchRan) {
-                invalidBatches++;
-            } else {
+            if (batchCompleted) {
+                completedBatches++;
                 witnesses.addAll(accumulator.witnesses());
+            } else if (batchExhausted) {
+                exhaustedBatches++;
+                // Partial evidence from earlier attempts is still retained above.
+            } else {
+                // Loop ended without a terminal outcome (e.g. runtime failures every attempt).
+                exhaustedBatches++;
             }
         }
         if (witnesses.isEmpty()) {
-            if (!failures.isEmpty() && invalidBatches == batches.size()) {
+            if (exhaustedBatches == batches.size()) {
                 log.error("[Job {}] Relationship witness discovery FAILED for snapshot {}: {}",
                         jobId, corpusSnapshotId, failures);
                 return RelationshipDiscoveryResult.failed(failures);
             }
-            // Valid emptiness (or partial failure with zero witnesses anywhere): report status.
-            if (!failures.isEmpty()) {
-                log.warn("[Job {}] Relationship witness discovery found no witnesses for "
-                                + "snapshot {} with partial failures: {}",
-                        jobId, corpusSnapshotId, failures);
-            } else {
-                log.info("[Job {}] Relationship witness discovery completed with no supported "
-                        + "witnesses for snapshot {} (valid empty)", jobId, corpusSnapshotId);
+            if (exhaustedBatches > 0) {
+                log.warn("[Job {}] Relationship witness discovery PARTIAL for snapshot {}: "
+                                + "{} of {} batches exhausted with no usable witnesses: {}",
+                        jobId, corpusSnapshotId, exhaustedBatches, batches.size(), failures);
+                return new RelationshipDiscoveryResult(
+                        RelationshipDiscoveryStatus.PARTIAL, List.of(), failures, 0,
+                        List.of(), Map.of());
             }
+            log.info("[Job {}] Relationship witness discovery completed with no supported "
+                    + "witnesses for snapshot {} (valid empty)", jobId, corpusSnapshotId);
             return new RelationshipDiscoveryResult(
-                    RelationshipDiscoveryStatus.COMPLETED, List.of(), failures, 0, List.of());
+                    RelationshipDiscoveryStatus.COMPLETED, List.of(), List.of(), 0,
+                    List.of(), Map.of());
         }
-        return consolidateWitnesses(ontology, witnesses, job, corpusSnapshotId,
-                dispatcher, maxValidationRetries, failures);
+        RelationshipDiscoveryResult consolidated = consolidateWitnesses(
+                ontology, witnesses, job, corpusSnapshotId, dispatcher,
+                maxValidationRetries, failures, exhaustedBatches, completedBatches);
+        if (consolidated.status() == RelationshipDiscoveryStatus.COMPLETED
+                && !recoveredDiagnostics.isEmpty()) {
+            return new RelationshipDiscoveryResult(
+                    consolidated.status(), consolidated.witnesses(), recoveredDiagnostics,
+                    consolidated.consolidatedTypes(), consolidated.droppedAtSignature(),
+                    consolidated.witnessSupport());
+        }
+        return consolidated;
     }
 
     /**
@@ -1874,7 +1942,9 @@ final class CorpusSchemaUnifier {
             String corpusSnapshotId,
             CrawlLlmDispatcher dispatcher,
             int maxValidationRetries,
-            List<String> failures) {
+            List<String> failures,
+            int exhaustedBatches,
+            int completedBatches) {
         String jobId = hasText(job.getJobId()) ? job.getJobId() : "crawl";
         Set<String> knownWitnessIds = witnesses.stream()
                 .map(RelationshipWitness::witnessId)
@@ -1888,9 +1958,8 @@ final class CorpusSchemaUnifier {
                     ? basePrompt
                     : schemaRepairPrompt(basePrompt, CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
                             validationErrors, attempt, maxValidationRetries + 1);
-            CrawlLlmDispatcher.LlmCallScope callScope = schemaScope(
-                    job, corpusSnapshotId, CorpusSchemaPromptBuilder.TypePass.RELATIONSHIP_TYPES,
-                    batches_considered_placeholder(), attempt);
+            CrawlLlmDispatcher.LlmCallScope callScope = witnessScope(
+                    job, corpusSnapshotId, "consolidation", 1, attempt);
             CorpusSchemaResponseParser.WitnessConsolidationResult parsed;
             try {
                 parsed = CorpusSchemaResponseParser.parseWitnessConsolidation(
@@ -1913,58 +1982,117 @@ final class CorpusSchemaUnifier {
                         + "for snapshot {} (valid empty over {} witnesses)",
                         jobId, corpusSnapshotId, witnesses.size());
                 return new RelationshipDiscoveryResult(
-                        RelationshipDiscoveryStatus.COMPLETED, witnesses, failures, 0, List.of());
+                        RelationshipDiscoveryStatus.COMPLETED, witnesses, failures, 0,
+                        List.of(), Map.of());
             }
             if (!parsed.supported().isEmpty()) {
-                GraphSchema proposal = new GraphSchema(null,
-                        parsed.supported().stream()
-                                .map(CorpusSchemaResponseParser.SupportedRelationship::type)
-                                .toList(),
-                        null);
-                CrawlOntology.UpdateResult update = ontology.updateTypesOnly(proposal);
-                if (update.valid()) {
+                // Per-row isolation at commit: try the full batch first; if the ontology
+                // rejects it (e.g. one generic/invalid predicate), quarantine rows named in
+                // the validator diagnostics and commit only the surviving valid siblings,
+                // mirroring the node-accumulator behavior. A single bad row must not erase
+                // unrelated valid predicates.
+                List<CorpusSchemaResponseParser.SupportedRelationship> pending =
+                        new ArrayList<>(parsed.supported());
+                List<String> commitErrors = new ArrayList<>();
+                GraphSchema committed = null;
+                for (int commitAttempt = 0; commitAttempt <= maxValidationRetries + 1
+                        && !pending.isEmpty(); commitAttempt++) {
+                    GraphSchema proposal = new GraphSchema(null,
+                            pending.stream()
+                                    .map(CorpusSchemaResponseParser.SupportedRelationship::type)
+                                    .toList(),
+                            null);
+                    CrawlOntology.UpdateResult update = ontology.updateTypesOnly(proposal);
+                    if (update.valid()) {
+                        committed = proposal;
+                        break;
+                    }
+                    commitErrors.addAll(update.errors());
+                    List<String> errors = List.copyOf(update.errors());
+                    pending.removeIf(supported -> errors.stream().anyMatch(error ->
+                            error.contains(supported.type().getType())));
+                    if (pending.size() == parsed.supported().size()) {
+                        // No row could be attributed to a diagnostic; avoid an infinite loop.
+                        break;
+                    }
+                }
+                if (committed != null) {
                     log.info("[Job {}] Witness consolidation retained {} relationship types "
-                                    + "from {} witnesses for snapshot {}",
-                            jobId, parsed.supported().size(), witnesses.size(), corpusSnapshotId);
+                                    + "from {} witnesses for snapshot {} ({} row diagnostics)",
+                            jobId, committed.getRelationshipTypes().size(), witnesses.size(),
+                            corpusSnapshotId, commitErrors.size());
+                    Map<String, List<String>> support = new LinkedHashMap<>();
+                    committed.getRelationshipTypes().forEach(type ->
+                            parsed.supported().stream()
+                                    .filter(supported -> supported.type().getType()
+                                            .equals(type.getType()))
+                                    .findFirst()
+                                    .ifPresent(supported -> support.put(
+                                            supported.type().getType(), supported.witnessIds())));
+                    if (!commitErrors.isEmpty()) {
+                        failures.addAll(commitErrors);
+                    }
                     return new RelationshipDiscoveryResult(
                             RelationshipDiscoveryStatus.COMPLETED, witnesses, failures,
-                            parsed.supported().size(), List.of());
+                            parsed.supported().size(), List.of(), support);
                 }
-                validationErrors = conciseValidationErrors(update.errors());
+                validationErrors = conciseValidationErrors(commitErrors);
             } else {
                 validationErrors = conciseValidationErrors(parsed.errors());
             }
         }
         failures.add("consolidation exhausted: " + validationErrors);
+        // Exhausted consolidation is not valid emptiness: the checked witness inventory is
+        // preserved in the result for diagnostics, and the status distinguishes
+        // fully-exhausted (FAILED) from partially-exhausted (PARTIAL) discovery.
+        if (exhaustedBatches > 0) {
+            log.error("[Job {}] Witness consolidation FAILED (PARTIAL discovery) for "
+                            + "snapshot {}: {}",
+                    jobId, corpusSnapshotId, failures);
+            return new RelationshipDiscoveryResult(
+                    RelationshipDiscoveryStatus.PARTIAL, witnesses, failures,
+                    0, List.of(), Map.of());
+        }
         log.error("[Job {}] Witness consolidation FAILED for snapshot {}: {}",
                 jobId, corpusSnapshotId, failures);
-        return RelationshipDiscoveryResult.failed(failures);
+        return RelationshipDiscoveryResult.failed(failures, witnesses);
     }
 
-    /** True when a witness batch is a repetition loop, not merely sparse: many rows sharing
-     * one long label-chain prefix and few distinct (subject,object) pairs relative to rows. */
+    /**
+     * True when the CURRENT response is a repetition loop: at least four observed rows of
+     * which the majority are exact duplicates (same window/quote/roles) of a small residue.
+     * Shared predicate wording or shared endpoint pairs alone are NOT repetition — six
+     * independent "submitted" observations between different pairs are legitimate.
+     * Examines only this response's rows, never a cumulative witness list.
+     */
     private static boolean isWitnessRepetition(RelationshipWitnessAccumulator.BatchResult parsed) {
-        if (parsed.observedRowCount() < 6) {
+        int observed = parsed.observedRowCount();
+        if (observed < 4) {
             return false;
         }
-        List<RelationshipWitness> rows = parsed.witnesses();
-        if (rows.isEmpty()) {
-            // Every row was dropped as a duplicate: pure repetition of one observation.
-            return true;
+        long exactDuplicates = parsed.rows().stream()
+                .filter(row -> !row.retained())
+                .filter(row -> row.error() != null
+                        && row.error().contains("[WITNESS_DUPLICATE]"))
+                .count();
+        if (exactDuplicates == 0) {
+            return false;
         }
-        long distinctPairs = rows.stream()
-                .map(witness -> witness.subject().toLowerCase(Locale.ROOT)
-                        + "|" + witness.object().toLowerCase(Locale.ROOT))
-                .distinct().count();
-        long distinctPredicates = rows.stream()
-                .map(RelationshipWitness::predicateText)
-                .map(text -> text.toLowerCase(Locale.ROOT).replaceAll("\\s+", " "))
-                .distinct().count();
-        return distinctPairs <= 2 || distinctPredicates == 1;
+        // A loop re-emits the same observation(s) many times: duplicates must dominate.
+        return exactDuplicates * 2 >= observed;
     }
 
-    private int batches_considered_placeholder() {
-        return 1;
+    /** Distinct call-scope identity for witness pipeline stages, so traces and replay keys
+     * never collide with node/type passes sharing the same batch and attempt numbers. */
+    private CrawlLlmDispatcher.LlmCallScope witnessScope(
+            UnifiedCrawlJob job, String corpusSnapshotId, String stage,
+            int batch, int attempt) {
+        String jobId = hasText(job.getJobId()) ? job.getJobId() : "crawl";
+        return new CrawlLlmDispatcher.LlmCallScope(
+                "SCHEMA_PREPASS", "relationship-witness-" + stage + "-" + batch, attempt,
+                jobId + ":corpus-schema:witness:" + stage + ":" + batch
+                        + (attempt > 1 ? ":attempt:" + attempt : ""),
+                null, null, corpusSnapshotId, null, 0, 0);
     }
 
     /** String enum schema over the submitted prompt-local window ids. */

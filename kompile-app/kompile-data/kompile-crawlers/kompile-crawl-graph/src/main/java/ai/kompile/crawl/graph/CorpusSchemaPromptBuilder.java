@@ -223,8 +223,8 @@ final class CorpusSchemaPromptBuilder {
         prompt.append("type: one specific directed predicate in UPPER_SNAKE_CASE matching [A-Z][A-Z0-9_]*; the label need not reuse the witnesses' wording, but each retained predicate must be supported by its cited witnesses.\n");
         prompt.append("connectionFamily: exactly one family from the trusted list below; never a family name as a predicate. HIERARCHICAL is an internal structural edge and must never be returned.\n");
         prompt.append("witnessIds: the witness ids supporting this predicate, copied from the checked observations below. Every retained predicate needs at least one cited witness that its evidence actually supports; do not cite witnesses for interpretations their quotes do not support, and never invent witness ids.\n");
-        prompt.append("Direction matters: one predicate may be supported by witnesses with consistent role direction; witnesses in the opposite direction support a distinct predicate or its explicit inverse mapping, never silently swapped roles.\n");
-        prompt.append("Omit a witness rather than force it into a predicate when its observation is qualified, ambiguous, or one-off; unsupported witnesses are simply not cited.\n");
+        prompt.append("Direction matters: one predicate may be supported by witnesses with consistent role direction; a witness whose roles run opposite to the predicate's source-to-target direction does not support that predicate. Do not group opposite-direction witnesses under it.");
+        prompt.append("Omit a witness rather than force it into a predicate when its observation is qualified or ambiguous; unsupported witnesses are simply not cited. A single clear supported witness is sufficient support for a reusable predicate.\n");
         prompt.append("Use an empty relationshipTypes array when no witness describes a reusable relationship.\n\n");
         appendHierarchyVocabulary(prompt, TypePass.RELATIONSHIP_TYPES);
         appendEstablishedTypes(prompt, establishedSchema, TypePass.RELATIONSHIP_TYPES);
