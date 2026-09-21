@@ -1984,67 +1984,102 @@ final class CorpusSchemaUnifier {
             }
             if (parsed.supported().isEmpty() && parsed.errors().isEmpty()) {
                 log.info("[Job {}] Witness consolidation completed with no supported predicates "
-                        + "for snapshot {} (valid empty over {} witnesses)",
+                                + "for snapshot {} (valid empty over {} witnesses)",
                         jobId, corpusSnapshotId, witnesses.size());
                 return new RelationshipDiscoveryResult(
                         RelationshipDiscoveryStatus.COMPLETED, witnesses, failures, 0,
                         List.of(), Map.of());
             }
             if (!parsed.supported().isEmpty()) {
-                // Per-row isolation at commit: try the full batch first; if the ontology
-                // rejects it (e.g. one generic/invalid predicate), quarantine rows named in
-                // the validator diagnostics and commit only the surviving valid siblings,
-                // mirroring the node-accumulator behavior. A single bad row must not erase
-                // unrelated valid predicates.
-                List<CorpusSchemaResponseParser.SupportedRelationship> pending =
-                        new ArrayList<>(parsed.supported());
-                List<String> commitErrors = new ArrayList<>();
-                GraphSchema committed = null;
-                for (int commitAttempt = 0; commitAttempt <= maxValidationRetries + 1
-                        && !pending.isEmpty(); commitAttempt++) {
-                    GraphSchema proposal = new GraphSchema(null,
-                            pending.stream()
-                                    .map(CorpusSchemaResponseParser.SupportedRelationship::type)
-                                    .toList(),
-                            null);
-                    CrawlOntology.UpdateResult update = ontology.updateTypesOnly(proposal);
-                    if (update.valid()) {
-                        committed = proposal;
-                        break;
+                // The parser's deterministic reducer already merged same-family duplicates
+                // and quarantined family-conflicting labels; apply the existing generic-label
+                // policy pre-commit so one generic row cannot fail the whole proposal, then
+                // commit only the surviving validated candidates.
+                List<CorpusSchemaResponseParser.SupportedRelationship> admissible =
+                        new ArrayList<>();
+                List<String> preCommitDiagnostics = new ArrayList<>(parsed.errors());
+                Set<String> establishedNodeLabels = ontology.snapshot().getAllNodeLabels();
+                Set<String> trustedFamilies =
+                        Set.copyOf(SchemaHierarchyVocabulary.CONNECTION_FAMILIES);
+                for (CorpusSchemaResponseParser.SupportedRelationship supported
+                        : parsed.supported()) {
+                    String label = supported.type().getType();
+                    String family = supported.type().getConnectionFamily();
+                    if (CorpusSchemaOverlayValidator.isGenericTypeName(label)) {
+                        preCommitDiagnostics.add("[SCHEMA_GENERIC_TYPE] Generated relationship "
+                                + "type is a placeholder/generic type: " + label);
+                        continue;
                     }
-                    commitErrors.addAll(update.errors());
-                    List<String> errors = List.copyOf(update.errors());
-                    pending.removeIf(supported -> errors.stream().anyMatch(error ->
-                            error.contains(supported.type().getType())));
-                    if (pending.size() == parsed.supported().size()) {
-                        // No row could be attributed to a diagnostic; avoid an infinite loop.
-                        break;
+                    if (trustedFamilies.contains(label)
+                            || SchemaHierarchyVocabulary.CONNECTION_FAMILIES.contains(label)) {
+                        preCommitDiagnostics.add("[SCHEMA_CONNECTION_PREDICATE] Relationship "
+                                + "type " + label + " is a family or internal structural edge; "
+                                + "emit a specific directed predicate");
+                        continue;
                     }
+                    if (establishedNodeLabels.contains(label)) {
+                        preCommitDiagnostics.add("[SCHEMA_TYPE_KIND_COLLISION] Relationship type "
+                                + "collides with node type: " + label);
+                        continue;
+                    }
+                    admissible.add(supported);
                 }
-                if (committed != null) {
-                    log.info("[Job {}] Witness consolidation retained {} relationship types "
-                                    + "from {} witnesses for snapshot {} ({} row diagnostics)",
-                            jobId, committed.getRelationshipTypes().size(), witnesses.size(),
-                            corpusSnapshotId, commitErrors.size());
-                    Map<String, List<String>> support = new LinkedHashMap<>();
-                    committed.getRelationshipTypes().forEach(type ->
-                            parsed.supported().stream()
-                                    .filter(supported -> supported.type().getType()
-                                            .equals(type.getType()))
-                                    .findFirst()
-                                    .ifPresent(supported -> support.put(
-                                            supported.type().getType(), supported.witnessIds())));
-                    if (!commitErrors.isEmpty()) {
-                        failures.addAll(commitErrors);
+                if (admissible.isEmpty()) {
+                    // All candidates were generic/invalid: safe empty outcome with diagnostics,
+                    // not a model retry (duplicates/conflicts are resolved locally).
+                    if (!preCommitDiagnostics.isEmpty()) {
+                        failures.addAll(preCommitDiagnostics);
                     }
+                    log.warn("[Job {}] Witness consolidation produced no admissible predicates "
+                                    + "for snapshot {} ({} raw rows): {}",
+                            jobId, corpusSnapshotId, parsed.rawRows(), preCommitDiagnostics);
                     return new RelationshipDiscoveryResult(
                             RelationshipDiscoveryStatus.COMPLETED, witnesses, failures,
-                            parsed.supported().size(), List.of(), support);
+                            0, List.of(), Map.of());
                 }
-                validationErrors = conciseValidationErrors(commitErrors);
-            } else {
-                validationErrors = conciseValidationErrors(parsed.errors());
+                GraphSchema proposal = new GraphSchema(null,
+                        admissible.stream()
+                                .map(CorpusSchemaResponseParser.SupportedRelationship::type)
+                                .toList(),
+                        null);
+                CrawlOntology.UpdateResult update = ontology.updateTypesOnly(proposal);
+                if (update.valid()) {
+                    // Merged support: every retained predicate carries its full union of
+                    // unique citations (duplicates already merged by the reducer).
+                    Map<String, List<String>> support = new LinkedHashMap<>();
+                    admissible.forEach(supported ->
+                            support.put(supported.type().getType(), supported.witnessIds()));
+                    if (!preCommitDiagnostics.isEmpty()) {
+                        failures.addAll(preCommitDiagnostics);
+                    }
+                    log.info("[Job {}] Witness consolidation retained {} unique predicates "
+                                    + "from {} raw rows for snapshot {} ({} same-family rows merged, "
+                                    + "{} labels quarantined for family conflict, {} other rejections)",
+                            jobId, admissible.size(), parsed.rawRows(),
+                            corpusSnapshotId, parsed.sameFamilyDuplicatesMerged(),
+                            parsed.labelsQuarantinedForFamilyConflict(),
+                            parsed.otherRejectedRows() + preCommitDiagnostics.size()
+                                    - parsed.errors().size());
+                    // Same-family dedup alone is not failure; quarantines/other rejections
+                    // surface as recovered diagnostics on a COMPLETED result.
+                    return new RelationshipDiscoveryResult(
+                            RelationshipDiscoveryStatus.COMPLETED, witnesses, failures,
+                            admissible.size(), List.of(), support);
+                }
+                // Whole-proposal validation is the final safety check (e.g. authoritative
+                // conflicts); report the failure explicitly rather than repairing by errors.
+                validationErrors = conciseValidationErrors(update.errors());
+                failures.add("consolidation commit rejected: " + validationErrors);
+                log.error("[Job {}] Witness consolidation commit FAILED for snapshot {}: {}",
+                        jobId, corpusSnapshotId, validationErrors);
+                if (exhaustedBatches > 0) {
+                    return new RelationshipDiscoveryResult(
+                            RelationshipDiscoveryStatus.PARTIAL, witnesses, failures,
+                            0, List.of(), Map.of());
+                }
+                return RelationshipDiscoveryResult.failed(failures, witnesses);
             }
+            validationErrors = conciseValidationErrors(parsed.errors());
         }
         failures.add("consolidation exhausted: " + validationErrors);
         // Exhausted consolidation is not valid emptiness: the checked witness inventory is

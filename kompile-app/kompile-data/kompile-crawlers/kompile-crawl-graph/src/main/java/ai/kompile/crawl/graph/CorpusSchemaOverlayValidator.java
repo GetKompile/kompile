@@ -43,6 +43,12 @@ final class CorpusSchemaOverlayValidator {
             "PHRASE", "RELATIONSHIP", "RELATIONS", "CO_OCCURS", "CONNECTION",
             "CONNECTIONS", "LINK", "LINKS", "ASSOCIATION", "ASSOCIATIONS"
     );
+
+    /** Package accessor: witness-consolidation admission applies the same generic-label
+     * policy pre-commit so one generic row cannot fail the whole ontology proposal. */
+    static boolean isGenericTypeName(String canonicalName) {
+        return GENERIC_TYPE_NAMES.contains(canonicalName);
+    }
     private static final List<String> ALLOWED_PROPERTY_TYPES = List.of(
             "String",
             "Integer",

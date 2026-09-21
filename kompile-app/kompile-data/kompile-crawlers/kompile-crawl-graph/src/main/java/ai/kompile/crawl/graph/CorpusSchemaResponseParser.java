@@ -284,18 +284,17 @@ final class CorpusSchemaResponseParser {
     }
 
     /**
-     * Parses a witness-aware consolidation response. Each row needs exactly type,
-     * connectionFamily, and witnessIds; identifiers and families still satisfy the existing
-     * structural validators, and every cited witness id must exist in the request inventory.
-     * Structural citation checks prove reference integrity only, never semantic truth.
+     * Parses a witness-aware consolidation response with deterministic structural reduction:
+     * validated rows are grouped by exact type label; same-family duplicates merge their
+     * unique citations; a label proposed under conflicting trusted families is quarantined
+     * (never resolved by first/last/majority vote) while unrelated valid labels survive.
+     * Structural checks prove reference integrity and conflict freedom, never semantic truth.
      */
     static WitnessConsolidationResult parseWitnessConsolidation(
             Map<String, Object> arguments,
             java.util.Set<String> knownWitnessIds,
             java.util.Set<String> trustedFamilies,
             java.util.Set<String> authoritativeLabels) {
-        List<SupportedRelationship> supported = new ArrayList<>();
-        List<String> errors = new ArrayList<>();
         if (arguments == null || !arguments.keySet().equals(java.util.Set.of("relationshipTypes"))
                 || !(arguments.get("relationshipTypes") instanceof List<?> rows)) {
             return new WitnessConsolidationResult(List.of(), List.of(
@@ -305,6 +304,11 @@ final class CorpusSchemaResponseParser {
             return new WitnessConsolidationResult(List.of(), List.of(
                     "[WITNESS_CONSOLIDATION] relationshipTypes must contain at most 32 objects"));
         }
+        // label -> (family -> unique citations), insertion-ordered for determinism.
+        Map<String, Map<String, List<String>>> grouped = new LinkedHashMap<>();
+        Map<String, Integer> rawRowsPerLabel = new LinkedHashMap<>();
+        List<String> errors = new ArrayList<>();
+        int malformedRows = 0;
         for (int index = 0; index < rows.size(); index++) {
             String path = "relationshipTypes[" + index + "]";
             try {
@@ -339,26 +343,68 @@ final class CorpusSchemaResponseParser {
                     }
                 }
                 if (authoritativeLabels.contains(type)) {
-                    // Discovery cannot redefine trusted types; accounting only.
+                    // Discovery cannot redefine trusted types; accounting only, no failure.
                     continue;
                 }
-                var relationship = new RelationshipType(type,
-                        "Corpus-supported relationship " + type + ".", null, List.of(), family);
-                supported.add(new SupportedRelationship(relationship, List.copyOf(cited)));
+                grouped.computeIfAbsent(type, ignored -> new LinkedHashMap<>())
+                        .computeIfAbsent(family, ignored -> new ArrayList<>())
+                        .addAll(cited);
+                rawRowsPerLabel.merge(type, 1, Integer::sum);
             } catch (IllegalArgumentException invalidRow) {
                 errors.add(path + ": " + conciseErrorMessage(invalidRow));
+                malformedRows++;
             }
         }
-        return new WitnessConsolidationResult(List.copyOf(supported), List.copyOf(errors));
+        // Deterministic reduction: exact-label grouping; family conflict quarantines the
+        // label; same-family duplicates merge their unique citations.
+        List<SupportedRelationship> supported = new ArrayList<>();
+        int quarantinedLabels = 0;
+        int sameFamilyMerges = 0;
+        for (Map.Entry<String, Map<String, List<String>>> labelEntry : grouped.entrySet()) {
+            String label = labelEntry.getKey();
+            Map<String, List<String>> byFamily = labelEntry.getValue();
+            if (byFamily.size() > 1) {
+                List<String> families = new ArrayList<>(byFamily.keySet());
+                java.util.Collections.sort(families);
+                errors.add("[WITNESS_FAMILY_CONFLICT] relationship type " + label
+                        + " was proposed under conflicting trusted families "
+                        + families + "; the label is quarantined for this consolidation scope");
+                quarantinedLabels++;
+                continue;
+            }
+            String family = byFamily.keySet().iterator().next();
+            List<String> citations = byFamily.get(family);
+            sameFamilyMerges += Math.max(0, rawRowsPerLabel.getOrDefault(label, 1) - 1);
+            supported.add(new SupportedRelationship(new RelationshipType(label,
+                    "Corpus-supported relationship " + label + ".", null, List.of(), family),
+                    List.copyOf(citations)));
+        }
+        supported.sort(java.util.Comparator.comparing(supportedRelationship ->
+                supportedRelationship.type().getType()));
+        return new WitnessConsolidationResult(
+                List.copyOf(supported), List.copyOf(errors),
+                rows.size(), supported.size(), sameFamilyMerges, quarantinedLabels,
+                malformedRows);
     }
 
-    /** Witness-aware consolidation result: supported predicates plus per-row diagnostics. */
+    /** Witness-aware consolidation result: supported predicates plus per-row diagnostics
+     * and structured reduction counts (never report raw rows as retained predicates). */
     record WitnessConsolidationResult(
             List<SupportedRelationship> supported,
-            List<String> errors) {
+            List<String> errors,
+            int rawRows,
+            int uniqueRetainedPredicates,
+            int sameFamilyDuplicatesMerged,
+            int labelsQuarantinedForFamilyConflict,
+            int otherRejectedRows) {
         WitnessConsolidationResult {
             supported = supported == null ? List.of() : List.copyOf(supported);
             errors = errors == null ? List.of() : List.copyOf(errors);
+        }
+
+        /** Backward-compatible two-field construction (counts zeroed). */
+        WitnessConsolidationResult(List<SupportedRelationship> supported, List<String> errors) {
+            this(supported, errors, 0, supported == null ? 0 : supported.size(), 0, 0, 0);
         }
     }
 
