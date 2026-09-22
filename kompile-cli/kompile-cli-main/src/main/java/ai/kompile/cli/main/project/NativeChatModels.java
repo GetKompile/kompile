@@ -7,6 +7,7 @@ package ai.kompile.cli.main.project;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.ChatProvider;
 import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
+import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelDiscoveryHttp;
@@ -190,8 +191,9 @@ public final class NativeChatModels {
                         || protocol == DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES;
                 // Structured output is a transport capability declared by the
                 // provider descriptor (see ProviderStructuredOutputCapabilities);
-                // DirectLlmClient emits response_format json_schema for every
-                // provider that declares it. Anthropic/custom chat routes without
+                // DirectLlmClient emits response_format json_schema, or documented
+                // json_object mode with a prompt-level schema, for every provider
+                // that declares support. Anthropic/custom chat routes without
                 // a declared contract still fall back to validated text.
                 case "json_schema" -> protocol == DirectLlmClient.WireProtocol.OPENAI_RESPONSES
                         || (protocol == DirectLlmClient.WireProtocol.OPENAI_CHAT
@@ -283,8 +285,13 @@ public final class NativeChatModels {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("Positive chat timeout required");
         if (maxResponseChars < 1) throw new IllegalArgumentException("Positive response limit required");
         selection.requireSupported(schema != null ? "json_schema" : attachments.isEmpty() ? "text" : "image");
-        if (schema != null && (!schema.isObject() || !attachments.isEmpty())) throw new IOException(
-                "CHAT_MODEL strict JSON requires a schema object and text-only input; combined image/schema requests are unsupported");
+        if (schema != null && (!schema.isObject())) throw new IOException(
+                "CHAT_MODEL strict JSON requires a schema object");
+        if (schema != null && !attachments.isEmpty()
+                && !ProviderStructuredOutputCapabilities.forProvider(selection.provider()).isJsonObjectOnly())
+            throw new IOException(
+                "CHAT_MODEL strict JSON with image input is only available on object-mode structured-output providers "
+                        + "(schema travels prompt-level; response_format is text-model-only on Z.AI)");
         Thread owner = Thread.currentThread();
         if (owner.isInterrupted()) throw new InterruptedException("CHAT_MODEL cancelled");
         AtomicLong streamedChars = new AtomicLong();
@@ -315,7 +322,10 @@ public final class NativeChatModels {
                         "Native chat provider authentication/configuration is unavailable; configure this provider with kompile chat --setup");
                 DirectLlmClient.StreamResult response = schema == null
                         ? client.streamChat(prompt, systemPrompt, null, null, selection.model(), attachments)
-                        : client.streamOneShotJson(prompt, systemPrompt, selection.model(), "pipeline_output", schema, true);
+                        : client.streamOneShotJson(prompt, systemPrompt, selection.model(), "pipeline_output",
+                                schema, true,
+                                ProviderStructuredOutputCapabilities.forProvider(selection.provider()).isJsonObjectOnly()
+                                        ? attachments : List.of());
                 if (streamedChars.get() > maxResponseChars) throw new IOException("CHAT_MODEL response exceeds maxResponseChars=" + maxResponseChars);
                 if (cancelled.get() || worker.isInterrupted() || owner.isInterrupted() || (response != null && response.cancelled))
                     throw new InterruptedException("CHAT_MODEL cancelled");
@@ -332,8 +342,16 @@ public final class NativeChatModels {
                 if (text.isEmpty()) throw new IOException("Native chat provider returned empty text");
                 if (text.length() > maxResponseChars) throw new IOException("CHAT_MODEL response exceeds maxResponseChars=" + maxResponseChars);
                 if (schema != null) {
-                    try { MAPPER.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text); }
-                    catch (IOException invalid) { throw new IOException("Native chat provider returned invalid JSON for strict schema output"); }
+                    try {
+                        MAPPER.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
+                    } catch (IOException invalid) {
+                        String repaired = repairStrictJson(text);
+                        if (repaired == null) {
+                            throw new IOException("Native chat provider returned invalid JSON for strict schema output"
+                                    + strictSchemaFailureDetail(response, invalid, text));
+                        }
+                        text = repaired;
+                    }
                 }
                 return text;
             }
@@ -492,6 +510,68 @@ public final class NativeChatModels {
         String compact = failureMessage.replaceAll("[\\r\\n\\t]+", " ").strip();
         if (compact.length() > 600) compact = compact.substring(0, 600) + "...";
         return compact;
+    }
+
+    /**
+     * Bounded, credential-safe diagnostic for a strict-schema parse failure: parser
+     * reason, stream outcome signals, and a sanitized response prefix. Without these
+     * the failure cannot be attributed to truncation, framing, or malformed JSON.
+     */
+    /**
+     * Deterministic, bounded repair of a strict-schema answer that arrived wrapped
+     * in markdown fencing or surrounded by prose. The candidate only replaces the
+     * raw text when it parses cleanly; anything else (including a cut-off object)
+     * falls through to the enriched failure diagnostic. One pass, no retries, no
+     * additional model calls.
+     */
+    private static String repairStrictJson(String raw) {
+        String stripped = stripJsonFencing(raw);
+        if (!stripped.equals(raw) && parsesStrictly(stripped)) return stripped;
+        int start = stripped.indexOf('{');
+        int end = stripped.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            String candidate = stripped.substring(start, end + 1);
+            if (parsesStrictly(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    private static boolean parsesStrictly(String candidate) {
+        try {
+            MAPPER.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(candidate);
+            return true;
+        } catch (IOException invalid) {
+            return false;
+        }
+    }
+
+    private static String stripJsonFencing(String raw) {
+        String trimmed = raw.strip();
+        if (trimmed.startsWith("```")) {
+            int firstBreak = trimmed.indexOf('\n');
+            if (firstBreak > 0) trimmed = trimmed.substring(firstBreak + 1);
+            int fence = trimmed.lastIndexOf("```");
+            if (fence >= 0) trimmed = trimmed.substring(0, fence);
+        }
+        return trimmed.strip();
+    }
+
+    private static String strictSchemaFailureDetail(
+            DirectLlmClient.StreamResult response, IOException cause, String text) {
+        StringBuilder detail = new StringBuilder(160);
+        detail.append("; parser=").append(cause.getClass().getSimpleName()).append(": ")
+                .append(safeFailureDetail(String.valueOf(cause.getMessage())));
+        if (response != null) {
+            if (response.isTruncatedDetected()) detail.append(", truncated=finish_reason:length");
+            if (response.isRefusalDetected()) detail.append(", refused=content_filter");
+            if (!response.isTerminalEventSeen()) detail.append(", noTerminalStreamEvent=true");
+        }
+        if (text != null && !text.isBlank()) {
+            String prefix = text.replaceAll("[\\r\\n\\t]+", " ").strip();
+            if (prefix.length() > 240) prefix = prefix.substring(0, 240) + "...";
+            detail.append(", responsePrefix=\"").append(prefix).append('\"');
+        }
+        return detail.toString();
     }
 
     private static Duration min(Duration left, Duration right) { return left.compareTo(right) <= 0 ? left : right; }

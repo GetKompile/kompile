@@ -30,15 +30,22 @@ import java.util.concurrent.ConcurrentHashMap;
  * until a live call.</p>
  */
 public record ProviderStructuredOutputCapabilities(
-        boolean jsonSchema, String sourceUrl, String notice) {
+        boolean jsonSchema, boolean jsonObjectOnly, String sourceUrl, String notice) {
     private static final Map<String, ProviderStructuredOutputCapabilities> CACHE = new ConcurrentHashMap<>();
 
     public boolean supportsJsonSchema() {
         return jsonSchema;
     }
 
+    /** True when the documented chat-completions contract is {@code response_format
+     *  {"type":"json_object"}} only (schema carried in messages, validated client-side).
+     *  Such providers must not receive an undocumented {@code json_schema} enum value. */
+    public boolean isJsonObjectOnly() {
+        return jsonObjectOnly;
+    }
+
     public static ProviderStructuredOutputCapabilities none() {
-        return new ProviderStructuredOutputCapabilities(false, "", "");
+        return new ProviderStructuredOutputCapabilities(false, false, "", "");
     }
 
     /** Only chat-completions transports with an implemented json_schema wire contract may opt in.
@@ -70,7 +77,8 @@ public record ProviderStructuredOutputCapabilities(
             if (!url.startsWith("https://") || notice.isBlank()) return none();
             LocalDate.parse(source.path("verifiedAt").asText(""));
             if (!structured.path("jsonSchema").asBoolean(false)) return none();
-            return new ProviderStructuredOutputCapabilities(true, url, notice);
+            return new ProviderStructuredOutputCapabilities(true,
+                    structured.path("jsonObjectOnly").asBoolean(false), url, notice);
         } catch (Exception invalidResource) {
             // Missing or malformed documentation must not enable the capability.
             return none();

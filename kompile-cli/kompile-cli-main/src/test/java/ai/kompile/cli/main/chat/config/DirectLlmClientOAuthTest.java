@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -1439,6 +1440,93 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void zaiOneShotJsonUsesObjectModeAndCarriesSchemaInSystemMessage() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, chatCompletionBody(mapper, "{\"ok\":true}"));
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "zai", "test-key", "glm-5.3-flash", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.createObjectNode()
+                    .put("type", "object")
+                    .put("additionalProperties", false)
+                    .set("properties", mapper.createObjectNode()
+                            .set("allowed", mapper.createObjectNode().put("type", "boolean")));
+
+            DirectLlmClient.StreamResult result = client.streamOneShotJson(
+                    "review", "return JSON", null, "judge verdict", schema, true);
+
+            assertFalse(result.failed, result.text);
+            JsonNode request = mapper.readTree(requestBody.get());
+            // Documented Z.AI object mode only — never the OpenAI-only json_schema enum.
+            assertEquals("json_object", request.path("response_format").path("type").asText());
+            assertFalse(request.path("response_format").has("json_schema"));
+            String system = request.path("messages").path(0).path("content").asText();
+            assertTrue(system.contains("single JSON object"), system);
+            assertTrue(system.contains("allowed"), "schema properties must reach the system message");
+            assertTrue(system.contains("return JSON"), "existing system instructions must be preserved");
+            assertEquals("review", request.path("messages").path(1).path("content").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void zaiImagePlusSchemaOmitsResponseFormatAndCarriesContractInSystemMessage() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = server("/chat/completions", exchange -> {
+            requestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            respond(exchange, 200, chatCompletionBody(mapper, "{\"ocr\":\"ok\"}"));
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "zai", "test-key", "glm-5.3-flash", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            JsonNode schema = mapper.createObjectNode()
+                    .put("type", "object")
+                    .set("properties", mapper.createObjectNode()
+                            .set("ocr", mapper.createObjectNode().put("type", "string")));
+            DirectLlmClient.AttachmentInput image = new DirectLlmClient.AttachmentInput(
+                    "page.png", "image/png", true, "aWNvbi1ieXRlcw==", null);
+
+            DirectLlmClient.StreamResult result = client.streamOneShotJson(
+                    "extract the table", "ocr assistant", null, "pipeline_output",
+                    schema, true, List.of(image));
+
+            assertFalse(result.failed, result.text);
+            JsonNode request = mapper.readTree(requestBody.get());
+            // response_format is documented for text models only; multimodal requests
+            // carry the contract prompt-level instead.
+            assertFalse(request.has("response_format"), request.toString());
+            String system = request.path("messages").path(0).path("content").asText();
+            assertTrue(system.contains("single JSON object"), system);
+            assertTrue(system.contains("pipeline_output"), system);
+            JsonNode user = request.path("messages").path(1);
+            assertTrue(user.path("content").isArray(), user.toString());
+            assertEquals("image_url", user.path("content").path(0).path("type").asText());
+            assertEquals("data:image/png;base64,aWNvbi1ieXRlcw==",
+                    user.path("content").path(0).path("image_url").path("url").asText());
+            assertEquals("extract the table",
+                    user.path("content").path(1).path("text").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static String chatCompletionBody(ObjectMapper mapper, String content) throws IOException {
+        return "data: {\"choices\":[{\"delta\":{\"content\":"
+                + mapper.writeValueAsString(content) + ",\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n\n";
+    }
+
+    @Test
     void oneShotJsonAddsChatCompletionsStructuredOutput() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         AtomicReference<String> requestBody = new AtomicReference<>();
@@ -1545,6 +1633,7 @@ class DirectLlmClientOAuthTest {
                     assertTrue(rejected.failureMessage.contains("kompile auth login anthropic"));
                     assertFalse(rejected.text.contains("expired-secret"));
                     assertEquals(0, calls.get());
+                    assertNull(store.read("anthropic", "personal"), "Expired grant is purged before the request");
                     store.put("anthropic", "another-name", ManagedCredential.oauth(
                             "new-secret", "new-refresh", System.currentTimeMillis() + 3_600_000L, identity), true);
                     DirectLlmClient.StreamResult recovered = client.streamChat("hello", "system", null, null);
@@ -1552,7 +1641,8 @@ class DirectLlmClientOAuthTest {
                     assertEquals("recovered", recovered.text);
                     assertEquals(1, calls.get());
                     assertEquals(1, store.list("anthropic").size());
-                    assertEquals("personal", store.activeCredentialName("anthropic"));
+                    assertEquals("another-name", store.activeCredentialName("anthropic"));
+                    assertEquals("another-name", store.defaultCredentialName("anthropic"));
                 }
             } finally {
                 server.stop(0);

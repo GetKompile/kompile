@@ -1,6 +1,7 @@
 /* Copyright 2025 Kompile Inc. Licensed under the Apache License, Version 2.0. */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -437,6 +438,80 @@ class NativeChatModelsTest {
             assertTrue(failure.getMessage().contains("invalid_json_schema"), failure.getMessage());
             assertFalse(failure.getMessage().contains("fixture-secret"));
             assertFalse(failure.getMessage().contains("schema prepass"));
+        } finally { server.stop(0); }
+    }
+
+    @Test
+    void strictSchemaParseFailureCarriesParserReasonOutcomeSignalsAndResponsePrefix() throws Exception {
+        AtomicReference<String> output = new AtomicReference<>("Sorry, I could not produce JSON for this.");
+        HttpServer server = server(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, chatResponse(output.get()));
+        });
+        try {
+            configure("openai", url(server));
+            Exception failure = assertThrows(Exception.class, () -> NativeChatModels.call(root,
+                    NativeChatModels.resolve(root, null, null),
+                    "Return an object with ok set to true.", "system",
+                    List.of(), mapper.readTree(
+                            "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}}}"),
+                    Duration.ofSeconds(2), 4096));
+            String message = failure.getMessage();
+            assertTrue(message.contains("invalid JSON for strict schema output"), message);
+            assertTrue(message.contains("parser="), "parser reason must be retained: " + message);
+            assertTrue(message.contains("responsePrefix="), "bounded response prefix must be retained: " + message);
+            assertTrue(message.contains("Sorry, I could not produce JSON"), message);
+            assertFalse(message.contains("truncated="), "clean stop must not claim truncation: " + message);
+            assertFalse(message.contains("fixture-secret"));
+        } finally { server.stop(0); }
+    }
+
+    @Test
+    void fencedAndProseWrappedJsonIsRepairedLocallyWithoutAnotherRequest() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            respond(exchange, chatResponse("Sure! Here is the JSON you asked for:\n```json\n"
+                    + "{\"ok\": true}\n```\nLet me know if you need anything else."));
+        });
+        try {
+            configure("openai", url(server));
+            String result = NativeChatModels.call(root,
+                    NativeChatModels.resolve(root, null, null),
+                    "Return an object with ok set to true.", "system",
+                    List.of(), mapper.readTree(
+                            "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}}}"),
+                    Duration.ofSeconds(2), 4096);
+            assertEquals("{\"ok\": true}", result, "the strict answer must be the extracted JSON only");
+            assertEquals(1, requests.size(), "repair must be deterministic and request-free");
+        } finally { server.stop(0); }
+    }
+
+    @Test
+    void zaiSchemaWithImageAttachmentIsAcceptedForMultimodalStructuredOutput() throws Exception {
+        List<JsonNode> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = server(exchange -> {
+            JsonNode captured = mapper.readTree(exchange.getRequestBody());
+            requests.add(captured);
+            respond(exchange, chatResponse("{\"ocr\":\"ok\"}"));
+        });
+        try {
+            configure("zai", url(server));
+            String result = NativeChatModels.call(root,
+                    NativeChatModels.resolve(root, null, null),
+                    "extract the table", "ocr assistant",
+                    List.of(new DirectLlmClient.AttachmentInput(
+                            "page.png", "image/png", true, "aWNvbi1ieXRlcw==", null)),
+                    mapper.readTree("{\"type\":\"object\",\"properties\":{\"ocr\":{\"type\":\"string\"}}}"),
+                    Duration.ofSeconds(2), 4096);
+            assertEquals("{\"ocr\":\"ok\"}", result);
+            JsonNode request = requests.get(0);
+            assertFalse(request.has("response_format"), request.toString());
+            assertTrue(request.path("messages").path(0).path("content").asText()
+                    .contains("single JSON object"), request.toString());
+            assertEquals("image_url", request.path("messages").path(1).path("content")
+                    .path(0).path("type").asText());
         } finally { server.stop(0); }
     }
 

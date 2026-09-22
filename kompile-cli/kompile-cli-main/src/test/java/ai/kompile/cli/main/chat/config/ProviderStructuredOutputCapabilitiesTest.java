@@ -23,6 +23,18 @@ class ProviderStructuredOutputCapabilitiesTest {
     }
 
     @Test
+    void zaiIsObjectModeOnlyAndOthersAreNot() {
+        // Z.AI documents response_format.type as text|json_object only; json_schema must
+        // never be sent there (it yields prose instead of JSON on glm-5.3-flash).
+        assertTrue(ProviderStructuredOutputCapabilities.forProvider("zai").isJsonObjectOnly());
+        for (String provider : new String[] {"openai", "groq", "xai", "ollama", "openrouter"}) {
+            assertFalse(ProviderStructuredOutputCapabilities.forProvider(provider).isJsonObjectOnly(),
+                    provider + " documents native json_schema and must not be forced into object mode");
+        }
+        assertFalse(ProviderStructuredOutputCapabilities.none().isJsonObjectOnly());
+    }
+
+    @Test
     void responsesProtocolAndUndeclaredProvidersResolveToNone() {
         // openai-codex rides the Responses protocol (text.format), gated before this descriptor.
         assertFalse(ProviderStructuredOutputCapabilities.forProvider("openai-codex").supportsJsonSchema());

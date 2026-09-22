@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ProviderStructuredOutputCapabilities;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.pipeline.serving.definition.ChatPipelineComposition;
 import ai.kompile.pipeline.serving.definition.PipelineDefinitionValidator;
@@ -250,13 +251,17 @@ public final class ChatModelPipelineRunner {
         if (schema != null && !(schema instanceof Map<?, ?>)) throw new IOException("CHAT_MODEL jsonSchema must be an object");
         if (schema != null || "json_schema".equals(operation)) {
             selection.requireSupported("json_schema");
-            if (schema == null || kind != MediaKind.TEXT) throw new IOException("CHAT_MODEL strict JSON requires a schema and text input");
+            boolean objectMode = ProviderStructuredOutputCapabilities
+                    .forProvider(selection.provider()).isJsonObjectOnly();
+            if (schema == null || (kind != MediaKind.TEXT && !objectMode))
+                throw new IOException("CHAT_MODEL strict JSON requires a schema"
+                        + (objectMode ? "" : " and text input"));
         }
         if (operation != null) {
             selection.requireSupported(operation);
             if (("image".equals(operation) && kind != MediaKind.IMAGE)
                     || ("pdf".equals(operation) && kind != MediaKind.PDF)
-                    || (Set.of("text", "graph_extraction", "json_schema").contains(operation) && kind != MediaKind.TEXT))
+                    || (Set.of("text", "graph_extraction").contains(operation) && kind != MediaKind.TEXT))
                 throw new IOException("CHAT_MODEL operation does not match the supplied media type");
         }
         if (kind == MediaKind.IMAGE || kind == MediaKind.PDF) selection.requireSupported("image");

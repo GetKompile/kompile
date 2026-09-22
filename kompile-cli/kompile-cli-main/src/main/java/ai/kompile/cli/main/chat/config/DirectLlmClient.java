@@ -444,7 +444,7 @@ public class DirectLlmClient implements AutoCloseable {
             return new ResolvedRoute(WireProtocol.ANTHROPIC_MESSAGES, false,
                     ProviderCompactionCapabilities.generic());
         }
-        if (usesGitHubOpenAiResponses(effectiveModel)) {
+        if (usesOpenAiResponses(effectiveModel) || usesGitHubOpenAiResponses(effectiveModel)) {
             return new ResolvedRoute(WireProtocol.OPENAI_RESPONSES, false,
                     ProviderCompactionCapabilities.generic());
         }
@@ -1160,6 +1160,21 @@ public class DirectLlmClient implements AutoCloseable {
     public StreamResult streamOneShotJson(
             String prompt, String systemPrompt, String modelOverride,
             String schemaName, JsonNode schema, boolean strict) {
+        return streamOneShotJson(prompt, systemPrompt, modelOverride,
+                schemaName, schema, strict, List.of());
+    }
+
+    /**
+     * One-shot structured-output completion with optional image attachments.
+     * Intended for object-mode providers (schema rides prompt-level; multimodal
+     * requests omit response_format). Schema-transport providers (native
+     * json_schema) accept only text for structured output; attachments there are
+     * rejected by the caller-side gate in {@code NativeChatModels.call}.
+     */
+    public StreamResult streamOneShotJson(
+            String prompt, String systemPrompt, String modelOverride,
+            String schemaName, JsonNode schema, boolean strict,
+            List<AttachmentInput> attachments) {
         if (schema == null || !schema.isObject()) {
             throw new IllegalArgumentException("Structured output schema must be a JSON object");
         }
@@ -1180,7 +1195,8 @@ public class DirectLlmClient implements AutoCloseable {
             isolated.setConnectivityEventConsumer(connectivityEventConsumer);
             isolated.requestedJsonOutput = new JsonOutputSpec(
                     normalizeJsonSchemaName(schemaName), schema.deepCopy(), strict);
-            return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride);
+            return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride,
+                    attachments == null ? List.of() : List.copyOf(attachments));
         }
     }
 
@@ -1307,6 +1323,14 @@ public class DirectLlmClient implements AutoCloseable {
                 && !model.startsWith("claude-fable-");
     }
 
+    private boolean usesOpenAiResponses(String model) {
+        // Astra function calling requires Responses. Keep the same protocol on
+        // tool-free turns too, so replay and subsequent tool results agree.
+        // Do not infer protocol support for third-party OpenAI-compatible APIs.
+        return "openai".equals(config.getProvider()) && model != null
+                && (model.equals("gpt-6-astra") || model.startsWith("gpt-6-astra-"));
+    }
+
     private boolean usesGitHubOpenAiResponses(String model) {
         if (!"github-copilot".equals(config.getProvider()) || model == null) {
             return false;
@@ -1404,6 +1428,22 @@ public class DirectLlmClient implements AutoCloseable {
                         .supportsJsonSchema()) {
             return;
         }
+        if (ProviderStructuredOutputCapabilities.forProvider(config.getProvider()).isJsonObjectOnly()) {
+            // Documented object mode (Z.AI): the schema must travel in the system
+            // message. Sending the OpenAI-only json_schema enum value here yields
+            // prose instead of JSON (observed on glm-5.3-flash) and broke
+            // strict-schema pipelines.
+            ensureJsonSchemaInSystemMessage(request);
+            if (!requestHasImageContent(request)) {
+                ObjectNode objectMode = objectMapper.createObjectNode();
+                objectMode.put("type", "json_object");
+                request.set("response_format", objectMode);
+            }
+            // response_format is documented for text models only; on image-bearing
+            // requests the system-message contract alone carries the schema, so the
+            // multimodal flow (e.g. glm-5.3-flash OCR) stays on one request.
+            return;
+        }
         ObjectNode responseFormat = objectMapper.createObjectNode();
         responseFormat.put("type", "json_schema");
         ObjectNode jsonSchema = responseFormat.putObject("json_schema");
@@ -1412,6 +1452,37 @@ public class DirectLlmClient implements AutoCloseable {
         // Do not apply the native Codex compatibility reduction to generic providers.
         jsonSchema.set("schema", output.schema().deepCopy());
         request.set("response_format", responseFormat);
+    }
+
+    /** Carry the requested schema in the system prompt for object-mode providers (Z.AI). */
+    private void ensureJsonSchemaInSystemMessage(ObjectNode request) {
+        JsonOutputSpec output = requestedJsonOutput;
+        if (output == null) return;
+        JsonNode messages = request.get("messages");
+        if (!(messages instanceof ArrayNode messageArray) || messageArray.isEmpty()) return;
+        JsonNode first = messageArray.get(0);
+        String systemContract = "You must respond with a single JSON object and nothing else.\n"
+                + "The JSON must conform exactly to this schema (\"" + output.name() + "\"):\n"
+                + output.schema().toString();
+        String existing = first.path("content").asText("");
+        if (!existing.isBlank()) {
+            systemContract = systemContract + "\n\nAdditional instructions:\n" + existing;
+        }
+        ((ObjectNode) first).put("content", systemContract);
+    }
+
+    /** True when any request message carries an image block (multimodal request). */
+    private static boolean requestHasImageContent(ObjectNode request) {
+        JsonNode messages = request.get("messages");
+        if (!(messages instanceof ArrayNode array)) return false;
+        for (JsonNode message : array) {
+            JsonNode content = message.path("content");
+            if (!content.isArray()) continue;
+            for (JsonNode block : content) {
+                if ("image_url".equals(block.path("type").asText())) return true;
+            }
+        }
+        return false;
     }
 
     private static JsonNode normalizeNativeCodexStrictSchema(JsonNode schema) {
@@ -1653,11 +1724,12 @@ public class DirectLlmClient implements AutoCloseable {
                 ObjectNode text = objectMapper.createObjectNode();
                 text.put("verbosity", "low");
                 request.set("text", text);
-                ArrayNode include = objectMapper.createArrayNode();
-                include.add("reasoning.encrypted_content");
-                request.set("include", include);
                 request.put("tool_choice", "auto");
                 request.put("parallel_tool_calls", true);
+            }
+            if (codex || "openai".equals(config.getProvider())) {
+                // store=false: retain opaque reasoning for later tool turns.
+                request.putArray("include").add("reasoning.encrypted_content");
             }
             applyResponsesJsonOutput(request, codex);
 
@@ -1943,6 +2015,10 @@ public class DirectLlmClient implements AutoCloseable {
             responseTool.set("parameters", parameters);
             if (codex) {
                 responseTool.putNull("strict");
+            } else if ("openai".equals(config.getProvider())) {
+                // MCP schemas permit omitted optional arguments. Responses
+                // must not silently normalize them into strict required fields.
+                responseTool.put("strict", false);
             }
             tools.add(responseTool);
         }
@@ -3265,7 +3341,38 @@ public class DirectLlmClient implements AutoCloseable {
             messages.add(userMsg);
         }
 
-        return messages;
+        return "zai".equalsIgnoreCase(config.getProvider())
+                ? normalizeZaiMessages(messages) : messages;
+    }
+
+    private ArrayNode normalizeZaiMessages(ArrayNode messages) {
+        ArrayNode normalized = objectMapper.createArrayNode();
+        for (JsonNode message : messages) {
+            JsonNode content = message.path("content");
+            boolean empty = content.isMissingNode() || content.isNull()
+                    || (content.isTextual() && content.asText().isBlank())
+                    || (content.isArray() && content.isEmpty());
+            if (!empty) {
+                normalized.add(message);
+                continue;
+            }
+            String role = message.path("role").asText();
+            if ("assistant".equals(role) && message.path("tool_calls").isArray()
+                    && !message.path("tool_calls").isEmpty()) {
+                // Z.AI represents tool-only assistant content as null, not "".
+                // Copy at the wire boundary so replay/checkpoint history is untouched.
+                ObjectNode toolCall = ((ObjectNode) message).deepCopy();
+                toolCall.putNull("content");
+                normalized.add(toolCall);
+            } else if ("tool".equals(role)) {
+                // Keep the call/result pair even when the tool produced no text.
+                ObjectNode toolResult = ((ObjectNode) message).deepCopy();
+                toolResult.put("content", "[Tool completed with no output.]");
+                normalized.add(toolResult);
+            }
+            // Empty plain-text turns carry no context and fail Z.AI validation.
+        }
+        return normalized;
     }
 
     private void appendOpenAiToolResultHistory(List<ToolCallResultInput> toolResults) {
@@ -3424,9 +3531,13 @@ public class DirectLlmClient implements AutoCloseable {
                     JsonNode chunk = objectMapper.readTree(data);
                     JsonNode errorNode = chunk.get("error");
                     if (errorNode != null && !errorNode.isNull()) {
+                        // OpenRouter-style upstream wraps carry the routed provider
+                        // and the real failure in metadata; surface them in both the
+                        // retry event reason and the terminal message.
                         appendProtocolError(
                                 result,
-                                errorNode.path("message").asText("Unknown provider error"),
+                                errorNode.path("message").asText("Unknown provider error")
+                                        + ProviderResponseFailure.upstreamDetail(errorNode),
                                 errorNode.toString());
                         terminal = true;
                         break;
@@ -4250,7 +4361,7 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private boolean recordKnownProviderFailure(StreamResult result, int status, String body) {
-        FailureKind kind = ProviderResponseFailure.classify(status, body);
+        FailureKind kind = ProviderResponseFailure.classify(config.getProvider(), status, body);
         if (kind == FailureKind.NONE) return false;
         recordTerminalOutcome(result, kind, status);
         return true;
@@ -4552,6 +4663,15 @@ public class DirectLlmClient implements AutoCloseable {
             total = saturatingAdd(total, Math.max(0L, cacheReadTokens));
             return saturatingAdd(total, Math.max(0L, cacheCreationTokens));
         }
+
+        /** Provider stated a length cutoff for this stream (finish_reason=length). */
+        public boolean isTruncatedDetected() { return truncatedDetected; }
+
+        /** Provider stated a content refusal for this stream (finish_reason=content_filter). */
+        public boolean isRefusalDetected() { return refusalDetected; }
+
+        /** True when a terminal stream event (finish_reason / [DONE] / response.completed) arrived. */
+        public boolean isTerminalEventSeen() { return terminalEventSeen; }
 
         public boolean isContextOverflow() {
             return failed && failureKind == FailureKind.CONTEXT_OVERFLOW;

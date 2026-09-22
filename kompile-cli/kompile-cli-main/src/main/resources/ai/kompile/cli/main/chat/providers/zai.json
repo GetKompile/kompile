@@ -12,10 +12,11 @@
     "metadataSource": "DOCUMENTED_FALLBACK",
     "source": {
       "url": "https://docs.z.ai/api-reference/llm/chat-completion",
-      "verifiedAt": "2026-09-17",
-      "notice": "Z.AI chat-completion accepts response_format json_schema for GLM models; model-level support still varies."
+      "verifiedAt": "2026-09-22",
+      "notice": "Z.AI documents response_format.type as text|json_object only; the schema belongs in the system message and is validated client-side. json_schema is not a documented enum value and is not sent."
     },
-    "jsonSchema": true
+    "jsonSchema": true,
+    "jsonObjectOnly": true
   },
   "profiles": [
     {

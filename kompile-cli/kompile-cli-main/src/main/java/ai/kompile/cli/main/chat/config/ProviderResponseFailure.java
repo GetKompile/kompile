@@ -44,6 +44,26 @@ final class ProviderResponseFailure {
         return detail.isEmpty() ? "" : " (" + detail + ")";
     }
 
+    /**
+     * Allowlisted detail from an in-band error envelope's upstream metadata
+     * (OpenRouter's {@code metadata.provider_name} / {@code metadata.raw}), so a
+     * bare "Provider returned error" wrap names the routed provider and its real
+     * failure. Bounded and sanitized via the same rules as HTTP diagnostics;
+     * never dumps the full envelope.
+     */
+    static String upstreamDetail(JsonNode error) {
+        if (error == null || error.isMissingNode() || error.isNull()) return "";
+        StringBuilder detail = new StringBuilder();
+        appendDiagnostic(detail, "upstream",
+                error.path("metadata").path("provider_name").asText(""));
+        appendDiagnostic(detail, "code", error.path("code").asText(""));
+        String raw = error.path("metadata").path("raw").asText("");
+        if (safeDiagnosticMessage(raw)) {
+            appendDiagnostic(detail, "raw", raw);
+        }
+        return detail.isEmpty() ? "" : " (" + detail + ")";
+    }
+
     private static boolean safeDiagnosticMessage(String value) {
         if (value == null || value.isBlank()) return false;
         String lower = value.toLowerCase(java.util.Locale.ROOT);
@@ -69,10 +89,24 @@ final class ProviderResponseFailure {
     }
 
     static DirectLlmClient.FailureKind classify(int status, String body) {
+        return classify(null, status, body);
+    }
+
+    static DirectLlmClient.FailureKind classify(String provider, int status, String body) {
         try {
             JsonNode root = JSON.readTree(body);
             if (root != null) {
                 JsonNode error = root.has("error") ? root.path("error") : root;
+                if ("zai".equalsIgnoreCase(provider) && status == 429) {
+                    // Z.AI uses numeric business codes for exhausted/expired
+                    // plans. These will not recover through connectivity retries.
+                    switch (error.path("code").asText("")) {
+                        case "1113", "1308", "1309", "1310", "1314",
+                                "1316", "1317", "1318", "1319", "1320", "1321":
+                            return DirectLlmClient.FailureKind.QUOTA_EXHAUSTED;
+                        default: break;
+                    }
+                }
                 for (String code : new String[]{error.isTextual() ? error.asText() : "",
                         error.path("code").asText(""), error.path("type").asText("")}) {
                     switch (code) {
