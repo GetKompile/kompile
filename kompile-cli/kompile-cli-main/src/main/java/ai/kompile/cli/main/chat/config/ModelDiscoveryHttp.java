@@ -465,7 +465,10 @@ public final class ModelDiscoveryHttp {
                     if (recovery.attempted || auth == null || !auth.oauth()
                             || auth.credentialName() == null || auth.credentialName().isBlank()
                             || recovery.refresh == null) {
-                        return fail(ModelDiscovery.Status.AUTH_REQUIRED, "Provider credentials were rejected");
+                        return fail(ModelDiscovery.Status.AUTH_REQUIRED,
+                                ChatProviderRegistry.label(vendor)
+                                        + (auth != null && !auth.oauth() ? " API key" : " credentials")
+                                        + " rejected (HTTP 401). Select or add a valid credential.");
                     }
                     recovery.attempted = true;
                     if (auth.credentialIdentity() == null || auth.credentialIdentity().isBlank()) {
@@ -481,7 +484,8 @@ public final class ModelDiscoveryHttp {
                                 ? ModelDiscovery.Status.TIMEOUT : credentialStatus(failure), failure.message());
                     }
                     if (refreshed == null) {
-                        return fail(ModelDiscovery.Status.AUTH_REQUIRED, "Provider credentials were rejected");
+                        return fail(ModelDiscovery.Status.AUTH_REQUIRED,
+                                "Provider credentials rejected (HTTP 401). Sign in again or choose another credential.");
                     }
                     if (!refreshed.oauth()
                             || !Objects.equals(auth.credentialName(), refreshed.credentialName())
@@ -493,7 +497,8 @@ public final class ModelDiscoveryHttp {
                     recovery.auth = refreshed;
                     return request(context, endpoint, descriptor, deadlineNanos, recovery);
                 }
-                if (code == 403) return fail(ModelDiscovery.Status.FORBIDDEN, "Provider credentials cannot list models");
+                if (code == 403) return fail(ModelDiscovery.Status.FORBIDDEN,
+                        "Provider denied model listing (HTTP 403). Check the selected credential's model-list permissions.");
                 if (code == 429) return fail(ModelDiscovery.Status.RATE_LIMITED, "Provider rate limited discovery");
                 if (code / 100 != 2) return fail(ModelDiscovery.Status.UNAVAILABLE,
                         "Model discovery returned HTTP " + code);
@@ -572,7 +577,7 @@ public final class ModelDiscoveryHttp {
         }
     }
 
-    private static ModelDiscovery.Status credentialStatus(CredentialFailure failure) {
+    static ModelDiscovery.Status credentialStatus(CredentialFailure failure) {
         return switch (failure.kind()) {
             case REAUTH_REQUIRED -> ModelDiscovery.Status.AUTH_REQUIRED;
             case PERMISSION_DENIED -> ModelDiscovery.Status.FORBIDDEN;

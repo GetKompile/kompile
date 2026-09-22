@@ -985,6 +985,42 @@
           Select a harness persona from the settings to get started.
         </p>
 
+        <!-- Current model: the header context chip only appears once there is
+             history, so an empty chat shows nothing about the provider/model.
+             Show it here too — plus a direct path to switch it — so a fresh
+             `kompile chat --web` opener can see and change the configuration. -->
+        <div class="welcome-model-card" *ngIf="selectedAgent" data-testid="welcome-model-card">
+          <ng-container *ngIf="contextBudget as cb; else unknownModel">
+            <div class="welcome-model-row">
+              <span class="model-type-badge agent">Model</span>
+              <code class="welcome-model-name">{{ cb.model }}</code>
+            </div>
+            <div class="welcome-model-sub" *ngIf="cb.contextWindow">
+              {{ formatTokenCount(cb.contextWindow) }} context window · source: {{ cb.source }}
+            </div>
+          </ng-container>
+          <ng-template #unknownModel>
+            <div class="welcome-model-row">
+              <span class="model-type-badge agent">Model</span>
+              <code class="welcome-model-name">unknown</code>
+            </div>
+            <div class="welcome-model-sub">No context budget reported for this persona yet.</div>
+          </ng-template>
+          <button type="button" class="text-btn small" data-testid="welcome-model-picker"
+            (click)="openWelcomeModelPicker()"
+            [disabled]="isStreaming || isLoading" title="Switch the model this session uses">
+            Change model…
+          </button>
+          <span class="welcome-model-hint">or type <code>/model</code> in the chat box</span>
+        </div>
+
+        <div class="welcome-commands" data-testid="welcome-commands">
+          <span class="welcome-commands-label">Slash commands:</span>
+          <button *ngFor="let item of slashCommands" type="button" class="welcome-command-chip"
+            (click)="selectSlashCommand(item.command)" [disabled]="isStreaming || isLoading || !selectedAgent"
+            title="Insert {{ item.command }} into the chat box">{{ item.command }}</button>
+        </div>
+
         <div class="quick-tips">
           <div class="tip">
             <strong>Tip:</strong> Use Shift+Enter for multi-line messages

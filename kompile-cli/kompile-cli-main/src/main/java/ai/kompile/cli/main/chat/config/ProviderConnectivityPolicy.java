@@ -171,6 +171,15 @@ public record ProviderConnectivityPolicy(
                     // rate-limit envelopes delivered inside a 200 SSE stream.
                     || message.contains("overloaded")
                     || message.contains("rate limit") || message.contains("rate_limit")
+                    // OpenRouter wraps a routed upstream failure as
+                    // {"error":{"message":"Provider returned error","code":429,...}}
+                    // inside a 200 stream: the wrap text carries no rate-limit words
+                    // and OpenRouter itself did not reject the request, so the wrap
+                    // is a transient-upstream signal worth the bounded retry budget.
+                    // When the wrapped failure was a request-shape problem, the
+                    // retries fail fast and the terminal message names the upstream
+                    // provider and its raw error instead of the bare wrap.
+                    || message.contains("provider returned error")
                     // OpenAI-compatible servers signal transient server-side failures
                     // with these typed envelopes ("type":"server_error" is their 5xx
                     // equivalent), so classify on the type token, not the human

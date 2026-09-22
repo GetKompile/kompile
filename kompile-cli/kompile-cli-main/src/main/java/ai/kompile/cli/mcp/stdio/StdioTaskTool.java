@@ -277,6 +277,15 @@ public class StdioTaskTool {
      */
     static WorkflowTeamEnforcement workflowEnforcement(Path workDir, RoleManager roleManager) {
         if (workDir == null) return null;
+        // In-process session context first (the harness-owned chat lead whose JVM
+        // cannot mutate its own environment), then the inherited environment (a
+        // delegated child server process). Tool arguments can never supply
+        // identity in either path.
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        if (context != null) {
+            return workflowEnforcementWith(workDir, roleManager, context.snapshot().team());
+        }
         String workflowName = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
         if (workflowName == null || workflowName.isBlank()) return null;
         try {

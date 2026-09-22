@@ -58,6 +58,47 @@ class DirectLlmClientToolReplayTest {
     // ── Envelope replay per route ───────────────────────────────────────────
 
     @Test
+    void zaiReplayNormalizesEmptyContentWithoutLosingToolPairsOrMutatingHistory() throws Exception {
+        ChatConfig config = new ChatConfig("zai", "test-key", "glm-4.7", "http://127.0.0.1:1/v1");
+        DirectLlmClient client = new DirectLlmClient(config, mapper);
+        client.addToHistory("user", "Inspect the project");
+        client.addToHistory("assistant", " ");
+        client.addReplayedToolCall("bash", "call_astra", "{}");
+        client.addReplayedToolResult("bash", "call_astra", "");
+        client.addToHistory("assistant", null);
+
+        ArrayNode messages = invokeBuildOpenAiMessages(client, "continue", null);
+        assertEquals(4, messages.size());
+        assertEquals("Inspect the project", messages.get(0).path("content").asText());
+        assertTrue(messages.get(1).path("content").isNull());
+        assertEquals("call_astra", messages.get(1).path("tool_calls").get(0).path("id").asText());
+        assertEquals("call_astra", messages.get(2).path("tool_call_id").asText());
+        assertEquals("[Tool completed with no output.]", messages.get(2).path("content").asText());
+        assertEquals("continue", messages.get(3).path("content").asText());
+
+        config.setProvider("openai");
+        ArrayNode unchanged = invokeBuildOpenAiMessages(client, "continue", null);
+        assertEquals(6, unchanged.size());
+        assertEquals("", unchanged.get(2).path("content").asText());
+        assertEquals("", unchanged.get(3).path("content").asText());
+    }
+
+    @Test
+    void zaiLiveToolResultsAlsoNormalizeEmptyOutput() throws Exception {
+        DirectLlmClient client = clientForProvider("zai");
+        client.addReplayedToolCall("bash", "call_live", "{}");
+        Method method = DirectLlmClient.class.getDeclaredMethod(
+                "buildOpenAiMessages", String.class, String.class, List.class);
+        method.setAccessible(true);
+        ArrayNode messages = (ArrayNode) method.invoke(client, null, " ", List.of(
+                new DirectLlmClient.ToolCallResultInput("call_live", "bash", null, false)));
+        assertEquals(2, messages.size());
+        assertTrue(messages.get(0).path("content").isNull());
+        assertEquals("call_live", messages.get(1).path("tool_call_id").asText());
+        assertFalse(messages.get(1).path("content").asText().isBlank());
+    }
+
+    @Test
     void openAiRouteReplaysToolCallsAsStructuredEnvelopes() throws Exception {
         DirectLlmClient client = clientForProvider("openai");
         client.addReplayedToolCall("bash", "call_1", "{\"command\":\"ls\"}");

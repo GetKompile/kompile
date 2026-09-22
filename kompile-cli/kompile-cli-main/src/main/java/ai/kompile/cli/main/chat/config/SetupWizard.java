@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.CredentialMenu;
 import ai.kompile.cli.main.auth.NativeCliAuth;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
@@ -107,6 +108,11 @@ public class SetupWizard {
 
     /** Select or create a named account without changing the vendor's global selection. */
     public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method) {
+        return authenticateSession(reader, vendor, method, null);
+    }
+
+    public static AuthenticationSelection authenticateSession(LineReader reader, String vendor, AuthMethod method,
+            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
         if (method == AuthMethod.NATIVE) {
@@ -114,19 +120,20 @@ public class SetupWizard {
             // machine-global; they cannot be pinned per session. Route them
             // through the startup flow so session-scope callers (notably the
             // in-session model picker) cannot dead-end on a guaranteed null.
-            return authenticate(reader, vendor, method);
+            return authenticate(reader, vendor, method, pageRenderer);
         }
         try {
             CredentialStore store = CredentialStore.create();
-            List<CredentialStore.CredentialInfo> credentials = store.list(provider).stream()
+            List<CredentialStore.CredentialInfo> credentials = CredentialMenu.unexpired(store.list(provider)).stream()
                     .filter(info -> compatibleCredentials(List.of(info), method).size() == 1
                             || method == AuthMethod.OAUTH && isLegacyOpenAiCodexCredential(store, provider, info))
                     .toList();
             List<String> labels = new ArrayList<>(credentials.stream()
-                    .map(info -> info.credentialName() + " — " + info.type()
-                            + (info.identity() == null ? "" : " — " + info.identity())).toList());
+                    .map(CredentialStore.CredentialInfo::displayLabel).toList());
             labels.add("Sign in / add another credential");
-            int choice = selectNumbered(reader, "Authentication for this session:", labels);
+            int choice = credentials.isEmpty() && method != AuthMethod.OAUTH ? 0
+                    : CredentialMenu.select(reader, "Authentication for this session:", labels,
+                    CredentialMenu.defaultIndex(store, provider, credentials), pageRenderer);
             if (choice < 0) return null;
             String name;
             if (choice < credentials.size()) {
@@ -144,6 +151,7 @@ public class SetupWizard {
                 }
             }
             if (name == null) throw new IOException("Cannot identify selected credential");
+            store.recordUsed(provider, name);
             return new AuthenticationSelection(provider, method, null, name);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1016,8 +1024,21 @@ public class SetupWizard {
                 && provider != null
                 && provider.equalsIgnoreCase(config.getProvider());
         String baseUrl = sameProvider ? config.getBaseUrl() : null;
-        if (sameProvider && config.getCredentialName() != null) {
-            return ModelDiscoveryHttp.refreshResultWithAuth(provider, config.resolveRequestAuth(), baseUrl);
+        if (transientApiKey != null && !transientApiKey.isBlank()) {
+            return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
+        }
+        if (sameProvider) {
+            try {
+                var auth = config.resolveRequestAuth();
+                if (auth == null && "api-key".equalsIgnoreCase(config.getAuthenticationMethod())) {
+                    return ModelDiscovery.Result.failure(ModelDiscovery.Status.AUTH_REQUIRED,
+                            "No API key is available for the selected authentication route.", List.of());
+                }
+                return ModelDiscoveryHttp.refreshResultWithAuth(provider, auth, baseUrl);
+            } catch (ChatConfig.AuthenticationException error) {
+                return ModelDiscovery.Result.failure(ModelDiscoveryHttp.credentialStatus(error.failure()),
+                        error.failure().message(), List.of());
+            }
         }
         return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
     }
@@ -1030,14 +1051,7 @@ public class SetupWizard {
     /** Force a live request with the transient credential and configured endpoint. */
     public static ModelDiscovery.Result refreshModelDiscovery(
             String provider, String transientApiKey, ChatConfig config) {
-        boolean sameProvider = config != null
-                && provider != null
-                && provider.equalsIgnoreCase(config.getProvider());
-        String baseUrl = sameProvider ? config.getBaseUrl() : null;
-        if (sameProvider && config.getCredentialName() != null) {
-            return ModelDiscoveryHttp.refreshResultWithAuth(provider, config.resolveRequestAuth(), baseUrl);
-        }
-        return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
+        return modelDiscovery(provider, transientApiKey, config);
     }
 
     public static List<String> modelOptions(String provider) {
@@ -1129,10 +1143,16 @@ public class SetupWizard {
     /**
      * Reuse the startup authentication flow for any provider/model selector.
      * This selects an existing managed credential, performs subscription OAuth
-     * when needed, or collects a transient API key for the candidate config.
+     * when needed, or saves a new API key in managed credential storage.
      */
     public static AuthenticationSelection authenticate(
             LineReader reader, String vendor, AuthMethod authMethod) {
+        return authenticate(reader, vendor, authMethod, null);
+    }
+
+    public static AuthenticationSelection authenticate(
+            LineReader reader, String vendor, AuthMethod authMethod,
+            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         if (vendor == null || vendor.isBlank() || authMethod == null) {
             return null;
         }
@@ -1155,11 +1175,11 @@ public class SetupWizard {
             }
             return new AuthenticationSelection(provider, authMethod, null);
         }
-        if (!selectManagedCredential(reader, provider, authMethod)) {
+        if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
             return null;
         }
 
-        OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
+        OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider, authMethod);
         if (authMethod == AuthMethod.OAUTH) {
             if (existing != null && existing.oauth()) {
                 System.out.println(GREEN + "  ✓ Using existing OAuth credential for "
@@ -1177,9 +1197,17 @@ public class SetupWizard {
             return new AuthenticationSelection(provider, authMethod, null);
         }
         String apiKey = promptApiKey(reader, provider);
-        return apiKey == null || apiKey.isBlank()
-                ? null
-                : new AuthenticationSelection(provider, authMethod, apiKey);
+        if (apiKey == null || apiKey.isBlank()) return null;
+        try {
+            // Authentication is reusable independently of which model is chosen
+            // next (or whether model discovery/setup is subsequently cancelled).
+            // A new API key must not overwrite an OAuth account for this provider.
+            CredentialStore.create().putApiKey(provider, "api-key-" + java.util.UUID.randomUUID(), apiKey, true);
+            return new AuthenticationSelection(provider, authMethod, null);
+        } catch (IOException e) {
+            System.err.println("  Could not save API key to managed credential storage: " + e.getMessage());
+            return null;
+        }
     }
 
     private static ProviderSelection selectStandardProvider(LineReader reader) {
@@ -1484,6 +1512,10 @@ public class SetupWizard {
     static ModelSelection selectModel(
             LineReader reader, String provider, String transientApiKey, ChatConfig config) {
         ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
+        if (ModelCatalogSelection.authenticationBlocked(discovery)) {
+            System.err.println("  " + ModelCatalogSelection.authenticationNotice(discovery, provider));
+            return null;
+        }
         List<String> models = modelIds(provider, discovery);
         if (!discovery.message().isBlank()) {
             System.err.println("  " + discovery.message());
@@ -1514,6 +1546,13 @@ public class SetupWizard {
             }
 
             String manual = promptManual(reader, "  Enter model id manually (blank to cancel): ");
+            if (manual != null) {
+                manual = ModelCatalogSelection.resolvePickerInput(manual, List.of());
+                if (manual == null) {
+                    System.err.println("  No numbered models are available. Enter a model ID after resolving discovery.");
+                    return null;
+                }
+            }
             if (manual != null) {
                 System.out.println("  → " + GREEN + manual + RESET);
                 System.out.println();
@@ -1639,10 +1678,11 @@ public class SetupWizard {
     private static boolean selectManagedCredential(
             LineReader reader,
             String provider,
-            AuthMethod authMethod) {
+            AuthMethod authMethod,
+            java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         try {
             CredentialStore store = CredentialStore.create();
-            List<CredentialStore.CredentialInfo> allCredentials = store.list(provider);
+            List<CredentialStore.CredentialInfo> allCredentials = CredentialMenu.unexpired(store.list(provider));
             List<CredentialStore.CredentialInfo> credentials = new ArrayList<>(
                     compatibleCredentials(allCredentials, authMethod));
             if (authMethod == AuthMethod.OAUTH
@@ -1666,13 +1706,15 @@ public class SetupWizard {
             String prompt = authMethod == AuthMethod.OAUTH
                     ? "Select Subscription:"
                     : "Select Stored Credential:";
-            int selected = selectNumbered(reader, prompt, labels);
+            int selected = CredentialMenu.select(reader, prompt, labels,
+                    CredentialMenu.defaultIndex(store, provider, credentials), pageRenderer);
             if (selected < 0) {
                 return false;
             }
             CredentialStore.CredentialInfo selectedCredential = credentials.get(selected);
             String credentialName = selectedCredential.credentialName();
             if (selectedCredential.active()) {
+                store.recordUsed(provider, credentialName);
                 return true;
             }
             if (!store.switchCredential(provider, credentialName)) {
@@ -1716,8 +1758,10 @@ public class SetupWizard {
                 .toList();
     }
 
-    private static OAuthProviderFlow.RequestAuth resolveExistingCredential(String provider) {
+    private static OAuthProviderFlow.RequestAuth resolveExistingCredential(String provider, AuthMethod method) {
         ChatConfig probe = new ChatConfig(provider, null, "credential-probe", null);
+        probe.setAuthenticationScope("global");
+        probe.setAuthenticationMethod(method.configValue());
         try {
             return probe.resolveRequestAuth();
         } catch (ChatConfig.AuthenticationException e) {
@@ -1745,15 +1789,26 @@ public class SetupWizard {
     }
 
     private static String promptApiKey(LineReader reader, String provider) {
+        return promptApiKey(reader, provider, System::getenv);
+    }
+
+    static String promptApiKey(LineReader reader, String provider,
+                               java.util.function.Function<String, String> environment) {
         String envVar = getEnvVarName(provider);
-        String envValue = envVar != null ? System.getenv(envVar) : null;
+        String envValue = envVar != null ? environment.apply(envVar) : null;
 
         if (envValue != null && !envValue.isBlank()) {
             String masked = maskKey(envValue);
             System.out.println("  Found " + envVar + " in environment: " + DIM + masked + RESET);
-            String use = promptManual(reader, "  Use this key? [Y/n]: ");
+            String use;
+            try {
+                // Unlike a free-text value, blank input here means yes, not cancel.
+                use = reader.readLine("  Use this key? [Y/n]: ");
+            } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
+                return null;
+            }
             if (use == null) return null;
-            if (use.isBlank() || use.toLowerCase().startsWith("y")) {
+            if (use.isBlank() || use.trim().toLowerCase(java.util.Locale.ROOT).startsWith("y")) {
                 return envValue;
             }
         }

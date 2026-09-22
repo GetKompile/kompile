@@ -95,6 +95,27 @@ class AuthWizardTest {
     }
 
     @Test
+    void switchWizardHidesExpiredAccountsButLogoutCanStillRemoveThem() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("expired-switch.json"));
+        store.putOAuth("anthropic", "expired", "old-access", "refresh", 1L, true);
+        store.putApiKey("openai", "live-key", "fixture-key", true);
+        // Only one visible provider/account: no selection prompts are needed.
+        try (AuthWizard wizard = AuthWizard.using(new ScriptedPrompter())) {
+            assertEquals(new AuthWizard.SwitchRequest("openai", "live-key"), wizard.promptForSwitch(store));
+        }
+        assertNotNull(store.read("anthropic", "expired"));
+        try (AuthWizard wizard = AuthWizard.using(new ScriptedPrompter().selecting("expired").confirming(true))) {
+            assertEquals("expired", wizard.promptForLogout(store).credentialName());
+        }
+        store.delete("openai");
+        ScriptedPrompter empty = new ScriptedPrompter();
+        try (AuthWizard wizard = AuthWizard.using(empty)) {
+            assertNull(wizard.promptForSwitch(store));
+        }
+        assertTrue(empty.messages.stream().anyMatch(message -> message.contains("No unexpired credentials")));
+    }
+
+    @Test
     void logoutWizardOffersNamedProviderAndGlobalScopes() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("logout-auth.json"));
         store.putApiKey("openai", "personal", "personal-secret", true);

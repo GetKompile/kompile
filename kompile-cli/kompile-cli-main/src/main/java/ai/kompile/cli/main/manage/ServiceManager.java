@@ -310,12 +310,35 @@ public class ServiceManager {
      * Wait for service to become healthy
      */
     public boolean waitForHealth(int port, int timeoutSeconds) {
+        return waitForHealth(port, timeoutSeconds, null);
+    }
+
+    /**
+     * Wait for the service to become healthy, aborting as soon as {@code process} exits
+     * (pass null for the plain port-only polling of {@link #waitForHealth(int, int)}).
+     * When a process is supplied, a heartbeat line is printed every 15 seconds so a slow
+     * boot never reads as a silent hang, and a child that died during startup returns
+     * immediately instead of burning the rest of the timeout in silence.
+     */
+    public boolean waitForHealth(int port, int timeoutSeconds, Process process) {
         long startTime = System.currentTimeMillis();
         long timeoutMs = timeoutSeconds * 1000L;
+        long nextHeartbeat = startTime + 15000;
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             if (checkHealth(port)) {
                 return true;
+            }
+            if (process != null && !process.isAlive()) {
+                // Died on boot — polling a dead process for the rest of the timeout
+                // only adds silence before the same error.
+                return false;
+            }
+            if (process != null && System.currentTimeMillis() >= nextHeartbeat) {
+                long remaining = Math.max(0, (startTime + timeoutMs - System.currentTimeMillis()) / 1000);
+                System.out.println("  Still waiting for the service to accept requests... ("
+                        + remaining + "s of " + timeoutSeconds + "s left)");
+                nextHeartbeat += 15000;
             }
             try {
                 Thread.sleep(2000); // Check every 2 seconds

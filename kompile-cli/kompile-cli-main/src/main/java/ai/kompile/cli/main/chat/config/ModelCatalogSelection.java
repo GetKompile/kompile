@@ -28,6 +28,36 @@ public final class ModelCatalogSelection {
     private ModelCatalogSelection() {
     }
 
+    public static boolean authenticationBlocked(ModelDiscovery.Result discovery) {
+        return discovery != null && (discovery.status() == ModelDiscovery.Status.AUTH_REQUIRED
+                || discovery.status() == ModelDiscovery.Status.FORBIDDEN);
+    }
+
+    /** Prominent, actionable explanation shared by setup, the picker and /model <id>. */
+    public static String authenticationNotice(ModelDiscovery.Result discovery, String provider) {
+        if (!authenticationBlocked(discovery)) return "";
+        return (discovery.status() == ModelDiscovery.Status.AUTH_REQUIRED
+                ? "Authentication failed for " : "Model access denied for ")
+                + providerLabel(provider) + ". " + discovery.message()
+                + " Model selection is blocked. Go back to choose or replace the credential, then retry.";
+    }
+
+    /** Menu numbers must resolve against the displayed list, never become model IDs. */
+    public static String resolvePickerInput(String input, List<String> models) {
+        String value = input == null ? "" : input.trim();
+        if (value.isEmpty()) return models.isEmpty() ? null : models.get(0);
+        if (value.matches("[+-]?[0-9]+")) {
+            try {
+                int index = Integer.parseInt(value);
+                return index >= 1 && index <= models.size() ? models.get(index - 1) : null;
+            } catch (NumberFormatException overflow) {
+                return null;
+            }
+        }
+        return models.stream().filter(model -> model.equalsIgnoreCase(value))
+                .findFirst().orElse(value);
+    }
+
     /** Outcome of resolving a picker list from a discovery result. */
     public record CatalogList(
             List<String> models,
@@ -65,6 +95,9 @@ public final class ModelCatalogSelection {
      */
     public static CatalogList listForPicker(
             ModelDiscovery.Result discovery, String provider, Path storePath) {
+        if (authenticationBlocked(discovery)) {
+            return new CatalogList(List.of(), false, authenticationNotice(discovery, provider), discovery);
+        }
         List<String> live = SetupWizard.modelOptions(provider, discovery, null);
         if (!live.isEmpty()) {
             // Interactive-only recording point: a verified live list becomes the
@@ -108,7 +141,7 @@ public final class ModelCatalogSelection {
         if (modelId == null || modelId.isBlank()) {
             return SelectionDecision.UNKNOWN;
         }
-        if (discovery == null) {
+        if (discovery == null || authenticationBlocked(discovery)) {
             return SelectionDecision.UNKNOWN;
         }
         String id = modelId.trim();
@@ -118,6 +151,9 @@ public final class ModelCatalogSelection {
         if (inLive) {
             return SelectionDecision.LIVE_LIST;
         }
+        // /model <id> has no displayed menu to index. A failed discovery must
+        // not silently persist a menu response as a literal model ID.
+        if (id.matches("[+-]?[0-9]+")) return SelectionDecision.UNKNOWN;
         if (discovery.status() == ModelDiscovery.Status.SUCCESS && discovery.hasModels()) {
             // An authoritative live list that simply does not contain the id.
             return SelectionDecision.UNKNOWN;

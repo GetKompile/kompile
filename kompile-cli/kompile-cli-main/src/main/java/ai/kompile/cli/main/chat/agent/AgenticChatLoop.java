@@ -829,6 +829,16 @@ public class AgenticChatLoop {
             sb.append("\n\n").append(workflowPrompt);
         }
 
+        // Workflow TEAM context (participants, routing, gates): static for the
+        // session, so it belongs in this cache-stable prefix. This is the harness
+        // acknowledging the team to the model; task/multi_task still enforce
+        // every delegation in code.
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        if (context != null) {
+            sb.append("\n\n").append(context.systemPromptSection());
+        }
+
         if (toolResultStore != null) {
             sb.append("\n\n# Tool Result Files\n\n");
             sb.append("All tool call outputs for this session are saved to: ")

@@ -75,6 +75,10 @@ class ModelDiscoveryRecoveryTest {
             });
             assertEquals(ModelDiscovery.Status.AUTH_REQUIRED, result.status());
             assertEquals(1, transport.requests.size());
+            assertTrue(result.message().contains("HTTP 401"));
+            assertTrue(result.message().contains("credential"));
+            if (!auth.oauth()) assertTrue(result.message().contains("API key"));
+            assertFalse(result.message().contains("synthetic-key"));
         }
     }
 

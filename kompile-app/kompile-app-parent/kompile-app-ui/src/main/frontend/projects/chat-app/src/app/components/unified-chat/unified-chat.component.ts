@@ -3158,6 +3158,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   /**
+   * Welcome-state entry point into the same CLI /model flow as the header and
+   * inline pickers: seed the input with the bare command and send. The CLI
+   * replies with the real catalog menu, which renders in the transcript.
+   */
+  openWelcomeModelPicker(): void {
+    if (!this.selectedAgent || this.isStreaming || this.isLoading) return;
+    this.userInput = '/model';
+    this.sendMessage();
+  }
+
+  /**
    * Reflect an applied CLI /model selection in the existing current-model
    * display (the header context-usage tooltip shows the budget's model).
    * Window/token numbers stay as last fetched until the next budget refresh.

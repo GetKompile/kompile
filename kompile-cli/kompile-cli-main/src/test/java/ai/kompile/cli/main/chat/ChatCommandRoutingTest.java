@@ -719,6 +719,19 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void modelOnlySwitchRetainsExplicitApiKeyButProviderSwitchNeverInheritsIt() {
+        ChatConfig active = new ChatConfig("openai", "fixture-inline-key", "old-model", null);
+        active.setAuthenticationMethod("api-key");
+        ChatConfig candidate = ChatRepl.buildModelProviderCandidateFrom(active, "openai", "new-model", null);
+        assertEquals("fixture-inline-key", candidate.getApiKey());
+        assertEquals("new-model", candidate.getModel());
+        ChatConfig other = ChatRepl.buildModelProviderCandidateFrom(active, "anthropic", "new-model", null);
+        other.setProvider(null); // Inspect only the in-memory secret, not the real environment/store.
+        assertNull(other.getApiKey());
+        assertEquals("fixture-inline-key", active.getApiKey());
+    }
+
+    @Test
     void modelSwitchDoesNotFlattenManagedOauthIntoAnApiKey(
             @org.junit.jupiter.api.io.TempDir Path tempDir) {
         String previousHome = System.getProperty("user.home");

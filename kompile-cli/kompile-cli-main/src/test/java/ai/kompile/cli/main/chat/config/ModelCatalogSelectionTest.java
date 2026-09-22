@@ -34,6 +34,32 @@ class ModelCatalogSelectionTest {
         return new LiveModelDiscovery.Model(id, List.of());
     }
 
+    @Test
+    void pickerNumbersResolveOnlyAgainstDisplayedChoices() {
+        List<String> models = List.of("gpt-6-astra", "gpt-5.6-sol");
+        assertEquals("gpt-6-astra", ModelCatalogSelection.resolvePickerInput("1", models));
+        assertEquals("gpt-5.6-sol", ModelCatalogSelection.resolvePickerInput(" 2 ", models));
+        assertEquals("gpt-6-astra", ModelCatalogSelection.resolvePickerInput("", models));
+        assertEquals("gpt-6-astra", ModelCatalogSelection.resolvePickerInput("GPT-6-ASTRA", models));
+        assertEquals("custom-model", ModelCatalogSelection.resolvePickerInput("custom-model", List.of()));
+        for (String input : List.of("1", "0", "-1", "+3", "999999999999999999999")) {
+            org.junit.jupiter.api.Assertions.assertNull(
+                    ModelCatalogSelection.resolvePickerInput(input, List.of()), input);
+        }
+        org.junit.jupiter.api.Assertions.assertNull(ModelCatalogSelection.resolvePickerInput("3", models));
+        org.junit.jupiter.api.Assertions.assertNull(ModelCatalogSelection.resolvePickerInput("", List.of()));
+    }
+
+    @Test
+    void discoveryFailureDoesNotAcceptMenuNumbersAsExplicitModelIds() {
+        for (ModelDiscovery.Status status : List.of(ModelDiscovery.Status.TIMEOUT,
+                ModelDiscovery.Status.UNAVAILABLE, ModelDiscovery.Status.AUTH_REQUIRED)) {
+            assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
+                    ModelCatalogSelection.decisionFor(failure(status, "discovery failed"),
+                            "openai", "1", tempDir.resolve("catalogs.json")));
+        }
+    }
+
     private static ModelDiscovery.Result success(String... ids) {
         return ModelDiscovery.Result.success(
                 java.util.Arrays.stream(ids).map(ModelCatalogSelectionTest::model).toList(),
@@ -50,7 +76,7 @@ class ModelCatalogSelectionTest {
                 tempDir.resolve("catalogs.json"));
 
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
-                success("glm-4.5", "glm-4.6"), "zai");
+                success("glm-4.5", "glm-4.6"), "zai", tempDir.resolve("catalogs.json"));
 
         assertFalse(list.fromFallback());
         assertEquals(List.of("glm-4.5", "glm-4.6"), list.models());
@@ -63,7 +89,7 @@ class ModelCatalogSelectionTest {
                 tempDir.resolve("catalogs.json"));
 
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
-                failure(ModelDiscovery.Status.UNAVAILABLE, "connection reset"), "zai");
+                failure(ModelDiscovery.Status.UNAVAILABLE, "connection reset"), "zai", tempDir.resolve("catalogs.json"));
 
         assertTrue(list.fromFallback());
         assertEquals(List.of("glm-4.5", "glm-4.6"), list.models());
@@ -78,7 +104,7 @@ class ModelCatalogSelectionTest {
                 tempDir.resolve("catalogs.json"));
 
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
-                failure(ModelDiscovery.Status.TIMEOUT, "timed out"), "zai");
+                failure(ModelDiscovery.Status.TIMEOUT, "timed out"), "zai", tempDir.resolve("catalogs.json"));
 
         assertTrue(list.fromFallback());
         assertTrue(list.banner().contains("timed out"));
@@ -92,7 +118,7 @@ class ModelCatalogSelectionTest {
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
                 new ModelDiscovery.Result(ModelDiscovery.Status.SUCCESS_EMPTY,
                         List.of(), "provider returned zero models", List.of()),
-                "zai");
+                "zai", tempDir.resolve("catalogs.json"));
 
         assertFalse(list.fromFallback());
         assertTrue(list.models().isEmpty());
@@ -104,7 +130,7 @@ class ModelCatalogSelectionTest {
                 tempDir.resolve("catalogs.json"));
 
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
-                failure(ModelDiscovery.Status.INVALID_RESPONSE, "bad json"), "zai");
+                failure(ModelDiscovery.Status.INVALID_RESPONSE, "bad json"), "zai", tempDir.resolve("catalogs.json"));
 
         assertFalse(list.fromFallback());
         assertTrue(list.models().isEmpty());
@@ -121,13 +147,20 @@ class ModelCatalogSelectionTest {
                     failure(status, "credential rejected"), "openai-codex", store);
             assertFalse(list.fromFallback(), status.name());
             assertTrue(list.models().isEmpty(), status.name());
+            assertTrue(list.banner().contains("Model selection is blocked"));
+            assertTrue(list.banner().contains("credential"));
+            for (String id : List.of("account-a-model", "custom-model", "1")) {
+                assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
+                        ModelCatalogSelection.decisionFor(failure(status, "rejected"),
+                                "openai-codex", id, store));
+            }
         }
     }
 
     @Test
     void noRecordedCatalogYieldsEmptyListRatherThanFakeData() {
         ModelCatalogSelection.CatalogList list = ModelCatalogSelection.listForPicker(
-                failure(ModelDiscovery.Status.UNAVAILABLE, "offline"), "some-provider");
+                failure(ModelDiscovery.Status.UNAVAILABLE, "offline"), "some-provider", tempDir.resolve("catalogs.json"));
 
         assertFalse(list.fromFallback());
         assertTrue(list.models().isEmpty());
@@ -137,7 +170,7 @@ class ModelCatalogSelectionTest {
     void liveListMembershipWinsForExplicitSelection() {
         assertEquals(ModelCatalogSelection.SelectionDecision.LIVE_LIST,
                 ModelCatalogSelection.decisionFor(
-                        success("glm-4.5"), "zai", "GLM-4.5"));
+                        success("glm-4.5"), "zai", "GLM-4.5", tempDir.resolve("catalogs.json")));
     }
 
     @Test
@@ -147,7 +180,7 @@ class ModelCatalogSelectionTest {
 
         assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
                 ModelCatalogSelection.decisionFor(
-                        success("glm-4.5", "glm-4.6"), "zai", "glm-stale"));
+                        success("glm-4.5", "glm-4.6"), "zai", "glm-stale", tempDir.resolve("catalogs.json")));
     }
 
     @Test
@@ -158,7 +191,7 @@ class ModelCatalogSelectionTest {
         assertEquals(ModelCatalogSelection.SelectionDecision.FALLBACK_LIST,
                 ModelCatalogSelection.decisionFor(
                         failure(ModelDiscovery.Status.UNAVAILABLE, "offline"),
-                        "zai", "glm-4.5"));
+                        "zai", "glm-4.5", tempDir.resolve("catalogs.json")));
     }
 
     @Test
@@ -166,7 +199,7 @@ class ModelCatalogSelectionTest {
         assertEquals(ModelCatalogSelection.SelectionDecision.MANUAL_ENTRY,
                 ModelCatalogSelection.decisionFor(
                         failure(ModelDiscovery.Status.TIMEOUT, "timed out"),
-                        "zai", "brand-new-model"));
+                        "zai", "brand-new-model", tempDir.resolve("catalogs.json")));
     }
 
     @Test
@@ -174,15 +207,15 @@ class ModelCatalogSelectionTest {
         ModelDiscovery.Result empty = new ModelDiscovery.Result(
                 ModelDiscovery.Status.SUCCESS_EMPTY, List.of(), "", List.of());
         assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
-                ModelCatalogSelection.decisionFor(empty, "zai", "anything"));
+                ModelCatalogSelection.decisionFor(empty, "zai", "anything", tempDir.resolve("catalogs.json")));
     }
 
     @Test
     void blankIdsAlwaysReject() {
         assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
-                ModelCatalogSelection.decisionFor(success("glm-4.5"), "zai", "  "));
+                ModelCatalogSelection.decisionFor(success("glm-4.5"), "zai", "  ", tempDir.resolve("catalogs.json")));
         assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
-                ModelCatalogSelection.decisionFor(null, "zai", "glm-4.5"));
+                ModelCatalogSelection.decisionFor(null, "zai", "glm-4.5", tempDir.resolve("catalogs.json")));
     }
 
     @Test

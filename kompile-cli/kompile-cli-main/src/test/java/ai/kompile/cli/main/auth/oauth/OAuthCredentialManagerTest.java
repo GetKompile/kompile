@@ -19,6 +19,31 @@ class OAuthCredentialManagerTest {
     Path tempDir;
 
     @Test
+    void purgesExpiredGrantAfterConfirmedRefreshRejection() throws Exception {
+        Path auth = tempDir.resolve("purge-rejected.json");
+        CredentialStore store = new CredentialStore(auth);
+        store.putOAuth("test-oauth", "old", "revoked-refresh", 1L);
+        TestFlow flow = new TestFlow();
+        flow.refreshFailure = refreshHttpFailure(400);
+        flow.failuresRemaining = 1;
+        var error = assertThrows(java.io.IOException.class, () -> manager(store, flow).resolve("test-oauth"));
+        assertEquals(CredentialFailure.Kind.REAUTH_REQUIRED, CredentialFailure.classify(error).kind());
+        assertNull(new CredentialStore(auth).read("test-oauth"));
+        assertEquals(1, flow.refreshes.get());
+    }
+
+    @Test
+    void successfulNamedResolutionRemembersAccountWithoutChangingGlobalSelection() throws Exception {
+        Path auth = tempDir.resolve("remember-named.json");
+        CredentialStore store = new CredentialStore(auth);
+        store.putOAuth("test-oauth", "global", "global-token", "global-refresh", Long.MAX_VALUE, true);
+        store.putOAuth("test-oauth", "last", "old", "refresh", 1L, false);
+        assertEquals("new-access", manager(store, new TestFlow()).resolve("test-oauth", "oauth", "last").token());
+        assertEquals("last", new CredentialStore(auth).defaultCredentialName("test-oauth"));
+        assertEquals("global", store.activeCredentialName("test-oauth"));
+    }
+
+    @Test
     void namedOauthRefreshDoesNotActivateAccount() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("named.json"));
         store.putOAuth("test-oauth", "global", "global-access", "global-refresh", Long.MAX_VALUE, true);
@@ -182,6 +207,7 @@ class OAuthCredentialManagerTest {
         OAuthCredentialManager manager = new OAuthCredentialManager(store, new OAuthProviderRegistry(List.of(flow)));
         assertThrows(java.io.IOException.class, () -> manager.resolve("test-oauth"));
         assertEquals(0, flow.refreshes.get());
+        assertNull(store.read("test-oauth"), "Expired non-renewable grant should be purged");
     }
 
     @Test

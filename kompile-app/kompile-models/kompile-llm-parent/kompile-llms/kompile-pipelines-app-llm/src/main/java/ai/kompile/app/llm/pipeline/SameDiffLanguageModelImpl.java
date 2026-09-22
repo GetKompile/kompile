@@ -1322,6 +1322,32 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         modelId, thinkingSampling.isDoSample(), thinkingSampling.getTemperature(),
                         thinkingSampling.getTopK(), thinkingSampling.getTopP(),
                         thinkingSampling.getPresencePenalty(), thinkingSampling.getRepetitionPenalty());
+                // Plan-reuse posture: make the per-call rebuild cost explicit at load time.
+                // maxPrefillLength=0 selects the variable-shape path — every generation with a
+                // different prompt length tears down and rebuilds/warms the DSP prefill+decode
+                // plans. maxPrefillLength>0 selects the fixed-buffer path: one prefill plan and
+                // one decode plan, frozen at the configured length and reused in place (LRU-of-one
+                // in cachedFixedBufferState). Multi-call harnesses and serving loops almost always
+                // want the latter.
+                if (pipelineConfig.getMaxPrefillLength() > 0) {
+                    logger.info("Plan reuse for '{}': FIXED-BUFFER path active (maxPrefillLength={}, "
+                                    + "maxKvLen={}) — prefill+decode DSP plans are frozen once and reused "
+                                    + "in place across calls (LRU-of-one retained state)",
+                            modelId, pipelineConfig.getMaxPrefillLength(),
+                            pipelineConfig.getMaxKvCacheLength());
+                } else {
+                    logger.warn("Plan reuse for '{}': DISABLED (maxPrefillLength=0) — every call with a "
+                                    + "different prompt length tears down and rebuilds/re-warms the DSP "
+                                    + "prefill+decode plans (seconds of overhead per call). If this model "
+                                    + "serves more than one generation per load, set maxPrefillLength to "
+                                    + "the longest expected prompt length to freeze and reuse the plans.",
+                            modelId);
+                }
+                if (!prefixCache.enabled()) {
+                    logger.info("Prefix cache for '{}': DISABLED — repeated/extended prompts (e.g. "
+                                    + "multi-round tool loops) will re-prefill from scratch each call",
+                            modelId);
+                }
                 return new GenerationPipelineBackend(
                         pipeline, tokenizer, effectiveChatTemplate, maxNewTokens,
                         continuationEnabled, continuationChunkTokens, thinkingSampling,
@@ -1424,6 +1450,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
      *   <li>the configured template — an explicit operator choice outranks anything inferred;</li>
      *   <li>the tokenizer's own, from {@code tokenizer_config.json} beside {@code tokenizer.json};
      *   </li>
+     *   <li>{@code chat_template.jinja} beside the model — the Hugging Face convention staging
+     *       downloads for modern models. Staging persists this file even when it does not carry a
+     *       {@code tokenizer_config.json}, so it is the model's real template on disk.</li>
      *   <li>the GGUF the graph was converted from, which declares {@code tokenizer.chat_template}
      *       in its metadata. A model staged before staging carried that file forward has this and
      *       nothing else, and it is the model's real template.</li>
@@ -1444,6 +1473,14 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             logger.debug("Tokenizer chat-template metadata was unavailable: {}", e.getMessage());
         }
 
+        String jinjaTemplate = chatTemplateFromJinja(modelFile);
+        if (jinjaTemplate != null) {
+            logger.info(
+                    "Tokenizer metadata omits a chat template; using the chat_template.jinja "
+                            + "staged beside '{}' ({} chars)", modelFile, jinjaTemplate.length());
+            return jinjaTemplate;
+        }
+
         String ggufTemplate = chatTemplateFromGguf(modelFile);
         if (ggufTemplate != null) {
             logger.info(
@@ -1453,6 +1490,29 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         }
 
         return null;
+    }
+
+    /**
+     * The chat template staged by Hugging Face convention as {@code chat_template.jinja} beside
+     * the model, or null if there is no such file. Staging downloads it even when the model ships
+     * no {@code tokenizer_config.json}, so it is the model's real template on disk.
+     */
+    static String chatTemplateFromJinja(Path modelFile) {
+        Path parent = modelFile == null ? null : modelFile.toAbsolutePath().getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return null;
+        }
+        Path jinja = parent.resolve("chat_template.jinja");
+        if (!Files.isRegularFile(jinja)) {
+            return null;
+        }
+        try {
+            String template = Files.readString(jinja);
+            return template.isBlank() ? null : template;
+        } catch (IOException e) {
+            logger.debug("Could not read a chat template from '{}': {}", jinja, e.getMessage());
+            return null;
+        }
     }
 
     /**

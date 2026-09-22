@@ -417,6 +417,33 @@ class ChatCompleterTtyTest {
         ChatRepl.disableTranscriptMouse(null);
     }
 
+    @ParameterizedTest
+    @CsvSource({"success", "cancel", "eof", "error"})
+    void authenticationReleasesMouseWhileWaitingAndRestoresItOnEveryExit(String exit) {
+        terminalOutput.reset();
+        RuntimeException failure = switch (exit) {
+            case "cancel" -> new org.jline.reader.UserInterruptException("");
+            case "eof" -> new org.jline.reader.EndOfFileException();
+            case "error" -> new IllegalStateException("authentication failed");
+            default -> null;
+        };
+        String released = "\033[?1000l\033[?1002l\033[?1003l\033[?1006l";
+        java.util.function.Supplier<String> login = () -> {
+            assertEquals(released, terminalOutput.toString(StandardCharsets.UTF_8),
+                    "native text selection and links must work even with no active readLine");
+            if (failure != null) throw failure;
+            return "authenticated";
+        };
+        if (failure == null) {
+            assertEquals("authenticated", ChatRepl.withNativeMouseDuringAuthentication(terminal, login));
+        } else {
+            assertSame(failure, assertThrows(failure.getClass(),
+                    () -> ChatRepl.withNativeMouseDuringAuthentication(terminal, login)));
+        }
+        assertEquals(released + "\033[?1000l\033[?1003l\033[?1002h\033[?1006h",
+                terminalOutput.toString(StandardCharsets.UTF_8));
+    }
+
     @Test
     void rightClickPastesClipboardThroughManagedMouseWithoutExpandingLargeText() throws Exception {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
@@ -475,10 +502,11 @@ class ChatCompleterTtyTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"false,true", "true,true", "false,false", "true,false"})
+    @CsvSource({"false,true,false", "true,true,false", "false,false,false", "true,false,false",
+            "false,true,true", "true,true,true", "false,false,true", "true,false,true"})
     @ResourceLock(Resources.SYSTEM_PROPERTIES)
     void resumedTranscriptCanBeSelectedAndCopiedWithBufferedMouseReports(
-            boolean buffered, boolean sgr, @TempDir Path home) throws Exception {
+            boolean buffered, boolean sgr, boolean authWindow, @TempDir Path home) throws Exception {
         String previousHome = System.getProperty("user.home");
         System.setProperty("user.home", home.toString());
         BackgroundTaskManager tasks = new BackgroundTaskManager();
@@ -509,22 +537,29 @@ class ChatCompleterTtyTest {
                     new AsciiRenderer(renderer, 120),
                     null, null, null).restoreSession(tui::printInScrollRegion);
 
-            // Find the actual rendered resume row, not a hand-built live-output surrogate.
+            String expected = authWindow ? "https://login.example/auth?state=resume" : "Saved answer with `code`";
+            if (authWindow) {
+                tui.showTemporaryWindow("Provider authentication", List.of(expected));
+                assertTrue(tui.getVisibleContentLines().stream()
+                        .anyMatch(value -> value.contains("\033]8;;" + expected + "\033\\")));
+            }
+            // Exercise both the restored transcript and authentication over that same session.
             List<String> visible = tui.getVisibleContentLines();
             int answerRow = -1;
             for (int i = 0; i < visible.size(); i++) {
                 if (AsciiRenderer.stripAnsi(visible.get(i))
-                        .contains("Saved answer with `code`")) answerRow = tui.scrollTop() + i;
+                        .contains(expected)) answerRow = tui.scrollTop() + i;
             }
             assertTrue(answerRow > 0, () -> "the restored answer must be visible: " + visible);
+            int endColumn = expected.length() + 2;
             String reports = String.format(Locale.ROOT,
-                    "\033[<0;3;%dM\033[<32;26;%dM\033[<0;26;%dm\033[<2;3;%dM",
-                    answerRow, answerRow, answerRow, answerRow);
+                    "\033[<0;3;%dM\033[<32;%d;%dM\033[<0;%d;%dm\033[<2;3;%dM",
+                    answerRow, endColumn, answerRow, endColumn, answerRow, answerRow);
             if (!sgr) {
                 char row = (char) (answerRow + 32);
                 reports = "\033[M" + (char) 32 + (char) 35 + row
-                        + "\033[M" + (char) 64 + (char) 58 + row
-                        + "\033[M" + (char) 35 + (char) 58 + row
+                        + "\033[M" + (char) 64 + (char) (endColumn + 32) + row
+                        + "\033[M" + (char) 35 + (char) (endColumn + 32) + row
                         + "\033[M" + (char) 34 + (char) 35 + row;
             }
             if (buffered) {
@@ -539,8 +574,8 @@ class ChatCompleterTtyTest {
             }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (copied.get() == null && System.nanoTime() < deadline) Thread.sleep(10);
-            assertEquals("Saved answer with `code`", copied.get());
-            assertEquals("Saved answer with `code`", tui.getSelectedTranscriptText());
+            assertEquals(expected, copied.get());
+            assertEquals(expected, tui.getSelectedTranscriptText());
             assertEquals("", reader.getBuffer().toString(), "mouse reports must not become draft text");
             keyboardPipe.write(CR);
             keyboardPipe.flush();

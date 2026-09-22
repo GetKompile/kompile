@@ -506,6 +506,7 @@ public class ChatCommand implements Callable<Integer> {
             return printError("--multi-session requires a configured direct provider. Run `kompile chat --setup` separately first.", 2);
         }
         ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot wizardWorkflow = null;
+        boolean wizardRan = false;
         if (!multiSession && !headless && shouldRunSetupWizard(config, hasExplicitAction)) {
             SetupWizard.SetupResult result = runSetupWizard();
             config = result == null ? null : result.config();
@@ -518,8 +519,11 @@ public class ChatCommand implements Callable<Integer> {
                 System.err.println("Setup cancelled.");
                 return 1;
             }
-            // The workflow step already ran inside the setup wizard; reuse its choice.
+            // The workflow step already ran inside the setup wizard; its choice is
+            // authoritative for this launch (including a deliberate "no") so the
+            // fallback prompt below never re-asks the same question.
             wizardWorkflow = result.workflow();
+            wizardRan = true;
         }
 
         // Override chat mode from --mode flag
@@ -543,20 +547,50 @@ public class ChatCommand implements Callable<Integer> {
             }
         }
 
-        // ── Workflow team resolution (wizard choice, else explicit flag, else prompt) ──
-        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot workflowSnapshot;
-        if (wizardWorkflow != null && workflow == null) {
-            workflowSnapshot = wizardWorkflow;
-        } else {
+        // ── Workflow team resolution: a resume restores the recorded team; otherwise ──
+        // ── the wizard's choice wins, then the explicit flag, then one prompt.       ──
+        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot workflowSnapshot = null;
+        boolean resumedWorkflow = false;
+        if (isResume) {
             try {
-                workflowSnapshot = resolveWorkflow(headless);
-            } catch (IllegalArgumentException e) {
+                workflowSnapshot = ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                        .restore(sessionId, effectiveWorkingDirectory());
+                resumedWorkflow = workflowSnapshot != null;
+                if (resumedWorkflow) {
+                    System.out.println("Workflow team restored for this session: "
+                            + workflowSnapshot.workflowName());
+                }
+            } catch (IOException | java.io.UncheckedIOException e) {
                 return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
+            }
+        }
+        if (!resumedWorkflow) {
+            if (isResume) {
+                // A resume with no recorded team means this session never had one:
+                // restore nothing and never prompt (the launch dialog belongs to
+                // fresh setups, not to picking a conversation back up).
+                workflowSnapshot = null;
+            } else if (wizardRan && workflow == null) {
+                // A deliberate wizard "no" is final; do not re-ask here.
+                workflowSnapshot = wizardWorkflow;
+            } else {
+                try {
+                    workflowSnapshot = resolveWorkflow(headless);
+                } catch (IllegalArgumentException e) {
+                    return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
+                }
             }
         }
         if (workflowSnapshot != null) {
             exportWorkflowEnvironment(workflowSnapshot);
-            System.out.println(workflowSnapshot.summarize());
+            if (!isResume) {
+                System.out.println(workflowSnapshot.summarize());
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.persist(
+                        sessionId, workflowSnapshot);
+            }
+        } else if (isResume) {
+            // Resuming a session that never had a workflow: nothing to restore or prompt.
+            ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.clear(sessionId);
         }
 
         try {
@@ -1759,10 +1793,12 @@ public class ChatCommand implements Callable<Integer> {
     // ── Workflow team support ───────────────────────────────────────────────
 
     /**
-     * Resolves the workflow snapshot for this launch. Priority: --workflow flag,
-     * else the interactive wizard prompt (interactive non-headless sessions only).
-     * Returns null when no workflow applies. An explicit --workflow that cannot
-     * be resolved aborts the launch rather than starting unenforced.
+     * Resolves the workflow snapshot for this launch from the {@code --workflow}
+     * flag only. The interactive opt-in question lives in the setup wizard and
+     * the workflow-mode picker — never as a silent fallback here, which is what
+     * made the question appear on resumes and explicit-action launches.
+     * An explicit {@code --workflow} that cannot be resolved aborts the launch
+     * rather than starting unenforced.
      */
     ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot resolveWorkflow(boolean headless) {
         String requested = workflow == null ? null : workflow.trim();
@@ -1802,32 +1838,15 @@ public class ChatCommand implements Callable<Integer> {
             }
         }
         if (headless) return null;
-        if (System.console() == null) return null;
-        SetupWizard.WorkflowSelection selection =
-                SetupWizard.selectWorkflow(effectiveWorkingDirectory());
-        if (selection.cancelled()) {
-            throw new IllegalArgumentException("Workflow selection cancelled.");
-        }
-        return selection.snapshot();
+        // No flag: no workflow. (The wizard asks the opt-in question on its own.)
+        return null;
     }
 
-    /** Propagates the workflow identity into this session's harness state for MCP tools. */
+    /** Installs the workflow identity in this process's harness state (see WorkflowSessionContext). */
     static void exportWorkflowEnvironment(ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot snapshot) {
         if (snapshot == null) return;
-        ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement enforcement =
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.forCaller(
-                        snapshot, ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement
-                                .resolveCallerParticipant(snapshot.team()));
-        // Java cannot mutate its own process environment; the harness exports these
-        // values when spawning the MCP stdio server (McpToolInjectionSupport) and
-        // subagents (SubprocessAgentRunner), which is the authoritative channel —
-        // tool arguments can never alter them.
-        WORKFLOW_ENV_EXPORT.putAll(enforcement.childEnvironment(enforcement.callerParticipant()));
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.activate(snapshot);
     }
-
-    /** Workflow environment values the harness exports to children. Package-visible for tests. */
-    static final java.util.concurrent.ConcurrentMap<String, String> WORKFLOW_ENV_EXPORT =
-            new java.util.concurrent.ConcurrentHashMap<>();
 
 
     /**

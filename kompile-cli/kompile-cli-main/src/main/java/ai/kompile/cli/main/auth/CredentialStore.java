@@ -105,12 +105,95 @@ public final class CredentialStore {
     }
 
     public List<CredentialInfo> list() throws IOException {
-        return withLock(store -> listCredentials(store, null));
+        return withLock(store -> {
+            purgeExpired(store);
+            return listCredentials(store, null);
+        });
     }
 
     public List<CredentialInfo> list(String providerId) throws IOException {
         String normalized = normalizeProviderId(providerId);
-        return withLock(store -> listCredentials(store, normalized));
+        return withLock(store -> {
+            purgeExpired(store);
+            return listCredentials(store, normalized);
+        });
+    }
+
+    /** Last account used for this provider; distinct from its global session default. */
+    public String defaultCredentialName(String providerId) throws IOException {
+        String normalized = normalizeProviderId(providerId);
+        return withLock(store -> {
+            purgeExpired(store);
+            ProviderCredentials provider = store.providers.get(normalized);
+            return provider == null ? null : provider.lastUsedName != null
+                    ? provider.lastUsedName : provider.activeName;
+        });
+    }
+
+    public void recordUsed(String providerId, String credentialName) throws IOException {
+        String normalized = normalizeProviderId(providerId);
+        String name = normalizeCredentialName(credentialName);
+        withLock(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            if (provider != null && provider.credentials.containsKey(name)
+                    && !name.equals(provider.lastUsedName)) {
+                provider.lastUsedName = name;
+                store.normalized = true;
+            }
+            return null;
+        });
+    }
+
+    /** Remove expired grants that cannot renew, without making network requests. */
+    public int purgeExpired() throws IOException {
+        return withLock(CredentialStore::purgeExpired);
+    }
+
+    private static int purgeExpired(StoreState store) {
+        long now = System.currentTimeMillis();
+        int removed = 0;
+        var providers = store.providers.entrySet().iterator();
+        while (providers.hasNext()) {
+            var entry = providers.next();
+            ProviderCredentials provider = entry.getValue();
+            int before = provider.credentials.size();
+            provider.credentials.values().removeIf(credential ->
+                    OAuthCredentialIdentity.expiredWithoutRefresh(entry.getKey(), credential, now));
+            removed += before - provider.credentials.size();
+            repairSelections(provider);
+            if (provider.credentials.isEmpty()) providers.remove();
+        }
+        store.normalized |= removed > 0;
+        return removed;
+    }
+
+    private static void repairSelections(ProviderCredentials provider) {
+        if (!provider.credentials.containsKey(provider.lastUsedName)) provider.lastUsedName = null;
+        if (!provider.credentials.containsKey(provider.activeName)) {
+            provider.activeName = provider.lastUsedName != null ? provider.lastUsedName
+                    : provider.credentials.keySet().stream().findFirst().orElse(null);
+        }
+        if (provider.sessionSelection != null
+                && !provider.credentials.containsKey(provider.sessionSelection.credentialName())) {
+            provider.sessionSelection = null;
+        }
+    }
+
+    /** A failed refresh must not delete a grant replaced by another process. */
+    public boolean deleteCredentialIfUnchanged(String providerId, String name, ManagedCredential expected)
+            throws IOException {
+        String normalized = normalizeProviderId(providerId);
+        String normalizedName = normalizeCredentialName(name);
+        return withLock(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            if (expected == null || provider == null
+                    || !expected.equals(provider.credentials.get(normalizedName))) return false;
+            provider.credentials.remove(normalizedName);
+            repairSelections(provider);
+            if (provider.credentials.isEmpty()) store.providers.remove(normalized);
+            store.normalized = true;
+            return true;
+        });
     }
 
     private static List<CredentialInfo> listCredentials(StoreState store, String providerFilter) {
@@ -171,6 +254,7 @@ public final class CredentialStore {
                     : provider.activeName;
             provider.credentials.put(targetName, credential);
             provider.activeName = targetName;
+            provider.lastUsedName = targetName;
             return credential;
         });
     }
@@ -194,6 +278,7 @@ public final class CredentialStore {
             provider.credentials.put(normalizedName, credential);
             if (provider.activeName == null || activate) {
                 provider.activeName = normalizedName;
+                provider.lastUsedName = normalizedName;
             }
             return credential;
         });
@@ -218,7 +303,10 @@ public final class CredentialStore {
             }
             removeAliases(providerId, provider, targetName, normalized);
             provider.credentials.put(targetName, normalized);
-            if (activate || provider.activeName == null) provider.activeName = targetName;
+            if (activate || provider.activeName == null) {
+                provider.activeName = targetName;
+                provider.lastUsedName = targetName;
+            }
             return normalized;
         });
     }
@@ -246,6 +334,7 @@ public final class CredentialStore {
             if (entry.getKey().equals(retainedName)
                     || !OAuthCredentialIdentity.sameAccount(providerId, entry.getValue(), credential)) return false;
             if (entry.getKey().equals(provider.activeName)) provider.activeName = retainedName;
+            if (entry.getKey().equals(provider.lastUsedName)) provider.lastUsedName = retainedName;
             return true;
         });
     }
@@ -345,6 +434,7 @@ public final class CredentialStore {
                 removeAliases(normalized, provider, targetName, resolved);
                 provider.credentials.put(targetName, resolved);
             }
+            provider.lastUsedName = targetName;
             return new SelectedCredential(targetName, resolved);
         });
     }
@@ -362,10 +452,9 @@ public final class CredentialStore {
             if (provider == null || provider.credentials.remove(normalizedName) == null) {
                 return false;
             }
+            repairSelections(provider);
             if (provider.credentials.isEmpty()) {
                 store.providers.remove(normalizedProvider);
-            } else if (normalizedName.equals(provider.activeName)) {
-                provider.activeName = provider.credentials.keySet().iterator().next();
             }
             return true;
         });
@@ -386,6 +475,7 @@ public final class CredentialStore {
                 return false;
             }
             provider.activeName = normalizedName;
+            provider.lastUsedName = normalizedName;
             if (updateOpenSessions) {
                 provider.sessionSelection = new SessionSelection(UUID.randomUUID().toString(), normalizedName);
             }
@@ -426,7 +516,8 @@ public final class CredentialStore {
     }
 
     public String resolveApiKey(String providerId, String name, Function<String, String> environment) throws IOException {
-        ManagedCredential credential = name == null ? read(providerId) : read(providerId, name);
+        String selectedName = name == null ? activeCredentialName(providerId) : name;
+        ManagedCredential credential = selectedName == null ? null : read(providerId, selectedName);
         if (name != null && credential == null) throw new IOException("Selected credential no longer exists");
         if (credential == null || !credential.isApiKey()) {
             return null;
@@ -434,9 +525,11 @@ public final class CredentialStore {
         String value = credential.getKey();
         String envName = referencedEnvironmentName(value);
         if (envName == null) {
+            recordUsed(providerId, selectedName);
             return value;
         }
         String resolved = environment != null ? environment.apply(envName) : null;
+        if (resolved != null && !resolved.isBlank()) recordUsed(providerId, selectedName);
         return resolved == null || resolved.isBlank() ? null : resolved;
     }
 
@@ -573,6 +666,10 @@ public final class CredentialStore {
             }
             provider.credentials.clear();
             provider.credentials.putAll(unique.credentials);
+            if (provider.lastUsedName != null && !provider.credentials.containsKey(provider.lastUsedName)) {
+                provider.lastUsedName = provider.activeName;
+                store.normalized = true;
+            }
         });
         return store;
     }
@@ -617,6 +714,11 @@ public final class CredentialStore {
                         + "' does not exist for provider " + providerId);
             }
             provider.activeName = activeName;
+            JsonNode lastUsed = providerNode.get("lastUsed");
+            if (lastUsed != null && lastUsed.isTextual()) {
+                String name = normalizeCredentialName(lastUsed.asText());
+                if (provider.credentials.containsKey(name)) provider.lastUsedName = name;
+            }
             JsonNode selection = providerNode.get("sessionSelection");
             if (selection != null && !selection.isNull()) {
                 provider.sessionSelection = new SessionSelection(
@@ -685,6 +787,7 @@ public final class CredentialStore {
         store.providers.forEach((providerId, provider) -> {
             ObjectNode providerNode = providersNode.putObject(providerId);
             providerNode.put("active", provider.activeName);
+            if (provider.lastUsedName != null) providerNode.put("lastUsed", provider.lastUsedName);
             if (provider.sessionSelection != null) {
                 ObjectNode selection = providerNode.putObject("sessionSelection");
                 selection.put("revision", provider.sessionSelection.revision());
@@ -844,6 +947,7 @@ public final class CredentialStore {
             String expiry = expiresAt == Long.MAX_VALUE ? "non-expiring"
                     : expiresAt <= System.currentTimeMillis()
                     ? (refreshable ? "expired; refresh needed" : "expired; sign in again")
+                            + "; expiry " + java.time.Instant.ofEpochMilli(expiresAt)
                     : "expires " + java.time.Instant.ofEpochMilli(expiresAt);
             return (active ? "active; " : "") + expiry;
         }
@@ -861,6 +965,7 @@ public final class CredentialStore {
 
     private static final class ProviderCredentials {
         private String activeName;
+        private String lastUsedName;
         private SessionSelection sessionSelection;
         private final LinkedHashMap<String, ManagedCredential> credentials = new LinkedHashMap<>();
 

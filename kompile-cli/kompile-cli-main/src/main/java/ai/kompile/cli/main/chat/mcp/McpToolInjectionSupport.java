@@ -85,19 +85,12 @@ public final class McpToolInjectionSupport {
         // Workflow team identity rides in the env block so the child MCP server's
         // delegation tools enforce the same team as the parent chat. The child's
         // ToolContext never reads participant identity from tool arguments.
-        String workflowName = System.getenv(
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
-        String workflowParticipant = System.getenv(
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
-        if (workflowName != null && !workflowName.isBlank()) {
-            server.putObject("env")
-                    .put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME,
-                            workflowName);
-            if (workflowParticipant != null && !workflowParticipant.isBlank()) {
-                server.putObject("env")
-                        .put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT,
-                                workflowParticipant);
-            }
+        // Source is the harness-owned session context: a JVM cannot mutate its own
+        // process environment, so a top-level chat lead carries the team there and
+        // a delegated child (which did inherit real env values) forwards them.
+        for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                .inheritableEnvironment().entrySet()) {
+            server.putObject("env").put(entry.getKey(), entry.getValue());
         }
         return writeConfig(root, "kompile-cli stdio", "stdio");
     }
@@ -201,19 +194,14 @@ public final class McpToolInjectionSupport {
             return args;
         }
 
-        /** Extra env for the child MCP server carrying the active workflow team. */
+        /**
+         * Extra env for the child MCP server carrying the active workflow team.
+         * Reads the harness-owned session context (chat lead) with inherited env
+         * as fallback (delegated child).
+         */
         java.util.Map<String, String> workflowEnvironment() {
-            java.util.Map<String, String> env = new java.util.LinkedHashMap<>();
-            String name = System.getenv(
-                    ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
-            if (name != null && !name.isBlank()) {
-                env.put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME, name);
-                String participant = System.getenv(
-                        ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
-                env.put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT,
-                        participant == null ? "" : participant);
-            }
-            return env;
+            return ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                    .inheritableEnvironment();
         }
     }
 

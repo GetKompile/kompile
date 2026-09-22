@@ -32,6 +32,7 @@ import org.jline.utils.WCWidth;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
 
 import static ai.kompile.utils.AnsiConstants.*;
 
@@ -90,6 +92,7 @@ public class KompileTui {
     private static final long MIN_ASYNC_FRAME_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
     private static final long RESIZE_POLL_MILLIS = 100L;
     private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Scroll to bottom]";
+    private static final Pattern WEB_LINK = Pattern.compile("https?://[^\\s\\p{Cntrl}<>\"│]+");
 
     private final TopBar topBar;
     private final StatusBar statusBar;
@@ -157,8 +160,15 @@ public class KompileTui {
         }
     }
 
+    /** Character offsets within attributed text, with a complete native link target. */
+    private record Hyperlink(int start, int end, String target) {}
+
     /** One terminal row plus the retained logical line that produced it. */
-    private record VisualRow(AttributedString text, int logicalLine) {}
+    private record VisualRow(AttributedString text, int logicalLine, List<Hyperlink> links) {
+        private VisualRow(AttributedString text, int logicalLine) {
+            this(text, logicalLine, List.of());
+        }
+    }
 
     /** Absolute visual-row/cell coordinate within the active content view. */
     private record SelectionPoint(int row, int column) {}
@@ -549,7 +559,7 @@ public class KompileTui {
     public boolean beginTranscriptSelection(int x, int y) {
         synchronized (drawLock) {
             SelectionPoint point = selectionPointAt(x, y, false);
-            if (point == null || temporaryWindowActive) {
+            if (point == null) {
                 boolean changed = clearTranscriptSelectionLocked();
                 if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
                 return changed;
@@ -1272,6 +1282,7 @@ public class KompileTui {
     public void closeTemporaryWindow() {
         synchronized (drawLock) {
             if (!temporaryWindowActive) return;
+            clearTranscriptSelectionLocked();
             temporaryWindowActive = false;
             commandOutputPage = new CommandOutputPage(false);
             contentViewKey = savedContentViewKey == null ? MAIN_CONTENT_VIEW : savedContentViewKey;
@@ -2110,13 +2121,22 @@ public class KompileTui {
         for (int logicalLine = 0; logicalLine < lines.size(); logicalLine++) {
             String line = lines.get(logicalLine);
             AttributedString attributed = AttributedString.fromAnsi(line == null ? "" : line);
+            List<Hyperlink> links = webLinks(attributed.toString());
             List<AttributedString> wrapped = attributed.columnSplitLength(width);
             if (wrapped.isEmpty()) {
                 rows.add(new VisualRow(AttributedString.EMPTY, logicalLineOffset + logicalLine));
                 continue;
             }
+            int offset = 0;
             for (AttributedString row : wrapped) {
-                rows.add(new VisualRow(row, logicalLineOffset + logicalLine));
+                List<Hyperlink> rowLinks = new ArrayList<>();
+                for (Hyperlink link : links) {
+                    int from = Math.max(0, link.start() - offset);
+                    int to = Math.min(row.length(), link.end() - offset);
+                    if (from < to) rowLinks.add(new Hyperlink(from, to, link.target()));
+                }
+                rows.add(new VisualRow(row, logicalLineOffset + logicalLine, List.copyOf(rowLinks)));
+                offset += row.length();
             }
         }
         return List.copyOf(rows);
@@ -2146,7 +2166,41 @@ public class KompileTui {
                     ? selection.end().column() : text.columnLength();
             text = inverseColumns(text, start, end);
         }
-        return toAnsi(text);
+        if (!renderer.isAnsiEnabled() || row.links().isEmpty()) return toAnsi(text);
+        // Emit OSC 8 only after JLine has wrapped and styled the visible cells.
+        // Every wrapped fragment links to the complete URL; copying uses the
+        // original attributed text and never includes terminal control sequences.
+        StringBuilder linked = new StringBuilder();
+        int offset = 0;
+        for (Hyperlink link : row.links()) {
+            linked.append(toAnsi(text.subSequence(offset, link.start())));
+            linked.append("\033]8;;").append(link.target()).append("\033\\");
+            linked.append(toAnsi(text.subSequence(link.start(), link.end())));
+            linked.append("\033]8;;\033\\");
+            offset = link.end();
+        }
+        return linked.append(toAnsi(text.subSequence(offset, text.length()))).toString();
+    }
+
+    private static List<Hyperlink> webLinks(String text) {
+        List<Hyperlink> links = new ArrayList<>();
+        var matcher = WEB_LINK.matcher(text);
+        while (matcher.find()) {
+            String target = matcher.group();
+            // Rendered Markdown links may have a surrounding pair of parentheses.
+            if (matcher.start() > 0 && text.charAt(matcher.start() - 1) == '(' && target.endsWith(")")) {
+                target = target.substring(0, target.length() - 1);
+            }
+            try {
+                URI uri = URI.create(target);
+                if (uri.getHost() != null) {
+                    links.add(new Hyperlink(matcher.start(), matcher.start() + target.length(), uri.toASCIIString()));
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Malformed URLs remain ordinary, selectable text.
+            }
+        }
+        return links;
     }
 
     private AttributedString inverseColumns(AttributedString text, int start, int end) {
@@ -2191,14 +2245,7 @@ public class KompileTui {
     }
 
     private boolean autoScrollSelectionAt(int y) {
-        int maximum = clampScrollOffset(
-                Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
-        int next = contentScrollOffset;
-        if (y <= scrollTop() - 1 && contentScrollOffset < maximum) {
-            next++;
-        } else if (y >= transcriptBottomY() && contentScrollOffset > 0) {
-            next--;
-        }
+        int next = selectionScrollOffsetAt(y);
         if (next == contentScrollOffset) return false;
         contentScrollOffset = next;
         return true;
@@ -2230,10 +2277,15 @@ public class KompileTui {
     }
 
     private boolean selectionAtScrollableEdge() {
-        int maximum = clampScrollOffset(
-                Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
-        return (selectionPointerY <= scrollTop() - 1 && contentScrollOffset < maximum)
-                || (selectionPointerY >= transcriptBottomY() && contentScrollOffset > 0);
+        return selectionScrollOffsetAt(selectionPointerY) != contentScrollOffset;
+    }
+
+    private int selectionScrollOffsetAt(int y) {
+        int delta = y <= scrollTop() - 1 ? 1 : y >= transcriptBottomY() ? -1 : 0;
+        // Temporary documents count from their top; live transcripts count from
+        // their bottom. Drag scrolling must follow the same direction as wheel scrolling.
+        if (temporaryWindowActive) delta = -delta;
+        return clampScrollOffset(contentScrollOffset + delta, contentViewLines, contentViewPinsHeader);
     }
 
     private int transcriptBottomY() {

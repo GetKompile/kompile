@@ -184,6 +184,134 @@ class ChatInstanceBootstrapTest {
         assertFalse(services.started, "a corrupt jar must never be launched");
     }
 
+    @Test
+    void deadProcessFailsFastWithExitCodeInsteadOfBurningTheTimeout(@TempDir Path tempDir)
+            throws Exception {
+        Path lib = Files.createDirectories(tempDir.resolve("lib"));
+        Files.writeString(lib.resolve("kompile-chat.jar"), "test");
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        DeadOnBootServiceManager services = new DeadOnBootServiceManager();
+
+        var error = org.junit.jupiter.api.Assertions.assertThrows(
+                ChatInstanceBootstrap.BootstrapException.class,
+                () -> ChatInstanceBootstrap.ensureReady(
+                        "http://localhost:9181", 7, registry, services, tempDir.toFile()));
+
+        assertTrue(error.getMessage().contains("exited before accepting connections"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains("exit code 3"), error.getMessage());
+        assertFalse(services.process.destroyForciblyCalled,
+                "a dead process must not be force-killed again");
+    }
+
+    @Test
+    void corruptH2DatabaseFailureNamesTheExactFileToDelete(@TempDir Path tempDir)
+            throws Exception {
+        Path lib = Files.createDirectories(tempDir.resolve("lib"));
+        Files.writeString(lib.resolve("kompile-chat.jar"), "test");
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        DeadOnBootServiceManager services = new DeadOnBootServiceManager();
+        // Real failure signature (2026-09-22): JDBC URL on stdout, MVStore corruption on stderr.
+        services.outLogText = "a.k.app.config.PrimaryDataSourceConfig   : Creating primary data "
+                + "source: jdbc:h2:file:/tmp/project/data/orchestrator-db;DB_CLOSE_DELAY=-1;AUTO_RECONNECT=TRUE;AUTO_SERVER=TRUE\n";
+        services.errLogText = "Caused by: org.h2.mvstore.MVStoreException: File is corrupted "
+                + "- unable to recover a valid set of chunks [2.2.224/6]\n";
+
+        var error = org.junit.jupiter.api.Assertions.assertThrows(
+                ChatInstanceBootstrap.BootstrapException.class,
+                () -> ChatInstanceBootstrap.ensureReady(
+                        "http://localhost:9181", 7, registry, services, tempDir.toFile()));
+
+        assertTrue(error.getMessage().contains("H2 database file is corrupt"), error.getMessage());
+        assertTrue(error.getMessage().contains("/tmp/project/data/orchestrator-db.mv.db"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains(".trace.db"), error.getMessage());
+    }
+
+    private static final class DeadOnBootServiceManager extends ServiceManager {
+        private final DeadProcess process = new DeadProcess(3);
+        private String outLogText = "";
+        private String errLogText = "";
+
+        @Override
+        public boolean checkHealth(int port) {
+            return false;
+        }
+
+        @Override
+        public Process startProjectComponent(String instanceName, String type, File artifact,
+                                             int port, File workDirectory,
+                                             List<String> jvmArgs, List<String> appArgs,
+                                             File logDirectory, boolean foreground)
+                throws IOException {
+            logDirectory.mkdirs();
+            Files.writeString(new File(logDirectory, instanceName + ".out.log").toPath(), outLogText);
+            Files.writeString(new File(logDirectory, instanceName + ".err.log").toPath(), errLogText);
+            return process;
+        }
+
+        @Override
+        public boolean waitForHealth(int port, int timeoutSeconds, Process process) {
+            return false; // the child never became healthy
+        }
+    }
+
+    private static final class DeadProcess extends Process {
+        private final int code;
+        private boolean destroyForciblyCalled;
+
+        private DeadProcess(int code) {
+            this.code = code;
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return OutputStream.nullOutputStream();
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public InputStream getErrorStream() {
+            return InputStream.nullInputStream();
+        }
+
+        @Override
+        public int waitFor() {
+            return code;
+        }
+
+        @Override
+        public int exitValue() {
+            return code;
+        }
+
+        @Override
+        public void destroy() {
+        }
+
+        @Override
+        public Process destroyForcibly() {
+            destroyForciblyCalled = true;
+            return this;
+        }
+
+        @Override
+        public boolean isAlive() {
+            return false;
+        }
+
+        @Override
+        public long pid() {
+            return 4242L;
+        }
+    }
+
     private static final class CapturingServiceManager extends ServiceManager {
         private final boolean initiallyHealthy;
         private boolean started;
@@ -227,7 +355,7 @@ class ChatInstanceBootstrapTest {
         }
 
         @Override
-        public boolean waitForHealth(int port, int timeoutSeconds) {
+        public boolean waitForHealth(int port, int timeoutSeconds, Process process) {
             this.healthTimeoutSeconds = timeoutSeconds;
             return true;
         }

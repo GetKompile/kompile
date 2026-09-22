@@ -235,18 +235,10 @@ public class DirectSubagentRunnerStdio {
         env.put("KOMPILE_AGENT_NAME", agentName);
         // Workflow team identity: children inherit the delegating participant's
         // environment untouched; enforcement in the child resolves identity from
-        // these values, never from prompt content.
-        String workflowName = System.getenv(
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
-        if (workflowName != null && !workflowName.isBlank()) {
-            env.put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME, workflowName);
-            String workflowParticipant = System.getenv(
-                    ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
-            if (workflowParticipant != null) {
-                env.put(ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT,
-                        workflowParticipant);
-            }
-        }
+        // these values, never from prompt content. A chat lead (whose JVM cannot
+        // mutate its own env) sources the values from the session context.
+        env.putAll(ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                .inheritableEnvironment());
         runner.setExtraEnvironment(env);
         runner.setOutputConsumer(line -> {
             synchronized (captured) {

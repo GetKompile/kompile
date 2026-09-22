@@ -470,6 +470,83 @@ class DirectLlmClientConnectivityTest {
     }
 
     @Test
+    void retriesOpenRouterUpstreamErrorEnvelopeUntilRecovery() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            if (calls.incrementAndGet() == 1) {
+                // The exact OpenRouter shape behind "provider returned error": a 200
+                // stream dying with an upstream-failure wrap. Neither the wrap text
+                // nor the upstream raw text carries a rate-limit keyword — the wrap
+                // classification is what earns the retry.
+                respondSse(exchange,
+                        "data: {\"error\":{\"message\":\"Provider returned error\","
+                                + "\"code\":429,\"metadata\":{\"provider_name\":\"Google\","
+                                + "\"raw\":\"too many concurrent requests for your tier\"}}}\n\n");
+            } else {
+                respondSse(exchange, completion("after-upstream-retry"));
+            }
+        });
+        try (fixture; DirectLlmClient client = client(fixture)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            StringBuilder output = new StringBuilder();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(output::append);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(2, calls.get(),
+                    "the upstream wrap must be counted as a retryable attempt");
+            assertEquals("after-upstream-retry", result.text);
+            assertFalse(result.failed);
+            assertEquals(1, events.size(),
+                    "the failed attempt should emit one reconnect event");
+            assertTrue(events.get(0).reason().contains("Provider returned error"));
+            assertTrue(events.get(0).reason().contains("upstream=Google"),
+                    "the reconnect reason must name the routed upstream provider");
+            assertTrue(events.get(0).reason().contains("code=429"));
+            assertEquals("after-upstream-retry", output.toString(),
+                    "the failed attempt must not leak into rendered output");
+        }
+    }
+
+    @Test
+    void exhaustedOpenRouterUpstreamRetriesCarryUpstreamDetailNotTheBareWrap()
+            throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        TestServer fixture = startServer(exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            calls.incrementAndGet();
+            respondSse(exchange,
+                    "data: {\"error\":{\"message\":\"Provider returned error\","
+                            + "\"code\":429,\"metadata\":{\"provider_name\":\"Google\","
+                            + "\"raw\":\"too many concurrent requests for your tier\"}}}\n\n");
+        });
+        try (fixture; DirectLlmClient client = client(fixture)) {
+            List<DirectLlmClient.ConnectivityEvent> events = new ArrayList<>();
+            StringBuilder output = new StringBuilder();
+            client.setConnectivityEventConsumer(events::add);
+            client.setOutputConsumer(output::append);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals(FAST_POLICY.maxAttempts(), calls.get());
+            assertTrue(result.failed);
+            assertTrue(result.text.contains("Provider returned error"));
+            assertTrue(result.text.contains("upstream=Google"),
+                    "the terminal message must name the routed upstream provider");
+            assertTrue(result.text.contains("code=429"));
+            assertTrue(result.text.contains("raw=too many concurrent"),
+                    "the terminal message must carry the upstream's real error text");
+            assertFalse(result.text.contains("{\"error\""),
+                    "the terminal message must not dump the raw envelope");
+            assertEquals(FAST_POLICY.maxAttempts() - 1, events.size());
+        }
+    }
+
+    @Test
     void inBandInvalidRequestEnvelopeStaysTerminalWithoutRetries() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         TestServer fixture = startServer(exchange -> {

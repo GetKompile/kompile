@@ -168,6 +168,8 @@ public class TaskTool implements CliTool {
         props.putObject("role").put("type", "string").put("description",
                 "Named role's prompt and tool policy, instead of agent_type. Does not apply CLI-agent launch defaults. "
                         + "Recursive delegation remains disabled.");
+        props.putObject("purpose").put("type", "string").put("description",
+                "Workflow routing purpose (active workflow teams only): which participant should handle this task.");
         props.putObject("background").put("type", "boolean").put("description",
                 "Detach this subagent invocation so the parent continues immediately; the final result "
                         + "arrives as a system message on completion. Ignored with a synchronous fallback "
@@ -185,6 +187,22 @@ public class TaskTool implements CliTool {
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Spawn subagent");
+
+        // Workflow team enforcement: identity is harness-owned (session context,
+        // set at launch/restore); delegation must route through the team's
+        // purposes, edges, and gates exactly like the MCP task tool.
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext workflowContext =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        if (workflowContext != null) {
+            ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.DelegationDecision decision =
+                    workflowContext.enforcement().evaluateDelegation(
+                            params.path("purpose").asText("").trim(),
+                            params.path("role").asText("").trim());
+            if (decision instanceof ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement
+                    .DelegationDecision.Denied denied) {
+                return ToolResult.error(denied.reason());
+            }
+        }
 
         String desc = params.path("description").asText("");
         String prompt = params.path("prompt").asText("");

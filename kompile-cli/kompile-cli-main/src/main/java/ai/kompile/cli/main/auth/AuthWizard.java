@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.BiConsumer;
 
 /** Chat-style numbered wizards for managed provider credentials. */
 final class AuthWizard implements AutoCloseable {
@@ -172,9 +173,9 @@ final class AuthWizard implements AutoCloseable {
 
     SwitchRequest promptForSwitch(CredentialStore store) throws IOException {
         prompter.header("Kompile Auth Switch", "Choose the provider credential, including for open chats");
-        List<CredentialStore.CredentialInfo> all = store.list();
+        List<CredentialStore.CredentialInfo> all = CredentialMenu.unexpired(store.list());
         if (all.isEmpty()) {
-            prompter.message("No stored credentials. Run 'kompile auth login' first.");
+            prompter.message("No unexpired credentials. Run 'kompile auth login' first.");
             return null;
         }
 
@@ -189,13 +190,15 @@ final class AuthWizard implements AutoCloseable {
             return null;
         }
         String providerId = providers.get(providerIndex);
-        List<CredentialStore.CredentialInfo> credentials = store.list(providerId);
+        List<CredentialStore.CredentialInfo> credentials = all.stream()
+                .filter(info -> providerId.equals(info.providerId())).toList();
         List<String> labels = credentials.stream()
                 .map(AuthWizard::credentialLabel)
                 .toList();
         int credentialIndex = credentials.size() == 1
                 ? 0
-                : prompter.select("Select Credential:", labels);
+                : prompter.select("Select Credential:", labels,
+                        CredentialMenu.defaultIndex(store, providerId, credentials));
         if (credentialIndex < 0) {
             return null;
         }
@@ -364,6 +367,10 @@ final class AuthWizard implements AutoCloseable {
 
         int select(String title, List<String> items);
 
+        default int select(String title, List<String> items, int defaultIndex) {
+            return select(title, items);
+        }
+
         String text(String label, String defaultValue);
 
         String secret(String label);
@@ -387,15 +394,22 @@ final class AuthWizard implements AutoCloseable {
 
         private final Terminal terminal;
         private final LineReader reader;
+        private final BiConsumer<String, List<String>> pageRenderer;
 
         private TerminalPrompter() throws IOException {
             terminal = TerminalBuilder.builder().system(true).build();
             reader = LineReaderBuilder.builder().terminal(terminal).build();
+            pageRenderer = null;
         }
 
         TerminalPrompter(Terminal terminal, LineReader reader) {
+            this(terminal, reader, null);
+        }
+
+        TerminalPrompter(Terminal terminal, LineReader reader, BiConsumer<String, List<String>> pageRenderer) {
             this.terminal = terminal;
             this.reader = reader;
+            this.pageRenderer = pageRenderer;
         }
 
         private static String terminalSafe(String value) {
@@ -437,16 +451,25 @@ final class AuthWizard implements AutoCloseable {
 
         @Override
         public int select(String title, List<String> items) {
+            return select(title, items, -1);
+        }
+
+        @Override
+        public int select(String title, List<String> items, int defaultIndex) {
             // Resume/chat can leave a scroll region, mouse reporting, or bracketed
             // paste active. Reset them even when there is nothing to select.
-            terminal.writer().print("\033[r\033[?9l\033[?1000l\033[?1001l\033[?1002l"
-                    + "\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1007l"
-                    + "\033[?1015l\033[?1016l\033[?2004l");
-            terminal.writer().flush();
+            // An active chat modal owns these terminal modes and its redraws.
+            if (pageRenderer == null) {
+                terminal.writer().print("\033[r\033[?9l\033[?1000l\033[?1001l\033[?1002l"
+                        + "\033[?1003l\033[?1004l\033[?1005l\033[?1006l\033[?1007l"
+                        + "\033[?1015l\033[?1016l\033[?2004l");
+                terminal.writer().flush();
+            }
             if (items.isEmpty()) {
                 return -1;
             }
-            int first = 0;
+            boolean hasDefault = defaultIndex >= 0 && defaultIndex < items.size();
+            int first = hasDefault ? defaultIndex / menuCapacity() * menuCapacity() : 0;
             int pageEndLimit = items.size();
             String status = "";
             while (true) {
@@ -454,27 +477,33 @@ final class AuthWizard implements AutoCloseable {
                 int capacity = menuCapacity();
                 first = Math.min(first, items.size() - 1);
                 int end = Math.min(first + capacity, Math.min(pageEndLimit, items.size()));
-                terminal.writer().print("\033[2J\033[H");
-                if (height >= 5) {
-                    printMenuLine(BOLD + terminalSafe(title) + RESET);
-                }
+                List<String> page = new ArrayList<>();
                 for (int i = first; i < end; i++) {
-                    printMenuLine(CYAN + String.format("%2d", i + 1) + RESET
-                            + "  " + terminalSafe(items.get(i)));
+                    page.add(CYAN + String.format("%2d", i + 1) + RESET
+                            + "  " + terminalSafe(items.get(i)) + (hasDefault && i == defaultIndex ? " [default]" : ""));
                 }
                 if (height >= 6) {
-                    printMenuLine(DIM + "Showing " + (first + 1) + "-" + end + " of " + items.size() + RESET);
+                    page.add(DIM + "Showing " + (first + 1) + "-" + end + " of " + items.size() + RESET);
                 }
                 if (height >= 4) {
-                    printMenuLine("number/name | n next | p prev | q cancel");
+                    page.add("number/name | n next | p prev | q cancel");
                 }
                 if (height >= 7) {
-                    printMenuLine(YELLOW + status + RESET);
+                    page.add(YELLOW + status + RESET);
                 }
-                terminal.writer().flush();
+                if (pageRenderer != null) {
+                    pageRenderer.accept(terminalSafe(title), List.copyOf(page));
+                } else {
+                    terminal.writer().print("\033[2J\033[H");
+                    if (height >= 5) {
+                        printMenuLine(BOLD + terminalSafe(title) + RESET);
+                    }
+                    page.forEach(this::printMenuLine);
+                    terminal.writer().flush();
+                }
                 String input;
                 try {
-                    input = reader.readLine("> ");
+                    input = reader.readLine(hasDefault ? "> [" + (defaultIndex + 1) + "] " : "> ");
                 } catch (RuntimeException e) {
                     return -1;
                 }
@@ -482,6 +511,7 @@ final class AuthWizard implements AutoCloseable {
                     return -1;
                 }
                 String trimmed = input.trim();
+                if (trimmed.isEmpty() && hasDefault) return defaultIndex;
                 if (trimmed.equalsIgnoreCase("q")
                         || trimmed.equalsIgnoreCase("quit")
                         || trimmed.equalsIgnoreCase("cancel")) {

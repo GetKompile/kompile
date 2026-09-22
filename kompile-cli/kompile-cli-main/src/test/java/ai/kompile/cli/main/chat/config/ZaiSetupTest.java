@@ -34,7 +34,8 @@ class ZaiSetupTest {
     void switchesBillingEndpointAndPersistsItWithoutReplacingTheKey() throws Exception {
         String previousHome = System.getProperty("user.home");
         System.setProperty("user.home", tempDir.toString());
-        try {
+        try (var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                "zai-setup", "xterm", new java.io.ByteArrayOutputStream(), java.nio.charset.StandardCharsets.UTF_8)) {
             CredentialStore store = CredentialStore.create();
             store.putApiKey("zai", "shared", "test-zai-key", true);
             ChatConfig config = new ChatConfig("zai", null, "glm-5", null);
@@ -45,7 +46,7 @@ class ZaiSetupTest {
             for (String choice : List.of("2", "1")) {
                 SetupWizard.AuthMethod method = SetupWizard.selectAuthMethod(reader(choice), "zai");
                 SetupWizard.AuthenticationSelection authentication =
-                        SetupWizard.authenticateSession(reader("1"), "zai", method);
+                        SetupWizard.authenticateSession(reader(terminal, "1"), "zai", method);
                 assertNotNull(authentication);
                 assertEquals("shared", authentication.credentialName());
                 assertNull(authentication.apiKey(), "reuse the stored key without prompting for another");
@@ -84,9 +85,14 @@ class ZaiSetupTest {
     }
 
     private static LineReader reader(String... answers) {
+        return reader(null, answers);
+    }
+
+    private static LineReader reader(org.jline.terminal.Terminal terminal, String... answers) {
         ArrayDeque<String> input = new ArrayDeque<>(List.of(answers));
         return (LineReader) Proxy.newProxyInstance(LineReader.class.getClassLoader(),
                 new Class<?>[]{LineReader.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("getTerminal")) return terminal;
                     if (method.getName().equals("readLine")) {
                         if (input.isEmpty()) throw new EndOfFileException();
                         return input.removeFirst();

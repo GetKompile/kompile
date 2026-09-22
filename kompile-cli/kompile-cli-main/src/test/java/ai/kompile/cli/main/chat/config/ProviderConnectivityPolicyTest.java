@@ -93,6 +93,16 @@ class ProviderConnectivityPolicyTest {
         assertTrue(policy.isRetryableFailure(new IOException("Unknown error")),
                 "an opaque unknown error is never a request-shape problem");
 
+        // OpenRouter's upstream-failure wrap: a 200-stream envelope whose wrap
+        // text has no rate-limit words and whose upstream raw text deliberately
+        // carries none either — only the wrap itself is the transient signal.
+        String openRouterWrap = "Provider returned error "
+                + "{\"message\":\"Provider returned error\",\"code\":429,"
+                + "\"metadata\":{\"provider_name\":\"Google\","
+                + "\"raw\":\"too many concurrent requests for your tier\"}}";
+        assertTrue(policy.isRetryableFailure(new IOException(openRouterWrap)),
+                "OpenRouter's Provider-returned-error wrap must consume the retry budget");
+
         // Authentication and request-shape failures must stay terminal.
         assertFalse(policy.isRetryableFailure(new IOException(
                 "{\"message\":\"Incorrect API key\",\"type\":\"invalid_request_error\"}")));

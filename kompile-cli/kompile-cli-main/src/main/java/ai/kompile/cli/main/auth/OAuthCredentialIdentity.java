@@ -57,6 +57,17 @@ public final class OAuthCredentialIdentity {
                         credential.getAccess(), credential.getRefresh(), expires, metadata);
     }
 
+    /** API keys have no known expiry, except recognized legacy Codex access-token records. */
+    static boolean expiredWithoutRefresh(String provider, ManagedCredential credential, long now) {
+        if (credential.isApiKey() && "openai-codex".equals(provider)) {
+            JsonNode payload = claims(credential.getKey());
+            if (!payload.path(OPENAI_AUTH).path("chatgpt_account_id").asText().isBlank()) {
+                credential = normalize(provider, ManagedCredential.oauth(credential.getKey(), "", Long.MAX_VALUE));
+            }
+        }
+        return credential.expiresWithin(0L, now) && !credential.hasRefreshToken();
+    }
+
     public static boolean sameAccount(String provider, ManagedCredential left, ManagedCredential right) {
         if (left == null || right == null || !left.isOAuth() || !right.isOAuth()) return false;
         // A tenant, gateway or OAuth client is part of the credential's identity boundary.

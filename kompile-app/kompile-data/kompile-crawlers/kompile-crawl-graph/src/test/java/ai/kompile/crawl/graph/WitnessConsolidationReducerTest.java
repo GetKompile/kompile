@@ -196,6 +196,29 @@ class WitnessConsolidationReducerTest {
     }
 
     /**
+     * Contract: usable admissions must coexist with unresolved conflicts for a clean run.
+     * When quarantine removes EVERY candidate, nothing is retained and the unifier must
+     * report PARTIAL/FAILED (not COMPLETED); the reducer itself keeps the conflict visible.
+     */
+    @Test
+    void everyFamilyConflictedCandidateLeavesNothingRetained() {
+        var result = parse(List.of(
+                Map.of("type", "IS_MONTHLY_CLOSE", "connectionFamily", "AFFILIATION",
+                        "witnessIds", List.of(LIVE_WITNESS_A)),
+                Map.of("type", "IS_MONTHLY_CLOSE", "connectionFamily", "ATTRIBUTION",
+                        "witnessIds", List.of(LIVE_WITNESS_B, LIVE_WITNESS_C))));
+
+        assertTrue(result.supported().isEmpty(),
+                "no candidate survives when every row shares the conflicted label");
+        assertTrue(result.errors().stream().anyMatch(error ->
+                        error.contains("[WITNESS_FAMILY_CONFLICT]")
+                                && error.contains("IS_MONTHLY_CLOSE")),
+                "the conflict diagnostic must name the quarantined label: " + result.errors());
+        assertEquals(0, result.uniqueRetainedPredicates());
+        assertEquals(1, result.labelsQuarantinedForFamilyConflict());
+    }
+
+    /**
      * Byte-exact live replay of the recorded proc-106 consolidation payload (both attempts):
      * the reducer must produce a deterministic outcome without the SCHEMA_DUPLICATE_TYPE /
      * SCHEMA_CONNECTION_FAMILY_CONFLICT whole-batch exhaustion.

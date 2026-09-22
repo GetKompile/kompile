@@ -118,6 +118,37 @@ class DirectLlmClientFailureClassificationTest {
     }
 
     @Test
+    void zaiUsageLimitStopsAfterOneRequestAndExplainsQuota() throws Exception {
+        for (String code : new String[]{"1113", "1308", "1309", "1310", "1314",
+                "1316", "1317", "1318", "1319", "1320", "1321"}) {
+            try (var fixture = new Fixture("zai", 429,
+                    "{\"error\":{\"code\":\"" + code + "\"}}", false)) {
+                var result = fixture.run();
+                assertEquals(QUOTA_EXHAUSTED, result.failureKind, code);
+                assertTrue(result.text.contains("usage limit exhausted"));
+                assertEquals(1, fixture.requests.get());
+                assertEquals(0, fixture.refreshes.get());
+            }
+        }
+    }
+
+    @Test
+    void zaiEmptyInformationIsValidationNotQuota() throws Exception {
+        try (var fixture = new Fixture("zai", 400,
+                "{\"error\":{\"code\":\"1214\",\"message\":\"Information can not be empty\"}}", false)) {
+            var result = fixture.run();
+            assertEquals(PROVIDER_ERROR, result.failureKind);
+            assertEquals(400, result.failureStatusCode);
+            assertTrue(result.text.contains("Information can not be empty"));
+            assertEquals(1, fixture.requests.get());
+        }
+        assertEquals(NONE, ProviderResponseFailure.classify("zai", 429,
+                "{\"error\":{\"code\":\"1302\"}}"));
+        assertEquals(NONE, ProviderResponseFailure.classify("openai", 429,
+                "{\"error\":{\"code\":\"1310\"}}"));
+    }
+
+    @Test
     void diagnosticMetadataIsOptionalBoundedAndAllowlisted() {
         var empty = java.net.http.HttpHeaders.of(Map.of(), (name, value) -> true);
         assertEquals("", ProviderResponseFailure.diagnostics("{\"error\":{\"message\":\"ordinary\"}}", empty));

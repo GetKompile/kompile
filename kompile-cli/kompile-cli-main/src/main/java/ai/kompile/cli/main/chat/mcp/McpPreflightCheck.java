@@ -130,7 +130,12 @@ public class McpPreflightCheck {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(projectDir.toFile());
             pb.redirectErrorStream(true);
-            
+            // Workflow team identity flows to the child server exactly like the
+            // env block in a written MCP config does.
+            pb.environment().putAll(
+                    ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                            .inheritableEnvironment());
+
             // Start the process
             stdioMcpProcess = pb.start();
             isRunning.set(true);

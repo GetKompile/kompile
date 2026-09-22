@@ -9,6 +9,7 @@ import org.junit.jupiter.api.parallel.Resources;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -184,14 +185,21 @@ class ChatConfigCredentialMigrationTest {
             CredentialStore store = CredentialStore.create();
             store.putApiKey("openai", "first", "first-key", true);
             store.putApiKey("openai", "second", "second-key", false);
-            org.jline.reader.LineReader reader = (org.jline.reader.LineReader) java.lang.reflect.Proxy.newProxyInstance(
-                    getClass().getClassLoader(), new Class<?>[]{org.jline.reader.LineReader.class},
-                    (proxy, method, args) -> method.getName().equals("readLine") ? "second" : null);
-            var selected = SetupWizard.authenticateSession(reader, "openai", SetupWizard.AuthMethod.API_KEY);
-            assertNotNull(selected);
-            assertEquals("second", selected.credentialName());
-            assertNull(selected.apiKey());
-            assertEquals("first", store.activeCredentialName("openai"));
+            try (var terminal = new org.jline.terminal.impl.LineDisciplineTerminal(
+                    "session-auth", "xterm", new java.io.ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
+                org.jline.reader.LineReader reader = (org.jline.reader.LineReader) java.lang.reflect.Proxy.newProxyInstance(
+                        getClass().getClassLoader(), new Class<?>[]{org.jline.reader.LineReader.class},
+                        (proxy, method, args) -> switch (method.getName()) {
+                            case "readLine" -> "second";
+                            case "getTerminal" -> terminal;
+                            default -> null;
+                        });
+                var selected = SetupWizard.authenticateSession(reader, "openai", SetupWizard.AuthMethod.API_KEY);
+                assertNotNull(selected);
+                assertEquals("second", selected.credentialName());
+                assertNull(selected.apiKey());
+                assertEquals("first", store.activeCredentialName("openai"));
+            }
         });
     }
 

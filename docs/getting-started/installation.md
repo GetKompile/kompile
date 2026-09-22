@@ -16,7 +16,8 @@ curl -fsSL https://get.kompile.ai/install.sh | bash -s -- \
   --version 0.1.0 --variant cli-only --dir ~/.kompile
 ```
 
-**Variants:** `cli-only` (the cross-platform `kompile` CLI — the backend is fetched on demand via
+**Variants:** `cli-only` (the cross-platform `kompile` CLI plus the chat handoff JAR that backs
+`kompile web` — server personas and the local backend are fetched on demand via
 `kompile install kompile-app`), `hosted` (CLI **plus** the bundled app-main server),
 `cpu-intel`, `cpu-arm`, `cuda`, `amd-zluda`. The ZLUDA variant defaults to ROCm 7.2.4;
 after the candidate artifacts are published, select ROCm 10 explicitly with

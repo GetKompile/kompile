@@ -152,23 +152,65 @@ final class ChatInstanceBootstrap {
         }
 
         int timeoutSeconds = Math.max(1, startupTimeoutSeconds);
-        if (!serviceManager.waitForHealth(chatPort, timeoutSeconds) || !process.isAlive()) {
-            if (process.isAlive()) {
+        System.out.println("  Waiting for readiness (timeout: " + timeoutSeconds
+                + "s; a cold JVM boot typically takes 30-90s, progress every 15s)...");
+        if (!serviceManager.waitForHealth(chatPort, timeoutSeconds, process) || !process.isAlive()) {
+            boolean diedOnBoot = !process.isAlive();
+            int exitCode = diedOnBoot ? process.exitValue() : -1;
+            if (!diedOnBoot) {
                 process.destroyForcibly();
             }
             InstanceRegistry.unregister(instanceName);
-            // Surface the launch failure directly: the err log names it (e.g.
-            // "Error: Invalid or corrupt jarfile") and a bare timeout message hides it.
+            // Surface the launch failure directly: BOTH logs name it — the JDBC URL and
+            // Spring banner land on stdout while the exception lands on stderr — and a
+            // bare timeout message hides the real cause.
             String errorTail = tailLines(new File(logDirectory, instanceName + ".err.log"), 20);
+            String outTail = tailLines(new File(logDirectory, instanceName + ".out.log"), 20);
+            String diagnosis = diagnoseStartupFailure(errorTail + "\n" + outTail);
             throw new BootstrapException("The Kompile chat subprocess did not become ready at "
-                    + requestedChatUrl + " within " + timeoutSeconds + " seconds. Logs: "
-                    + logDirectory.getAbsolutePath()
-                    + (errorTail.isEmpty() ? "" : "\nLast error output:\n" + errorTail));
+                    + requestedChatUrl + " within " + timeoutSeconds + " seconds"
+                    + (diedOnBoot
+                        ? " (the process exited before accepting connections, exit code " + exitCode + ")"
+                        : "")
+                    + ". Logs: " + logDirectory.getAbsolutePath()
+                    + diagnosis
+                    + (errorTail.isEmpty() ? "" : "\nLast error output:\n" + errorTail)
+                    + (outTail.isEmpty() ? "" : "\nLast startup output:\n" + outTail));
         }
 
         System.out.println("  Chat subprocess ready (PID: " + process.pid() + ")");
         System.out.println("  Logs: " + logDirectory.getAbsolutePath());
         return new StartupResult(requestedChatUrl, true);
+    }
+
+    /**
+     * Targeted next-step guidance for the boot failure classes we have actually seen
+     * (corrupt embedded H2 file, full disk, corrupt installed artifact). Returns ""
+     * when the logs match nothing known.
+     */
+    static String diagnoseStartupFailure(String logText) {
+        if (logText == null || logText.isBlank()) {
+            return "";
+        }
+        if (logText.contains("MVStoreException") && logText.contains("File is corrupted")) {
+            java.util.regex.Matcher url = java.util.regex.Pattern
+                    .compile("jdbc:h2:file:([^;\\s\"]+)").matcher(logText);
+            String remedy = url.find()
+                    ? "Delete \"" + url.group(1) + ".mv.db\" (plus its .trace.db) — it is recreated "
+                        + "empty on the next start."
+                    : "Find the *.mv.db named after 'Creating primary data source' in the startup "
+                        + "log and delete it (plus its .trace.db).";
+            return "\nLikely cause: the embedded H2 database file is corrupt, which aborts startup "
+                    + "at the datasource. " + remedy;
+        }
+        if (logText.toLowerCase(Locale.ROOT).contains("no space left on device")) {
+            return "\nLikely cause: the disk is full. Free space and retry.";
+        }
+        if (logText.contains("Invalid or corrupt jarfile")) {
+            return "\nLikely cause: the installed artifact is corrupt. Reinstall with: kompile install "
+                    + ComponentRegistry.KOMPILE_APP_CHAT;
+        }
+        return "";
     }
 
     /** Last {@code maxLines} lines of a log file, each capped, or empty when unreadable. */

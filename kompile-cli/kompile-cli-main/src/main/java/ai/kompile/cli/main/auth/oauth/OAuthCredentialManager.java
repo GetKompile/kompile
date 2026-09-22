@@ -105,8 +105,11 @@ public final class OAuthCredentialManager {
         // Capture the active name once: a concurrent global switch must not mix
         // one account's auth type with another account's token or refresh.
         String selectedName = name == null ? store.activeCredentialName(providerId) : name;
+        store.purgeExpired();
         ManagedCredential credential = selectedName == null ? null : store.read(providerId, selectedName);
-        if (name != null && credential == null) throw new IOException("Selected credential no longer exists");
+        if (selectedName != null && credential == null) {
+            throw new OAuthCredentialLifecycle.ReauthenticationRequiredException("Selected credential no longer exists; sign in again");
+        }
         if (credential == null) {
             return null;
         }
@@ -126,10 +129,24 @@ public final class OAuthCredentialManager {
         }
 
         OAuthProviderFlow flow = registry.require(providerId);
-        CredentialStore.SelectedCredential selected = store.resolveOAuthSelection(
-                providerId, selectedName,
-                MINIMUM_VALIDITY_MILLIS,
-                current -> refreshValidated(providerId, flow, current, true));
+        CredentialStore.SelectedCredential selected;
+        try {
+            selected = store.resolveOAuthSelection(providerId, selectedName,
+                    MINIMUM_VALIDITY_MILLIS,
+                    current -> refreshValidated(providerId, flow, current, true));
+        } catch (IOException failure) {
+            // Only confirmed, expired and unrenewable grants are removed. Transient
+            // network/provider failures must leave the account available for retry.
+            if (credential.expiresWithin(0L, System.currentTimeMillis())
+                    && CredentialFailure.classify(failure).kind() == CredentialFailure.Kind.REAUTH_REQUIRED) {
+                try {
+                    store.deleteCredentialIfUnchanged(providerId, selectedName, credential);
+                } catch (IOException cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
+            throw failure;
+        }
         ManagedCredential valid = selected == null ? null : selected.credential();
         if (valid == null || !valid.isOAuth()) {
             return null;

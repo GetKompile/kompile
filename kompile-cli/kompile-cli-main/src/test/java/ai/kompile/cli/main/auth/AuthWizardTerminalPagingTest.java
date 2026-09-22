@@ -16,6 +16,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AuthWizardTerminalPagingTest {
     @Test
+    void usesAvailableTerminalHeightWithoutATwelveCredentialLimit() throws Exception {
+        for (int height : new int[]{0, 24, 80}) {
+            var output = new ByteArrayOutputStream();
+            try (var terminal = new LineDisciplineTerminal("auth-cap-test", "xterm", output, StandardCharsets.UTF_8)) {
+                terminal.setSize(new Size(80, height));
+                var script = new ScriptedReader("n", "p", "60");
+                assertEquals(59, new AuthWizard.TerminalPrompter(terminal, script.reader)
+                        .select("Choose credential", providers(60)));
+                terminal.writer().flush();
+                String rendered = output.toString(StandardCharsets.UTF_8);
+                int capacity = (height == 0 ? 24 : height) - 6;
+                assertTrue(rendered.contains("Showing 1-" + Math.min(60, capacity) + " of 60"));
+                assertTrue(rendered.contains("Provider 13"));
+                for (String page : rendered.split("\033\\[2J\033\\[H")) {
+                    assertTrue(page.lines().filter(line -> line.contains("Provider ")).count() <= capacity);
+                }
+                assertEquals(3, script.calls);
+            }
+        }
+    }
+
+    @Test
+    void enterSelectsRememberedAccountBeyondFirstPage() throws Exception {
+        var output = new ByteArrayOutputStream();
+        try (var terminal = new LineDisciplineTerminal("auth-default", "xterm", output, StandardCharsets.UTF_8)) {
+            terminal.setSize(new Size(80, 18));
+            var script = new ScriptedReader("");
+            assertEquals(24, new AuthWizard.TerminalPrompter(terminal, script.reader)
+                    .select("Choose", providers(60), 24));
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("Showing 25-36 of 60"));
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("Provider 25 [default]"));
+        }
+    }
+
+    @Test
     void pagesLargeListsAndSelectsGlobalNumber() throws Exception {
         var output = new ByteArrayOutputStream();
         try (var terminal = new LineDisciplineTerminal("auth-page-test", "xterm", output, StandardCharsets.UTF_8)) {

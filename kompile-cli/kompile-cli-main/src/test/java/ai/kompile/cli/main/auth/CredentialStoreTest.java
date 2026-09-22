@@ -21,6 +21,69 @@ class CredentialStoreTest {
     Path tempDir;
 
     @Test
+    void listsEveryLiveAccountAndPersistsExpiryCleanupAndLastUsedDefault() throws Exception {
+        Path auth = tempDir.resolve("many-accounts.json");
+        CredentialStore store = new CredentialStore(auth);
+        for (int i = 1; i <= 30; i++) store.putApiKey("provider", "key-" + i, "secret-" + i, i == 1);
+        store.putOAuth("provider", "renewable", "expired-access", "live-refresh", 1L, false);
+        store.putOAuth("provider", "permanent", "permanent-access", "", Long.MAX_VALUE, false);
+        store.putOAuth("provider", "dead", "expired-secret", "", 1L, true);
+        store.switchCredential("provider", "dead", true);
+        store.recordUsed("provider", "key-29");
+        store.putOAuth("empty-provider", "dead-only", "", 1L);
+
+        assertEquals(32, store.list("provider").size());
+        assertEquals(32, store.list().size());
+        assertFalse(Files.readString(auth).contains("expired-secret"));
+        CredentialStore reopened = new CredentialStore(auth);
+        assertNull(reopened.read("provider", "dead"));
+        assertNull(reopened.read("empty-provider"));
+        assertEquals("key-29", reopened.defaultCredentialName("provider"));
+        assertEquals("key-29", reopened.activeCredentialName("provider"));
+        assertTrue(reopened.sessionSelections().isEmpty());
+        assertNotNull(reopened.read("provider", "renewable"), "An expired access token can still be renewed");
+        assertEquals(0, reopened.purgeExpired());
+    }
+
+    @Test
+    void lastUsedPersistsWithoutChangingGlobalDefaultAndFallsBackOnDeletion() throws Exception {
+        Path auth = tempDir.resolve("last-used.json");
+        CredentialStore store = new CredentialStore(auth);
+        store.putApiKey("provider", "global", "first-secret", true);
+        store.putApiKey("provider", "session", "second-secret", false);
+        assertEquals("second-secret", store.resolveApiKey("provider", "session", ignored -> null));
+        CredentialStore reopened = new CredentialStore(auth);
+        assertEquals("session", reopened.defaultCredentialName("provider"));
+        assertEquals("global", reopened.activeCredentialName("provider"));
+        assertTrue(reopened.sessionSelections().isEmpty());
+        assertTrue(reopened.deleteCredential("provider", "session"));
+        assertEquals("global", new CredentialStore(auth).defaultCredentialName("provider"));
+    }
+
+    @Test
+    void failedRefreshCleanupCannotDeleteAReplacementCredential() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("replacement.json"));
+        ManagedCredential old = ManagedCredential.oauth("old", "old-refresh", 1L);
+        store.put("provider", "account", old, true);
+        store.putOAuth("provider", "account", "replacement", "replacement-refresh", Long.MAX_VALUE, true);
+        assertFalse(store.deleteCredentialIfUnchanged("provider", "account", old));
+        assertEquals("replacement", store.read("provider", "account").getAccess());
+    }
+
+    @Test
+    void purgesConfirmedExpiredLegacyCodexTokensButKeepsOpaqueApiKeys() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("legacy-expiry.json"));
+        String payload = "{\"exp\":1,\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"test-account\"}}";
+        String token = "e30." + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".signature";
+        store.putApiKey("openai-codex", "expired", token, true);
+        store.putApiKey("openai-codex", "opaque", "opaque-key", false);
+        assertEquals(1, store.purgeExpired());
+        assertNull(store.read("openai-codex", "expired"));
+        assertEquals("opaque", store.defaultCredentialName("openai-codex"));
+    }
+
+    @Test
     void storesListsAndDeletesCredentialsWithoutExposingSecrets() throws Exception {
         Path authPath = tempDir.resolve(".kompile").resolve("auth.json");
         CredentialStore store = new CredentialStore(authPath);
@@ -387,15 +450,28 @@ class CredentialStoreTest {
     }
 
     @Test
-    void expiredIdentityAppearsInStatusWithoutTokenMaterial() throws Exception {
+    void renewableExpiredIdentityAppearsInStatusWithoutTokenMaterial() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("status.json"));
-        store.put("anthropic", ManagedCredential.oauth("secret-access", "", 1L,
+        store.put("anthropic", ManagedCredential.oauth("secret-access", "secret-refresh", 1L,
                 java.util.Map.of("accountId", "account", "email", "alice@example.test\n\u001b")));
         var info = store.list().get(0);
-        assertTrue(info.status().contains("expired; sign in again"));
+        assertTrue(info.status().contains("expired; refresh needed"));
+        assertTrue(info.status().contains("expiry 1970-01-01T00:00:00.001Z"));
         assertEquals("alice@example.test", info.identity());
         assertFalse(info.toString().contains("secret-access"));
+        assertFalse(info.toString().contains("secret-refresh"));
         assertFalse(info.displayLabel().contains("\n"));
+    }
+
+    @Test
+    void expiryLabelsDistinguishDatedNonExpiringAndApiKeyCredentials() {
+        long expiry = java.time.Instant.parse("2099-07-08T09:10:11Z").toEpochMilli();
+        assertTrue(new CredentialStore.CredentialInfo("provider", "dated", ManagedCredential.OAUTH,
+                false, null, expiry, true).displayLabel().contains("expires 2099-07-08T09:10:11Z"));
+        assertEquals("permanent — oauth (non-expiring)", new CredentialStore.CredentialInfo(
+                "provider", "permanent", ManagedCredential.OAUTH, false, null, Long.MAX_VALUE, false).displayLabel());
+        assertEquals("key — api_key", new CredentialStore.CredentialInfo(
+                "provider", "key", ManagedCredential.API_KEY, false).displayLabel());
     }
 
     private static String jwt(String user, String account, long expiry) {

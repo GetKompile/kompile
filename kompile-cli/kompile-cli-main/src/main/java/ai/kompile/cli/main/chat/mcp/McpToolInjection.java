@@ -607,11 +607,20 @@ public class McpToolInjection {
         }
         argsValue.append(']');
 
-        return List.of(
-                "-c",
-                "mcp_servers.kompile.command=\"" + escapeToml(launcher.command()) + "\"",
-                "-c",
-                "mcp_servers.kompile.args=" + argsValue);
+        var overrides = new java.util.ArrayList<String>();
+        overrides.add("-c");
+        overrides.add("mcp_servers.kompile.command=\"" + escapeToml(launcher.command()) + "\"");
+        overrides.add("-c");
+        overrides.add("mcp_servers.kompile.args=" + argsValue);
+        // Workflow team identity overrides so the child stdio server enforces the
+        // same team as the launching chat (mirrors injectForCodex's env table).
+        for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                .inheritableEnvironment().entrySet()) {
+            overrides.add("-c");
+            overrides.add("mcp_servers.kompile.env." + entry.getKey()
+                    + "=\"" + escapeToml(entry.getValue()) + "\"");
+        }
+        return List.copyOf(overrides);
     }
 
     private static Path injectForCodex(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
@@ -651,6 +660,17 @@ public class McpToolInjection {
             toml.append("\"").append(escapeToml(fullArgs.get(i))).append("\"");
         }
         toml.append("]\n");
+        // Workflow team identity for the child server (Codex TOML env table;
+        // the section-stripping regex above already removes stale env rows).
+        var workflowEnv = ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                .inheritableEnvironment();
+        if (!workflowEnv.isEmpty()) {
+            toml.append("\n[mcp_servers.kompile.env]\n");
+            for (var entry : workflowEnv.entrySet()) {
+                toml.append(escapeToml(entry.getKey())).append(" = \"")
+                        .append(escapeToml(entry.getValue())).append("\"\n");
+            }
+        }
 
         Files.writeString(configFile, toml.toString());
 
@@ -898,6 +918,13 @@ public class McpToolInjection {
             ArrayNode argsArray = kompile.putArray("args");
             for (String arg : fullArgs) {
                 argsArray.add(arg);
+            }
+            // Workflow team identity rides in the env block (same contract as
+            // McpToolInjectionSupport.createStdioConfig) so the child server
+            // enforces the same team as the launching chat.
+            for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
+                    .inheritableEnvironment().entrySet()) {
+                kompile.putObject("env").put(entry.getKey(), entry.getValue());
             }
             mode = "stdio";
         }

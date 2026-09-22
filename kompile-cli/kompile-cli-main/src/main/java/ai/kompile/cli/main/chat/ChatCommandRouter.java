@@ -1958,6 +1958,32 @@ public class ChatCommandRouter {
 
         System.out.println(ascii.sectionHeader("Local Agents"));
         System.out.println(ascii.table(agentHeaders, agentRows));
+
+        // Workflow team: the participants this session actually enforces, with the
+        // caller marked — complements the generic agent registry above.
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext workflowContext =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        if (workflowContext != null) {
+            ai.kompile.cli.main.chat.workflow.WorkflowTeam team =
+                    workflowContext.snapshot().team();
+            String caller = workflowContext.enforcement().callerParticipant();
+            List<String> teamHeaders = List.of("Participant", "Role", "Capabilities", "Delegates To");
+            List<List<String>> teamRows = new ArrayList<>();
+            for (ai.kompile.cli.main.chat.workflow.WorkflowTeam.Participant participant :
+                    team.participants().values()) {
+                boolean self = participant.id().equals(caller);
+                teamRows.add(List.of(
+                        self ? participant.id() + " " + renderer.green("(you)") : participant.id(),
+                        participant.role(),
+                        String.join(", ", participant.capabilities()),
+                        participant.delegatesTo().isEmpty()
+                                ? renderer.dim("—") : String.join(", ", participant.delegatesTo())));
+            }
+            System.out.println();
+            System.out.println(ascii.sectionHeader("Workflow Team: " + team.name()));
+            System.out.println(ascii.table(teamHeaders, teamRows));
+        }
+
         System.out.println();
         String switchCmd = localMode ? "/agent <name>" : "/local-agent <name>";
         System.out.println(renderer.dim("  Switch with: " + switchCmd));
@@ -2311,8 +2337,13 @@ public class ChatCommandRouter {
         System.out.println();
         System.out.println(ascii.sectionHeader("Workflow Team"));
         System.out.println();
-        String workflowName = System.getenv(
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
+        // Session context first (the chat lead; env is immutable in-process),
+        // then the inherited environment (a delegated child).
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        String workflowName = context != null ? context.workflowName()
+                : System.getenv(
+                        ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
         if (workflowName == null || workflowName.isBlank()) {
             System.out.println(renderer.dim("  No workflow active for this session."));
             System.out.println(renderer.dim("  Start one with `kompile chat --workflow <name>` or via the setup wizard."));
@@ -2321,6 +2352,11 @@ public class ChatCommandRouter {
         String participant = System.getenv(
                 ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
         try {
+            if (context != null) {
+                // Live enforcement object from the session: true caller identity.
+                System.out.println(context.enforcement().statusLine());
+                return;
+            }
             var team = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.get(
                     workingDirectoryOrDot(), workflowName);
             if (team == null) {

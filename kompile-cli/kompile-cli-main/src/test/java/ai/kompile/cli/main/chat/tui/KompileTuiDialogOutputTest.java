@@ -29,6 +29,67 @@ import static org.junit.jupiter.api.Assertions.*;
 @ResourceLock(Resources.SYSTEM_ERR)
 class KompileTuiDialogOutputTest {
     @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void loginLinksRemainClickableAndCopyableAcrossWrappedRows(boolean modal) throws Exception {
+        try (Fixture f = new Fixture()) {
+            String url = "https://login.example/authorize?state=" + "a".repeat(95) + "&redirect_uri=http%3A%2F%2Flocalhost";
+            f.tui.runCommandOutput(() -> {
+                if (modal) f.tui.showTemporaryWindow("Provider authentication", List.of());
+                System.out.println(url);
+                return true;
+            });
+            String openLink = "\033]8;;" + url + "\033\\";
+            List<String> visible = f.tui.getVisibleContentLines();
+            List<String> fragments = visible.stream().filter(line -> line.contains(openLink)).toList();
+            assertEquals(2, fragments.size(), "each wrapped fragment must target the complete login URL");
+            assertTrue(fragments.stream().allMatch(line -> line.contains("\033]8;;\033\\")),
+                    "hyperlinks must end before subsequent UI output");
+
+            int start = modal ? 2 : 0;
+            int firstRow = f.tui.scrollTop() - 1 + visible.indexOf(fragments.get(0));
+            int lastCell = start + url.length() - 1;
+            int lastRow = firstRow + lastCell / 99;
+            assertTrue(f.tui.beginTranscriptSelection(start, firstRow));
+            assertTrue(f.tui.dragTranscriptSelection(lastCell % 99, lastRow));
+            assertTrue(f.tui.finishTranscriptSelection(lastCell % 99, lastRow));
+            assertEquals(url, f.tui.getSelectedTranscriptText(), "copy must contain no wrapping, borders, or escape codes");
+            assertEquals(2, f.tui.getVisibleContentLines().stream().filter(line -> line.contains(openLink)).count(),
+                    "selection highlighting must preserve native links");
+            if (modal) {
+                f.tui.updateTemporaryWindow("Credentials", List.of("next page"));
+                assertFalse(f.tui.hasTranscriptSelection());
+                assertTrue(f.tui.beginTranscriptSelection(2, f.tui.scrollTop()));
+                assertTrue(f.tui.finishTranscriptSelection(5, f.tui.scrollTop()));
+                f.tui.closeTemporaryWindow();
+                assertFalse(f.tui.hasTranscriptSelection());
+            }
+        }
+    }
+
+    @Test
+    void authSelectionScrollsInDocumentDirectionAtBothEdges() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.tui.showTemporaryWindow("Credentials", java.util.stream.IntStream.range(1, 61)
+                    .mapToObj(i -> "credential " + i).toList());
+            int top = f.tui.scrollTop() - 1;
+            int bottom = top + f.tui.getVisibleContentLines().size() - 1;
+            assertTrue(f.tui.beginTranscriptSelection(2, top + 1));
+            assertTrue(f.tui.dragTranscriptSelection(13, bottom));
+            assertTrue(f.tui.finishTranscriptSelection(13, bottom));
+            assertEquals(1, f.tui.getContentScrollOffset());
+            assertTrue(f.tui.getSelectedTranscriptText().startsWith("credential 1"));
+            assertFalse(f.tui.getSelectedTranscriptText().contains("PgUp"));
+
+            assertTrue(f.tui.beginTranscriptSelection(13, bottom));
+            assertTrue(f.tui.dragTranscriptSelection(2, top));
+            assertTrue(f.tui.finishTranscriptSelection(2, top));
+            assertEquals(0, f.tui.getContentScrollOffset());
+            assertTrue(f.tui.getSelectedTranscriptText().startsWith("credential 1"));
+            assertFalse(f.tui.getSelectedTranscriptText().contains("PgUp"));
+        }
+    }
+
+    @ParameterizedTest
     @CsvSource({
             "Provider authentication, success", "Provider authentication, cancel",
             "Provider authentication, eof", "Provider authentication, error",

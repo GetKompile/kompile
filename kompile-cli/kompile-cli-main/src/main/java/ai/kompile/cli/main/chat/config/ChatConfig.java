@@ -154,7 +154,7 @@ public class ChatConfig {
         if (!"session".equals(authenticationScope) || provider == null || getCredentialName() != null
                 || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)) return;
         CredentialStore store = CredentialStore.create();
-        String name = store.activeCredentialName(provider);
+        String name = store.defaultCredentialName(provider);
         if (name == null && !"oauth".equalsIgnoreCase(authenticationMethod)) {
             String variable = getEnvironmentVariable(provider);
             String key = variable == null ? null : environment.apply(variable);
@@ -362,8 +362,12 @@ public class ChatConfig {
             return null;
         }
         try {
+            String selectedName = getCredentialName();
+            if (selectedName == null && "session".equals(authenticationScope)) {
+                selectedName = CredentialStore.create().defaultCredentialName(provider);
+            }
             OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create().resolve(provider,
-                    oauthOnly ? "oauth" : apiKeyOnly ? "api_key" : null, getCredentialName());
+                    oauthOnly ? "oauth" : apiKeyOnly ? "api_key" : null, selectedName);
             if (stored != null
                     && (!oauthOnly || stored.oauth())
                     && (!apiKeyOnly || !stored.oauth())) {
@@ -395,7 +399,7 @@ public class ChatConfig {
             return null;
         }
         try {
-            return getCredentialName() != null
+            return "session".equals(authenticationScope) && rejectedAuth.credentialName() != null
                     ? OAuthCredentialManager.create().refreshNamedAfterUnauthorized(provider, rejectedAuth)
                     : OAuthCredentialManager.create().refreshAfterUnauthorized(provider, rejectedAuth);
         } catch (IOException e) {

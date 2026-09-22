@@ -2025,17 +2025,22 @@ final class CorpusSchemaUnifier {
                     admissible.add(supported);
                 }
                 if (admissible.isEmpty()) {
-                    // All candidates were generic/invalid: safe empty outcome with diagnostics,
-                    // not a model retry (duplicates/conflicts are resolved locally).
+                    // PARTIAL, not COMPLETED: a quarantined family conflict left NO usable
+                    // predicate, so usable-admissions do not coexist with unresolved
+                    // diagnostics here and the checked witness inventory must stay visible
+                    // for auditing. No model retry: duplicates/conflicts are resolved locally.
                     if (!preCommitDiagnostics.isEmpty()) {
                         failures.addAll(preCommitDiagnostics);
                     }
-                    log.warn("[Job {}] Witness consolidation produced no admissible predicates "
-                                    + "for snapshot {} ({} raw rows): {}",
+                    log.warn("[Job {}] Witness consolidation PARTIAL for snapshot {}: no "
+                                    + "admissible predicates from {} raw rows: {}",
                             jobId, corpusSnapshotId, parsed.rawRows(), preCommitDiagnostics);
-                    return new RelationshipDiscoveryResult(
-                            RelationshipDiscoveryStatus.COMPLETED, witnesses, failures,
-                            0, List.of(), Map.of());
+                    if (exhaustedBatches > 0) {
+                        return new RelationshipDiscoveryResult(
+                                RelationshipDiscoveryStatus.PARTIAL, witnesses, failures,
+                                0, List.of(), Map.of());
+                    }
+                    return RelationshipDiscoveryResult.failed(failures, witnesses);
                 }
                 GraphSchema proposal = new GraphSchema(null,
                         admissible.stream()

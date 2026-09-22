@@ -541,8 +541,7 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
-    void prefersTheSourceGgufsTemplateOverTheGenericChatMlStandIn() throws Exception {
-        // A model staged before staging carried tokenizer_config.json forward has its real template
+    void prefersTheSourceGgufsTemplateOverTheGenericChatMlStandIn() throws Exception {        // A model staged before staging carried tokenizer_config.json forward has its real template
         // in one place only: the GGUF it was converted from. Falling through to the built-in ChatML
         // template would frame every prompt in a template that merely resembles the model's own.
         String declared = "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
@@ -570,6 +569,48 @@ class SameDiffLanguageModelImplTest {
         assertNull(SameDiffLanguageModelImpl.resolveChatTemplate(
                 tokenizer, null, stagedModel));
         verify(tokenizer, never()).getTokenId(anyString());
+    }
+
+    @Test
+    void prefersTheStagedChatTemplateJinjaOverTheGguf() throws Exception {
+        // Staging downloads chat_template.jinja for modern HF models even when the model ships
+        // no tokenizer_config.json — it is the model's real template on disk, and outranks the
+        // GGUF metadata the graph was converted from.
+        String declared = "{{ '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}";
+        Files.writeString(tempDir.resolve("chat_template.jinja"), declared);
+        Files.write(tempDir.resolve("source-model.gguf"),
+                GgufFixture.headerWithChatTemplate("{% for m in messages %}GGUF{% endfor %}"));
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        Tokenizer tokenizer = mock(Tokenizer.class);
+        when(tokenizer.getChatTemplate()).thenReturn(null);
+
+        assertEquals(declared,
+                SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
+    }
+
+    @Test
+    void ggufTemplateAnswersWhenNoJinjaIsStaged() throws Exception {
+        String declared = "{% for m in messages %}GGUF{% endfor %}";
+        Files.write(tempDir.resolve("source-model.gguf"), GgufFixture.headerWithChatTemplate(declared));
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        Tokenizer tokenizer = mock(Tokenizer.class);
+        when(tokenizer.getChatTemplate()).thenReturn(null);
+
+        assertEquals(declared,
+                SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
+    }
+
+    @Test
+    void blankJinjaFileIsIgnored() throws Exception {
+        Files.writeString(tempDir.resolve("chat_template.jinja"), "   \n");
+        Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
+
+        Tokenizer tokenizer = mock(Tokenizer.class);
+        when(tokenizer.getChatTemplate()).thenReturn(null);
+
+        assertNull(SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
     }
 
     @Test

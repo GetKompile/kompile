@@ -60,6 +60,7 @@ import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
@@ -1662,6 +1663,24 @@ public class ChatRepl implements AutoCloseable {
             System.out.println(ascii.welcomePanelWithModes(sessionId, agentName, ragEnabled, false));
         }
 
+        // Workflow team acknowledgment: the active team, this process's
+        // participant identity, and its delegable edges — shown where the
+        // session identity is presented.
+        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext workflowContext =
+                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        if (workflowContext != null) {
+            WorkflowTeam workflowTeam = workflowContext.snapshot().team();
+            String workflowCaller = workflowContext.enforcement().callerParticipant();
+            System.out.println(renderer.cyan("  Team: " + workflowTeam.name())
+                    + renderer.dim(" — you are '" + workflowCaller + "' ("
+                    + workflowTeam.participant(workflowCaller).role()
+                    + "); delegation purposes: "
+                    + (workflowTeam.routing().isEmpty()
+                    ? "none" : workflowTeam.routing().keySet())));
+            System.out.println(renderer.dim("  Delegable from you: "
+                    + workflowTeam.participant(workflowCaller).delegatesTo()));
+        }
+
         // Show AGENTS.md status
         String agentsMd = agenticLoop.getAgentsMdContent();
         if (agentsMd != null && !agentsMd.isEmpty()) {
@@ -3200,6 +3219,18 @@ public class ChatRepl implements AutoCloseable {
         }
     }
 
+    static <T> T withNativeMouseDuringAuthentication(Terminal terminal, Supplier<T> authentication) {
+        // Browser/device authorization can block without an active readLine. In
+        // that state no widget can consume captured clicks: let the terminal own
+        // selection, copy, and hyperlink activation until the picker resumes.
+        disableTranscriptMouse(terminal);
+        try {
+            return authentication.get();
+        } finally {
+            enableTranscriptMouse(terminal);
+        }
+    }
+
     private static void showActivityView(
             KompileTui tui,
             StandardChatActivityPanel.ActivityView view) {
@@ -3611,15 +3642,17 @@ public class ChatRepl implements AutoCloseable {
                         continue;
                     }
                 }
-                // Credential/OAuth prompts write through the command-output sink.
-                // Give them a short page instead of appending below the provider list.
+                // Replace credential pages inside the modal so startup and resumed
+                // chats share bounded paging without disturbing the chat terminal.
                 tui.updateTemporaryWindow("Provider authentication", List.of(
                         SetupWizard.vendorLabel(selectedVendor) + " · "
                                 + SetupWizard.authMethodLabel(selectedVendor, selectedAuth)));
-                SetupWizard.AuthenticationSelection authentication =
-                        "global".equals(chatConfig.getAuthenticationScope())
-                                ? SetupWizard.authenticate(reader, selectedVendor, selectedAuth)
-                                : SetupWizard.authenticateSession(reader, selectedVendor, selectedAuth);
+                String authVendor = selectedVendor;
+                SetupWizard.AuthMethod authMethod = selectedAuth;
+                SetupWizard.AuthenticationSelection authentication = withNativeMouseDuringAuthentication(
+                        reader.getTerminal(), () -> "global".equals(chatConfig.getAuthenticationScope())
+                                ? SetupWizard.authenticate(reader, authVendor, authMethod, tui::updateTemporaryWindow)
+                                : SetupWizard.authenticateSession(reader, authVendor, authMethod, tui::updateTemporaryWindow));
                 if (authentication == null) {
                     tui.updateTemporaryWindow("Provider and model", List.of(
                             "Authentication was not completed for "
@@ -3666,15 +3699,18 @@ public class ChatRepl implements AutoCloseable {
                 String fallbackBanner = catalog.banner();
                 boolean usedFallback = catalog.fromFallback();
                 while (true) {
+                    boolean authenticationBlocked = ModelCatalogSelection.authenticationBlocked(discovery);
                     String defaultModel = models.isEmpty() ? null : models.get(0);
-                    List<String> modelPickerLines = pickerLines(
+                    List<String> modelPickerLines = authenticationBlocked ? new ArrayList<>(List.of(
+                            ModelCatalogSelection.authenticationNotice(discovery, selectedProvider),
+                            "Commands: back to change credentials, refresh to retry, or Esc to cancel.")) : pickerLines(
                             "Choose a model for " + providerLabel(selectedVendor),
                             models, defaultModel, selectedVendor, selectedProvider, selectedModel);
-                    if (!fallbackBanner.isBlank()) {
+                    if (!authenticationBlocked && !fallbackBanner.isBlank()) {
                         modelPickerLines.add("");
                         modelPickerLines.add(renderer.yellow("  ⚠ " + fallbackBanner));
                     }
-                    if (!discovery.message().isBlank()) {
+                    if (!authenticationBlocked && !discovery.message().isBlank()) {
                         modelPickerLines.add("");
                         modelPickerLines.add("Discovery: "
                                 + discovery.status().name().toLowerCase().replace('_', ' '));
@@ -3682,7 +3718,9 @@ public class ChatRepl implements AutoCloseable {
                     }
                     tui.updateTemporaryWindow("Provider and model", modelPickerLines);
                     String modelInput = reader.readLine(
-                            "picker model (number/name, refresh, blank uses default, Esc cancels): ");
+                            authenticationBlocked
+                                    ? "Authentication failed (back, refresh, Esc cancels): "
+                                    : "picker model (number/name, refresh, blank uses default, Esc cancels): ");
                     if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
                         return;
                     }
@@ -3699,16 +3737,12 @@ public class ChatRepl implements AutoCloseable {
                         usedFallback = refreshed.fromFallback();
                         continue;
                     }
-                    String modelChoice = modelInput.isBlank()
-                            ? defaultModel
-                            : parsePickerChoice(modelInput, models);
-                    if (modelChoice == null && !modelInput.isBlank()) {
-                        modelChoice = modelInput.trim();
-                    }
+                    if (authenticationBlocked) continue;
+                    String modelChoice = ModelCatalogSelection.resolvePickerInput(modelInput, models);
                     if (modelChoice == null || modelChoice.isBlank()) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
-                                "No model was selected for " + providerLabel(selectedVendor) + ".",
-                                "Choose a listed model, enter an id manually, refresh, or go back.",
+                                "Invalid model selection for " + providerLabel(selectedVendor) + ".",
+                                "Numbers must match a listed choice. Enter a model id, refresh, or go back.",
                                 "Current: " + activeModelDisplayName()));
                         continue;
                     }
@@ -3898,6 +3932,12 @@ public class ChatRepl implements AutoCloseable {
         String selected = model.trim();
         ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
                 chatConfig.getProvider(), null, chatConfig);
+        if (ModelCatalogSelection.authenticationBlocked(discovery)) {
+            ChatCompleter.printAbove(renderer.yellow(
+                    ModelCatalogSelection.authenticationNotice(discovery, chatConfig.getProvider()))
+                    + " Use /model to choose credentials or /setup to reconfigure.");
+            return;
+        }
         ModelCatalogSelection.SelectionDecision decision =
                 ModelCatalogSelection.decisionFor(
                         discovery, chatConfig.getProvider(), selected);
@@ -4023,10 +4063,12 @@ public class ChatRepl implements AutoCloseable {
             String baseUrlOverride) {
         ChatConfig candidate = new ChatConfig();
         candidate.applyLlmSettingsFrom(activeConfig);
-        // Authentication remains a managed provider capability. Flattening an
-        // OAuth/subscription credential into a transient API key loses its
-        // provider-owned headers and base URL (notably OpenAI Codex/Anthropic).
-        candidate.setApiKey(null);
+        // Preserve an explicit API key for a model-only change. Do not resolve
+        // getApiKey() here: flattening managed OAuth would lose provider headers.
+        // Provider switches below still discard any inherited in-memory secret.
+        if ("oauth".equalsIgnoreCase(activeConfig.getAuthenticationMethod())) {
+            candidate.setApiKey(null);
+        }
         candidate.setProvider(provider);
         candidate.setModel(model);
         candidate.setFastMode(provider != null && provider.equalsIgnoreCase(activeConfig.getProvider())
