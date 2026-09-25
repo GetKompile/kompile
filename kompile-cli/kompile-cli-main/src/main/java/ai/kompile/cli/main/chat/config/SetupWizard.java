@@ -422,7 +422,9 @@ public class SetupWizard {
                     return null;
                 }
 
-                if (!"kompile".equals(provider)) {
+                boolean claudeCliRoute = "anthropic".equalsIgnoreCase(provider)
+                        && providerSelection.authMethod() == AuthMethod.OAUTH;
+                if (!"kompile".equals(provider) && !claudeCliRoute) {
                     boolean sameProvider = existingConfig != null
                             && provider.equalsIgnoreCase(existingConfig.getProvider());
                     ChatConfig discoveryConfig = new ChatConfig(
@@ -964,11 +966,13 @@ public class SetupWizard {
                 yield vendor;
             }
             case OAUTH -> {
-                String oauthProvider = oauthProviderForVendor(vendor);
-                if (oauthProvider == null) {
+                // Anthropic OAuth = the user's Claude Code subscription login.
+                // Claude Code owns that credential; Kompile cannot script it, so
+                // the selection proceeds and the wizard warns below.
+                if (!"anthropic".equalsIgnoreCase(vendor) && oauthProviderForVendor(vendor) == null) {
                     throw new IllegalArgumentException(vendor + " does not support OAuth");
                 }
-                yield oauthProvider;
+                yield vendor;
             }
             case API_KEY, API_KEY_CREDITS -> {
                 if (authMethod == AuthMethod.API_KEY_CREDITS && !"zai".equalsIgnoreCase(vendor)) {
@@ -1180,6 +1184,15 @@ public class SetupWizard {
             }
             return new AuthenticationSelection(provider, authMethod, null);
         }
+        if (authMethod == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
+            // Claude Code owns the subscription (OAuth) credential and Kompile
+            // cannot manage it. All we do is warn and let the user through to
+            // the chat; it is on them to have run `claude login`.
+            System.out.println("  → " + YELLOW
+                    + "Claude Code owns this login. Run `claude login` in a terminal first — "
+                    + "Kompile does not manage this credential." + RESET);
+            return new AuthenticationSelection(provider, authMethod, null);
+        }
         if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
             return null;
         }
@@ -1304,10 +1317,10 @@ public class SetupWizard {
         }
         if ("anthropic".equalsIgnoreCase(vendor)) {
             // One vendor, two auth routes (mirrors the OpenAI pattern):
-            // subscription via the claude CLI (runs `claude -p` turns; auth is
-            // verified at runtime by the transport, which warns when the CLI
-            // reports a login failure) and direct API-key HTTP.
-            return List.of(AuthMethod.NATIVE, AuthMethod.API_KEY);
+            // OAuth/subscription via Claude Code and direct API-key HTTP.
+            // Kompile does NOT manage the subscription credential — Claude Code
+            // owns it; the wizard only warns and lets the user through.
+            return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
             return List.of(AuthMethod.NATIVE);

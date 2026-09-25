@@ -97,16 +97,19 @@ class ChatConfigTest {
         System.setProperty("user.home", tempDir.toString());
         try {
             new ChatConfig("ollama", null, "global-model", null).saveGlobal();
-            ChatConfig project = new ChatConfig("anthropic", null, "project-model", null);
+            // A Kompile-managed OAuth vendor: anthropic oauth is now the claude
+            // CLI route (credential owned by Claude Code), so the managed-store
+            // guarantee is exercised on openai-codex instead.
+            ChatConfig project = new ChatConfig("openai-codex", null, "project-model", null);
             project.setAuthenticationMethod("oauth");
             project.saveProject(tempDir);
-            ai.kompile.cli.main.auth.CredentialStore.create().putOAuth("anthropic", "expired", "", 1L);
+            ai.kompile.cli.main.auth.CredentialStore.create().putOAuth("openai-codex", "expired", "", 1L);
             ChatConfig loaded = ChatConfig.loadOrFromEnv(tempDir);
-            assertEquals("anthropic", loaded.getProvider());
+            assertEquals("openai-codex", loaded.getProvider());
             assertFalse(loaded.isValid());
             assertThrows(ChatConfig.AuthenticationException.class, loaded::resolveRequestAuth);
             assertEquals(ModelDiscovery.Status.AUTH_REQUIRED,
-                    ModelDiscoveryHttp.refreshResult("anthropic", null, null).status());
+                    ModelDiscoveryHttp.refreshResult("openai-codex", null, null).status());
         } finally {
             System.setProperty("user.home", originalHome);
         }
@@ -364,13 +367,17 @@ class ChatConfigTest {
 
     @Test
     void anthropicNativeRouteRunsThroughTheClaudeCliTransportWhileApiKeyStaysDirectHttp() {
-        // Subscription route: same anthropic vendor, turns run claude -p.
-        ChatConfig nativeConfig = new ChatConfig("anthropic", null, null, null);
-        nativeConfig.setAuthenticationMethod("native");
-        assertTrue(nativeConfig.isClaudeCliNative());
-        assertTrue(nativeConfig.isValid(),
+        // Subscription route (wizard oauth choice): same anthropic vendor, turns
+        // run claude -p; Kompile resolves NO credential for it (Claude Code owns
+        // the login).
+        ChatConfig oauthConfig = new ChatConfig("anthropic", null, null, null);
+        oauthConfig.setAuthenticationMethod("oauth");
+        assertTrue(oauthConfig.isClaudeCliNative());
+        assertTrue(oauthConfig.isValid(),
                 "the claude CLI has a built-in default model, so a pick is optional");
-        assertFalse(nativeConfig.isOpenAiCompatible());
+        assertFalse(oauthConfig.isOpenAiCompatible());
+        assertNull(oauthConfig.resolveRequestAuth(),
+                "the claude CLI route must never resolve a Kompile-managed credential");
 
         // API-key route: unchanged direct Anthropic Messages HTTP transport.
         ChatConfig apiKeyConfig = new ChatConfig("anthropic", "test-key", "claude-sonnet-4", null);
@@ -378,7 +385,7 @@ class ChatConfigTest {
         assertFalse(apiKeyConfig.isClaudeCliNative());
 
         try (DirectLlmClient client = new DirectLlmClient(
-                nativeConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
+                oauthConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
             assertEquals(DirectLlmClient.WireProtocol.CLAUDE_CLI,
                     client.resolveRoute(null).protocol());
         }

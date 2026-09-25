@@ -152,7 +152,8 @@ public class ChatConfig {
 
     void pinActiveCredential(java.util.function.Function<String, String> environment) throws IOException {
         if (!"session".equals(authenticationScope) || provider == null || getCredentialName() != null
-                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)) return;
+                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)
+                || isClaudeCliNative()) return;
         CredentialStore store = CredentialStore.create();
         String name = store.defaultCredentialName(provider);
         if (name == null && !"oauth".equalsIgnoreCase(authenticationMethod)) {
@@ -345,7 +346,10 @@ public class ChatConfig {
     @JsonIgnore
     public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
         if ("none".equalsIgnoreCase(authenticationMethod)
-                || "native".equalsIgnoreCase(authenticationMethod)) {
+                || "native".equalsIgnoreCase(authenticationMethod)
+                // The claude CLI route: the user's Claude Code login is the
+                // credential and Kompile never resolves one for it.
+                || isClaudeCliNative()) {
             return null;
         }
         try {
@@ -729,12 +733,14 @@ public class ChatConfig {
      * (subscription/OAuth route). Same vendor as the direct HTTP route;
      * {@code isAnthropicFormat()} stays false here because the CLI owns the
      * credentials and the wire protocol is Claude Code stream-json, not the
-     * Anthropic Messages API.
+     * Anthropic Messages API. Kompile never touches this credential — the user
+     * manages it with Claude Code (`claude login`).
      */
     @JsonIgnore
     public boolean isClaudeCliNative() {
         return "anthropic".equals(provider)
-                && "native".equalsIgnoreCase(authenticationMethod);
+                && ("native".equalsIgnoreCase(authenticationMethod)
+                || "oauth".equalsIgnoreCase(authenticationMethod));
     }
 
     /** Whether this provider uses Pi's native messages protocol. */

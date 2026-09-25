@@ -8,6 +8,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.common.util.NativeCliProcess;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
 
@@ -111,6 +112,8 @@ final class ClaudeCliClient implements AutoCloseable {
     private String sessionId;
     /** False until the first turn has created the native session. */
     private boolean sessionStarted;
+    /** Settings file written by the one-time MCP injection; restored on close. */
+    private java.nio.file.Path injectedSettingsFile;
     private Process turnProcess;
     private volatile boolean closed;
 
@@ -146,6 +149,7 @@ final class ClaudeCliClient implements AutoCloseable {
         if (sessionId == null) {
             sessionId = UUID.randomUUID().toString();
         }
+        injectKompileToolsOnce();
 
         Process process;
         try {
@@ -191,10 +195,38 @@ final class ClaudeCliClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Register the kompile MCP tools in the sub-claude session, exactly like the
+     * passthrough lanes do for claude (project {@code .mcp.json}, hooks
+     * pre-configured BEFORE launch because Claude Code watches that file via
+     * inotify). Runs once per chat; {@link #close()} restores the original file.
+     */
+    private void injectKompileToolsOnce() {
+        if (injectedSettingsFile != null) return;
+        try {
+            McpToolInjection.ensureHooksPreConfigured(workingDirectory);
+            String sseUrl = null; // claude reads portable project .mcp.json entries on stdio
+            injectedSettingsFile = McpToolInjection.injectTools(workingDirectory, "claude", sseUrl);
+        } catch (Exception e) {
+            // Injection is an enhancement, not a gate: chat works without the
+            // kompile tools, exactly as passthrough degrades gracefully.
+            injectedSettingsFile = null;
+        }
+    }
+
     @Override
     public synchronized void close() {
         closed = true;
         cancel();
+        java.nio.file.Path injected = injectedSettingsFile;
+        injectedSettingsFile = null;
+        if (injected != null) {
+            try {
+                McpToolInjection.removeTools(injected);
+            } catch (Exception ignored) {
+                // Best-effort restore must never block shutdown.
+            }
+        }
     }
 
     // ── Turn plumbing ─────────────────────────────────────────────────────
