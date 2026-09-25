@@ -109,6 +109,16 @@ public class SetupWizard {
             java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
+        if (method == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
+            // Claude Code owns the subscription login and Kompile manages NO
+            // credential for it — there is nothing to select and nothing to
+            // sign into here. Warn and pass straight through to the chat;
+            // it is on the user to have run `claude login`.
+            System.out.println("  → " + YELLOW
+                    + "Claude Code owns this login. Run `claude login` in a terminal first — "
+                    + "Kompile does not manage this credential." + RESET);
+            return new AuthenticationSelection(provider, method, null);
+        }
         if (method == AuthMethod.NATIVE) {
             // Native CLI credentials are owned by the provider CLI and are
             // machine-global; they cannot be pinned per session. Route them
