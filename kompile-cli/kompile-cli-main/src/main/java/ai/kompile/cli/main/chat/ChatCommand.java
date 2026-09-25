@@ -387,6 +387,15 @@ public class ChatCommand implements Callable<Integer> {
                         throw new IllegalArgumentException("Unsupported --input-format: " + inputFormat);
                     }
                     webInput = WebChatInput.parse(resolvedPrompt);
+                    // Headless session-configuration read: no model configuration or
+                    // transcript machinery is required — the runner answers directly.
+                    if (webInput.configQuery()) {
+                        if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
+                        return new HeadlessAgentRunner(liveControls).run(new HeadlessAgentRunner.Options(
+                                "", sessionId, false, null, null, headlessMode,
+                                effectiveWorkingDirectory(), 0, outputLastMessage)
+                                .withWebInput(webInput)).exitCode();
+                    }
                     var resolution = WebCommandResolver.resolve(webInput, effectiveWorkingDirectory());
                     if (resolution.isCommandOutcome()) {
                         if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();

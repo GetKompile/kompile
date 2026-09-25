@@ -149,6 +149,7 @@ public class ChatRepl implements AutoCloseable {
     private final ChatHistory chatHistory;
     private final ChatMemory chatMemory;
     private final ReminderManager reminderManager;
+    private final ContinueManager continueManager;
     private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
     private final AtomicBoolean sessionTitleSyncPending = new AtomicBoolean();
     private boolean ragEnabled;
@@ -366,6 +367,7 @@ public class ChatRepl implements AutoCloseable {
         }));
 
         this.reminderManager = new ReminderManager(objectMapper, sessionId, workDir);
+        this.continueManager = new ContinueManager(objectMapper, workDir);
 
         // Load custom agents from .kompile/agents/ and ~/.kompile/agents/
         CustomAgentLoader customAgentLoader = new CustomAgentLoader(workDir);
@@ -636,6 +638,7 @@ public class ChatRepl implements AutoCloseable {
     public CrawlRunStore getCrawlRunStore() { return crawlRunStore; }
     public boolean isForceAgentic() { return forceAgentic; }
     ReminderManager getReminderManager() { return reminderManager; }
+    ContinueManager getContinueManager() { return continueManager; }
 
     // ── Clipboard image paste (Claude Code-style [Image #N] chips) ────────────
 
@@ -740,7 +743,7 @@ public class ChatRepl implements AutoCloseable {
                 this, mcpClient, httpClient, objectMapper, sessionId, localMode,
                 chatHistory, chatMemory, sessionMetrics, renderer, ascii, agenticLoop,
                 backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments,
-                reminderManager);
+                reminderManager, continueManager);
         this.queueManager = new MessageQueueManager(
                 this, messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
                 renderer, ascii, autoDequeueEnabled);

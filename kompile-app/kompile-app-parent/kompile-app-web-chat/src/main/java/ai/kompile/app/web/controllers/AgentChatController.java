@@ -287,6 +287,27 @@ public class AgentChatController {
     }
 
     /**
+     * Quiet session-configuration snapshot for the config dialog: resolves the
+     * model / role / fast / reminders / loops / queue menus headlessly through
+     * the CLI (one short-lived process) and returns them as JSON. Sends no chat
+     * messages and writes no transcript entries. Pass the browser session id —
+     * the server derives the same durable harness session id the live turns
+     * use, so session-scoped state matches what the live session sees.
+     */
+    @GetMapping("/session-config")
+    public ResponseEntity<JsonNode> sessionConfig(
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) String workingDirectory,
+            @RequestParam(required = false) String modelVendor) {
+        if (harnessClient == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
+        }
+        return ResponseEntity.ok(
+                harnessClient.configSnapshot(sessionId, workingDirectory, modelVendor));
+    }
+
+    /**
      * The context budget for an agent's lane: the model's real context window
      * (staging metadata for local models, model catalogs otherwise), its output
      * reservation, and the resulting input budget. The chat window uses this to

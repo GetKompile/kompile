@@ -28,6 +28,7 @@ import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.mcp.stdio.StdioInvocationAccounting;
 import ai.kompile.cli.main.chat.tools.ActivateToolsTool;
 import ai.kompile.cli.main.chat.tools.AmbientGardenTool;
 import ai.kompile.cli.main.chat.tools.AmbientMemoryGardener;
@@ -142,6 +143,7 @@ import ai.kompile.cli.mcp.stdio.McpToolProgressLogger;
 import ai.kompile.cli.mcp.stdio.StdioHarnessTool;
 import ai.kompile.cli.mcp.stdio.StdioMultiTaskTool;
 import ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool;
+import ai.kompile.cli.mcp.stdio.StdioInvocationAccounting;
 import ai.kompile.cli.mcp.stdio.StdioTaskTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -275,6 +277,9 @@ public class McpStdioCommand implements Callable<Integer> {
     /** Structured audit logger — writes MCP tool calls to the shared tool-call catalog. */
     private volatile McpToolAuditLogger auditLogger;
 
+    /** Per-invocation usage accounting (Task 3): counting + finalization only. */
+    private volatile StdioInvocationAccounting usageAccounting;
+
     /** CLI-side tool gateway — applies gateway rules outside the Spring MCP registry. */
     private volatile CliToolGatewayInterceptor gatewayInterceptor;
 
@@ -318,6 +323,10 @@ public class McpStdioCommand implements Callable<Integer> {
         final AtomicBoolean cancelled = new AtomicBoolean(false);
         volatile ToolContext context;
         volatile String progressToken;
+        /** Usage accounting context for this invocation (null until accounting begins). */
+        volatile ai.kompile.cli.common.metrics.ToolInvocationContext usageCtx;
+        /** Raw result snapshot before reference-cache substitution (optional raw-size compare). */
+        volatile ToolResult rawResultBeforeSubstitution;
     }
 
     /** JSON-RPC id → in-flight registry key (ids may be numbers or strings). */
@@ -517,6 +526,19 @@ public class McpStdioCommand implements Callable<Integer> {
                     "mcp-stdio",
                     wd,
                     om);
+            usageAccounting = new StdioInvocationAccounting(om,
+                    new ai.kompile.cli.common.metrics.ToolUsageRecorder() {
+                        @Override
+                        public void record(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+                            ai.kompile.cli.main.chat.ToolCallIndex.getInstance().recordUsageDirect(usage);
+                        }
+
+                        @Override
+                        public com.fasterxml.jackson.databind.node.ObjectNode toJsonNode(
+                                com.fasterxml.jackson.databind.ObjectMapper mapper) {
+                            return null;
+                        }
+                    });
 
             // Load enforcer tool call guard from environment (if enforcer mode is active)
             enforcerGuard = EnforcerToolCallGuard.fromEnvironment(om, wd);
@@ -645,9 +667,16 @@ public class McpStdioCommand implements Callable<Integer> {
                                         // A cancelled request gets NO late response — the
                                         // client already forgot the id and would treat the
                                         // response as a protocol error (connection drop).
+                                        // Usage: actual disposition is recorded at this
+                                        // write/suppression boundary, not at prepare time.
                                         if (!inFlight.cancelled.get()) {
                                             mcpOut.write(om.writeValueAsString(response) + "\n");
                                             mcpOut.flush();
+                                        } else if (inFlight.usageCtx != null && usageAccounting != null) {
+                                            usageAccounting.finalizeCall(inFlight.usageCtx, null, null,
+                                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.CANCELLED,
+                                                    ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.SUPPRESSED,
+                                                    true, System.currentTimeMillis());
                                         }
                                     }
                                 }
@@ -846,6 +875,21 @@ public class McpStdioCommand implements Callable<Integer> {
                     String toolName = params.path("name").asText();
                     JsonNode args = params.path("arguments");
 
+                    // ── Usage accounting: open the invocation BEFORE gateway/enforcer checks.
+                    final ai.kompile.cli.common.metrics.ToolInvocationContext usageCtx =
+                            usageAccounting != null
+                                    ? usageAccounting.begin(toolContextSessionId(transcriptId),
+                                            null, toolName,
+                                            tools.containsKey(toolName) ? toolName : toolName,
+                                            detectOwningAgent(), "mcp-stdio")
+                                    : null;
+                    if (usageCtx != null) {
+                        InFlightCall inFlightForUsage = CURRENT_CALL.get();
+                        if (inFlightForUsage != null) {
+                            inFlightForUsage.usageCtx = usageCtx;
+                        }
+                    }
+
                     // Extract progress token from _meta if present
                     String progressToken = null;
                     JsonNode metaNode = params.path("_meta");
@@ -877,6 +921,14 @@ public class McpStdioCommand implements Callable<Integer> {
                             auditLogger.recordDecision(toolName, originalArgMap, null,
                                     "unknown_tool", "Unknown tool", true, 0);
                         }
+                        if (usageAccounting != null && usageCtx != null) {
+                            usageAccounting.finalizeCall(usageCtx,
+                                    ai.kompile.cli.main.chat.tools.ToolResult.error("Unknown tool: " + toolName),
+                                    null,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.UNKNOWN_TOOL,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                    true, System.currentTimeMillis());
+                        }
                     } else {
                         String auditDecision = "executed";
                         String auditReason = null;
@@ -898,6 +950,14 @@ public class McpStdioCommand implements Callable<Integer> {
                                 if (auditLogger != null) {
                                     auditLogger.recordDecision(toolName, originalArgMap, effectiveArgMap,
                                             "gateway_blocked", gatewayDecision.reason, true, 0);
+                                }
+                                if (usageAccounting != null && usageCtx != null) {
+                                    usageAccounting.finalizeCall(usageCtx,
+                                            ai.kompile.cli.main.chat.tools.ToolResult.error(blockMsg),
+                                            null,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.DENIED,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                            true, System.currentTimeMillis());
                                 }
                                 return result;
                             } else if (gatewayDecision.action
@@ -928,6 +988,14 @@ public class McpStdioCommand implements Callable<Integer> {
                                     auditLogger.recordDecision(toolName, originalArgMap, effectiveArgMap,
                                             "enforcer_blocked", guardDecision.blockMessage(), true, 0);
                                 }
+                                if (usageAccounting != null && usageCtx != null) {
+                                    usageAccounting.finalizeCall(usageCtx,
+                                            ai.kompile.cli.main.chat.tools.ToolResult.error(blockMsg),
+                                            null,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.DENIED,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                            true, System.currentTimeMillis());
+                                }
                                 return result;
                             } else if (guardDecision.isRewrite() && guardDecision.getRewrittenArgs() != null) {
                                 effectiveArgMap = new LinkedHashMap<>(guardDecision.getRewrittenArgs());
@@ -956,6 +1024,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
                         if (background && asyncExecutor != null) {
                             final Map<String, Object> finalArgs = argMap;
+                            final var backgroundUsageCtx = usageCtx;
                             final Map<String, Object> auditOriginal = new LinkedHashMap<>(originalArgMap);
                             final Map<String, Object> auditEffective = new LinkedHashMap<>(argMap);
                             final String backgroundAuditDecision = "executed".equals(auditDecision)
@@ -970,6 +1039,13 @@ public class McpStdioCommand implements Callable<Integer> {
                                     if (sessionTracker != null) {
                                         sessionTracker.recordToolCall(toolName, tr.isError(), backgroundDuration);
                                     }
+                                    if (usageAccounting != null && backgroundUsageCtx != null) {
+                                        usageAccounting.finalizeCall(backgroundUsageCtx, tr, null,
+                                                ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
+                                                ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.BACKGROUND_ACK,
+                                                tr.isError(),
+                                                backgroundStart + backgroundDuration);
+                                    }
                                     if (auditLogger != null) {
                                         auditLogger.recordDecision(toolName, auditOriginal, auditEffective,
                                                 backgroundAuditDecision, backgroundAuditReason,
@@ -980,6 +1056,14 @@ public class McpStdioCommand implements Callable<Integer> {
                                     long backgroundDuration = System.currentTimeMillis() - backgroundStart;
                                     if (sessionTracker != null) {
                                         sessionTracker.recordToolCall(toolName, true, backgroundDuration);
+                                    }
+                                    if (usageAccounting != null && backgroundUsageCtx != null) {
+                                        usageAccounting.finalizeCall(backgroundUsageCtx,
+                                                ai.kompile.cli.main.chat.tools.ToolResult.error(String.valueOf(e.getMessage())), null,
+                                                ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTION_FAILED,
+                                                ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.BACKGROUND_ACK,
+                                                true,
+                                                backgroundStart + backgroundDuration);
                                     }
                                     if (auditLogger != null) {
                                         auditLogger.recordDecision(toolName, auditOriginal, auditEffective,
@@ -1004,6 +1088,18 @@ public class McpStdioCommand implements Callable<Integer> {
                                     + "**Log**: `tail -f " + (progressLogger != null ? progressLogger.getLogFile() : LogPaths.logsDirectory().toPath().resolve("mcp-activity.log")) + "`");
                             callResult.put("isError", false);
                             result.set("result", callResult);
+                            // Background ACK payload is FINAL for this response: measure it,
+                            // disposition BACKGROUND_ACK. Later execution is linked via the
+                            // same invocationId (finalize above), NOT a new execution.
+                            if (usageAccounting != null && usageCtx != null) {
+                                usageAccounting.finalizeCall(usageCtx,
+                                        ai.kompile.cli.main.chat.tools.ToolResult.success(
+                                                callResult.path("content").get(0).path("text").asText()),
+                                        null,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.BACKGROUND_ACK,
+                                        false, System.currentTimeMillis());
+                            }
 
                         } else if ("poll".equals(toolName) && asyncExecutor != null) {
                             // Poll is handled inline — see tool registration below
@@ -1015,13 +1111,29 @@ public class McpStdioCommand implements Callable<Integer> {
                                 auditLogger.recordDecision(toolName, originalArgMap, argMap,
                                         auditDecision, auditReason, tr.isError(), callDuration);
                             }
-                            result.set("result", buildCallResult(tr));
+                            // Poll response: separate payload measurement for THIS poll
+                            // response; never duplicates the original execution's usage.
+                            var pollUsage = usageAccounting != null && usageCtx != null
+                                    ? usageAccounting.finalizeCall(usageCtx, tr, null,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                        tr.isError(), System.currentTimeMillis())
+                                    : null;
+                            result.set("result", buildCallResult(tr, pollUsage));
 
                         } else {
                             // Standard synchronous execution with logging
                             if (currentCall != null && currentCall.cancelled.get()) {
                                 // Client already gave up on this request — skip execution
                                 // entirely; no response or notification may be sent for it.
+                                // Accounting: record CANCELLED + SUPPRESSED — the prepared
+                                // output is NOT delivered and must not be labeled as such.
+                                if (usageAccounting != null && usageCtx != null) {
+                                    usageAccounting.finalizeCall(usageCtx, null, null,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.CANCELLED,
+                                            ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.SUPPRESSED,
+                                            true, System.currentTimeMillis());
+                                }
                                 return null;
                             }
                             String callId = progressLogger != null
@@ -1060,6 +1172,7 @@ public class McpStdioCommand implements Callable<Integer> {
                             // Auto-cache large results using reference handles
                             // (never re-cache a fetch — the caller explicitly
                             // asked for that content inline)
+                            ToolResult rawResult = tr;
                             if (!tr.isError() && resultReferenceCache != null
                                     && tr.getOutput() != null
                                     && !"fetch_result".equals(toolName)
@@ -1069,7 +1182,18 @@ public class McpStdioCommand implements Callable<Integer> {
                                         toolName, tr.getTitle(), tr.getOutput(), tr.getMetadata());
                             }
 
-                            result.set("result", buildCallResult(tr));
+                            // Usage: measure the FINAL returned content (post substitution);
+                            // optional raw snapshot kept separate for delta reporting.
+                            var syncUsage = usageAccounting != null && usageCtx != null
+                                    ? usageAccounting.finalizeCall(usageCtx, tr, rawResult,
+                                        "executed".equals(auditDecision)
+                                                ? ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED
+                                                : ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.REWRITTEN,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                                        tr.isError(), System.currentTimeMillis())
+                                    : null;
+
+                            result.set("result", buildCallResult(tr, syncUsage));
                         }
                     }
                 }
@@ -1873,6 +1997,16 @@ public class McpStdioCommand implements Callable<Integer> {
     ObjectNode buildCallResult(ToolResult tr) {
         ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
         return McpToolResultSerializer.toMcpCallResult(mapper, tr);
+    }
+
+    /**
+     * Build the call result with per-invocation usage at {@code _meta["ai.kompile/usage"]}.
+     * Serialization only — never increments totals or creates a new invocation.
+     */
+    ObjectNode buildCallResult(ToolResult tr,
+                               ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        ObjectMapper mapper = om != null ? om : JsonUtils.standardMapper();
+        return McpToolResultSerializer.toMcpCallResult(mapper, tr, usage);
     }
 
     /** Register single and parallel delegation together, including compact discovery guidance. */

@@ -102,7 +102,7 @@ public class RoleManagerTool implements CliTool {
         // agent (optional, for assign_role)
         ObjectNode agentNode = objectMapper.createObjectNode();
         agentNode.put("type", "string");
-        agentNode.put("description", "Registered agent to assign the role prompt to (for example codex, claude, opencode, gemini, or qwen). Per-agent role launch defaults apply only to codex, claude, and opencode. If omitted, assigns to the current session.");
+        agentNode.put("description", "Registered agent to assign the role prompt to (for example codex, claude, opencode, gemini, or qwen). Per-agent role launch defaults apply to every delegatable agent: codex, claude, opencode, gemini, qwen, pi. If omitted, assigns to the current session.");
         properties.set("agent", agentNode);
 
         // display_name (for create_role, update_role)

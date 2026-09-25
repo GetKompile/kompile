@@ -56,10 +56,13 @@
       </mat-menu>
     </div>
 
-    <!-- Settings button — only when this app hosts a settings route -->
+    <!-- Settings button — only when this app hosts a settings route.
+         Hosts may bind settingsClick to handle the click in place (e.g. open a
+         dialog without leaving the current view); without a binding it opens
+         the route in a new tab so in-flight work is never torn down. -->
     <button mat-icon-button
             *ngIf="settingsRoute"
-            [routerLink]="settingsRoute"
+            (click)="handleSettingsClick()"
             aria-label="Settings"
             title="Settings"
             class="settings-btn">

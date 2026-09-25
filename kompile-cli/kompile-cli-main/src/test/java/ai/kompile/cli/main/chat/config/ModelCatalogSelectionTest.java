@@ -174,13 +174,28 @@ class ModelCatalogSelectionTest {
     }
 
     @Test
-    void authoritativeLiveListRejectsUnknownIdsEvenWithRecordedCatalog() {
+    void authoritativeLiveListAcceptsUnlistedIdsWithCaution() {
         ModelCatalogFallback.record("zai", List.of("glm-stale"), null,
                 tempDir.resolve("catalogs.json"));
 
-        assertEquals(ModelCatalogSelection.SelectionDecision.UNKNOWN,
+        // A successful catalog that lacks the id must not hard-block explicit
+        // selection: day-one releases routinely appear before catalog/CLI
+        // propagation. Accept with a caution; the provider validates the id.
+        assertEquals(ModelCatalogSelection.SelectionDecision.UNLISTED,
                 ModelCatalogSelection.decisionFor(
                         success("glm-4.5", "glm-4.6"), "zai", "glm-stale", tempDir.resolve("catalogs.json")));
+        assertFalse(ModelCatalogSelection.noteFor(
+                ModelCatalogSelection.SelectionDecision.UNLISTED, "glm-stale", "zai").isEmpty());
+    }
+
+    @Test
+    void dayOneOpenAiModelIsSelectableAgainstAuthoritativeCatalog() {
+        ModelDiscovery.Result live = success("gpt-6-astra", "gpt-5.6-sol");
+
+        assertEquals(ModelCatalogSelection.SelectionDecision.UNLISTED,
+                ModelCatalogSelection.decisionFor(live, "openai", "gpt-6-luna"));
+        assertFalse(ModelCatalogSelection.noteFor(
+                ModelCatalogSelection.SelectionDecision.UNLISTED, "gpt-6-luna", "openai").isEmpty());
     }
 
     @Test
@@ -226,6 +241,8 @@ class ModelCatalogSelectionTest {
                 ModelCatalogSelection.SelectionDecision.FALLBACK_LIST, "m", "zai").isEmpty());
         assertFalse(ModelCatalogSelection.noteFor(
                 ModelCatalogSelection.SelectionDecision.MANUAL_ENTRY, "m", "zai").isEmpty());
+        assertFalse(ModelCatalogSelection.noteFor(
+                ModelCatalogSelection.SelectionDecision.UNLISTED, "m", "zai").isEmpty());
         assertTrue(ModelCatalogSelection.noteFor(
                 ModelCatalogSelection.SelectionDecision.UNKNOWN, "m", "zai").isEmpty());
     }

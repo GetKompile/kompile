@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -66,6 +67,12 @@ class ChatHarnessCapabilitiesTest {
         assertEquals("kompile-cli-main", parsed.path("engine").asText());
         assertTrue(parsed.path("attachmentsSupported").asBoolean());
         assertTrue(parsed.path("personas").isArray());
+        // Durable-session commands: the browser-config button surface contract.
+        var durableNames = parsed.path("webInput").path("durableSessionCommandNames");
+        assertTrue(durableNames.isArray());
+        assertEquals(java.util.List.of("model", "role", "fast"),
+                java.util.stream.StreamSupport.stream(durableNames.spliterator(), false)
+                        .map(JsonNode::asText).toList());
     }
 
     @Test

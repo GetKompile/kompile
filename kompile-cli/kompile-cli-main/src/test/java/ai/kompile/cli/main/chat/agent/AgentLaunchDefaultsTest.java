@@ -278,9 +278,9 @@ class AgentLaunchDefaultsTest {
                         "opencode", "openai/gpt", "high",
                         AgentLaunchDefaults.LaunchMode.INTERACTIVE));
 
-        AgentLaunchDefaults.Selection unsupported = AgentLaunchDefaults.resolve(
+        AgentLaunchDefaults.Selection noConfiguredDefaults = AgentLaunchDefaults.resolve(
                 "qwen", tempDir, null, null);
-        assertNull(unsupported.model());
-        assertNull(unsupported.thinking());
+        assertNull(noConfiguredDefaults.model());
+        assertNull(noConfiguredDefaults.thinking());
     }
 }

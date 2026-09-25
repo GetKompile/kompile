@@ -481,7 +481,7 @@ public class ConfigureCommand implements Callable<Integer> {
             description = "Configure per-agent model and per-model thinking defaults.")
     public static class AgentDefaultsConfigureCommand implements Callable<Integer> {
         @Option(names = "--agent", required = true,
-                description = "Target agent: codex, claude, opencode")
+                description = "Target agent: codex, claude, opencode, gemini, qwen, pi")
         String agent;
 
         @Option(names = {"--model", "-m"},

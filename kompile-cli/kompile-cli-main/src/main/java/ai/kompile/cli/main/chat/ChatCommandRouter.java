@@ -362,6 +362,14 @@ public class ChatCommandRouter {
                 printReminderResult(ReminderManager.Scope.SESSION, rest);
                 return true;
 
+            case "/continue":
+                if (repl.getContinueManager() == null) {
+                    System.out.println(renderer.yellow("  /continue is unavailable in this session."));
+                } else {
+                    System.out.println(repl.getContinueManager().handleCommand(rest));
+                }
+                return true;
+
             case "/reminder-global":
                 printReminderResult(ReminderManager.Scope.PROJECT, rest);
                 return true;
@@ -927,6 +935,7 @@ public class ChatCommandRouter {
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
+            body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions ('Proceed?'); configurable\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
@@ -972,6 +981,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/dashboard [cmd]")).append("   Refresh/show/hide the project dashboard\n");
             body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add/clear; 'interval <n|off>' sets cadence\n");
             body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders; optional interval override\n");
+            body.append("  ").append(renderer.cyan("/continue [on|off]")).append("  Auto-reply to agent questions; /continue help for options\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");

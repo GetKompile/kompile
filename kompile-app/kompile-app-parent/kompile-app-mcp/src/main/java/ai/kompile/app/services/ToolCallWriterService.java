@@ -16,6 +16,7 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.cli.common.metrics.ToolCallUsageJournal;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -66,7 +67,25 @@ public class ToolCallWriterService {
     public void record(String sessionId, String toolName, String toolInput,
                        String agentName, String source, boolean isError,
                        String projectDirectory) {
+        record(sessionId, toolName, toolInput, agentName, source, isError,
+                projectDirectory, 0L, null);
+    }
+
+    /**
+     * Typed overload (Task 2): record a call with optional duration and usage.
+     * Usage is never packed into the argument string; it is attached as the record's
+     * optional usage block and mirrored into the shared usage journal (cross-process
+     * locked, idempotent per invocationId+revision).
+     *
+     * @return true when the usage journal write succeeded (no usage → false)
+     */
+    public boolean record(String sessionId, String toolName, String toolInput,
+                          String agentName, String source, boolean isError,
+                          String projectDirectory, long durationMs,
+                          ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        boolean journaled = false;
         try {
+            ToolCallUsageJournal.validateSessionKey(sessionId);
             Path dir = getToolCallsDir();
             Files.createDirectories(dir);
 
@@ -85,9 +104,13 @@ public class ToolCallWriterService {
             record.put("source", source);
             record.put("agentName", agentName);
             record.put("isError", isError);
-            record.put("durationMs", 0);
+            record.put("durationMs", Math.max(0, durationMs));
             record.put("category", category);
             record.put("projectDirectory", projectDirectory);
+
+            if (usage != null) {
+                record.put("usage", MAPPER.convertValue(usage.toJsonNode(MAPPER), Map.class));
+            }
 
             String jsonLine = MAPPER.writeValueAsString(record) + "\n";
 
@@ -99,9 +122,55 @@ public class ToolCallWriterService {
                 // Append to combined index
                 Files.writeString(getCombinedIndexFile(), jsonLine, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             }
+
+            if (usage != null) {
+                journaled = usageJournalFor().record(usage, revisionFor(usage))
+                        instanceof ToolCallUsageJournal.WriteResult.Written;
+            }
+        } catch (IllegalArgumentException unsafeSessionKey) {
+            logger.debug("Rejected unsafe session key for tool call record: {}", unsafeSessionKey.getMessage());
         } catch (IOException e) {
             logger.debug("Failed to write tool call record: {}", e.getMessage());
         }
+        return journaled;
+    }
+
+    /**
+     * Usage journal revision for finalization: derived from the completion timestamp so
+     * a later finalize of the same invocation supersedes any earlier partial event.
+     */
+    private static long revisionFor(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        return usage.finishedEpochMs() != null ? usage.finishedEpochMs() : usage.startedEpochMs();
+    }
+
+    /** Lazy shared usage journal in the same tool-calls directory. */
+    private ToolCallUsageJournal usageJournalFor() {
+        ToolCallUsageJournal journal = usageJournal;
+        if (journal == null) {
+            synchronized (this) {
+                if (usageJournal == null) {
+                    usageJournal = new ToolCallUsageJournal(
+                            ToolCallUsageJournal.defaultJournalFile(getToolCallsDir()), MAPPER);
+                }
+                journal = usageJournal;
+            }
+        }
+        return journal;
+    }
+
+    private volatile ToolCallUsageJournal usageJournal;
+
+    /**
+     * Journal usage WITHOUT writing a legacy catalog line (mirrors the CLI's
+     * ToolCallIndex.recordUsageDirect): one authoritative usage stream, no double
+     * counting across writers. Never throws; accounting health is visible via the
+     * journal's own health surface.
+     */
+    public void recordUsageDirect(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        if (usage == null) {
+            return;
+        }
+        usageJournalFor().record(usage, revisionFor(usage));
     }
 
     private static String categorize(String toolName) {

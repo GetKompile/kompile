@@ -78,7 +78,14 @@ public final class ModelCatalogSelection {
         FALLBACK_LIST,
         /** The id was typed manually while the live list was unusable — accept with a note. */
         MANUAL_ENTRY,
-        /** The id is absent from both the live list and the recorded catalog — reject. */
+        /**
+         * The live catalog answered successfully but does not list the id —
+         * accept with a caution. Day-one releases and account-gated models are
+         * routinely absent from a successful catalog response; the provider
+         * itself validates the id on the next request.
+         */
+        UNLISTED,
+        /** No verified source accepts the id — reject. */
         UNKNOWN
     }
 
@@ -155,8 +162,11 @@ public final class ModelCatalogSelection {
         // not silently persist a menu response as a literal model ID.
         if (id.matches("[+-]?[0-9]+")) return SelectionDecision.UNKNOWN;
         if (discovery.status() == ModelDiscovery.Status.SUCCESS && discovery.hasModels()) {
-            // An authoritative live list that simply does not contain the id.
-            return SelectionDecision.UNKNOWN;
+            // An authoritative live list that does not contain the id. This is
+            // exactly how a day-one model release looks before catalog/CLI
+            // propagation, so accept with a caution instead of hard-blocking:
+            // the provider validates the id on the next request.
+            return SelectionDecision.UNLISTED;
         }
         if (ModelCatalogFallback.knows(provider, id, storePath)) {
             return SelectionDecision.FALLBACK_LIST;
@@ -177,6 +187,8 @@ public final class ModelCatalogSelection {
                     + " catalog; the live list could not be verified this time.";
             case MANUAL_ENTRY -> modelId + " was accepted without a verified "
                     + "catalog entry; the provider will validate it on the next request.";
+            case UNLISTED -> modelId + " is not in " + providerLabel(provider)
+                    + "'s current live catalog; the provider will validate it on the next request.";
             case UNKNOWN -> "";
         };
     }

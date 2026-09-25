@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpServerSession;
@@ -481,6 +482,18 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         log.info("MCP SSE transport closed");
     }
 
+    /** Package-private test bridge over the private SessionTransport projection. */
+    Object usageWireNodeForTest(McpSchema.CallToolResult callResult,
+                                ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        if (usage == null) {
+            return null;
+        }
+        SessionTransport probe = new SessionTransport("test-session",
+                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(0L),
+                objectMapper);
+        return probe.usageWireNode(callResult, usage);
+    }
+
     /**
      * Inner class representing a single session's transport.
      */
@@ -556,10 +569,27 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
 
             return Mono.fromRunnable(() -> {
                 try {
+                    // Usage projection (Task 4): when a tool handler finalized usage on
+                    // THIS thread, substitute the CallToolResult with an equivalent node
+                    // carrying _meta["ai.kompile/usage"] before serialization. SDK 0.10.0
+                    // CallToolResult has no _meta; JSONRPCResponse.result() is Object so
+                    // the substitution serializes unchanged (Task 0 smoke-verified).
+                    McpSchema.JSONRPCMessage outgoing = message;
+                    if (message instanceof McpSchema.JSONRPCResponse response
+                            && response.result() instanceof McpSchema.CallToolResult callResult) {
+                        ai.kompile.cli.common.metrics.ToolCallUsage usage =
+                                ai.kompile.app.mcp.McpUsageWireContext.take();
+                        if (usage != null) {
+                            outgoing = new McpSchema.JSONRPCResponse(
+                                    response.jsonrpc(), response.id(),
+                                    usageWireNode(callResult, usage), response.error());
+                        }
+                    }
+
                     // SSE requires single-line JSON
                     String json = objectMapper.writer()
                             .without(SerializationFeature.INDENT_OUTPUT)
-                            .writeValueAsString(message);
+                            .writeValueAsString(outgoing);
 
                     SseEmitter requestEmitter = currentResponseEmitter();
                     SseEmitter commonEmitter = currentCommonStreamEmitter();
@@ -592,6 +622,30 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
         @Override
         public <T> T unmarshalFrom(Object data, TypeReference<T> typeRef) {
             return objectMapper.convertValue(data, typeRef);
+        }
+
+        /**
+         * Project a CallToolResult into an equivalent wire node with
+         * {@code _meta["ai.kompile/usage"]} appended. Content and isError are preserved;
+         * usage metadata is added AFTER measurement (never measured itself).
+         */
+        private Object usageWireNode(McpSchema.CallToolResult callResult,
+                                     ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+            com.fasterxml.jackson.databind.node.ObjectNode node = objectMapper.createObjectNode();
+            var content = node.putArray("content");
+            if (callResult.content() != null) {
+                for (McpSchema.Content c : callResult.content()) {
+                    if (c instanceof McpSchema.TextContent tc) {
+                        ObjectNode t = content.addObject();
+                        t.put("type", "text");
+                        t.put("text", tc.text());
+                    }
+                }
+            }
+            node.put("isError", Boolean.TRUE.equals(callResult.isError()));
+            ObjectNode meta = node.putObject("_meta");
+            meta.set("ai.kompile/usage", usage.toWireMetaNode(objectMapper));
+            return node;
         }
 
         @Override

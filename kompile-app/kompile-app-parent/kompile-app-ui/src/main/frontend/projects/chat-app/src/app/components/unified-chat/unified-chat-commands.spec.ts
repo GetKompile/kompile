@@ -2,7 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
-import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { MatDialog } from '@angular/material/dialog';
 import { MatMenuModule } from '@angular/material/menu';
 import { of, Subject } from 'rxjs';
@@ -17,13 +17,15 @@ import { ModelContextService } from '@shared/services/model-context.service';
 import { WebSocketService } from '@shared/services/websocket.service';
 import { AgentProvider, CommandEventData, CommandOutcome, LocalAgentSession } from '@shared/models/api-models';
 import { UnifiedChatComponent } from './unified-chat.component';
+import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
 
 /** Fixture-mounted TestBed harness (mirrors unified-chat-rag.spec.ts) for DOM assertions. */
 function createMenuTestBed() {
   const agentChatServiceSpy = jasmine.createSpyObj('LocalAgentChatService', [
     'getStreamingContent', 'getStreamingComplete', 'getStreamingError',
     'getChatStats', 'getSources', 'getFilesModified', 'sendMessage',
-    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction', 'getContextBudget'
+    'cancelStreaming', 'createSession', 'getToolUse', 'getCompaction', 'getContextBudget',
+    'getCommandOutcomes'
   ]);
   const agentServiceSpy = jasmine.createSpyObj('AgentService', [
     'getAllAgents', 'getAvailableAgents', 'getChatHarnessAgents',
@@ -135,9 +137,12 @@ describe('UnifiedChat command outcomes', () => {
     service = TestBed.inject(LocalAgentChatService);
     const unused = null as any;
     const cdr = jasmine.createSpyObj('cdr', ['detach', 'reattach', 'detectChanges', 'markForCheck']);
+    // dialog is ctor param 16 (ragService..sanitizer then dialog): a spy so
+    // /clear hand-off assertions can observe closeAll.
+    const dialogSpy = jasmine.createSpyObj('MatDialog', ['open', 'closeAll']);
     component = new UnifiedChatComponent(
       unused, service, unused, unused, unused, unused, unused, unused, unused,
-      unused, unused, unused, cdr, unused, unused, unused, unused, unused
+      unused, unused, unused, cdr, unused, unused, dialogSpy, unused, unused, unused
     );
     spyOn<any>(component, 'updateMonitorSubscription');
     spyOn<any>(component, 'refreshContextBudget');
@@ -279,12 +284,13 @@ describe('UnifiedChat command outcomes', () => {
       await send.calls.mostRecent().returnValue;
 
       expect(component.messages.length).toBe(2);
-      expect(component.modelMenu).toEqual(modelMenu);
+      expect(component.messages[1].commandOutcome?.data).toEqual(modelMenu);
       expect(component.messages[1].commandOutcome?.data?.menu).toBe('model');
       // Entries carry the full menu payload; the current one is flagged.
-      expect(component.modelMenu!.models!.map(m => component.modelMenuLabel(m)))
+      expect(component.messages[1].commandOutcome?.data?.models!.map(m => m.display || m.id))
         .toEqual(['Small', 'm-large']);
-      expect(component.modelMenu!.models!.find(m => m.id === 'm-large')?.current).toBeTrue();
+      expect(component.messages[1].commandOutcome?.data?.models!.find(m => m.id === 'm-large')?.current)
+        .toBeTrue();
     });
 
     it('selecting an option sends the raw "/model <id>" text through the same send path', async () => {
@@ -351,7 +357,7 @@ describe('UnifiedChat command outcomes', () => {
       expect(component.messages.length).toBe(2);
       expect(component.messages[1].role).toBe('system');
       expect(component.messages[1].content).toContain("Unknown model: 'nope'");
-      expect(component.modelMenu).toBeNull();
+      expect(component.messages[1].commandOutcome?.data?.menu).toBeUndefined();
     });
 
     it('selection is refused while a turn streams', async () => {
@@ -391,39 +397,51 @@ describe('UnifiedChat command outcomes', () => {
 
       expect((component as any).contextBudget.model).toBe('m-small');
     });
+
+    it('armed /clear dispatch resolves and starts a fresh chat', async () => {
+      const clearOutcome: CommandOutcome = {
+        command: '/clear', status: 'INTERACTION_REQUIRED', text: 'Starting a new conversation.',
+        ok: true, exit: 0, data: { menu: 'clear', sessionId: 'web-abc' }
+      };
+      fetchSpy.and.resolveTo(response(event('command', clearOutcome)
+        + event('complete', { content: clearOutcome.text, commandOutcome: clearOutcome })));
+      const newChat = spyOn(component, 'newChat');
+      // closeAll is already a jasmine spy from the ctor's createSpyObj.
+      const closeAll = (component as any).dialog.closeAll as jasmine.Spy;
+      (component as any).performConversationClear();
+      expect(component.clearOutcomeArmed).toBeTrue();
+      component.userInput = '/clear';
+      component.sendMessage();
+      await send.calls.mostRecent().returnValue;
+
+      expect(component.clearOutcomeArmed).toBeFalse();
+      expect(closeAll).toHaveBeenCalled();
+      expect(newChat).toHaveBeenCalled();
+    });
+
+    it('an unarmed clear outcome does not restart the chat', async () => {
+      const clearOutcome: CommandOutcome = {
+        command: '/clear', status: 'INTERACTION_REQUIRED', text: 'Starting a new conversation.',
+        ok: true, exit: 0, data: { menu: 'clear' }
+      };
+      fetchSpy.and.resolveTo(response(event('command', clearOutcome)
+        + event('complete', { content: clearOutcome.text, commandOutcome: clearOutcome })));
+      const newChat = spyOn(component, 'newChat');
+      component.userInput = '/clear';
+      component.sendMessage();
+      await send.calls.mostRecent().returnValue;
+      expect(newChat).not.toHaveBeenCalled();
+    });
   });
 });
 
 // DOM-level checks: the menu renders inside a real fixture and its select
 // honors the streaming disable. Harness mirrors unified-chat-rag.spec.ts.
-describe('UnifiedChat /model menu rendering', () => {
+describe('UnifiedChat session configuration modal', () => {
   let fixture: ComponentFixture<UnifiedChatComponent>;
   let component: UnifiedChatComponent;
   let spies: ReturnType<typeof createMenuTestBed>;
   let savedStorage: string | null;
-
-  const menuOutcome: CommandOutcome = {
-    command: '/model', status: 'INTERACTION_REQUIRED',
-    text: 'Available models.', ok: true, exit: 0,
-    data: {
-      menu: 'model', provider: 'custom', currentModel: 'm-large',
-      models: [{ id: 'm-small', display: 'Small', contextLimit: 8192 },
-        { id: 'm-large', contextLimit: 32768, current: true }]
-    }
-  };
-
-  function pushMenuOutcome(): void {
-    const message = {
-      id: 'msg-' + Date.now(), role: 'SYSTEM' as const, content: menuOutcome.text,
-      timestamp: new Date().toISOString(), streaming: false,
-      commandOnly: true, commandOutcome: menuOutcome
-    };
-    component.messages.push({
-      id: 'ui-' + message.id, role: 'system', kind: 'notice',
-      content: message.content, timestamp: new Date(),
-      commandOnly: true, commandOutcome: menuOutcome
-    });
-  }
 
   beforeEach(async () => {
     savedStorage = localStorage.getItem('unified_chat_sessions');
@@ -517,7 +535,7 @@ describe('UnifiedChat /model menu rendering', () => {
     expect(slashMenu(fixture)).not.toBeNull();
     expect(slashMenu(fixture)!.querySelectorAll('[role="option"]').length).toBe(component.slashCommands.length);
     expect(input.getAttribute('aria-expanded')).toBe('true');
-    expect(component.slashCommands.map(item => item.command)).toEqual(['/help', '/model', '/skills']);
+    expect(component.slashCommands.map(item => item.command)).toEqual(['/help', '/model', '/role', '/fast', '/skills']);
     typeInput('/Mo');
     const options = slashMenu(fixture)!.querySelectorAll('[role="option"]');
     expect(options.length).toBe(1);
@@ -618,39 +636,156 @@ describe('UnifiedChat /model menu rendering', () => {
     expect(slashMenu(fixture)).toBeNull();
   });
 
-  it('renders the model picker with entries and flags the current model', () => {
+  it('opens the Session Configuration modal; the dialog loads quietly over HTTP, not by sending messages', async () => {
     fixture.detectChanges();
-    pushMenuOutcome();
-    // OnPush: pushMenuOutcome mutates messages outside the CD cycle, so mark
-    // the component's view dirty (same pattern as component internals) before
-    // detectChanges re-checks it.
-    (component as any).cdr.markForCheck();
-    fixture.detectChanges();
-
-    const menu = fixture.nativeElement.querySelector('[data-testid="model-menu"]');
-    expect(menu).not.toBeNull();
-    const select = menu.querySelector('select');
-    expect(select).not.toBeNull();
-    expect(select.disabled).toBeFalse();
-    const options = Array.from(select.querySelectorAll('option')) as HTMLOptionElement[];
-    const labels = options.slice(1).map(o => o.textContent!.trim());
-    expect(labels[0]).toContain('Small');
-    expect(labels[0]).toContain('8192');
-    expect(labels[1]).toContain('m-large');
-    expect(labels[1]).toContain('current');
+    const open = spyOn(component, 'openCommandConfig').and.callThrough();
+    const dialogSpy = TestBed.inject(MatDialog) as jasmine.SpyObj<MatDialog>;
+    dialogSpy.open.and.returnValue({ close: () => undefined } as any);
+    const button = fixture.nativeElement.querySelector('[data-testid="command-config-open"]') as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    button.click();
+    expect(open).toHaveBeenCalled();
+    expect(dialogSpy.open).toHaveBeenCalled();
+    // No dispatch happens on open — the dialog fetches its snapshot in the
+    // background; sending only occurs for an explicit user action.
+    const send = spyOn(component, 'sendMessage');
+    const data = dialogSpy.open.calls.mostRecent().args[1]?.data as CommandConfigDialogData;
+    data.dispatch('/model m1');
+    expect(component.userInput).toBe('/model m1');
+    expect(send).toHaveBeenCalled();
   });
 
-  it('disables the picker and shows a busy placeholder while streaming', () => {
-    fixture.detectChanges();
-    component.isStreaming = true;
-    pushMenuOutcome();
-    // OnPush: mark dirty so the streaming placeholder/disabled re-render runs.
-    (component as any).cdr.markForCheck();
-    fixture.detectChanges();
+  it('dialog shows only a loading state until the quiet snapshot resolves, then populates every section', async () => {
+    const bus = new Subject<CommandOutcome>();
+    const snapshot: any = {
+      menu: 'config', model: { menu: 'model', models: [{ id: 'm1', current: true }] },
+      role: { menu: 'role', roles: [{ name: 'architect' }] },
+      fast: { menu: 'fast', fastMode: false, supported: true },
+      reminders: { menu: 'reminders', scope: 'session', reminders: [{ text: 'r1' }] },
+      queue: { menu: 'queue', queued: [] }
+    };
+    const data: CommandConfigDialogData = {
+      modelMenu: null, roleMenu: null, fastMenu: null,
+      reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
+      queue: null,
+      continueMenu: null,
+      judgeMenu: null,
+      sessionId: 'browser-session-1',
+      busy: () => false,
+      liveSession: () => false,
+      dispatch: () => undefined,
+      selectModel: () => undefined,
+      selectRole: () => undefined,
+      toggleFastMode: () => undefined,
+      clearConversation: () => undefined
+    };
+    // The dialog owns the quiet snapshot fetch; stub the service methods it
+    // uses (these tests build the dialog directly against a stub service).
+    const snapshot$ = new Subject<any>();
+    let requestedSessionId: string | undefined;
+    const svc = {
+      getCommandOutcomes: () => bus.asObservable(),
+      getSessionConfig: (sessionId?: string) => {
+        requestedSessionId = sessionId;
+        return snapshot$.asObservable();
+      }
+    } as unknown as LocalAgentChatService;
+    const dialog = new CommandConfigDialogComponent(
+      { close: () => undefined } as any, data, svc);
+    dialog.ngOnInit();
+    expect(requestedSessionId).toBe('browser-session-1');
+    expect(dialog.loading).toBeTrue();
+    expect(dialog.modelMenu).toBeNull();
+    snapshot$.next(snapshot);
+    snapshot$.complete();
+    expect(dialog.loading).toBeFalse();
+    expect(dialog.loadError).toBeNull();
+    expect(dialog.modelMenu?.models?.[0].id).toBe('m1');
+    expect(dialog.roleMenu?.roles?.[0].name).toBe('architect');
+    expect(dialog.fastMenu?.supported).toBeTrue();
+    expect(dialog.reminders?.reminders?.[0].text).toBe('r1');
+    expect(dialog.queue?.queued?.length).toBe(0);
+    dialog.ngOnDestroy();
+  });
 
-    const select = fixture.nativeElement
-      .querySelector('[data-testid="model-menu"] select') as HTMLSelectElement;
-    expect(select.disabled).toBeTrue();
-    expect(select.textContent).toContain('Working');
+  it('a failed quiet snapshot surfaces an error state instead of dispatching commands', async () => {
+    const bus = new Subject<CommandOutcome>();
+    const data: CommandConfigDialogData = {
+      modelMenu: null, roleMenu: null, fastMenu: null,
+      reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
+      queue: null,
+      continueMenu: null,
+      judgeMenu: null,
+      busy: () => false,
+      liveSession: () => false,
+      dispatch: () => undefined,
+      selectModel: () => undefined,
+      selectRole: () => undefined,
+      toggleFastMode: () => undefined,
+      clearConversation: () => undefined
+    };
+    const svc = {
+      getCommandOutcomes: () => bus.asObservable(),
+      getSessionConfig: () => {
+        const failed = new Subject<any>();
+        failed.error({ message: 'harness unavailable' });
+        return failed.asObservable();
+      }
+    } as unknown as LocalAgentChatService;
+    const dialog = new CommandConfigDialogComponent(
+      { close: () => undefined } as any, data, svc);
+    dialog.ngOnInit();
+    await Promise.resolve();
+    expect(dialog.loading).toBeFalse();
+    expect(dialog.loadError).toBe('harness unavailable');
+    expect(dialog.modelMenu).toBeNull();
+    dialog.ngOnDestroy();
+  });
+
+  it('command outcomes update the modal data in place via the outcome bus, not only the transcript', async () => {
+    const bus = new Subject<CommandOutcome>();
+    const data: CommandConfigDialogData = {
+      modelMenu: null, roleMenu: null, fastMenu: null,
+      reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
+      queue: null,
+      continueMenu: null,
+      judgeMenu: null,
+      busy: () => false,
+      liveSession: () => false,
+      dispatch: () => undefined,
+      selectModel: () => undefined,
+      selectRole: () => undefined,
+      toggleFastMode: () => undefined,
+      clearConversation: () => undefined
+    };
+    const svc = {
+      getCommandOutcomes: () => bus.asObservable(),
+      getSessionConfig: () => of({ menu: 'config' } as any)
+    } as unknown as LocalAgentChatService;
+    const dialog = new CommandConfigDialogComponent(
+      { close: () => undefined } as any, data, svc);
+    dialog.ngOnInit();
+    await Promise.resolve();
+    expect(dialog.modelMenu).toBeNull();
+
+    bus.next({
+      command: '/model', status: 'INTERACTION_REQUIRED', text: 'models', ok: true, exit: 0,
+      data: { menu: 'model', provider: 'custom', models: [{ id: 'm1', current: true }] }
+    });
+    expect(dialog.modelMenu?.models?.length).toBe(1);
+    expect(dialog.modelMenu?.models?.[0].current).toBeTrue();
+    dialog.ngOnDestroy();
+  });
+
+  it('senders route through the same select methods as the modal', () => {
+    fixture.detectChanges();
+    const send = spyOn(component, 'sendMessage');
+    component.selectModel('m-small');
+    expect(component.userInput).toBe('/model m-small');
+    component.selectRole('architect');
+    expect(component.userInput).toBe('/role architect');
+    component.toggleFastMode(true);
+    expect(component.userInput).toBe('/fast on');
+    expect(send).toHaveBeenCalledTimes(3);
   });
 });

@@ -35,9 +35,10 @@ import java.util.Objects;
  * Durable, cross-process session state for web-JSON command runs
  * ({@code ~/.kompile/web-session-state/<sessionId>.json}).
  *
- * <p>Currently the only field is the explicit {@code /model} selection, but the
- * schema is intentionally flat so future durable-session commands can extend it.
- * A stored record is trusted only when its {@code workingDirectory} still matches
+ * <p>Currently the durable fields are the explicit {@code /model} and {@code /role}
+ * selections, but the schema is intentionally flat so future durable-session
+ * commands can extend it. A stored record is trusted only when its
+ * {@code workingDirectory} still matches
  * the invoking run's directory; any mismatch (or an unreadable/corrupt file) is
  * reported as absent so stale state is never applied to a different project.
  *
@@ -49,12 +50,19 @@ import java.util.Objects;
  */
 public final class ChatSessionStateStore {
 
-    /** Persisted record schema version; readers reject any other version. */
-    public static final int SCHEMA_VERSION = 1;
+    /** Persisted record schema version; readers accept this version (and legacy 1/2). */
+    public static final int SCHEMA_VERSION = 3;
+    /** Legacy schema versions (model-only, then model+role) still readable. */
+    public static final int LEGACY_SCHEMA_VERSION = 2;
+    public static final int INITIAL_SCHEMA_VERSION = 1;
 
-    /** A durable session state record. {@code model} is null when never set. */
+    /**
+     * A durable session state record; fields are null when never set. {@code model}
+     * is only meaningful together with its {@code provider} (a stored model without
+     * a provider predates vendor switching and applies to the configured provider).
+     */
     public record SessionState(int schemaVersion, String sessionId, String workingDirectory,
-                               String model, String updatedAt) {
+                               String model, String role, String updatedAt, String provider) {
     }
 
     /** Result of a save: whether the mutation was applied and the resulting state. */
@@ -97,7 +105,7 @@ public final class ChatSessionStateStore {
             return null; // corrupt or partially written state behaves as absent
         }
         if (root == null || !root.isObject()
-                || root.path("schemaVersion").asInt(-1) != SCHEMA_VERSION
+                || !isKnownSchemaVersion(root.path("schemaVersion").asInt(-1))
                 || !root.path("sessionId").isTextual()) {
             return null;
         }
@@ -107,17 +115,47 @@ public final class ChatSessionStateStore {
             return null; // mismatch → ignore stale state
         }
         String model = root.path("model").isTextual() ? root.path("model").asText() : null;
+        String role = root.path("role").isTextual() ? root.path("role").asText() : null;
         String updatedAt = root.path("updatedAt").isTextual()
                 ? root.path("updatedAt").asText() : null;
-        return new SessionState(SCHEMA_VERSION, root.path("sessionId").asText(),
-                recordedDirectory, model, updatedAt);
+        String provider = root.path("provider").isTextual()
+                ? root.path("provider").asText() : null;
+        return new SessionState(root.path("schemaVersion").asInt(), root.path("sessionId").asText(),
+                recordedDirectory, model, role, updatedAt, provider);
     }
 
-    /** Convenience variant that reports whether a usable stored model exists. */
+    private static boolean isKnownSchemaVersion(int version) {
+        return version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION
+                || version == INITIAL_SCHEMA_VERSION;
+    }
+
+    /**
+     * Convenience variant that reports the stored provider for this session.
+     * Null when no usable stored state (or provider) exists.
+     */
+    public String loadProvider(String sessionId, Path workingDirectory) {
+        SessionState state = load(sessionId, workingDirectory);
+        return state == null || state.provider() == null || state.provider().isBlank()
+                ? null : state.provider();
+    }
+
+    /**
+     * Convenience variant that reports whether a usable stored model exists.
+     */
     public String loadModel(String sessionId, Path workingDirectory) {
         SessionState state = load(sessionId, workingDirectory);
         return state == null || state.model() == null || state.model().isBlank()
                 ? null : state.model();
+    }
+
+    /**
+     * Convenience variant that reports whether a usable stored role exists.
+     * An explicit empty string means "selection cleared" and reads as absent.
+     */
+    public String loadRole(String sessionId, Path workingDirectory) {
+        SessionState state = load(sessionId, workingDirectory);
+        return state == null || state.role() == null || state.role().isBlank()
+                ? null : state.role();
     }
 
     /**
@@ -127,6 +165,17 @@ public final class ChatSessionStateStore {
      * wins per field rather than losing whole records.
      */
     public SaveResult updateModel(String sessionId, Path workingDirectory, String model) {
+        return updateModel(sessionId, workingDirectory, null, model);
+    }
+
+    /**
+     * Atomically persist the model selection together with its provider
+     * (vendor switching). A {@code null}/{@code blank} {@code provider} keeps
+     * any stored provider (same-vendor model change); a concrete value records
+     * the vendor the model belongs to so the next turn can restore both.
+     */
+    public SaveResult updateModel(String sessionId, Path workingDirectory,
+                                  String provider, String model) {
         Objects.requireNonNull(workingDirectory, "workingDirectory");
         Path file = stateFile(sessionId);
         if (file == null) {
@@ -152,15 +201,15 @@ public final class ChatSessionStateStore {
                 String preservedDirectory = current != null
                         ? current.workingDirectory()
                         : normalize(workingDirectory).toString();
+                String preservedProvider = provider != null && !provider.isBlank()
+                        ? provider.trim()
+                        : current == null ? null : current.provider();
                 SessionState next = new SessionState(SCHEMA_VERSION, sessionId,
-                        preservedDirectory, model.trim(), java.time.Instant.now().toString());
-                ObjectNode root = JsonUtils.standardMapper().createObjectNode();
-                root.put("schemaVersion", next.schemaVersion());
-                root.put("sessionId", next.sessionId());
-                root.put("workingDirectory", next.workingDirectory());
-                root.put("model", next.model());
-                root.put("updatedAt", next.updatedAt());
-                writeAtomically(file, root);
+                        preservedDirectory, model.trim(),
+                        current == null ? null : current.role(),
+                        java.time.Instant.now().toString(),
+                        preservedProvider);
+                writeAtomically(file, next);
                 return new SaveResult(true, next);
             } finally {
                 lock.release();
@@ -169,6 +218,66 @@ public final class ChatSessionStateStore {
             // Persistence must never break a command run; report the current view.
             return new SaveResult(false, load(sessionId, workingDirectory));
         }
+    }
+
+    /**
+     * Atomically persist the role selection, preserving the stored model.
+     * Mirrors {@link #updateModel(String, Path, String)} locking semantics.
+     */
+    public SaveResult updateRole(String sessionId, Path workingDirectory, String role) {
+        Objects.requireNonNull(workingDirectory, "workingDirectory");
+        Path file = stateFile(sessionId);
+        if (file == null) {
+            return new SaveResult(false, null); // reject path-traversing/invalid ids before any I/O
+        }
+        if (role == null) {
+            return new SaveResult(false, load(sessionId, workingDirectory));
+        }
+        try {
+            Files.createDirectories(stateDirectory);
+        } catch (IOException e) {
+            return new SaveResult(false, load(sessionId, workingDirectory));
+        }
+        Path lockFile = stateDirectory.resolve(sessionId + ".lock");
+        try (FileChannel lockChannel = FileChannel.open(lockFile,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)) {
+            FileLock lock = tryLockWithRetry(lockChannel);
+            if (lock == null) {
+                return new SaveResult(false, load(sessionId, workingDirectory));
+            }
+            try {
+                SessionState current = load(sessionId, workingDirectory);
+                String preservedDirectory = current != null
+                        ? current.workingDirectory()
+                        : normalize(workingDirectory).toString();
+                String preservedModel = current == null ? null : current.model();
+                // An explicit empty string clears the role selection.
+                String storedRole = role.isBlank() ? "" : role.trim();
+                SessionState next = new SessionState(SCHEMA_VERSION, sessionId,
+                        preservedDirectory, preservedModel, storedRole,
+                        java.time.Instant.now().toString(),
+                        current == null ? null : current.provider());
+                writeAtomically(file, next);
+                return new SaveResult(true, next);
+            } finally {
+                lock.release();
+            }
+        } catch (Exception ignored) {
+            return new SaveResult(false, load(sessionId, workingDirectory));
+        }
+    }
+
+    /** Serialize one durable record; null fields are written as empty strings. */
+    private void writeAtomically(Path file, SessionState next) throws IOException {
+        ObjectNode root = JsonUtils.standardMapper().createObjectNode();
+        root.put("schemaVersion", next.schemaVersion());
+        root.put("sessionId", next.sessionId());
+        root.put("workingDirectory", next.workingDirectory());
+        root.put("model", next.model() == null ? "" : next.model());
+        root.put("role", next.role() == null ? "" : next.role());
+        root.put("updatedAt", next.updatedAt());
+        root.put("provider", next.provider() == null ? "" : next.provider());
+        writeAtomically(file, root);
     }
 
     /**

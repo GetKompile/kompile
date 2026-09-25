@@ -206,9 +206,11 @@ public final class ChatHarnessCapabilities {
                 .add("INTERACTION_REQUIRED").add("INVALID");
         webInput.put("skillDiscovery", "/skills");
         webInput.put("durableSessionCommands", true);
+        webInput.putArray("durableSessionCommandNames").add("model").add("role").add("fast");
         webInput.put("durableSessionCommandsNote",
-                "/model persists its selection per session id + working directory; "
-                        + "a stored selection applies to later MODEL_INPUT turns.");
+                "/model, /role, and /fast persist their selections per session id + working "
+                        + "directory; a stored model or role applies to later MODEL_INPUT turns "
+                        + "and /fast writes the chat configuration toggle.");
         ArrayNode commands = root.putArray("commands");
         for (var entry : ai.kompile.cli.main.chat.ChatCommandCatalog.entries()) {
             ObjectNode command = commands.addObject();

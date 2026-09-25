@@ -244,6 +244,27 @@ class DirectLlmClientConnectivityTest {
     }
 
     @Test
+    void inputExceedsContextWindowPhrasingIsClassifiedAsContextOverflow() {
+        // Observed across OpenAI-compatible backends: the overflow signal and
+        // the context-window mention arrive in reverse word order from the
+        // legacy literal, which formerly fell through to PROVIDER_ERROR and
+        // halted the session instead of triggering auto-compaction.
+        assertTrue(DirectLlmClient.isContextOverflowFailure(400,
+                "Your input exceeds the context window of this model. "
+                        + "Please adjust your input and try again."));
+        assertTrue(DirectLlmClient.isContextOverflowFailure(400,
+                "Request failed: input exceeds context window"));
+        assertTrue(DirectLlmClient.isContextOverflowFailure(400,
+                "This model's maximum context window is 128000 tokens"));
+        assertTrue(DirectLlmClient.isContextOverflowFailure(400,
+                "Your input exceeds the context length of this model"));
+        // A benign context-window mention without an overflow signal must not
+        // be misclassified.
+        assertFalse(DirectLlmClient.isContextOverflowFailure(400,
+                "Model context window is 200000 tokens"));
+    }
+
+    @Test
     void providerToolActivityMakesOverflowNonReplayable() {
         DirectLlmClient.StreamResult result = new DirectLlmClient.StreamResult();
         result.failed = true;

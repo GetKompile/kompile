@@ -32,6 +32,17 @@ public interface ChatHarnessClient {
     /** Non-secret harness/provider/persona capabilities for a project directory. */
     JsonNode capabilities(String workingDirectory, boolean refresh);
 
+    /**
+     * Quiet session-configuration snapshot (model / role / fast / reminders /
+     * loops / queue menus) resolved headlessly through the CLI. Sends no chat
+     * messages and writes no transcript entries. {@code modelVendor} scopes
+     * the model section to one vendor's models (quiet vendor browsing).
+     */
+    default JsonNode configSnapshot(String browserSessionId, String workingDirectory,
+                                    String modelVendor) {
+        throw new IllegalStateException("Session configuration snapshot unavailable");
+    }
+
     /** Model context budget projected from {@link #capabilities}. */
     Map<String, Object> contextBudget(String agentName, String workingDirectory);
 }

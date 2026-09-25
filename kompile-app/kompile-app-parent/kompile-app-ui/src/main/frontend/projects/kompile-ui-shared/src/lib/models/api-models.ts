@@ -2955,24 +2955,89 @@ export interface CommandModelEntry {
   current?: boolean;
 }
 
+/** One selectable entry of a CLI {@code /role} menu. */
+export interface CommandRoleEntry {
+  /** Canonical role name — the exact token sent back via {@code /role <name>}. */
+  name: string;
+  /** Optional friendly name when it differs from the name. */
+  display?: string;
+  /** Optional one-line description from the role file. */
+  description?: string;
+  /** Optional grouping category (development, research, …). */
+  category?: string;
+  /** True for the role this browser session currently uses. */
+  current?: boolean;
+}
+
 /**
- * Structured payload of a command outcome. Only {@code menu:"model"} has a
- * browser-rendered shape today; unknown menus degrade to status text.
+ * Structured payload of a command outcome. Browser-rendered shapes today:
+ * {@code menu:"model"}, {@code menu:"role"}, {@code menu:"fast"},
+ * {@code menu:"reminders"}, {@code menu:"loops"}, {@code menu:"queue"},
+ * and {@code menu:"clear"}; unknown menus degrade to status text.
  */
 export interface CommandEventData {
-  menu?: 'model';
+  menu?: 'model' | 'role' | 'fast' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
   provider?: string;
   currentModel?: string;
   liveListingAvailable?: boolean;
   persistedForSession?: boolean;
   note?: string;
   models?: CommandModelEntry[];
-  /** Applied session state after {@code /model <id>} succeeded. */
+  /** /role menu payload. */
+  currentRole?: string;
+  roles?: CommandRoleEntry[];
+  /** /fast payload. */
+  fastMode?: boolean;
+  supported?: boolean;
+  /** Scope marker for reminders/loops payloads: 'session' | 'project'. */
+  scope?: string;
+  /** /reminder payload. */
+  reminders?: { text: string }[];
+  /** /loop payload. */
+  loops?: {
+    id: string;
+    schedule: string;
+    prompt: string;
+    status: string;
+    interval: string;
+    fireCount: number;
+  }[];
+  /** /queue payload. */
+  queued?: {
+    id: string;
+    content: string;
+    status: string;
+    createdAt: string;
+  }[];
+  /** /continue payload: auto-reply configuration (project-global). */
+  continueEnabled?: boolean;
+  continueReply?: string;
+  keywords?: { keyword: string }[];
+  /** /judge payload: durable judge posture. */
+  judgeScope?: string;
+  globalEnabled?: boolean;
+  sessionEnabled?: boolean;
+  guidance?: string;
+  overrideArmed?: boolean;
+  /** /clear payload: the session id the clear was resolved for. */
+  sessionId?: string;
+  /** /model menu payload: switchable vendor chips (vendor key + display). */
+  vendors?: { vendor: string; display?: string; current?: boolean }[];
+  /** /model payload scoped to one vendor (quiet vendor browsing). */
+  vendor?: string;
+  currentVendor?: string;
+  /** Applied session state after an explicit selection succeeded. */
   state?: {
     sessionId?: string;
     workingDirectory?: string;
     model?: string;
+    /** Wire provider of the stored model (vendor switch). */
+    provider?: string;
+    /** Empty string means the role selection was cleared. */
+    role?: string;
   };
+  /** True when a selection was cleared (/role ''). */
+  cleared?: boolean;
 }
 
 /** Persisted transcript entries which must never become model context. */

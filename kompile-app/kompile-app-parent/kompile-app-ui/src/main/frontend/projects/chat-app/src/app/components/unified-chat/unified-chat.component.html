@@ -395,6 +395,17 @@
         <p class="setting-hint">Personas and roles come from kompile-cli-main. Configure its provider and model with <code>kompile chat --setup</code>.</p>
       </div>
 
+      <!-- Session Configuration (CLI model / role / fast mode) -->
+      <div class="settings-section">
+        <h4>Session Configuration</h4>
+        <p class="setting-hint">Pick the model and role this session uses, and toggle fast mode. Clicks dispatch the CLI commands; the CLI resolves and persists them.</p>
+        <button type="button" class="text-btn" data-testid="command-config-open"
+          [disabled]="!selectedAgent || isStreaming || isLoading"
+          (click)="openCommandConfig()">
+          Open Session Configuration…
+        </button>
+      </div>
+
       <!-- Active Models -->
       <div class="settings-section" *ngIf="activeModelContext">
         <div class="section-header-row">
@@ -1192,28 +1203,8 @@
             <!-- System/other messages: plain text fallback -->
             <pre *ngIf="message.role !== 'assistant' && message.role !== 'user'">{{ message.content }}</pre>
 
-            <!-- CLI /model menu: an inline picker attached to its command outcome.
-                 Selecting an entry sends the raw "/model <id>" text through the
-                 normal send path; the CLI resolves, validates, and persists it. -->
-            <div *ngIf="message.role === 'system' && message.commandOutcome?.data?.menu === 'model'"
-              class="model-menu" data-testid="model-menu">
-              <div class="model-menu-header">
-                <span class="model-menu-title">Model</span>
-                <span class="model-menu-provider" *ngIf="$any(message.commandOutcome?.data).provider">{{ $any(message.commandOutcome?.data).provider }}</span>
-                <span class="model-menu-note" *ngIf="$any(message.commandOutcome?.data).note">{{ $any(message.commandOutcome?.data).note }}</span>
-              </div>
-              <select class="model-menu-select select-input"
-                [disabled]="isStreaming || isLoading"
-                (change)="selectModel($any($event.target).value)">
-                <option value="" disabled>
-                  {{ isStreaming ? 'Working…' : 'Select a model…' }}
-                </option>
-                <option *ngFor="let m of $any(message.commandOutcome?.data).models" [value]="m.id"
-                  [selected]="m.id === $any(message.commandOutcome?.data).currentModel">
-                  {{ modelMenuLabel(m) }}{{ m.contextLimit ? ' — context ' + m.contextLimit : '' }}{{ m.current ? ' (current)' : '' }}
-                </option>
-              </select>
-            </div>
+            <!-- CLI command outcomes render as plain status text; the interactive
+                 pickers live in the Session Configuration modal (settings sidebar). -->
 
             <span class="streaming-cursor" *ngIf="message.isStreaming" data-testid="streaming-cursor">▌</span>
           </div>
@@ -1512,6 +1503,20 @@
       </div>
 
       <div class="input-container">
+        <!-- Queued message strip: the MOST RECENT queued entry only (harness-queue
+             via live controls, or locally parked when controls are unavailable).
+             Older entries live in the Session Configuration → Queue section. -->
+        <div class="queued-chips" *ngIf="latestQueued" data-testid="queued-chips">
+          <span class="queued-chip">
+            <span class="queued-chip-text" [title]="latestQueued.text">{{ latestQueued.text }}</span>
+            <button type="button" class="queued-chip-send" (click)="sendLatestQueuedNow()"
+              [disabled]="isStreaming || isLoading" title="Send this queued message now">➤</button>
+            <button type="button" class="queued-chip-remove" (click)="removeLatestQueued()"
+              aria-label="Remove queued message">×</button>
+          </span>
+          <button type="button" class="queued-chip-more" (click)="openCommandConfig()"
+            title="Open the full queue (Session Configuration)">Queue…</button>
+        </div>
         <div *ngIf="slashSuggestions.length" id="slash-command-menu" class="slash-command-menu"
           role="listbox" aria-label="Common slash commands" data-testid="slash-command-menu">
           <button *ngFor="let item of slashSuggestions; let i = index" type="button" role="option"
@@ -1529,12 +1534,12 @@
           title="Attach images, PDFs, or text files (8 files, 20 MiB total)"
           aria-label="Attach files" data-testid="attach-btn">📎</button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
-          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : 'Type your message...' }}"
+          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up for the next turn boundary' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"
           (keydown)="handleKeydown($event)" (blur)="dismissSlashMenu()"
           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-label="Chat message"
           [attr.aria-expanded]="slashSuggestions.length > 0"
           [attr.aria-controls]="slashSuggestions.length ? 'slash-command-menu' : null"
-          [attr.aria-activedescendant]="slashSuggestions.length ? 'slash-command-' + slashSelectedIndex : null" rows="2" [disabled]="transcriptReadOnly || isCompacting || isLoading || (isStreaming && !liveControlsReady) || !selectedAgent"
+          [attr.aria-activedescendant]="slashSuggestions.length ? 'slash-command-' + slashSelectedIndex : null" rows="2" [disabled]="transcriptReadOnly || isCompacting || isLoading || !selectedAgent"
           data-testid="chat-input">
         </textarea>
         <button class="send-btn" (click)="sendMessage()"

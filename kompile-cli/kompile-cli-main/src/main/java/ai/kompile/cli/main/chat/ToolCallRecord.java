@@ -21,6 +21,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
+import java.util.Map;
 
 /**
  * A single indexed tool call record from a passthrough or emulated passthrough session.
@@ -65,12 +66,29 @@ public class ToolCallRecord {
     @JsonProperty("projectDirectory")
     private String projectDirectory;
 
+    /**
+     * Optional versioned usage block (Task 2 catalog schema). {@code null} for legacy
+     * records — absent usage is not zero. Structure mirrors
+     * {@code ai.kompile.cli.common.metrics.ToolCallUsage#toJsonNode} payload fields:
+     * {@code invocationId, payload, arguments, outcome, disposition, revision}.
+     */
+    @JsonProperty("usage")
+    private Map<String, Object> usage;
+
     public ToolCallRecord() {}
 
     public ToolCallRecord(String id, String sessionId, String toolName, String toolInput,
                           String toolInputSummary, Instant timestamp, String source,
                           String agentName, boolean isError, long durationMs, String category,
                           String projectDirectory) {
+        this(id, sessionId, toolName, toolInput, toolInputSummary, timestamp, source,
+                agentName, isError, durationMs, category, projectDirectory, null);
+    }
+
+    public ToolCallRecord(String id, String sessionId, String toolName, String toolInput,
+                          String toolInputSummary, Instant timestamp, String source,
+                          String agentName, boolean isError, long durationMs, String category,
+                          String projectDirectory, Map<String, Object> usage) {
         this.id = id;
         this.sessionId = sessionId;
         this.toolName = toolName;
@@ -83,6 +101,19 @@ public class ToolCallRecord {
         this.durationMs = durationMs;
         this.category = category;
         this.projectDirectory = projectDirectory;
+        this.usage = usage;
+    }
+
+    public Map<String, Object> getUsage() { return usage; }
+
+    public void setUsage(Map<String, Object> usage) {
+        this.usage = usage;
+    }
+
+    /** True when this record carries a measured usage block with a payload token count. */
+    @JsonIgnore
+    public boolean hasUsage() {
+        return usage != null && !usage.isEmpty();
     }
 
     public String getId() { return id; }

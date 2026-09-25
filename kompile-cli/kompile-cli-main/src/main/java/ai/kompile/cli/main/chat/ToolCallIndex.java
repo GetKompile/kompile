@@ -100,10 +100,57 @@ public class ToolCallIndex {
         appendRecord(record);
     }
 
+    /**
+     * Record a tool call WITH usage (typed overload; Task 2). Never packs usage into
+     * the argument string. Writes the legacy line (usage block attached via the
+     * record's optional usage map) to per-session file + combined index, and journals
+     * the same usage into the shared usage journal under the cross-process lock.
+     *
+     * @param usage    usage payload (may be partially measured; absent fields are absent)
+     * @param revision monotonically increasing revision for idempotent finalization
+     * @return true when the usage journal write succeeded
+     */
+    public boolean recordWithUsage(ToolCallRecord record,
+                                   ai.kompile.cli.common.metrics.ToolCallUsage usage,
+                                   long revision) {
+        appendRecord(record);
+        return journalFor().record(usage, revision)
+                instanceof ai.kompile.cli.common.metrics.ToolCallUsageJournal.WriteResult.Written;
+    }
+
+    /**
+     * Journal usage WITHOUT writing a legacy catalog line (Task 3): the stdio dispatch
+     * loop finalizes usage per exit, and the audit logger owns catalog-line emission.
+     * Keeps one authoritative usage stream — no double counting across writers.
+     */
+    public void recordUsageDirect(ai.kompile.cli.common.metrics.ToolCallUsage usage) {
+        journalFor().record(usage,
+                usage.finishedEpochMs() != null ? usage.finishedEpochMs() : usage.startedEpochMs());
+    }
+
+    /** Lazy shared usage journal rooted in the same tool-calls directory. */
+    private ai.kompile.cli.common.metrics.ToolCallUsageJournal journalFor() {
+        ai.kompile.cli.common.metrics.ToolCallUsageJournal journal = usageJournal;
+        if (journal == null) {
+            synchronized (this) {
+                if (usageJournal == null) {
+                    usageJournal = new ai.kompile.cli.common.metrics.ToolCallUsageJournal(
+                            ai.kompile.cli.common.metrics.ToolCallUsageJournal
+                                    .defaultJournalFile(toolCallsDir), MAPPER);
+                }
+                journal = usageJournal;
+            }
+        }
+        return journal;
+    }
+
+    private volatile ai.kompile.cli.common.metrics.ToolCallUsageJournal usageJournal;
+
     private synchronized void appendRecord(ToolCallRecord record) {
         try {
             Files.createDirectories(toolCallsDir);
-
+            ai.kompile.cli.common.metrics.ToolCallUsageJournal
+                    .validateSessionKey(record.getSessionId());
             String jsonLine = MAPPER.writeValueAsString(record) + "\n";
 
             // Append to per-session file
@@ -115,6 +162,9 @@ public class ToolCallIndex {
             Files.writeString(combinedIndexFile, jsonLine,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 
+        } catch (IllegalArgumentException unsafeSessionKey) {
+            System.err.println("Warning: rejected unsafe session key for tool call index: "
+                    + unsafeSessionKey.getMessage());
         } catch (IOException e) {
             System.err.println("Warning: Failed to index tool call: " + e.getMessage());
         }

@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener, Optional, Inject } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { HttpClient } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
@@ -24,6 +25,7 @@ import { Subscription, fromEvent, firstValueFrom } from 'rxjs';
 import { throttleTime, takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
 import { ConfirmDialogComponent, ConfirmDialogData } from '@shared/components/confirm-dialog/confirm-dialog.component';
+import { CommandConfigDialogComponent, CommandConfigDialogData } from '../command-config-dialog/command-config-dialog.component';
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
@@ -57,7 +59,6 @@ import {
   LocalAgentSession,
   CommandMessageMetadata,
   CommandEventData,
-  CommandModelEntry,
   RagServiceStatus,
   ChatFolder,
   ActiveModelContext,
@@ -204,6 +205,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   // ═══════════════════════════════════════════════════════════════════════════════
 
   showSettings: boolean = false;
+  /** Armed between a modal /clear dispatch and its CLI resolution. */
+  clearOutcomeArmed: boolean = false;
   showHistorySidebar: boolean = true;
   chatSearchQuery: string = '';
   editingSessionId: string | null = null;
@@ -459,7 +462,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private sanitizer: DomSanitizer,
     private dialog: MatDialog,
     private snackBar: MatSnackBar,
-    private router: Router
+    private router: Router,
+    /** Present under the real router; spec constructions pass null. */
+    @Optional() @Inject(ActivatedRoute) private route: ActivatedRoute | null
   ) {}
 
   /**
@@ -505,6 +510,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   ngOnInit(): void {
+    this.registerSessionConfigOpener();
     this.loadSessions();
     this.checkRagServiceStatus();
     this.loadAgents();
@@ -554,6 +560,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   ngOnDestroy(): void {
     this.harnessViewDestroyed = true;
+    this.unregisterSessionConfigOpener();
     this.unsubscribeStreamingSubs();
     if (this.isStreaming) {
       if (this.agentChatService.detachStreaming) this.agentChatService.detachStreaming();
@@ -1069,6 +1076,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     if (this.lifecycleBusy) return; // one live transport owns this view
     this.invalidateLifecycle();
     this.resetHarnessDisplay();
+    this.queuedMessages = []; // a fresh conversation drops locally parked follow-ups
     const session: ChatSession = {
       id: this.generateId(),
       name: 'New Chat',
@@ -1278,6 +1286,27 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   harnessControlPending = false;
   harnessControlMessage = '';
   harnessProcessOutput = '';
+  /** Messages typed while streaming without live controls; sent when the run completes. */
+  queuedMessages: string[] = [];
+
+  /**
+   * The single queue entry shown above the input: the most recent message
+   * waiting to be delivered — either already accepted by the harness queue
+   * (live controls) or locally parked (no live controls). Older entries stay
+   * manageable in the Session Configuration → Queue section.
+   */
+  get latestQueued(): { text: string; source: 'harness' | 'local' } | null {
+    const harness = this.liveInputHistory;
+    const local = this.queuedMessages;
+    if (harness.length === 0 && local.length === 0) return null;
+    const harnessText = harness.length ? harness[harness.length - 1] : null;
+    const localText = local.length ? local[local.length - 1] : null;
+    // Prefer whichever was queued most recently; the harness history and the
+    // local park fill from the same composer, so their tails are comparable.
+    return harnessText !== null && (localText === null || harness.length >= local.length)
+      ? { text: harnessText, source: 'harness' }
+      : { text: localText!, source: 'local' };
+  }
   subagentInputs: Partial<Record<string, string>> = Object.create(null);
   private harnessViewDestroyed = false;
 
@@ -1338,10 +1367,70 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     }
   }
 
+  /** Send the displayed (most recent) queued message now. */
+  sendLatestQueuedNow(): void {
+    if (this.isStreaming || this.isLoading || !this.latestQueued) return;
+    if (this.latestQueued.source === 'harness') {
+      // Harness-queued messages were already accepted by the live run's input
+      // queue; there is nothing to re-send from the browser.
+      this.harnessControlMessage = 'That message is already in the harness queue; the live run consumes it at the next turn boundary.';
+      return;
+    }
+    this.sendQueuedNow(this.queuedMessages.length - 1);
+  }
+
+  /** Drop the displayed (most recent) queued message. */
+  removeLatestQueued(): void {
+    const latest = this.latestQueued;
+    if (!latest) return;
+    if (latest.source === 'harness') {
+      // Removing a harness-accepted message would desync the CLI queue file;
+      // route through the dialog's queue editor which resolves via the CLI.
+      this.openCommandConfig();
+      return;
+    }
+    this.removeQueued(this.queuedMessages.length - 1);
+  }
+
+  /** Send one locally queued message now (button on the queued chip). */
+  sendQueuedNow(index: number): void {
+    if (this.isStreaming || this.isLoading || index < 0 || index >= this.queuedMessages.length) return;
+    const content = this.queuedMessages.splice(index, 1)[0];
+    this.userInput = content;
+    this.sendMessage();
+  }
+
+  /** Drop a locally queued message. */
+  removeQueued(index: number): void {
+    if (index < 0 || index >= this.queuedMessages.length) return;
+    this.queuedMessages.splice(index, 1);
+    this.cdr.detectChanges();
+  }
+
+  /** Send locally queued follow-ups in order after a run completes. */
+  private flushQueuedMessages(): void {
+    if (this.queuedMessages.length === 0 || this.isStreaming || this.isLoading) return;
+    const next = this.queuedMessages.shift()!;
+    this.userInput = next;
+    this.cdr.detectChanges();
+    this.sendMessage();
+    // Remaining queue entries flush on each subsequent completion.
+  }
+
   sendMessage(): void {
     if (!this.userInput.trim() || this.isLoading || this.isCompacting || this.transcriptReadOnly) return;
     if (this.isStreaming) {
-      if (this.liveControlsReady) void this.sendHarnessControl('input', undefined, this.userInput);
+      if (this.liveControlsReady) {
+        // Live run: forward through the harness input control (CLI queue).
+        void this.sendHarnessControl('input', undefined, this.userInput);
+      } else {
+        // No live controls (queued run / reconnect pending): park the message
+        // locally and send it when the stream completes. Typing stays possible.
+        this.queuedMessages.push(this.userInput);
+        this.userInput = '';
+        this.harnessControlMessage = 'Message queued; it sends when the current run finishes.';
+        this.cdr.detectChanges();
+      }
       return;
     }
 
@@ -1492,6 +1581,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         if (msg.commandOutcome?.data?.state?.model) {
           this.applySessionModel(msg.commandOutcome.data.state.model);
         }
+        // An armed /clear hand-off: the CLI resolved the command, the browser
+        // starts the fresh conversation. The outcome turn is discarded with the
+        // transcript, so there is nothing else to render.
+        if (this.clearOutcomeArmed && msg.commandOutcome?.data?.menu === 'clear') {
+          this.clearOutcomeArmed = false;
+          this.isStreaming = false;
+          this.cdr.detectChanges();
+          this.dialog?.closeAll();
+          this.newChat();
+          return;
+        }
         lastMsg.isStreaming = false;
         lastMsg.latencyMs = msg.latencyMs || (Date.now() - startTime);
         lastMsg.sources = msg.sources;
@@ -1515,6 +1615,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
       this.updateCurrentSession();
       this.unsubscribeStreamingSubs();
+
+      // Flush locally queued follow-ups in order once the run completes.
+      this.flushQueuedMessages();
     });
 
     const errorSub = this.agentChatService.getStreamingError().subscribe((errorMsg: string) => {
@@ -2021,6 +2124,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
             this.loadAgentCapabilities(this.selectedAgent);
           }
           this.refreshContextBudget();
+          // Deep link from the Connections page: open the CLI Session
+          // Configuration dialog once a persona is selected.
+          if (this.selectedAgent && window.location.search.includes('openCliConfig=1')) {
+            window.history.replaceState(null, '', window.location.pathname);
+            this.openCommandConfig();
+          }
           this.cdr.detectChanges();
         });
       },
@@ -3119,53 +3228,49 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   // ═════════════════════════════════════════════════════════════════════════════
-  // CLI /model picker
+  // CLI command selection (Session Configuration modal in the settings sidebar)
   // ═════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * The model menu of the most recent command outcome, or null. Only the exact
-   * CLI payload shape (data.menu === 'model') opens a picker; unknown menus and
-   * invalid selections keep rendering as plain status text.
-   */
-  get modelMenu(): CommandEventData | null {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const outcome = this.messages[i].commandOutcome;
-      if (outcome?.data?.menu === 'model') return outcome.data;
-    }
-    return null;
-  }
-
-  /** Menu label: friendly display name when present, otherwise the raw id. */
-  modelMenuLabel(model: CommandModelEntry): string {
-    return model.display || model.id;
-  }
-
-  /** Safe iteration source for the template (strictTemplates-friendly). */
-  menuModels(): CommandModelEntry[] {
-    return this.modelMenu?.models ?? [];
-  }
 
   /**
    * Menu selection sends the raw CLI form through the SAME sendMessage path —
    * no separate command channel, no client-side parsing. The CLI re-resolves,
-   * validates, and persists the id; the resulting command outcome renders in
-   * place of the picker.
+   * validates, and persists the id; the outcome streams to the modal bus.
    */
   selectModel(modelId: string): void {
-    if (!modelId || this.isStreaming || this.isLoading) return;
-    this.userInput = '/model ' + modelId;
+    this.selectCliCommand('/model', modelId);
+  }
+
+  /**
+   * Role selection sends the raw CLI form through the same path as /model:
+   * the CLI re-resolves against its role roster, validates, and persists the
+   * choice durably for this session id + working directory.
+   */
+  selectRole(roleName: string): void {
+    this.selectCliCommand('/role', roleName);
+  }
+
+  /**
+   * Fast-mode toggle sends the raw CLI form; the CLI validates eligibility
+   * against the same provider capability table and persists the toggle.
+   */
+  toggleFastMode(enabled: boolean): void {
+    this.selectCliCommand('/fast', enabled ? 'on' : 'off');
+  }
+
+  /** Shared guard + send path for every CLI menu selection (model/role/fast). */
+  private selectCliCommand(command: string, argument: string): void {
+    if (!argument || this.isStreaming || this.isLoading) return;
+    this.userInput = command + ' ' + argument;
     this.sendMessage();
   }
 
   /**
-   * Welcome-state entry point into the same CLI /model flow as the header and
-   * inline pickers: seed the input with the bare command and send. The CLI
-   * replies with the real catalog menu, which renders in the transcript.
+   * Welcome-state entry point into the same CLI /model flow as the settings
+   * modal: open the Session Configuration dialog. The CLI replies with the
+   * real catalog, which the dialog renders.
    */
   openWelcomeModelPicker(): void {
-    if (!this.selectedAgent || this.isStreaming || this.isLoading) return;
-    this.userInput = '/model';
-    this.sendMessage();
+    this.openCommandConfig();
   }
 
   /**
@@ -3179,11 +3284,90 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.cdr.markForCheck();
   }
 
+  /**
+   * Latest menu snapshots per CLI menu kind, from the most recent command
+   * outcome carrying that payload. Seeds the command-config modal. Scope
+   * defaults to session when the CLI payload omits it.
+   */
+  private latestMenu(kind: 'model' | 'role' | 'fast' | 'reminders' | 'loops' | 'queue' | 'continue' | 'judge',
+                     scope?: 'project'): CommandEventData | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const data = this.messages[i].commandOutcome?.data;
+      if (data?.menu !== kind) continue;
+      if (scope === 'project' ? data.scope === 'project' : data.scope !== 'project') return data;
+    }
+    return null;
+  }
+
+  /**
+   * Open the session configuration modal. View-state reads only — safe to open
+   * mid-stream; the dialog's own busy() guard freezes actions while a turn runs.
+   */
+  openCommandConfig(): void {
+    if (!this.selectedAgent) return;
+    const data: CommandConfigDialogData = {
+      modelMenu: this.latestMenu('model'),
+      roleMenu: this.latestMenu('role'),
+      fastMenu: this.latestMenu('fast'),
+      reminders: this.latestMenu('reminders'),
+      remindersGlobal: this.latestMenu('reminders', 'project'),
+      loops: this.latestMenu('loops'),
+      loopsGlobal: this.latestMenu('loops', 'project'),
+      queue: this.latestMenu('queue'),
+      continueMenu: this.latestMenu('continue'),
+      judgeMenu: this.latestMenu('judge'),
+      sessionId: this.currentSession?.id,
+      workingDirectory: this.agentWorkingDirectory(),
+      busy: () => this.isStreaming || this.isLoading,
+      liveSession: () => this.liveControlsReady,
+      dispatch: (commandLine: string) => {
+        this.userInput = commandLine;
+        this.sendMessage();
+      },
+      selectModel: (modelId: string) => this.selectModel(modelId),
+      selectRole: (roleName: string) => this.selectRole(roleName),
+      toggleFastMode: (enabled: boolean) => this.toggleFastMode(enabled),
+      clearConversation: () => this.performConversationClear()
+    };
+    this.dialog.open(CommandConfigDialogComponent, {
+      width: '560px',
+      autoFocus: 'first-tabbable',
+      data
+    });
+  }
+
+  /** Working directory passed to chat requests (project-scoped CLI state). */
+  private agentWorkingDirectory(): string | undefined {
+    return undefined;
+  }
+  /**
+   * Header gear hook (app.component): the gear opens this dialog in place so the
+   * stream is never torn down by clicking away.
+   */
+  private registerSessionConfigOpener(): void {
+    (window as any).__kompileOpenSessionConfig = () => this.openCommandConfig();
+  }
+
+  private unregisterSessionConfigOpener(): void {
+    delete (window as any).__kompileOpenSessionConfig;
+  }
+
+  /**
+   * Browser-side /clear hand-off: the CLI resolved the command; the browser
+   * starts a fresh chat (new session id → clean durable state on the CLI side,
+   * while queue and reminders persist by design).
+   */
+  private performConversationClear(): void {
+    this.clearOutcomeArmed = true;
+  }
+
   // Web-supported builtins from ChatCommandCatalog, not an execution allowlist. Unknown commands and skills
   // still go through sendMessage unchanged; the CLI owns validation and dispatch.
   readonly slashCommands = [
     { command: '/help', description: 'Show available commands' },
     { command: '/model', description: 'Show or switch model' },
+    { command: '/role', description: 'Show or switch role' },
+    { command: '/fast', description: 'Show or toggle fast mode' },
     { command: '/skills', description: 'List available skills' }
   ];
   slashMenuOpen = false;

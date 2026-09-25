@@ -67,7 +67,7 @@ class ChatAsyncDispatchContextTest {
                 handler = new ChatMessageHandler(repl, null, null, new ObjectMapper(), "a", true,
                         history, null, null, new TerminalRenderer(), null,
                         mock(AgenticChatLoop.class), mock(BackgroundTaskManager.class), mock(MessageQueue.class),
-                        new AtomicBoolean(), List.of(), null);
+                        new AtomicBoolean(), List.of(), null, null);
             }
             AtomicInteger releases = new AtomicInteger();
             CountDownLatch done = new CountDownLatch(1);

@@ -60,8 +60,10 @@ public class SemanticMemoryTool implements CliTool {
              + "from past interactions or stored knowledge. "
              + "Parameters: query (required string), top_k (optional int, default 5), "
              + "threshold (optional number 0-1, default 0.15), "
-             + "action: 'search' (default), 'stats' (show index stats), "
-             + "'index_turn' (add a turn to the index).";
+             + "action: 'search' (default), 'stats' (show index stats and encoder state), "
+             + "'index_turn' (add a turn to the index), "
+             + "'load_encoder' (explicitly start the SameDiff/ND4J dense encoder — "
+             + "it does NOT auto-start at boot).";
     }
 
     @Override
@@ -73,7 +75,8 @@ public class SemanticMemoryTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action: search, stats, or index_turn");
+        action.put("description", "Action: search, stats, index_turn, "
+                + "or load_encoder (start the dense SameDiff encoder on demand)");
 
         ObjectNode query = props.putObject("query");
         query.put("type", "string");
@@ -146,7 +149,21 @@ public class SemanticMemoryTool implements CliTool {
             }
 
             case "stats": {
-                return ToolResult.success("semantic_memory: stats", engine.stats());
+                return ToolResult.success("semantic_memory: stats",
+                        engine.stats() + "\nencoder running: " + engine.isDenseMode());
+            }
+
+            case "load_encoder": {
+                if (engine.isDenseMode()) {
+                    return ToolResult.success("semantic_memory: load_encoder",
+                            "Dense encoder already running: " + engine.getEncoderMode());
+                }
+                String before = engine.getEncoderMode();
+                engine.startDenseEncoder();
+                return ToolResult.success("semantic_memory: load_encoder",
+                        "Dense encoder start requested (previous mode: " + before + "). "
+                                + "It loads asynchronously; check action=stats until encoder "
+                                + "running: true. Retrieval uses TF-IDF until then.");
             }
 
             case "index_turn": {
@@ -164,7 +181,7 @@ public class SemanticMemoryTool implements CliTool {
 
             default:
                 return ToolResult.error("Unknown action: " + action
-                        + ". Use search, stats, or index_turn.");
+                        + ". Use search, stats, index_turn, or load_encoder.");
         }
     }
 }

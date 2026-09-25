@@ -791,7 +791,13 @@ final class LocalEmbeddingRuntime {
                                                  Map<String, Object> runtimeOptions) {
         Object raw = runtimeOptions == null ? null : runtimeOptions.get("embeddingPlacement");
         String placement = raw == null || String.valueOf(raw).isBlank()
-                ? "inherit" : String.valueOf(raw).trim().toLowerCase(java.util.Locale.ROOT);
+                ? "" : String.valueOf(raw).trim().toLowerCase(java.util.Locale.ROOT);
+        // Folder config may pin placement without MCP options (kompile.local.rag.embedding.placement).
+        // Explicit runtime options win; absent both → INHERIT (launcher defaults), never forced GPU.
+        if (placement.isEmpty()) {
+            placement = System.getProperty("kompile.local.rag.embedding.placement", "inherit")
+                    .trim().toLowerCase(java.util.Locale.ROOT);
+        }
         if (placement.isEmpty() || "inherit".equals(placement) || "auto".equals(placement)) {
             return;
         }

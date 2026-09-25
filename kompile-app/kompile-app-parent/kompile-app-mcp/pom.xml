@@ -72,6 +72,15 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Shared lightweight tool-usage metrics contracts (ai.kompile.cli.common.metrics).
+             Lower shared module reachable by both app and CLI; CLI-main is NOT a dependency
+             of the app, only kompile-cli-common. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Spring-AI MCP client + webmvc server -->
         <dependency>
             <groupId>org.springframework.ai</groupId>

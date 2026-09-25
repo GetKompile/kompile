@@ -22,6 +22,60 @@ class SemanticMemoryEngineTest {
     Path tempDir;
 
     @Test
+    void denseAutostartPolicyRequiresExplicitTrue() {
+        // Default: encoder does NOT auto-start (GPU/ND4J must stay cold at boot).
+        assertFalse(SemanticMemoryEngine.resolveDenseAutostart(null, null));
+        assertFalse(SemanticMemoryEngine.resolveDenseAutostart("", null));
+        assertFalse(SemanticMemoryEngine.resolveDenseAutostart(null, "false"));
+        assertFalse(SemanticMemoryEngine.resolveDenseAutostart("invalid", "true"));
+        // Explicit opt-in only.
+        assertTrue(SemanticMemoryEngine.resolveDenseAutostart("true", null));
+        assertTrue(SemanticMemoryEngine.resolveDenseAutostart(" TRUE ", null));
+        assertTrue(SemanticMemoryEngine.resolveDenseAutostart(null, "true"));
+        // Property wins over environment.
+        assertFalse(SemanticMemoryEngine.resolveDenseAutostart("false", "true"));
+    }
+
+    @Test
+    void denseEncoderDoesNotAutostartWithoutOptIn() {
+        // denseEnabled=true but autostart=false (the default): the ND4J/CUDA
+        // backend must NOT initialize at boot. Mode advertises the on-demand action.
+        SemanticMemoryEngine engine = new SemanticMemoryEngine(tempDir.resolve("lazy"), true, false);
+        try {
+            engine.initialize();
+            assertFalse(engine.isDenseMode());
+            assertTrue(engine.getEncoderMode().contains("not started"));
+            assertTrue(engine.getEncoderMode().contains("load_encoder"));
+        } finally {
+            engine.shutdown();
+        }
+    }
+
+    @Test
+    void startDenseEncoderIsIdempotentAndDisabledRespectsOptOut() {
+        SemanticMemoryEngine disabled = new SemanticMemoryEngine(tempDir.resolve("optout"), false, true);
+        try {
+            disabled.initialize();
+            disabled.startDenseEncoder();
+            assertFalse(disabled.isDenseMode());
+            assertEquals("tfidf (dense disabled)", disabled.getEncoderMode());
+        } finally {
+            disabled.shutdown();
+        }
+
+        SemanticMemoryEngine lazy = new SemanticMemoryEngine(tempDir.resolve("lazy2"), true, false);
+        try {
+            lazy.initialize();
+            lazy.startDenseEncoder();
+            lazy.startDenseEncoder(); // idempotent: no second loader thread
+            // Encoder load is asynchronous; mode must not claim dense until ready.
+            assertFalse(lazy.isDenseMode() && !lazy.getEncoderMode().startsWith("samediff:"));
+        } finally {
+            lazy.shutdown();
+        }
+    }
+
+    @Test
     void densePolicyDefaultsToEnabledUnlessExplicitlyFalse() {
         assertTrue(SemanticMemoryEngine.resolveDenseEnabled(null, null));
         assertTrue(SemanticMemoryEngine.resolveDenseEnabled(null, "true"));

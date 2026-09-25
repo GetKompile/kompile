@@ -53,7 +53,9 @@ public class ToolCallCatalogTool implements CliTool {
                 "Actions: 'search' (query tool calls by text, tool name, category, project, agent), " +
                 "'list' (list with filters and sorting), 'stats' (aggregate statistics), " +
                 "'index' (index tool calls from provider transcripts like Claude, Codex, Qwen, OpenCode, Gemini), " +
-                "'filters' (get available filter options). " +
+                "'filters' (get available filter options), " +
+                "'usage' (session-scoped token usage report: payload vs model executions, " +
+                "requires 'session', format=json|markdown, optional include_calls). " +
                 "Supports grouping by category, project, agent, or tool. " +
                 "Useful for understanding what tools were used across sessions and projects.";
     }
@@ -65,7 +67,7 @@ public class ToolCallCatalogTool implements CliTool {
         ObjectNode props = schema.putObject("properties");
 
         prop(props, "action", "string",
-                "Action: 'search', 'list', 'stats', 'index', or 'filters'");
+                "Action: 'search', 'list', 'stats', 'index', 'filters', or 'usage'");
         prop(props, "query", "string",
                 "Search query (for 'search' action). Matches tool name, input, category, agent, session, project.");
         prop(props, "tool", "string",
@@ -90,6 +92,12 @@ public class ToolCallCatalogTool implements CliTool {
                 "For 'index' action: provider source to index ('all', 'claude-code', 'codex', 'qwen', 'opencode', 'gemini')");
         prop(props, "reindex", "boolean",
                 "For 'index' action: re-index already indexed sessions (default false)");
+        prop(props, "include_calls", "boolean",
+                "For 'usage' action: include bounded call-detail rows (default false)");
+        prop(props, "format", "string",
+                "For 'usage' action: response format 'json' (default) or 'markdown'");
+        prop(props, "offset", "integer",
+                "For 'usage' include_calls: detail rows offset (default 0)");
 
         schema.putArray("required").add("action");
         return schema;
@@ -110,9 +118,57 @@ public class ToolCallCatalogTool implements CliTool {
             case "stats" -> doStats();
             case "index" -> doIndex(params);
             case "filters" -> doFilters();
+            case "usage" -> doUsage(params, context);
             default -> ToolResult.error("Unknown action: '" + action
-                    + "'. Use 'search', 'list', 'stats', 'index', or 'filters'.");
+                    + "'. Use 'search', 'list', 'stats', 'index', 'filters', or 'usage'.");
         };
+    }
+
+    /**
+     * 'usage' action (Task 5): session-scoped tool-usage report from the shared usage
+     * journal. Requires a session scope; the report is an asOf snapshot that excludes
+     * THIS invocation (its own response is recorded normally afterward).
+     */
+    private ToolResult doUsage(JsonNode params, ToolContext context) {
+        String session = nullIfEmpty(params.path("session").asText(""));
+        if (session == null) {
+            // scope to the CURRENT session when not explicitly given
+            session = context != null ? context.getSessionId() : null;
+        }
+        if (session == null || session.isBlank()) {
+            return ToolResult.error("'session' parameter is required for 'usage' action "
+                    + "(reports are session-scoped, never global).");
+        }
+        try {
+            ai.kompile.cli.common.metrics.ToolUsageReportService service =
+                    new ai.kompile.cli.common.metrics.ToolUsageReportService(
+                            MAPPER,
+                            usageJournalFile());
+            // The report invocation's own usage is finalized AFTER this snapshot
+            // returns (measurement happens in the dispatch loop post-serialization),
+            // so no self-exclusion is needed here in practice; reserved param exists
+            // for async/report-over-MCP reentry.
+            ObjectNode report = service.sessionReport(session, null);
+            if (params.path("include_calls").asBoolean(false)) {
+                int offset = params.path("offset").asInt(0);
+                int limit = Math.min(params.path("limit").asInt(50), 500);
+                report.set("callDetails",
+                        service.sessionCallDetails(session, Math.max(0, offset), limit));
+            }
+            String format = params.path("format").asText("json");
+            String rendered = ai.kompile.cli.common.metrics.ToolUsageReportService.render(report, format);
+            return ToolResult.success(rendered);
+        } catch (IllegalArgumentException requiredScopeMissing) {
+            return ToolResult.error(requiredScopeMissing.getMessage());
+        } catch (Exception reportFailure) {
+            return ToolResult.error("usage report failed: " + reportFailure.getMessage());
+        }
+    }
+
+    private static java.nio.file.Path usageJournalFile() {
+        return ai.kompile.cli.common.metrics.ToolCallUsageJournal.defaultJournalFile(
+                ai.kompile.cli.common.KompileHome.homeDirectory().toPath()
+                        .resolve("conversations").resolve("tool-calls"));
     }
 
     private ToolResult doSearch(JsonNode params) {

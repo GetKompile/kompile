@@ -72,10 +72,6 @@ public record ServingSubprocessArgs(
         Boolean dspEnabled,
         Boolean optimizerEnabled,
         Boolean optimizerFp16,
-        /** Force single-GPU DSP plan placement (default true). On asymmetric multi-GPU
-         *  hosts a proportional split strands slots on small devices whose caps reject
-         *  mid-plan migrations. Explicit false opts back into sharding. */
-        Boolean dspSingleGpu,
 
         // Model/runtime knobs — null/0 = model-owned defaults. These mirror the opts
         // SameDiffLanguageModelImpl reads (chatTemplate, KV/prefill/continuation) so the

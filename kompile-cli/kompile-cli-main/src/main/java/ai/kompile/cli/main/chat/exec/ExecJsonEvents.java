@@ -128,6 +128,10 @@ public final class ExecJsonEvents {
                 n.put("type", "text");
                 n.put("text", event.text());
             }
+            case THINKING_DELTA -> {
+                n.put("type", "thinking");
+                n.put("text", event.text());
+            }
             case TOOL_STARTED -> {
                 n.put("type", "tool_start");
                 n.put("call_id", event.callId());

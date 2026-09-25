@@ -109,9 +109,11 @@ class RoleLoaderTest {
         Map<String, RoleAgentDefaults> normalized =
                 RoleManager.normalizeAgentDefaults(Map.of(" CODEX ", defaults));
         assertEquals(defaults, normalized.get("codex"));
+        normalized = RoleManager.normalizeAgentDefaults(Map.of("gemini", defaults));
+        assertEquals(defaults, normalized.get("gemini"));
 
         assertThrows(IllegalArgumentException.class,
-                () -> RoleManager.normalizeAgentDefaults(Map.of("gemini", defaults)));
+                () -> RoleManager.normalizeAgentDefaults(Map.of("notanagent", defaults)));
         assertThrows(IllegalArgumentException.class,
                 () -> new RoleAgentDefaults("gpt-5.6\n---", "medium", Map.of()));
         assertThrows(IllegalArgumentException.class,

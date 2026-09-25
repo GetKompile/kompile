@@ -35,4 +35,25 @@
       </button>
     </mat-card-actions>
   </mat-card>
+
+  <mat-card class="cli-session-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>tune</mat-icon>
+      <mat-card-title>CLI Session Configuration</mat-card-title>
+      <mat-card-subtitle>Model, role, fast mode, reminders, loops and message queue</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <p>
+        These live with the chat session (they dispatch through the running harness),
+        so they open from the chat's own settings sidebar. Click below to jump back to
+        the chat and open the configuration dialog.
+      </p>
+    </mat-card-content>
+    <mat-card-actions align="end">
+      <button mat-stroked-button color="primary" (click)="openCliChatConfiguration()">
+        <mat-icon>open_in_new</mat-icon>
+        Open CLI Session Configuration
+      </button>
+    </mat-card-actions>
+  </mat-card>
 </section>

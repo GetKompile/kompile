@@ -15,6 +15,18 @@ public final class McpToolResultSerializer {
     }
 
     public static ObjectNode toMcpCallResult(ObjectMapper mapper, ToolResult result) {
+        return toMcpCallResult(mapper, result, null);
+    }
+
+    /**
+     * Serialize a tool result, optionally attaching per-invocation usage metrics at
+     * {@code _meta["ai.kompile/usage"]}. Pure serialization never increments totals or
+     * creates a new invocation — it only projects the already-computed usage.
+     *
+     * @param usage usage snapshot for THIS invocation; null = legacy shape, no _meta
+     */
+    public static ObjectNode toMcpCallResult(ObjectMapper mapper, ToolResult result,
+                                             ai.kompile.cli.common.metrics.ToolCallUsage usage) {
         ObjectNode callResult = mapper.createObjectNode();
         var content = callResult.putArray("content");
         var text = content.addObject();
@@ -33,6 +45,14 @@ public final class McpToolResultSerializer {
             callResult.set("structuredContent", structured);
         }
         callResult.put("isError", result.isError());
+        if (usage != null) {
+            // merge into any unrelated _meta rather than replacing it
+            com.fasterxml.jackson.databind.JsonNode existingMeta = callResult.get("_meta");
+            ObjectNode meta = existingMeta != null && existingMeta.isObject()
+                    ? (ObjectNode) existingMeta
+                    : callResult.putObject("_meta");
+            meta.set("ai.kompile/usage", usage.toWireMetaNode(mapper));
+        }
         return callResult;
     }
 }

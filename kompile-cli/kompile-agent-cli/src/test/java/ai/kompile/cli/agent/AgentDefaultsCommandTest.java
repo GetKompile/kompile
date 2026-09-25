@@ -45,13 +45,24 @@ class AgentDefaultsCommandTest {
     }
 
     @Test
-    void standaloneAgentCliRejectsUnsupportedAgents() {
-        assertEquals(2, new CommandLine(new AgentDefaultsCommand())
+    void standaloneAgentCliAcceptsEveryDelegatableAgent() {
+        assertEquals(0, new CommandLine(new AgentDefaultsCommand())
                 .execute("--agent", "qwen",
                         "--project-dir", tempDir.toString(),
                         "--model", "qwen-model"));
+        AgentDefaultsStore.Selection selected = AgentDefaultsStore.resolve(
+                "qwen", tempDir, null, null);
+        assertEquals("qwen-model", selected.model());
+    }
+
+    @Test
+    void standaloneAgentCliRejectsUnsupportedAgents() {
         assertEquals(2, new CommandLine(new AgentDefaultsCommand())
                 .execute("--agent", "notcodex",
+                        "--project-dir", tempDir.toString(),
+                        "--model", "invalid-model"));
+        assertEquals(2, new CommandLine(new AgentDefaultsCommand())
+                .execute("--agent", "notanagent",
                         "--project-dir", tempDir.toString(),
                         "--model", "invalid-model"));
     }

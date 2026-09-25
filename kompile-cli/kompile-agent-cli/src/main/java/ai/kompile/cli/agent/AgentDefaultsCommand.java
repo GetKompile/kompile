@@ -28,11 +28,12 @@ import java.util.concurrent.Callable;
         name = "defaults",
         aliases = {"agent-defaults"},
         mixinStandardHelpOptions = true,
-        description = "Configure model and per-model thinking defaults for Codex, Claude, or OpenCode.")
+        description = "Configure model and per-model thinking defaults for a delegatable CLI agent " +
+                "(codex, claude, opencode, gemini, qwen, pi).")
 public class AgentDefaultsCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = "--agent", required = true,
-            description = "Target agent: codex, claude, opencode")
+            description = "Target agent: codex, claude, opencode, gemini, qwen, pi")
     private String agent;
 
     @CommandLine.Option(names = {"--model", "-m"},

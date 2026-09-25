@@ -77,6 +77,12 @@ public class ChatSessionMetrics {
     private final AtomicInteger totalToolErrors = new AtomicInteger(0);
     private final AtomicLong totalToolDurationMs = new AtomicLong(0);
 
+    // Tool payload token summary (SEPARATE ledger from provider input/output tokens;
+    // never mixed into recordTokenUsage totals — contract: payload counts are local
+    // deterministic estimates of returned tool content, provider counts are API-reported).
+    private final AtomicLong toolPayloadTokensMeasured = new AtomicLong(0);
+    private final AtomicInteger toolPayloadUnmeasured = new AtomicInteger(0);
+
     // Agentic context tracking
     private final AtomicInteger compactionEvents = new AtomicInteger(0);
     private final AtomicLong totalTokensBeforeCompaction = new AtomicLong(0);
@@ -190,6 +196,12 @@ public class ChatSessionMetrics {
         if (output > 0) outputTokens.addAndGet(output);
         if (cacheRead > 0) cacheReadTokens.addAndGet(cacheRead);
         if (cacheCreation > 0) cacheCreationTokens.addAndGet(cacheCreation);
+        // Task 7: request-scoped attribution at the verified model-completion boundary.
+        // With a ModelUsageScope open on this thread, this provider usage is ALSO
+        // attributed to the active tool invocation. Without a scope this is a no-op —
+        // the host conversation ledger stays the single source for unattributed usage.
+        ai.kompile.cli.common.metrics.ModelUsageScope.capture(
+                provider, model, input, output, cacheRead, cacheCreation);
         fireChange();
     }
 
@@ -248,6 +260,28 @@ public class ChatSessionMetrics {
             toolErrorCounts.computeIfAbsent(toolName, k -> new AtomicInteger(0)).incrementAndGet();
         }
         totalToolDurationMs.addAndGet(durationMs);
+    }
+
+    /**
+     * Dedicated tool-payload summary accessors (Task 5). Explicitly SEPARATE from
+     * {@link #recordTokenUsage}: calling these never increments provider totals, and
+     * recordTokenUsage never feeds these.
+     */
+    public void recordToolPayloadTokens(long measuredTokens, boolean measured) {
+        if (measured && measuredTokens >= 0) {
+            toolPayloadTokensMeasured.addAndGet(measuredTokens);
+        } else {
+            toolPayloadUnmeasured.incrementAndGet();
+        }
+        fireChange();
+    }
+
+    public long getToolPayloadTokensMeasured() {
+        return toolPayloadTokensMeasured.get();
+    }
+
+    public int getToolPayloadUnmeasuredCount() {
+        return toolPayloadUnmeasured.get();
     }
 
     // ========================================================================

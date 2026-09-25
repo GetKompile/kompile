@@ -289,18 +289,17 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
-    void openAiPickersAlwaysIncludeCurrentDocumentedModels() {
+    void openAiPickersRenderOnlyTheLiveProviderCatalog() {
         ModelDiscovery.Result live = ModelDiscovery.Result.success(
                 List.of(new LiveModelDiscovery.Model("account-specific-model", List.of())),
                 List.of("native:codex app-server/model/list"));
 
-        assertEquals(List.of(
-                        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-                        "gpt-5.3-codex-spark", "account-specific-model"),
+        // Live discovery is authoritative for the OpenAI providers too. The
+        // compiled-in documented-models prefix used to shadow day-one releases
+        // and leak stale ids into the persisted last-known-good store.
+        assertEquals(List.of("account-specific-model"),
                 SetupWizard.modelOptions("openai-codex", live, null));
-        assertEquals(List.of(
-                        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-                        "account-specific-model"),
+        assertEquals(List.of("account-specific-model"),
                 SetupWizard.modelOptions("openai", live, null));
     }
 

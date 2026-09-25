@@ -16,6 +16,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { Router } from '@angular/router';
 import { finalize } from 'rxjs/operators';
 
 interface ServiceEndpointsConfig {
@@ -53,7 +54,11 @@ export class ChatSettingsComponent implements OnInit {
   saving = false;
   error = '';
 
-  constructor(private readonly http: HttpClient, private readonly snackBar: MatSnackBar) {}
+  constructor(
+    private readonly http: HttpClient,
+    private readonly snackBar: MatSnackBar,
+    private readonly router: Router
+  ) {}
 
   ngOnInit(): void {
     this.loading = true;
@@ -84,6 +89,15 @@ export class ChatSettingsComponent implements OnInit {
         },
         error: error => this.error = error?.error?.error || 'Could not save service connections.'
       });
+  }
+
+  /**
+   * CLI session state (model/role/fast/reminders/loops/queue) lives with the
+   * chat view's harness connection, not here. Navigate back and ask the chat to
+   * open its Session Configuration dialog on arrival.
+   */
+  openCliChatConfiguration(): void {
+    this.router.navigate(['/chat'], { queryParams: { openCliConfig: '1' } });
   }
 
   private normalizeHttpBaseUrl(value: string): string | null {

@@ -25,7 +25,7 @@ describe('Browser conversation lifecycle', () => {
     component = new UnifiedChatComponent(unused, service, unused, unused, history, unused, unused, unused,
       unused, unused, unused, unused, jasmine.createSpyObj('cdr', ['detach', 'reattach', 'detectChanges', 'markForCheck']),
       unused, unused, { open: () => ({ afterClosed: () => confirmation }) } as any,
-      jasmine.createSpyObj('snack', ['open']), unused);
+      jasmine.createSpyObj('snack', ['open']), unused, unused);
     spyOn<any>(component, 'updateMonitorSubscription');
     spyOn<any>(component, 'refreshContextBudget');
     component.selectedAgent = { name: 'coder', displayName: 'Coder' } as AgentProvider;

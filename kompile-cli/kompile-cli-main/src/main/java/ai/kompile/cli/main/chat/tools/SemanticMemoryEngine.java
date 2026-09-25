@@ -61,6 +61,8 @@ public class SemanticMemoryEngine {
     private final List<Path> watchDirs = new CopyOnWriteArrayList<>();
     private final Path projectDirectory;
     private final boolean denseEnabled;
+    /** When false (default) the ND4J/CUDA-backed dense encoder only starts on explicit request. */
+    private final boolean denseAutostart;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
     private final ScheduledExecutorService refreshExecutor;
     private volatile long lastRefreshTime = 0;
@@ -70,6 +72,7 @@ public class SemanticMemoryEngine {
     private volatile Object encoder; // GenericDenseSameDiffEncoder (or null if unavailable)
     private volatile java.lang.reflect.Method encodeMethod; // encode(String) -> float[]
     private volatile boolean useDenseEmbeddings = false;
+    private volatile boolean denseStartRequested = false;
     private volatile String encoderMode = "uninitialized";
 
     public SemanticMemoryEngine() {
@@ -79,18 +82,32 @@ public class SemanticMemoryEngine {
     public SemanticMemoryEngine(Path projectDirectory) {
         this(projectDirectory, resolveDenseEnabled(
                 System.getProperty("kompile.memory.dense.enabled"),
-                System.getenv("KOMPILE_MEMORY_DENSE_ENABLED")));
+                System.getenv("KOMPILE_MEMORY_DENSE_ENABLED")),
+                resolveDenseAutostart(
+                        System.getProperty("kompile.memory.dense.autostart"),
+                        System.getenv("KOMPILE_MEMORY_DENSE_AUTOSTART")));
     }
 
     // Explicit policy seam keeps lexical-only tests independent of process configuration.
     SemanticMemoryEngine(Path projectDirectory, boolean denseEnabled) {
+        this(projectDirectory, denseEnabled, false);
+    }
+
+    SemanticMemoryEngine(Path projectDirectory, boolean denseEnabled, boolean denseAutostart) {
         this.projectDirectory = projectDirectory.toAbsolutePath().normalize();
         this.denseEnabled = denseEnabled;
+        this.denseAutostart = denseAutostart;
         this.refreshExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "semantic-memory-refresh");
             t.setDaemon(true);
             return t;
         });
+    }
+
+    /** Only an explicit true opts in; explicit false wins over the environment. */
+    static boolean resolveDenseAutostart(String propertyValue, String environmentValue) {
+        String value = propertyValue != null ? propertyValue : environmentValue;
+        return "true".equalsIgnoreCase(value == null ? "" : value.trim());
     }
 
     /** Only an explicit false opts out; an explicitly set property wins over the environment. */
@@ -129,9 +146,28 @@ public class SemanticMemoryEngine {
             return;
         }
 
-        // Load dense encoder asynchronously — model download can take minutes
-        // and must not block the MCP server startup handshake. The engine starts
-        // with TF-IDF and upgrades to dense embeddings once the encoder is ready.
+        // Opt-in autostart: by default the ND4J (and therefore CUDA) backend must
+        // not initialize at boot. The encoder starts through startDenseEncoder() —
+        // the semantic_memory load_encoder action — or an explicit opt-in here.
+        if (denseAutostart) {
+            startDenseEncoder();
+        } else {
+            encoderMode = "tfidf (dense encoder not started — semantic_memory action=load_encoder)";
+        }
+    }
+
+    /**
+     * Start the dense (SameDiff/ND4J-backed) encoder on demand and re-index
+     * existing memories once it is ready. Idempotent: TF-IDF retrieval keeps
+     * working before and while the encoder loads.
+     */
+    public synchronized void startDenseEncoder() {
+        if (!denseEnabled) {
+            encoderMode = "tfidf (dense disabled)";
+            return;
+        }
+        if (useDenseEmbeddings || denseStartRequested) return;
+        denseStartRequested = true;
         Thread encoderLoader = new Thread(() -> {
             initializeDenseEncoder();
             if (useDenseEmbeddings) {

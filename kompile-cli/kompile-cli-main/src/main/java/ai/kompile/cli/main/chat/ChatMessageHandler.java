@@ -74,6 +74,7 @@ public class ChatMessageHandler {
     private final AtomicBoolean cancelSignal;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
     private final ReminderManager reminderManager;
+    private final ContinueManager continueManager;
     private final Object turnDispatchLock = new Object();
     /** Serializes synchronous crawl/headless turns without blocking cancellation. */
     private final Object synchronousTurnLock = new Object();
@@ -104,6 +105,8 @@ public class ChatMessageHandler {
      */
     private final ConcurrentLinkedDeque<BackgroundInput> backgroundInputs =
             new ConcurrentLinkedDeque<>();
+    /** Finished assistant response of the owning turn, consumed once at release. */
+    private final AtomicReference<String> lastAssistantResponse = new AtomicReference<>();
 
     private record BackgroundInput(String content, String formerQueueId) { }
 
@@ -127,7 +130,8 @@ public class ChatMessageHandler {
             MessageQueue messageQueue,
             AtomicBoolean cancelSignal,
             List<ChatRepl.PendingAttachment> pendingAttachments,
-            ReminderManager reminderManager) {
+            ReminderManager reminderManager,
+            ContinueManager continueManager) {
         this.repl = repl;
         this.mcpClient = mcpClient;
         this.httpClient = httpClient;
@@ -145,6 +149,7 @@ public class ChatMessageHandler {
         this.cancelSignal = cancelSignal;
         this.pendingAttachments = pendingAttachments;
         this.reminderManager = reminderManager;
+        this.continueManager = continueManager;
         ChatCompleter.setQueueSupplier(() -> this.messageQueue.getAll().stream()
                 .map(MessageQueue.QueuedMessage::getContent)
                 .collect(Collectors.toList()));
@@ -166,8 +171,10 @@ public class ChatMessageHandler {
      */
     public void handleChatMessage(String message) {
         if (!acceptingDispatches.get()) return;
-        // Any user-submitted input takes ownership back from the watchdog.
+        // Any user-submitted input takes ownership back from the watchdog
+        // and re-arms the /continue auto-reply budget.
         usageLimitAutoContinue.disarm();
+        if (continueManager != null) continueManager.noteUserActivity();
         repl.initializeSessionTitleFromPrompt(message);
         // Crawl/headless runs deliberately stay synchronous so callers do not
         // tear down the transcript before the one requested turn completes.
@@ -247,6 +254,7 @@ public class ChatMessageHandler {
         String normalized = message.strip();
         synchronized (turnDispatchLock) {
             if (!acceptingDispatches.get()) return false;
+            if (continueManager != null) continueManager.noteUserActivity();
             boolean activeTurn = turnActive.get() || repl.isLlmBusy()
                     || activeDispatchThread.get() != null
                     || synchronousTurnOwner.get() != null;
@@ -373,6 +381,7 @@ public class ChatMessageHandler {
             repl.setLlmBusy(true);
             cancelSignal.set(false);
             turnActive.set(true);
+            lastAssistantResponse.set(null);
             activeRemoteProcessId.set(null);
             Thread dispatchThread = new Thread(sessionContext.wrap(() -> {
                 try {
@@ -421,8 +430,11 @@ public class ChatMessageHandler {
                         && dispatchPendingExternalAfterTurnRelease();
                 boolean backgroundInputDispatched = !feedbackDispatched && !externalDispatched
                         && dispatchPendingBackgroundInputAfterTurnRelease();
+                boolean continueDispatched = !feedbackDispatched && !externalDispatched
+                        && !backgroundInputDispatched
+                        && dispatchContinueAutoReply();
                 if (acceptingDispatches.get() && !feedbackDispatched && !externalDispatched
-                        && !backgroundInputDispatched) {
+                        && !backgroundInputDispatched && !continueDispatched) {
                     repl.dispatchQueuedMessageAfterTurnRelease();
                 }
             }
@@ -724,9 +736,35 @@ public class ChatMessageHandler {
     }
 
     /**
+     * /continue auto-reply: when the finished assistant turn matches a trigger
+     * keyword, dispatch its stored reply as an ordinary user turn — ahead of
+     * queued input, only when no human/critical lane claimed the release.
+     */
+    private boolean dispatchContinueAutoReply() {
+        if (continueManager == null) return false;
+        String response = lastAssistantResponse.getAndSet(null);
+        ContinueManager.Decision decision =
+                continueManager.decide(response, !repl.isForceAgentic(),
+                        agenticLoop.isPlanningMode());
+        if (decision.notice() != null) {
+            ChatCompleter.showNotice(renderer.yellow("  " + decision.notice()));
+            chatHistory.logSystem("[continue] " + decision.notice());
+        }
+        if (!decision.fire() || decision.reply() == null) return false;
+        String reply = decision.reply();
+        ChatCompleter.showNotice(renderer.cyan("  ▶ /continue auto-reply: "
+                + StringUtils.truncate(reply, 60)));
+        chatHistory.logSystem("[continue] auto-reply dispatched (keyword match)");
+        dispatchTurn(reply, () -> handleAcceptedChatMessage(reply), "standard-chat-continue");
+        continueManager.noteAutoReplySent();
+        return true;
+    }
+
+    /**
      * Completes one accepted turn without launching its successor. dispatchTurn's
      * owner-release callback claims mandatory judge feedback first, process events
-     * second, direct background input third, and ordinary queued input last.
+     * second, direct background input third, the /continue auto-reply fourth, and
+     * ordinary queued input last.
      */
     private void completeAcceptedTurn() {
         synchronized (turnDispatchLock) {
@@ -1028,6 +1066,7 @@ public class ChatMessageHandler {
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             appendFinalTaskOutput(task, response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
+            lastAssistantResponse.set(response);
             usageLimitAutoContinue.noteTurnSucceeded();
         } catch (Exception e) {
             if (cancelSignal.get()) {
@@ -1097,6 +1136,7 @@ public class ChatMessageHandler {
 
                 String finalAnswer = answer != null ? answer : rawResponse;
                 sessionMetrics.recordAssistantTurn(finalAnswer, timeMs);
+                lastAssistantResponse.set(finalAnswer);
                 chatHistory.logAssistantMessage(finalAnswer, docsRetrieved, timeMs);
             } catch (Exception e) {
                 emitLine("");
@@ -1264,6 +1304,7 @@ public class ChatMessageHandler {
             chatHistory.logAgentResponse(repl.getAgentName(), responseText, durationMs[0]);
             appendFinalTaskOutput(task, responseText);
             sessionMetrics.recordAssistantTurn(responseText, durationMs[0]);
+            lastAssistantResponse.set(responseText);
 
         } catch (Exception e) {
             if (cancelSignal.get()) {
@@ -1365,6 +1406,7 @@ public class ChatMessageHandler {
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             appendFinalTaskOutput(backgroundTaskManager.getCurrentTask(), response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
+            lastAssistantResponse.set(response);
             usageLimitAutoContinue.noteTurnSucceeded();
 
         } catch (Exception e) {

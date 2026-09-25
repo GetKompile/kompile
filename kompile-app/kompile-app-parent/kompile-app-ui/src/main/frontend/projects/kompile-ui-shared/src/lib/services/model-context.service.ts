@@ -21,6 +21,7 @@ import { catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ActiveModelContext } from '../models/api-models';
+import { environment } from '../../environments/environment';
 
 /**
  * Service for fetching and caching the active model context.
@@ -54,12 +55,20 @@ export class ModelContextService extends BaseService {
 
   /**
    * Fetch the active model context from the backend.
+   *
+   * The endpoint is served by the admin persona; persona-limited deployments
+   * (kompile chat --web hands off to the chat jar) answer 404/CONNECTION_REFUSED.
+   * That is a capability absence, not a chat failure — degrade silently (the
+   * Active Models settings card simply stays hidden) instead of spamming a
+   * console.error that makes a working chat look broken.
    */
   refresh(): void {
     this.loadingSubject.next(true);
     this.http.get<ActiveModelContext>(this.apiUrl).pipe(
       catchError(err => {
-        console.error('Failed to fetch active model context:', err);
+        if (!environment.production) {
+          console.info('[ModelContext] active-context unavailable on this deployment:', err.status || err.message);
+        }
         this.loadingSubject.next(false);
         return [];
       })

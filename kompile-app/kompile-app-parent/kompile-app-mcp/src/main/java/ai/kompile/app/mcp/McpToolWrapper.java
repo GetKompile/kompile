@@ -76,7 +76,16 @@ public class McpToolWrapper {
         return new McpServerFeatures.SyncToolSpecification(
                 tool,
                 (exchange, args) -> {
-                    McpAction logEntry = actionLogService.logActionStart(tool.name(), args);
+                    // Context-aware logging + usage accounting (Task 4). One invocation
+                    // per call; the composed registry wrapper must not record twice —
+                    // publish() here is consumed by the transport, and usage is only
+                    // journaled when this wrapper is the outermost layer.
+                    String logicalSessionId = ai.kompile.app.mcp.McpSessionContext
+                            .logicalSessionId(exchange);
+                    long started = System.currentTimeMillis();
+                    String invocationId = "inv-" + java.util.UUID.randomUUID();
+                    McpAction logEntry = actionLogService.logActionStart(tool.name(), args, logicalSessionId);
+                    boolean recorded = false;
 
                     try {
                         CallToolResult result = handler.apply(exchange, args);
@@ -84,17 +93,87 @@ public class McpToolWrapper {
                         if (result.isError() != null && result.isError()) {
                             String errorMsg = extractErrorMessage(result);
                             actionLogService.logActionFailure(logEntry.getId(), errorMsg);
+                            publishUsage(invocationId, logicalSessionId, tool.name(), started,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTION_FAILED,
+                                    true, System.currentTimeMillis(), errorMsg);
+                            recorded = true;
                         } else {
                             actionLogService.logActionSuccess(logEntry.getId(), extractResultContent(result), null);
+                            publishUsageWithPayload(invocationId, logicalSessionId, tool.name(), started,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
+                                    false, System.currentTimeMillis(), result, null);
+                            recorded = true;
                         }
 
                         return result;
                     } catch (Exception e) {
                         actionLogService.logActionFailure(logEntry.getId(), e.getMessage());
+                        publishUsage(invocationId, logicalSessionId, tool.name(), started,
+                                ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTION_FAILED,
+                                true, System.currentTimeMillis(), String.valueOf(e.getMessage()));
+                        recorded = true;
                         throw e;
+                    } finally {
+                        if (!recorded) {
+                            // defensive: never leave a stale usage on the thread
+                            ai.kompile.app.mcp.McpUsageWireContext.publish(null);
+                        }
                     }
                 }
         );
+    }
+
+    // ── usage helpers (shared with wrapUndoable) ────────────────────────────
+
+    private void publishUsage(String invocationId, String sessionId, String toolName,
+                              long started,
+                              ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome outcome,
+                              boolean errorResponse, long finished, String errorText) {
+        publishUsageWithPayload(invocationId, sessionId, toolName, started, outcome,
+                errorResponse, finished, null, errorText);
+    }
+
+    /** Measure the FINAL SDK result content (all text blocks, structured separately). */
+    private void publishUsageWithPayload(String invocationId, String sessionId, String toolName,
+                                         long started,
+                                         ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome outcome,
+                                         boolean errorResponse, long finished,
+                                         CallToolResult result, String errorText) {
+        try {
+            String textPayload = null;
+            String structuredJson = null;
+            if (result != null && result.content() != null) {
+                StringBuilder sb = new StringBuilder();
+                for (Object c : result.content()) {
+                    if (c instanceof TextContent tc) {
+                        if (sb.length() > 0) {
+                            sb.append('\n');
+                        }
+                        sb.append(tc.text());
+                    }
+                }
+                textPayload = sb.toString();
+            }
+            ai.kompile.cli.common.metrics.PayloadTokenCounter counter =
+                    new ai.kompile.cli.common.metrics.PayloadTokenCounter();
+            ai.kompile.cli.common.metrics.ToolCallUsage usage = new ai.kompile.cli.common.metrics.ToolCallUsage(
+                    invocationId, sessionId, toolName, toolName,
+                    started, finished, finished - started,
+                    outcome,
+                    ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                    errorResponse,
+                    counter.measureArgumentsJsonV1(java.util.Map.of(), new com.fasterxml.jackson.databind.ObjectMapper()),
+                    textPayload != null
+                            ? counter.measureMcpTextFieldsV1(textPayload, structuredJson,
+                                    new com.fasterxml.jackson.databind.ObjectMapper())
+                            : null,
+                    null, java.util.List.of(),
+                    textPayload == null && errorText == null,
+                    textPayload == null && errorText == null ? "no payload for this exit" : null);
+            ai.kompile.app.mcp.McpUsageWireContext.publish(usage);
+        } catch (Exception accountingFailure) {
+            ai.kompile.app.mcp.McpUsageWireContext.publish(null);
+        }
     }
 
     /**

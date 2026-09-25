@@ -37,6 +37,7 @@ public record HeadlessRunEvent(
         SOURCES,
         STATS,
         ASSISTANT_DELTA,
+        THINKING_DELTA,
         TOOL_STARTED,
         TOOL_COMPLETED,
         TOKEN_USAGE,
@@ -100,6 +101,12 @@ public record HeadlessRunEvent(
 
     public static HeadlessRunEvent assistantDelta(String sessionId, String text) {
         return new HeadlessRunEvent(0, Type.ASSISTANT_DELTA, sessionId, "", "", "",
+                text, true, 0, 0, "", Map.of());
+    }
+
+    /** Display-only model reasoning delta. Never part of the answer text. */
+    public static HeadlessRunEvent thinkingDelta(String sessionId, String text) {
+        return new HeadlessRunEvent(0, Type.THINKING_DELTA, sessionId, "", "", "",
                 text, true, 0, 0, "", Map.of());
     }
 

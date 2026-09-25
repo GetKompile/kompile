@@ -17,7 +17,7 @@ describe('UnifiedChat streaming render cache', () => {
     const unused = null as any;
     component = new UnifiedChatComponent(
       unused, unused, unused, unused, unused, unused, unused, unused, unused, unused,
-      renderer, unused, unused, unused, unused, unused, unused, unused
+      renderer, unused, unused, unused, unused, unused, unused, unused, unused
     );
   });
 

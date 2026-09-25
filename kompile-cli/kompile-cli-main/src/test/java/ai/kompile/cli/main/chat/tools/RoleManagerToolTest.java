@@ -44,7 +44,7 @@ class RoleManagerToolTest {
         var defaults = tool.parameterSchema().path("properties").path("agent_defaults");
         assertEquals("object", defaults.path("type").asText());
         assertFalse(defaults.path("additionalProperties").asBoolean(true));
-        for (String agent : java.util.List.of("codex", "claude", "opencode")) {
+        for (String agent : java.util.List.of("codex", "claude", "opencode", "gemini", "qwen", "pi")) {
             assertEquals("object",
                     defaults.path("properties").path(agent).path("type").asText());
             assertEquals("string",
@@ -73,11 +73,17 @@ class RoleManagerToolTest {
         assertEquals("max", parsed.get("codex").resolveThinking("gpt-5.6-sol"));
 
         ObjectNode invalid = objectMapper.createObjectNode();
-        invalid.putObject("agent_defaults").putObject("gemini").put("model", "gemini-pro");
+        invalid.putObject("agent_defaults").putObject("notanagent").put("model", "some-model");
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> RoleManagerTool.parseAgentDefaults(invalid));
         assertTrue(error.getMessage().contains("Supported agents"), error.getMessage());
+
+        ObjectNode gemini = objectMapper.createObjectNode();
+        gemini.putObject("agent_defaults").putObject("gemini").put("model", "gemini-pro");
+        Map<String, RoleAgentDefaults> geminiParsed =
+                RoleManagerTool.parseAgentDefaults(gemini);
+        assertEquals("gemini-pro", geminiParsed.get("gemini").getModel());
 
         ObjectNode multiline = objectMapper.createObjectNode();
         multiline.putObject("agent_defaults").putObject("codex")

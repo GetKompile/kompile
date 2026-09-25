@@ -552,10 +552,6 @@ public class ServingSubprocessMain {
         // rebind, host-staged non-peer failover) and the DeviceMemoryManager owns
         // cap enforcement with automatic admission. Multi-backend routing stays ON
         // by default; explicit args/system properties may still opt out.
-        Boolean singleGpu = servingArgs.dspSingleGpu();
-        if (singleGpu != null) {
-            System.setProperty(ND4JSystemProperties.DSP_SINGLE_GPU, singleGpu.toString());
-        }
         // Explicit args override JSON config; absent settings retain runtime defaults.
         applyOptimizerProperties(servingArgs, config);
 

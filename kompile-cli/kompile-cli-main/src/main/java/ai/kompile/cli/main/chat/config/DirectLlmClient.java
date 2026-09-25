@@ -4447,7 +4447,15 @@ public class DirectLlmClient implements AutoCloseable {
                 || normalized.contains("per second")) {
             return false;
         }
+        // Word-order agnostic: providers phrase the same rejection as
+        // "context window exceeded" (OpenAI), "Your input exceeds the context
+        // window of this model" (OpenAI-compatible backends), or
+        // "exceeded its context window". Any overflow signal paired with an
+        // explicit context-window mention is a context rejection.
         if (normalized.contains("context window exceeded")
+                || (normalized.contains("context window")
+                && (normalized.contains("exceed") || normalized.contains("too long")
+                || normalized.contains("too many tokens") || normalized.contains("maximum")))
                 || normalized.contains("maximum context length")
                 || normalized.contains("prompt is too long")
                 || normalized.contains("input is too long")
@@ -4460,6 +4468,7 @@ public class DirectLlmClient implements AutoCloseable {
                 || normalized.contains("too long")
                 || normalized.contains("maximum");
         if (exceeds && (normalized.contains("context limit")
+                || normalized.contains("context length")
                 || normalized.contains("token limit")
                 || normalized.contains("input token")
                 || normalized.contains("input length")

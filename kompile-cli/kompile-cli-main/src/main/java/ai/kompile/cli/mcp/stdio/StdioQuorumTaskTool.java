@@ -42,12 +42,12 @@ public class StdioQuorumTaskTool {
     public String id() { return "quorum_task"; }
 
     public String description() {
-        return "Spawn the same prompt to multiple independent Codex, Claude, or OpenCode instances in parallel and collect all responses. " +
+        return "Spawn the same prompt to multiple independent agent instances in parallel and collect all responses. " +
             "Use this for tasks where you want independent opinions " +
             "to compare, vote on, or synthesize into a consensus.\n\n" +
             "Each agent runs independently with the same prompt. Results are returned together " +
             "so you can identify agreement/disagreement across agents.\n\n" +
-            "Available agents: codex, claude, opencode.";
+            "Available agents: codex, claude, opencode, gemini, qwen, pi.";
     }
 
     public JsonNode parameterSchema() {

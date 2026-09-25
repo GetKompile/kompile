@@ -323,6 +323,98 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         return result;
     }
 
+    /**
+     * Quiet session-configuration snapshot: one headless CLI process reads a
+     * {@code configQuery} web-json frame and answers with a single command
+     * outcome carrying every config menu (model / role / fast / reminders /
+     * loops / queue). No chat transcript entry, no model turn, no visible
+     * session. Returns the outcome's structured {@code data} node, or a node
+     * with {@code available:false} plus a human-readable {@code status}.
+     */
+    public JsonNode configSnapshot(String browserSessionId, String workingDirectory,
+                                   String modelVendor) {
+        Path workDir;
+        try {
+            workDir = resolveWorkingDirectory(workingDirectory);
+        } catch (IOException invalid) {
+            return unavailableConfigSnapshot(invalid.getMessage());
+        }
+        // Mirror the live turn: session-scoped CLI state (persisted model/role,
+        // queue) is keyed by the same derived harness session id.
+        String harnessSessionId = harnessSessionId(workDir,
+                browserSessionId == null || browserSessionId.isBlank()
+                        ? UUID.randomUUID().toString() : browserSessionId);
+        Process process = null;
+        StringBuffer stdout = new StringBuffer();
+        StringBuffer stderr = new StringBuffer();
+        Thread outReader = null;
+        Thread errReader = null;
+        try {
+            List<String> command = new ArrayList<>(launcherResolver.resolve());
+            command.add("chat");
+            if (WebChatContext.globalConfig()) command.add("--global-config");
+            command.add("--output-format");
+            command.add("stream-json");
+            command.add("--input-format");
+            command.add("web-json");
+            command.add("--working-dir");
+            command.add(workDir.toString());
+            command.add("--timeout");
+            command.add("30");
+            process = processStarter.start(command, workDir);
+            ObjectNode input = mapper.createObjectNode();
+            input.put("version", 1);
+            input.put("rawInput", "");
+            input.put("sessionId", harnessSessionId);
+            input.put("configQuery", true);
+            if (modelVendor != null && !modelVendor.isBlank()) {
+                input.put("modelVendor", modelVendor.trim());
+            }
+            try (var stdin = process.getOutputStream()) {
+                stdin.write(mapper.writeValueAsBytes(input));
+                stdin.write('\n');
+            }
+            outReader = drain(process.getInputStream(), stdout, "web-chat-config-snapshot-stdout");
+            errReader = drain(process.getErrorStream(), stderr, "web-chat-config-snapshot-stderr");
+            if (!process.waitFor(25, TimeUnit.SECONDS)) {
+                terminate(process);
+                return unavailableConfigSnapshot("Session configuration probe timed out");
+            }
+            join(outReader, 2_000L);
+            join(errReader, 2_000L);
+            if (process.exitValue() != 0) {
+                return unavailableConfigSnapshot(lastDiagnostic(stderr));
+            }
+            // The outcome is the single "command" event line in stdout.
+            for (String line : stdout.toString().split("\n")) {
+                if (!line.contains("\"type\":\"command\"")) continue;
+                try {
+                    JsonNode event = mapper.readTree(line.trim());
+                    JsonNode data = event.path("data");
+                    if (data.isObject()) return data;
+                } catch (Exception ignored) {
+                    // fall through to the unavailable result
+                }
+            }
+            return unavailableConfigSnapshot("Harness returned no configuration snapshot");
+        } catch (Exception failure) {
+            if (process != null) terminate(process);
+            return unavailableConfigSnapshot(failure.getMessage());
+        } finally {
+            join(outReader, 500L);
+            join(errReader, 500L);
+        }
+    }
+
+    private ObjectNode unavailableConfigSnapshot(String status) {
+        ObjectNode result = mapper.createObjectNode();
+        result.put("menu", "config");
+        result.put("available", false);
+        result.put("status", status == null || status.isBlank()
+                ? "Session configuration is unavailable" : bounded(status, 1_000));
+        return result;
+    }
+
     /** Package-private synchronous seam for protocol tests; production uses {@link #executeChat}. */
     void runTurn(String runId, AgentChatRequest request, HarnessEventSink sink) {
         ActiveRun run = new ActiveRun(runId, "", null, sink);
@@ -482,6 +574,12 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 yield false;
             }
             case "text" -> { run.sink.send("chunk", event.path("text").asText("")); yield false; }
+            case "thinking" -> {
+                // Model reasoning deltas: display-only, forwarded so the browser can
+                // render the same thinking chrome the interactive REPL shows.
+                run.sink.send("thinking", event.path("text").asText(""));
+                yield false;
+            }
             case "tool_start" -> {
                 Map<String, Object> tool = new LinkedHashMap<>();
                 tool.put("callId", event.path("call_id").asText(""));

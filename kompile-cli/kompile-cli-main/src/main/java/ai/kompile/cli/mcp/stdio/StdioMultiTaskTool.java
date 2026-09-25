@@ -74,7 +74,7 @@ public class StdioMultiTaskTool {
             "Use edit_coordinator locks for concurrent edits. Do not batch work that depends on another subtask's output " +
             "(such as reviewing a change that has not been made), edits to the same files, or resource-conflicting builds/tests. " +
             "Run dependent phases sequentially, batching independent work within each phase. Use task for one delegation.\n\n" +
-            "Available agents: codex (default), claude, opencode. Subtasks may set their own agent, role, model, and thinking; " +
+            "Available agents: codex (default), claude, opencode, gemini, qwen, pi. Subtasks may set their own agent, role, model, and thinking; " +
             "different roles do not require serial dispatch. Top-level role/model/thinking provide defaults. " +
             "agent_count defaults to 1 per subtask; increase it only to duplicate that subtask's prompt, not to enable parallelism. " +
             "Unlike quorum_task (same prompt for independent judgments), multi_task assigns distinct work.\n\n" +
@@ -119,7 +119,7 @@ public class StdioMultiTaskTool {
         var subAgent = itemProps.putObject("agent");
         subAgent.put("type", "string");
         subAgent.put("default", DEFAULT_AGENT);
-        subAgent.put("description", "Agent for this subtask. Available: codex (default), claude, opencode.");
+        subAgent.put("description", "Agent for this subtask. Available: codex (default), claude, opencode, gemini, qwen, pi.");
         ArrayNode enumValues = subAgent.putArray("enum");
         SUPPORTED_AGENTS.forEach(enumValues::add);
 

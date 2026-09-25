@@ -17,6 +17,7 @@
 package ai.kompile.app.mcp;
 
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
+import ai.kompile.cli.common.metrics.PayloadTokenCounter;
 import ai.kompile.app.services.mcp.McpActionLogService;
 import ai.kompile.app.services.mcp.McpToolBeanDiscovery;
 import ai.kompile.app.services.mcp.McpToolCallbackCatalog;
@@ -120,6 +121,9 @@ public class McpToolRegistry {
 
     @Autowired(required = false)
     private McpToolCallbackCatalog toolCallbackCatalog;
+
+    @Autowired(required = false)
+    private ai.kompile.app.services.ToolCallWriterService toolCallWriterService;
 
     @Autowired
     public McpToolRegistry(ObjectMapper objectMapper,
@@ -379,7 +383,14 @@ public class McpToolRegistry {
         return new McpServerFeatures.SyncToolSpecification(
                 tool,
                 (exchange, args) -> {
-                    McpActionLogService.McpAction logEntry = actionLogService.logActionStart(toolName, args);
+                    // ── Usage accounting: invocation opens BEFORE permission/gateway
+                    // so denied calls still carry outcome + duration.
+                    String logicalSessionId = ai.kompile.app.mcp.McpSessionContext
+                            .logicalSessionId(exchange);
+                    long started = System.currentTimeMillis();
+                    String invocationId = "inv-" + java.util.UUID.randomUUID();
+                    McpActionLogService.McpAction logEntry =
+                            actionLogService.logActionStart(toolName, args, logicalSessionId);
 
                     if (toolPermissionService != null) {
                         String category = toolDiscoveryService != null
@@ -388,21 +399,29 @@ public class McpToolRegistry {
                         if (!toolPermissionService.isToolAllowed(toolName, category)) {
                             String msg = "Tool '" + toolName + "' is denied by permission policy";
                             actionLogService.logActionFailure(logEntry.getId(), msg);
+                            recordUsage(invocationId, logicalSessionId, toolName, started,
+                                    ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.DENIED,
+                                    true, null);
                             return errorResult(msg);
                         }
                     }
 
                     Map<String, Object> effectiveArgs = args;
+                    boolean rewritten = false;
                     if (toolGatewayService != null) {
                         try {
                             GatewayDecision decision = toolGatewayService.evaluate(toolName, args);
                             if (decision.action() == GatewayAction.BLOCK) {
                                 String msg = "Tool '" + toolName + "' blocked by gateway: " + decision.reason();
                                 actionLogService.logActionFailure(logEntry.getId(), msg);
+                                recordUsage(invocationId, logicalSessionId, toolName, started,
+                                        ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.DENIED,
+                                        true, null);
                                 return errorResult(msg);
                             }
                             if (decision.action() == GatewayAction.REWRITE && decision.rewrittenArgs() != null) {
                                 effectiveArgs = decision.rewrittenArgs();
+                                rewritten = true;
                                 log.info("Tool gateway rewrote args for '{}': rule={}",
                                         toolName, decision.matchedRuleId());
                             }
@@ -415,16 +434,88 @@ public class McpToolRegistry {
                         String input = objectMapper.writeValueAsString(effectiveArgs);
                         String rawResult = callback.call(input);
                         actionLogService.logActionSuccess(logEntry.getId(), truncate(rawResult), null);
-                        return textResult(compressCallbackResult(toolName, rawResult));
+                        String compressed = compressCallbackResult(toolName, rawResult);
+                        // ── Usage: measure the FINAL post-compression representation (not
+                        // truncate(rawResult), not extractResultContent), journal it, and
+                        // stash for the transport seam so _meta rides the wire result.
+                        long finished = System.currentTimeMillis();
+                        ai.kompile.cli.common.metrics.ToolCallUsage usage =
+                                recordUsageWithPayload(invocationId, logicalSessionId, toolName, started,
+                                        rewritten
+                                                ? ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.REWRITTEN
+                                                : ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTED,
+                                        false, finished,
+                                        compressed, null);
+                        ai.kompile.app.mcp.McpUsageWireContext.publish(usage);
+                        return textResult(compressed);
                     } catch (Throwable error) {
                         String message = error.getMessage() != null
                                 ? error.getMessage()
                                 : error.getClass().getSimpleName();
                         actionLogService.logActionFailure(logEntry.getId(), message);
                         log.error("Tool {} failed: {}", toolName, message, error);
+                        recordUsage(invocationId, logicalSessionId, toolName, started,
+                                ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome.EXECUTION_FAILED,
+                                true, System.currentTimeMillis());
+                        ai.kompile.app.mcp.McpUsageWireContext.publish(null);
                         return errorResult(message);
                     }
                 });
+    }
+
+    /** Record usage without payload (denials, failures): accounting-health degraded. */
+    private void recordUsage(String invocationId, String sessionId, String toolName,
+                             long started,
+                             ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome outcome,
+                             boolean errorResponse, Long finished) {
+        recordUsageWithPayload(invocationId, sessionId, toolName, started, outcome,
+                errorResponse, finished, null, null);
+    }
+
+    /**
+     * Build + journal one usage record. Payload measurement covers the final returned
+     * text; never derives counts from truncation or business metadata.
+     */
+    private ai.kompile.cli.common.metrics.ToolCallUsage recordUsageWithPayload(
+            String invocationId, String sessionId, String toolName,
+            long started,
+            ai.kompile.cli.common.metrics.ToolCallUsage.ExecutionOutcome outcome,
+            boolean errorResponse, Long finished,
+            String finalReturnedText, String errorText) {
+        try {
+            ai.kompile.cli.common.metrics.ToolCallUsage usage =
+                    new ai.kompile.cli.common.metrics.ToolCallUsage(
+                            invocationId,
+                            sessionId,
+                            toolName, toolName,
+                            started, finished,
+                            finished != null ? finished - started : null,
+                            outcome,
+                            ai.kompile.cli.common.metrics.ToolCallUsage.ResponseDisposition.DELIVERED,
+                            errorResponse,
+                            new PayloadTokenCounter().measureArgumentsJsonV1(Map.of(), objectMapper),
+                            finalReturnedText != null
+                                    ? new PayloadTokenCounter().measureMcpTextFieldsV1(
+                                            finalReturnedText, null, objectMapper)
+                                    : (errorText != null
+                                            ? new PayloadTokenCounter().measureMcpTextFieldsV1(
+                                                    errorText, null, objectMapper)
+                                            : null),
+                            null,
+                            java.util.List.of(),
+                            finalReturnedText == null && errorText == null,
+                            finalReturnedText == null && errorText == null
+                                    ? "no payload measurement for this exit" : null);
+            if (toolCallWriterService != null) {
+                // journal through the shared writer (authoritative stream; no legacy line)
+                toolCallWriterService.recordUsageDirect(usage);
+            }
+            return usage;
+        } catch (Exception accountingFailure) {
+            log.warn("Usage accounting degraded for tool '{}': {}", toolName,
+                    String.valueOf(accountingFailure.getMessage()));
+            return null;
+        }
     }
 
     private JsonSchema toMcpJsonSchema(String schemaJson) {

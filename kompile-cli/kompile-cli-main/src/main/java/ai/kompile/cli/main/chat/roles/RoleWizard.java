@@ -532,7 +532,7 @@ public class RoleWizard {
                 currentDefaults != null ? currentDefaults : Map.of();
 
         System.out.println();
-        System.out.println("  Set launch defaults for Codex, Claude, and OpenCode.");
+        System.out.println("  Set launch defaults for Codex, Claude, OpenCode, Gemini, Qwen, and Pi.");
         System.out.println("  " + DIM
                 + "Press Enter to keep the shown value; enter '-' to clear it." + RESET);
 

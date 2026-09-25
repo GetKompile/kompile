@@ -61,12 +61,6 @@ public class SetupWizard {
             "30 minutes", "1 hour", "2 hours", "4 hours", "8 hours", "24 hours");
     static final List<Integer> RESUME_ALL_INTERVAL_MINUTES = List.of(30, 60, 120, 240, 480, 1440);
 
-    private static final List<String> OPENAI_DOCUMENTED_MODELS = List.of(
-            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna");
-    private static final List<String> OPENAI_CODEX_DOCUMENTED_MODELS = List.of(
-            "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-            "gpt-5.3-codex-spark");
-
     private static final String RESET = "\033[0m";
     private static final String BOLD = "\033[1m";
     private static final String DIM = "\033[2m";
@@ -1083,24 +1077,20 @@ public class SetupWizard {
     }
 
     private static List<String> modelIds(String provider, ModelDiscovery.Result discovery) {
+        // Live provider catalogs are authoritative. A compiled-in
+        // "documented models" prefix used to be prepended here; it went stale
+        // exactly when a new provider model shipped (day-one releases never
+        // appear in it) and leaked those ids into the persisted last-known-good
+        // store via the interactive record point. Model ids now come only from
+        // the provider's live response; the provider argument is kept for
+        // signature stability with callers and future provider-scoped rules.
         if (discovery == null || !discovery.isUsable()) {
             return List.of();
         }
-        List<String> ids = new ArrayList<>(documentedModels(provider));
-        discovery.models().stream()
+        return discovery.models().stream()
                 .map(LiveModelDiscovery.Model::id)
-                .filter(id -> ids.stream().noneMatch(existing -> existing.equalsIgnoreCase(id)))
-                .forEach(ids::add);
-        return List.copyOf(ids);
-    }
-
-    private static List<String> documentedModels(String provider) {
-        if (provider == null) return List.of();
-        return switch (provider.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "openai" -> OPENAI_DOCUMENTED_MODELS;
-            case "openai-codex" -> OPENAI_CODEX_DOCUMENTED_MODELS;
-            default -> List.of();
-        };
+                .filter(id -> id != null && !id.isBlank())
+                .toList();
     }
 
     /** Resolve the active wire provider's current authentication route. */

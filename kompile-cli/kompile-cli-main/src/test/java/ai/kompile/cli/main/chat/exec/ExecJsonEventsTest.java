@@ -141,6 +141,11 @@ class ExecJsonEventsTest {
         assertEquals("text", delta.get("type").asText());
         assertEquals("hello", delta.get("text").asText());
 
+        JsonNode thinking = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.thinkingDelta("s", "reasoning…").withSequence(12)));
+        assertEquals("thinking", thinking.get("type").asText());
+        assertEquals("reasoning…", thinking.get("text").asText());
+
         JsonNode toolStart = mapper.readTree(ExecJsonEvents.event(mapper,
                 HeadlessRunEvent.toolStarted("s", "call-1", "bash", "pwd").withSequence(12)));
         assertEquals(12, toolStart.get("seq").asLong());

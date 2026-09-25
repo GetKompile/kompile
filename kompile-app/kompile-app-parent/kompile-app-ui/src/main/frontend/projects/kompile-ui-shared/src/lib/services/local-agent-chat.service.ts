@@ -25,6 +25,7 @@ import {
   AgentProvider,
   LocalAgentSession,
   LocalAgentMessage,
+  CommandEventData,
   CommandOutcome,
   LocalAgentChatRequest,
   ChatTabState,
@@ -37,6 +38,38 @@ import {
   ChatHistoryEntry,
   MessageAttachment
 } from '../models/api-models';
+
+/**
+ * Aggregated session-configuration snapshot from GET /agents/chat/session-config.
+ * Per-section keys each carry the same payload shape the dialog renders for the
+ * single-command menus ({@code menu:"model"}, {@code menu:"role"}, …).
+ */
+export interface SessionConfigSnapshot {
+  menu: 'config';
+  available?: boolean;
+  status?: string;
+  sessionId?: string;
+  model?: CommandEventData;
+  role?: CommandEventData;
+  fast?: CommandEventData;
+  reminders?: CommandEventData;
+  remindersGlobal?: CommandEventData;
+  loops?: CommandEventData;
+  loopsGlobal?: CommandEventData;
+  queue?: CommandEventData;
+  continue?: CommandEventData;
+  judge?: CommandEventData;
+}
+
+/** One selectable vendor chip of the model section. */
+export interface CommandVendorEntry {
+  /** Canonical vendor key — matches the interactive picker's vendor page. */
+  vendor: string;
+  /** Optional friendly name when it differs from the vendor key. */
+  display?: string;
+  /** True for the vendor this session currently uses. */
+  current?: boolean;
+}
 
 /**
  * Token metrics from LLM streaming responses.
@@ -310,8 +343,17 @@ export class LocalAgentChatService extends BaseService {
     this.liveMessages$.next(session.messages.slice(this.liveMessageStart).map(message => ({ ...message })));
   }
 
+  /**
+   * Every CLI command outcome (from modal dispatches AND typed commands).
+   * The command-center modal subscribes here to update its panels in place.
+   */
+  private readonly commandOutcomeBus$ = new Subject<CommandOutcome>();
+  getCommandOutcomes(): Observable<CommandOutcome> { return this.commandOutcomeBus$.asObservable(); }
+
   private startLiveTurn(session: LocalAgentSession, data: { turnId: number; source: string; text: string }): void {
     if (!Number.isSafeInteger(data.turnId) || data.turnId <= this.liveTurnId || !this.liveAgent) return;
+    if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
+    this.thinkingBuffer = ''; // thinking is per-turn chrome; never leaks across turns
     if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
     if (data.source !== 'initial') {
       const input = createUserMessage(session.id, data.text || '');
@@ -429,6 +471,19 @@ export class LocalAgentChatService extends BaseService {
     this.contentEpoch++;
     this.contentChunks = [];
     this.lastEmittedLength = 0;
+  }
+
+  /** Accumulated model reasoning for the current turn (display-only). */
+  private thinkingBuffer = '';
+
+  /** <thinking> block renderer prefix; empty when no reasoning has streamed. */
+  private renderThinkingPrefix(): string {
+    if (this.thinkingBuffer.length === 0) return '';
+    // While thinking is the only content the block is still open (renderer
+    // shows a live cursor); once answer text follows, close it.
+    return this.getCurrentContent().length === 0
+      ? '<thinking>' + this.thinkingBuffer
+      : '<thinking>' + this.thinkingBuffer + '</thinking>\n\n';
   }
 
   /**
@@ -584,6 +639,7 @@ export class LocalAgentChatService extends BaseService {
       this.closeHarnessControls();
       this.harnessActivity = null;
       this.liveTurnTexts = [];
+      this.thinkingBuffer = '';
       this.liveInputHistory = [];
 
       const response = await fetch(`${this.backendUrl}/agents/chat/stream`, {
@@ -721,7 +777,8 @@ export class LocalAgentChatService extends BaseService {
                 // A turn boundary is not the end of background work or the SSE connection.
                 if (this.liveTurnId > 0) {
                   if (parsed.turnId === this.liveTurnId && this.currentStreamingMessage) {
-                    this.currentStreamingMessage.content = parsed.text || '';
+                    this.currentStreamingMessage.content =
+                      this.renderThinkingPrefix() + (parsed.text || '');
                     this.currentStreamingMessage.streaming = false;
                     this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
                     this.lastLiveMessage = this.currentStreamingMessage;
@@ -745,6 +802,21 @@ export class LocalAgentChatService extends BaseService {
                 if (typeof parsed === 'string') {
                   this.accumulateContent(parsed);
                   emitContentUpdate();
+                }
+                break;
+
+              case 'thinking':
+                // Model reasoning deltas: display-only chrome. Routed into a
+                // <thinking> block prepended to the message content so the shared
+                // renderer shows the same collapsible thinking UI as the CLI REPL.
+                if (typeof parsed === 'string' && parsed.length > 0) {
+                  this.thinkingBuffer += parsed;
+                  const message = this.currentStreamingMessage;
+                  if (message) {
+                    message.content = this.renderThinkingPrefix() + this.getCurrentContent();
+                    this.storageService.updateSession(session);
+                    emitContentUpdate();
+                  }
                 }
                 break;
 
@@ -939,9 +1011,14 @@ export class LocalAgentChatService extends BaseService {
       this.currentStreamingMessage.latencyMs = Date.now() - this.streamStartTime;
 
       if (this.liveTurnTexts.length) {
-        this.currentStreamingMessage.content = this.liveTurnTexts.join('\n\n');
+        this.currentStreamingMessage.content = this.renderThinkingPrefix()
+          + this.liveTurnTexts.join('\n\n');
       } else if (data.content) {
         this.currentStreamingMessage.content = data.content;
+      } else if (this.thinkingBuffer.length > 0) {
+        // Thinking streamed but no answer text (e.g. turn ended during reasoning):
+        // keep the reasoning visible instead of dropping it.
+        this.currentStreamingMessage.content = this.renderThinkingPrefix();
       }
       if (data.rawResponse) {
         this.currentStreamingMessage.rawResponse = data.rawResponse;
@@ -960,6 +1037,9 @@ export class LocalAgentChatService extends BaseService {
   }
 
   private handleCommandOutcome(session: LocalAgentSession, outcome: CommandOutcome): void {
+    // Dedicated bus first: command-center modal panels update in place and do
+    // not depend on a transcript turn being in flight.
+    this.commandOutcomeBus$.next(outcome);
     const message = this.currentStreamingMessage;
     if (!message) return;
     const index = session.messages.indexOf(message);
@@ -1467,6 +1547,22 @@ export class LocalAgentChatService extends BaseService {
     return this.http.post<CompactChatResponse>(
       `${this.backendUrl}/agents/chat/compact`,
       { agentName, chatHistory, focusInstruction });
+  }
+
+  /**
+   * Quiet session-configuration snapshot: resolves the model / role / fast /
+   * reminders / loops / queue menus headlessly through the CLI. Sends no chat
+   * messages and creates no transcript entries — the Session Configuration
+   * dialog populates from this call alone.
+   */
+  getSessionConfig(sessionId?: string, workingDirectory?: string,
+                   modelVendor?: string): Observable<SessionConfigSnapshot> {
+    const params: { [key: string]: string } = {};
+    if (sessionId) params['sessionId'] = sessionId;
+    if (workingDirectory) params['workingDirectory'] = workingDirectory;
+    if (modelVendor) params['modelVendor'] = modelVendor;
+    return this.http.get<SessionConfigSnapshot>(
+      `${this.backendUrl}/agents/chat/session-config`, { params });
   }
 
   // Synchronous getters

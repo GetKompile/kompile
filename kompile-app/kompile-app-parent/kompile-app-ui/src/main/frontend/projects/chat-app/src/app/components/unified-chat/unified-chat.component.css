@@ -3858,6 +3858,58 @@
   color: var(--text-tertiary);
 }
 
+/* ── Locally queued messages (typed while streaming without live controls) ── */
+.queued-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.queued-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 340px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 12px;
+  background: var(--bg-body, #f5f5f5);
+  font-size: 0.82em;
+}
+
+.queued-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #666);
+}
+
+.queued-chip-send,
+.queued-chip-remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.queued-chip-send { color: var(--color-primary, #1976d2); }
+.queued-chip-remove { color: var(--text-tertiary, #888); }
+.queued-chip-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.queued-chip-remove:hover { color: var(--status-error, #c62828); }
+
+.queued-chip-more {
+  border: none;
+  background: transparent;
+  color: var(--color-primary, #1976d2);
+  font-size: 0.78em;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.queued-chip-more:hover { text-decoration: underline; }
+
 /* ── Task 4b: Stopped badge ─────────────────────────────────────────────── */
 .stopped-badge {
   display: inline-block;

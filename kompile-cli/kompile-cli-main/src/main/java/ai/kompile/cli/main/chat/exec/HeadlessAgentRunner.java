@@ -323,15 +323,33 @@ public final class HeadlessAgentRunner {
         // A durable explicit web /model selection overrides the configured and persona
         // default model. The persona selector itself is untouched. Applied BEFORE any
         // provider/client construction and reflected in the RUN_STARTED event.
-        if (opts.webInput() != null && !serverMode
-                && (opts.modelOverride() == null || opts.modelOverride().isBlank())) {
-            String persisted = opts.sessionStateStoreOrDefault()
-                    .loadModel(opts.webInput().sessionId() != null
-                                    && !opts.webInput().sessionId().isBlank()
-                            ? opts.webInput().sessionId() : opts.sessionId(),
-                            opts.workingDirectory());
-            if (persisted != null) {
-                config.setModel(persisted);
+        // A stored provider (web /model <vendor>:<model>) switches the wire provider
+        // too: like the interactive picker, cross-provider secrets and base URL are
+        // discarded so one vendor's credential can never leak into another.
+        String durableRole = null;
+        if (opts.webInput() != null && !serverMode) {
+            String stateSessionId = opts.webInput().sessionId() != null
+                    && !opts.webInput().sessionId().isBlank()
+                    ? opts.webInput().sessionId() : opts.sessionId();
+            if (opts.modelOverride() == null || opts.modelOverride().isBlank()) {
+                ChatSessionStateStore store = opts.sessionStateStoreOrDefault();
+                String persistedProvider = store.loadProvider(stateSessionId, opts.workingDirectory());
+                String persisted = store.loadModel(stateSessionId, opts.workingDirectory());
+                if (persisted != null) {
+                    if (persistedProvider != null
+                            && !persistedProvider.equalsIgnoreCase(config.getProvider())) {
+                        config.setProvider(persistedProvider);
+                        config.setApiKey(null);
+                        config.setBaseUrl(null);
+                        config.setAuthenticationMethod(null);
+                    }
+                    config.setModel(persisted);
+                }
+            }
+            // A durable explicit web /role selection behaves like --role for this turn.
+            if (opts.roleName() == null || opts.roleName().isBlank()) {
+                durableRole = opts.sessionStateStoreOrDefault()
+                        .loadRole(stateSessionId, opts.workingDirectory());
             }
         }
         if (opts.modelOverride() != null) {
@@ -366,8 +384,18 @@ public final class HeadlessAgentRunner {
             agentRegistry.register(role.toAgentConfig());
             localAgent = role.getName();
         }
-        String effectiveAgent = serverMode ? serverAgent : localAgent;
+        String effectiveAgentBase = serverMode ? serverAgent : localAgent;
         boolean effectiveRag = serverMode && opts.ragEnabled();
+        if (durableRole != null && !durableRole.isBlank()) {
+            RoleConfig durableRoleConfig = roleManager.getRole(durableRole);
+            if (durableRoleConfig != null) {
+                agentRegistry.register(durableRoleConfig.toAgentConfig());
+                effectiveAgentBase = durableRoleConfig.getName();
+            }
+        }
+        // Effectively-final capture for the turn lambda below; the durable role
+        // name wins over the plain server/local agent.
+        final String effectiveAgent = effectiveAgentBase;
 
         Map<String, String> effectiveConfiguration = new LinkedHashMap<>();
         effectiveConfiguration.put("mode", serverMode ? "server" : "standard");
@@ -377,7 +405,8 @@ public final class HeadlessAgentRunner {
         effectiveConfiguration.put("thinking", serverMode
                 ? "" : nullToEmpty(config.getThinking()));
         effectiveConfiguration.put("agent", effectiveAgent);
-        effectiveConfiguration.put("role", nullToEmpty(opts.roleName()));
+        effectiveConfiguration.put("role", durableRole != null && !durableRole.isBlank()
+                ? durableRole : nullToEmpty(opts.roleName()));
         effectiveConfiguration.put("rag", Boolean.toString(effectiveRag));
         effectiveConfiguration.put("memory", Boolean.toString(opts.memoryEnabled()));
         events.publish(HeadlessRunEvent.started(opts.sessionId(),
@@ -405,9 +434,16 @@ public final class HeadlessAgentRunner {
             };
         };
 
+        // Thinking deltas are events only (never stdout) so TEXT/QUIET pipe
+        // consumers keep receiving answer text exclusively.
+        final Consumer<String> thinkingSink = chunk -> {
+            if (events.isClosed()) return;
+            events.publish(HeadlessRunEvent.thinkingDelta(opts.sessionId(), chunk));
+        };
+
         final CapturingLlmClient directClient = serverMode
                 ? null : new CapturingLlmClient(
-                config, mapper, textSink, opts.workingDirectory());
+                config, mapper, textSink, thinkingSink, opts.workingDirectory());
 
         // ── Build the agent harness (auto-approve: non-interactive) ─────────
         PermissionService permissionService = new PermissionService();
@@ -756,12 +792,19 @@ public final class HeadlessAgentRunner {
      */
     static final class CapturingLlmClient extends DirectLlmClient {
         private final Consumer<String> sink;
+        private final Consumer<String> thinkingSink;
         private final StringBuilder captured = new StringBuilder();
 
         CapturingLlmClient(ChatConfig config, ObjectMapper mapper, Consumer<String> sink,
                            Path workingDirectory) {
+            this(config, mapper, sink, null, workingDirectory);
+        }
+
+        CapturingLlmClient(ChatConfig config, ObjectMapper mapper, Consumer<String> sink,
+                           Consumer<String> thinkingSink, Path workingDirectory) {
             super(config, mapper, workingDirectory);
             this.sink = sink;
+            this.thinkingSink = thinkingSink;
         }
 
         @Override
@@ -775,10 +818,14 @@ public final class HeadlessAgentRunner {
             }
         }
 
-        /** Reasoning is display-only chrome — never part of the captured answer. */
+        /** Reasoning is display-only chrome — never part of the captured answer,
+         *  but streaming consumers (stream-json) receive it as thinking deltas. */
         @Override
         protected void printThinkingChunk(String chunk) {
-            // Intentionally dropped: headless sinks receive answer text only.
+            if (chunk == null || chunk.isEmpty() || thinkingSink == null) {
+                return;
+            }
+            thinkingSink.accept(chunk);
         }
 
         String captured() {

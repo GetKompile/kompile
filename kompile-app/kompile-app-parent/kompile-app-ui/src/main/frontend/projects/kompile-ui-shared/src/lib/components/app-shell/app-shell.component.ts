@@ -99,6 +99,9 @@ export class AppShellComponent implements OnInit, OnDestroy {
   /** Route behind the header gear icon, or null when this app hosts no settings surface. */
   @Input() settingsRoute: string | null = null;
 
+  /** Host-provided in-place settings handler. Bound = handled here, no navigation. */
+  @Input() settingsClick: (() => void) | null = null;
+
   /** Where ModelStatusIndicator's "open staging" action goes, or null to make it inert. */
   @Input() stagingRoute: string | null = null;
 
@@ -136,6 +139,9 @@ export class AppShellComponent implements OnInit, OnDestroy {
     private dialog: MatDialog,
     @Inject(DOCUMENT) private document: Document
   ) { }
+
+  /** Narrowed window handle for tab hand-off. */
+  get window(): Window { return this.document.defaultView!; }
 
   ngOnInit(): void {
     // Subscribe to config updates from the backend
@@ -302,6 +308,33 @@ export class AppShellComponent implements OnInit, OnDestroy {
     } else {
       console.warn(`handleBannerNavigation: unknown key "${tabName}" — no route mapped in this app`);
     }
+  }
+
+  /**
+   * Header gear: a host-bound settingsClick runs in place (no navigation, so
+   * in-flight work such as a chat stream is never torn down). Without one the
+   * settings route opens in a new tab, which keeps this tab's stream running.
+   */
+  handleSettingsClick(): void {
+    if (this.settingsClick) {
+      this.settingsClick();
+      return;
+    }
+    if (this.settingsRoute) {
+      this.openSettingsInNewTab();
+    }
+  }
+
+  /**
+   * Settings opens in a new browser tab. Navigating in-place would tear down the
+   * router outlet and destroy any in-flight chat stream; the hash router makes a
+   * same-origin deep link safe to hand to a second tab, and each tab gets its own
+   * `sessionStorage`-scoped chat session state.
+   */
+  openSettingsInNewTab(): void {
+    if (!this.settingsRoute) return;
+    const url = `${this.document.baseURI}#${this.settingsRoute}`;
+    this.window.open(url, '_blank', 'noopener');
   }
 
   /**

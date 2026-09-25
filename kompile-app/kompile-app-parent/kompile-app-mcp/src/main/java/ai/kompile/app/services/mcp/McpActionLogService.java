@@ -617,12 +617,26 @@ public class McpActionLogService {
      * @return The created action record (in STARTED status)
      */
     public McpAction logActionStart(String toolName, Map<String, Object> arguments) {
+        return logActionStart(toolName, arguments, null);
+    }
+
+    /**
+     * Context-aware overload (Task 4): associates the action with an authorized
+     * logical session id instead of the per-instance {@code catalogSessionId}.
+     * The session value MUST come from {@link ai.kompile.app.mcp.McpSessionContext}
+     * resolution — a client-declared value is correlation only. Legacy signature
+     * retained and delegates with a null session (existing behavior unchanged).
+     *
+     * @param logicalSessionId resolved logical session id, or null for legacy behavior
+     */
+    public McpAction logActionStart(String toolName, Map<String, Object> arguments,
+                                    String logicalSessionId) {
         long id = actionIdGenerator.incrementAndGet();
         String category = determineCategory(toolName);
 
         McpAction action = new McpAction(id, toolName, category, arguments, null,
                 Instant.now(), ActionType.EXECUTE, false, false, null, null,
-                null, null, ActionStatus.STARTED, null, null, null);
+                logicalSessionId, null, ActionStatus.STARTED, null, null, null);
 
         synchronized (persistenceLock) {
             actionLog.addFirst(action);
@@ -630,7 +644,8 @@ public class McpActionLogService {
             persistLogLocked();
         }
 
-        logger.debug("MCP Action Started: id={}, tool={}, args={}", id, toolName, arguments);
+        logger.debug("MCP Action Started: id={}, tool={}, session={}, args={}",
+                id, toolName, logicalSessionId, arguments);
         return action;
     }
 

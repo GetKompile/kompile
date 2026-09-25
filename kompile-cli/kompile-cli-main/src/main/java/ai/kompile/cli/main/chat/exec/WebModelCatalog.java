@@ -6,8 +6,10 @@
 package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
 import ai.kompile.cli.main.chat.config.ModelContextResolver;
+import ai.kompile.cli.main.chat.config.SetupWizard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -172,5 +174,67 @@ public final class WebModelCatalog {
 
     private static String emptyToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    // ========================================================================
+    // Vendor (provider) switching — the web mirror of the interactive picker's
+    // vendor page. Vendors are user-facing keys (anthropic, openai, …), never
+    // wire provider ids; ordering and labels reuse the interactive picker so
+    // both UIs show the same choices. Read-only: no live auth probing happens
+    // here; validity is surfaced at selection time.
+    // ========================================================================
+
+    /** One selectable vendor entry. */
+    public record VendorEntry(String vendor, String display, String currentProvider) {
+    }
+
+    /**
+     * Switchable vendors for a working directory — the same set the
+     * interactive {@code /model} picker offers ({@code switchableProviders}),
+ * i.e. the direct vendor order plus the session's current vendor when it is
+     * otherwise unlisted (never the kompile runtime-owned vendors).
+     */
+    public static List<VendorEntry> vendors(ChatConfig config) {
+        java.util.LinkedHashSet<String> vendorIds = new java.util.LinkedHashSet<>(
+                SetupWizard.providerPickerOrder());
+        String currentVendor = config == null ? null
+                : SetupWizard.vendorForProvider(config.getProvider());
+        if (currentVendor != null && !currentVendor.isBlank()
+                && !"kompile".equalsIgnoreCase(currentVendor)
+                && !"kompile-local".equalsIgnoreCase(currentVendor)) {
+            vendorIds.add(currentVendor);
+        }
+        List<VendorEntry> vendors = new ArrayList<>();
+        for (String vendor : vendorIds) {
+            vendors.add(new VendorEntry(vendor, SetupWizard.vendorLabel(vendor),
+                    vendor.equalsIgnoreCase(currentVendor) ? config.getProvider() : null));
+        }
+        return List.copyOf(vendors);
+    }
+
+    /** Canonical vendor id for a case-insensitive request, or null when absent. */
+    public static String canonicalVendor(ChatConfig config, String requested) {
+        if (requested == null || requested.isBlank()) return null;
+        for (VendorEntry vendor : vendors(config)) {
+            if (vendor.vendor().equalsIgnoreCase(requested.trim())) return vendor.vendor();
+        }
+        return null;
+    }
+
+    /**
+     * Wire provider for a vendor using the session's credential setup: the
+     * vendor itself when it is a chat provider, else the configured wire
+     * provider when it belongs to that vendor, else null (unknown vendor).
+     * Mirrors the picker's {@code resolveProviderForAuth(NONE)} default route.
+     */
+    public static String providerForVendor(ChatConfig config, String vendor) {
+        if (vendor == null || vendor.isBlank()) return null;
+        if (ChatProviderRegistry.find(vendor) != null) return vendor;
+        String configured = config == null ? null : config.getProvider();
+        if (configured != null && !configured.isBlank()
+                && vendor.equalsIgnoreCase(SetupWizard.vendorForProvider(configured))) {
+            return configured;
+        }
+        return null;
     }
 }

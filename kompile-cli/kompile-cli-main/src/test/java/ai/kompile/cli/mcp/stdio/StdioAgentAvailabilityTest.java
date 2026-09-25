@@ -44,7 +44,7 @@ class StdioAgentAvailabilityTest {
 
     @Test
     void taskAcceptsEachSupportedAgentAndCarriesSelectionOverrides() {
-        for (String agent : List.of("codex", "claude", "opencode")) {
+        for (String agent : List.of("codex", "claude", "opencode", "gemini", "qwen", "pi")) {
             CapturingRunner runner = new CapturingRunner(tempDir);
             StdioTaskTool task = new StdioTaskTool(null, runner, objectMapper, null);
             ToolResult result = task.execute(Map.of(
@@ -106,16 +106,30 @@ class StdioAgentAvailabilityTest {
     }
 
     @Test
-    void delegationToolsRejectQwenEvenWhenSchemaValidationIsBypassed() {
+    void delegationToolsAcceptGeminiQwenAndPiLikeTheThreeOriginals() {
+        for (String agent : List.of("gemini", "qwen", "pi")) {
+            CapturingRunner runner = new CapturingRunner(tempDir);
+            StdioTaskTool task = new StdioTaskTool(null, runner, objectMapper, null);
+            ToolResult result = task.execute(Map.of(
+                    "description", "new vendor test",
+                    "prompt", "do work",
+                    "agent", agent));
+            assertTrue(!result.isError(), result.getOutput());
+            assertEquals(agent, runner.lastAgent.getName());
+        }
+    }
+
+    @Test
+    void delegationToolsRejectUnsupportedAgentsEvenWhenSchemaValidationIsBypassed() {
         StdioTaskTool task = new StdioTaskTool(null, null, objectMapper, null);
         ToolResult taskResult = task.execute(Map.of(
                 "description", "invalid agent",
                 "prompt", "do work",
-                "agent", "qwen"));
+                "agent", "notanagent"));
         assertUnavailable(taskResult);
 
         StdioMultiTaskTool multiTask = new StdioMultiTaskTool(null, null, objectMapper, tempDir, null);
-        Map<String, Object> invalidSubtask = subtask("one", "qwen");
+        Map<String, Object> invalidSubtask = subtask("one", "notanagent");
         Map<String, Object> validSubtask = subtask("two", "codex");
         ToolResult multiResult = multiTask.execute(Map.of(
                 "description", "invalid agent",
@@ -126,14 +140,14 @@ class StdioAgentAvailabilityTest {
         ToolResult quorumResult = quorum.execute(Map.of(
                 "description", "invalid agent",
                 "prompt", "do work",
-                "agents", List.of("codex", "qwen")));
+                "agents", List.of("codex", "notanagent")));
         assertUnavailable(quorumResult);
 
         StdioEnforcerTool enforcer = new StdioEnforcerTool(null, objectMapper, tempDir);
         ToolResult enforcerResult = enforcer.execute(Map.of(
                 "prompt", "do work",
                 "rules", "Follow the rules",
-                "agent", "qwen"));
+                "agent", "notanagent"));
         assertUnavailable(enforcerResult);
     }
 
@@ -212,7 +226,7 @@ class StdioAgentAvailabilityTest {
     private static void assertDelegationAgents(JsonNode enumValues) {
         List<String> values = new ArrayList<>();
         enumValues.forEach(value -> values.add(value.asText()));
-        assertEquals(List.of("codex", "claude", "opencode"), values);
+        assertEquals(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi"), values);
     }
 
     private static void assertSelectionFields(JsonNode properties) {

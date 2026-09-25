@@ -89,6 +89,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/dashboard", "Refresh, show, hide, or inspect the project dashboard");
         COMMANDS.put("/reminder", "List or add session reminders");
         COMMANDS.put("/reminder-global", "List or add project-global reminders");
+        COMMANDS.put("/continue", "Auto-reply to agent questions (keywords configurable)");
 
         // RAG & planning
         COMMANDS.put("/rag", "Toggle or configure RAG");
@@ -263,6 +264,18 @@ public class ChatCompleter implements Completer {
         );
         SUB_ARGS.put("/reminder", reminderArgs);
         SUB_ARGS.put("/reminder-global", reminderArgs);
+        SUB_ARGS.put("/continue", List.of(
+                new String[]{"on", "Enable auto-reply"},
+                new String[]{"off", "Disable auto-reply"},
+                new String[]{"status", "Show keywords, reply, and budget"},
+                new String[]{"list", "List trigger keywords"},
+                new String[]{"add", "Add trigger keywords"},
+                new String[]{"remove", "Remove trigger keywords"},
+                new String[]{"reply", "Show or set the auto-reply text"},
+                new String[]{"reset", "Restore default keywords"},
+                new String[]{"test", "Preview whether a text would trigger"},
+                new String[]{"help", "Show usage"}
+        ));
         SUB_ARGS.put("/render", List.of(
                 new String[]{"mirror", "Render the agent terminal directly"},
                 new String[]{"decoded", "Render the decoded transcript"},

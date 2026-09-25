@@ -766,17 +766,6 @@ public final class KompileLocalServingBootstrap {
                     command.add("-Dnd4j.dsp.diagnostics.level=" + level);
                 }
             }
-            String dspSingleGpu = System.getProperty("nd4j.dsp.singleGpu");
-            if (dspSingleGpu != null && !dspSingleGpu.isBlank()) {
-                command.add("-Dnd4j.dsp.singleGpu=" + dspSingleGpu);
-            }
-            // Default serving children to DSP single-GPU placement: a proportional
-            // split across asymmetric GPUs (e.g. 22 GiB + 4 GiB caps) strands slots on
-            // the small device whose cap then rejects mid-plan migrations. Callers can
-            // still opt into sharding with -Dnd4j.dsp.singleGpu=false on the CLI.
-            if (dspSingleGpu == null || dspSingleGpu.isBlank()) {
-                command.add("-Dnd4j.dsp.singleGpu=true");
-            }
             command.add("-jar");
             command.add(launcher.path().toString());
         }

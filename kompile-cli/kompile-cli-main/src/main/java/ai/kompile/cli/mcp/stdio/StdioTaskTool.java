@@ -73,7 +73,7 @@ public class StdioTaskTool {
             "Use sequential task calls only when later work needs an earlier result, or shared files/resources require serialization.\n\n" +
             "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
             "with its own context window, then returns a summary.\n\n" +
-            "Available agents: codex (default), claude, opencode. Roles customize the prompt and " +
+            "Available agents: codex (default), claude, opencode, gemini, qwen, pi. Roles customize the prompt and " +
             "model defaults without disabling tools, edits, execution, or delegation.\n" +
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
@@ -98,7 +98,7 @@ public class StdioTaskTool {
         var agent = props.putObject("agent");
         agent.put("type", "string");
         agent.put("default", DEFAULT_AGENT);
-        agent.put("description", "Which agent to spawn. Available: codex (default), claude, opencode.");
+        agent.put("description", "Which agent to spawn. Available: codex (default), claude, opencode, gemini, qwen, pi.");
         ArrayNode enumValues = agent.putArray("enum");
         SUPPORTED_AGENTS.forEach(enumValues::add);
         var model = props.putObject("model");

@@ -280,7 +280,7 @@ class McpStdioCommandTest {
         for (String field : List.of("name", "prompt", "agent", "role", "model", "thinking")) {
             assertEquals("string", properties.path(field).path("type").asText(), field);
         }
-        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode")),
+        assertEquals(mapper.valueToTree(List.of("codex", "claude", "opencode", "gemini", "qwen", "pi")),
                 properties.path("agent").path("enum"));
         assertEquals("array", properties.path("agents").path("type").asText());
         assertEquals("integer", properties.path("agent_count").path("type").asText());
