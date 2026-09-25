@@ -952,7 +952,13 @@ public class SetupWizard {
         return switch (authMethod) {
             case NONE -> vendor;
             case NATIVE -> {
-                if (!NativeCliAuth.isSupported(vendor)) {
+                // Anthropic takes the claude-CLI route (claude -p stream-json turns).
+                // Claude has no scriptable OAuth, so selection PROCEEDS without a
+                // pre-verified login: the CLI transport verifies credentials at
+                // runtime and warns with the fix when `claude -p` reports a login
+                // failure. Other vendors keep the registry gate.
+                if (!NativeCliAuth.isSupported(vendor)
+                        && !"anthropic".equalsIgnoreCase(vendor)) {
                     throw new IllegalArgumentException(vendor + " does not support native CLI authentication");
                 }
                 yield vendor;
@@ -1157,6 +1163,15 @@ public class SetupWizard {
             return new AuthenticationSelection(provider, authMethod, null);
         }
         if (authMethod == AuthMethod.NATIVE) {
+            if ("anthropic".equalsIgnoreCase(vendor)) {
+                // Claude has no scriptable direct OAuth login for Kompile to drive;
+                // the user's subscription credential is owned by the claude CLI.
+                // Proceed without pre-verification — the chat transport runs
+                // `claude -p` and warns with the fix when auth fails.
+                System.out.println("  → " + YELLOW
+                        + "Subscription auth is owned by the claude CLI; it is verified on the first message." + RESET);
+                return new AuthenticationSelection(provider, authMethod, null);
+            }
             int exitCode = NativeCliAuth.login(provider);
             if (exitCode != 0) {
                 System.err.println("  Native authentication failed for " + vendorLabel(vendor)
@@ -1286,6 +1301,13 @@ public class SetupWizard {
         }
         if ("custom".equalsIgnoreCase(vendor)) {
             return List.of(AuthMethod.NONE, AuthMethod.API_KEY);
+        }
+        if ("anthropic".equalsIgnoreCase(vendor)) {
+            // One vendor, two auth routes (mirrors the OpenAI pattern):
+            // subscription via the claude CLI (runs `claude -p` turns; auth is
+            // verified at runtime by the transport, which warns when the CLI
+            // reports a login failure) and direct API-key HTTP.
+            return List.of(AuthMethod.NATIVE, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
             return List.of(AuthMethod.NATIVE);

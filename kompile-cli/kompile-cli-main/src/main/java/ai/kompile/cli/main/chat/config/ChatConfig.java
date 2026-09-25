@@ -634,6 +634,10 @@ public class ChatConfig {
         if (provider == null || provider.isBlank()) return false;
         // Kompile instance mode doesn't need model or API key.
         if ("kompile".equals(provider)) return true;
+        // The native claude CLI has a built-in default model; an explicit pick is
+        // optional on the subscription route. Runtime auth is verified by the
+        // transport itself (it warns when `claude -p` reports a login failure).
+        if (isClaudeCliNative()) return true;
         if (model == null || model.isBlank()) return false;
         // First-party Kompile serving and external local endpoints do not require an API key.
         if ("kompile-local".equals(provider)
@@ -720,6 +724,19 @@ public class ChatConfig {
         return "opencode".equalsIgnoreCase(provider);
     }
 
+    /**
+     * Whether the Anthropic vendor runs turns through the native claude CLI
+     * (subscription/OAuth route). Same vendor as the direct HTTP route;
+     * {@code isAnthropicFormat()} stays false here because the CLI owns the
+     * credentials and the wire protocol is Claude Code stream-json, not the
+     * Anthropic Messages API.
+     */
+    @JsonIgnore
+    public boolean isClaudeCliNative() {
+        return "anthropic".equals(provider)
+                && "native".equalsIgnoreCase(authenticationMethod);
+    }
+
     /** Whether this provider uses Pi's native messages protocol. */
     @JsonIgnore
     public boolean isPiMessagesFormat() {
@@ -731,7 +748,7 @@ public class ChatConfig {
      */
     @JsonIgnore
     public boolean isOpenAiCompatible() {
-        return !isOpenCodeNative() && !isAnthropicFormat()
+        return !isOpenCodeNative() && !isClaudeCliNative() && !isAnthropicFormat()
                 && !isOpenAiCodexFormat() && !isPiMessagesFormat();
     }
 

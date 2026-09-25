@@ -363,6 +363,33 @@ class ChatConfigTest {
     }
 
     @Test
+    void anthropicNativeRouteRunsThroughTheClaudeCliTransportWhileApiKeyStaysDirectHttp() {
+        // Subscription route: same anthropic vendor, turns run claude -p.
+        ChatConfig nativeConfig = new ChatConfig("anthropic", null, null, null);
+        nativeConfig.setAuthenticationMethod("native");
+        assertTrue(nativeConfig.isClaudeCliNative());
+        assertTrue(nativeConfig.isValid(),
+                "the claude CLI has a built-in default model, so a pick is optional");
+        assertFalse(nativeConfig.isOpenAiCompatible());
+
+        // API-key route: unchanged direct Anthropic Messages HTTP transport.
+        ChatConfig apiKeyConfig = new ChatConfig("anthropic", "test-key", "claude-sonnet-4", null);
+        apiKeyConfig.setAuthenticationMethod("api-key");
+        assertFalse(apiKeyConfig.isClaudeCliNative());
+
+        try (DirectLlmClient client = new DirectLlmClient(
+                nativeConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
+            assertEquals(DirectLlmClient.WireProtocol.CLAUDE_CLI,
+                    client.resolveRoute(null).protocol());
+        }
+        try (DirectLlmClient client = new DirectLlmClient(
+                apiKeyConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
+            assertEquals(DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES,
+                    client.resolveRoute(null).protocol());
+        }
+    }
+
+    @Test
     void zaiCodingPlanUsesItsDedicatedSubscriptionEndpoint() {
         ChatProvider provider = ChatProviderRegistry.find("zai");
 
