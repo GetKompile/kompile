@@ -248,6 +248,32 @@ class ModelCatalogSelectionTest {
     }
 
     @Test
+    void claudeCodeRouteCatalogNeverFeedsTheAnthropicApiRoute() {
+        // Both routes are provider "anthropic". Claude Code's rows include
+        // aliases (default, opus) that the Anthropic API rejects, so they are
+        // recorded apart and never offered or matched on the API-key route.
+        Path store = tempDir.resolve("catalogs.json");
+        ModelDiscovery.Result claudeCode = ModelDiscoveryHttp.claudeCliResult(
+                List.of(model("default"), model("opus"), model("claude-sonnet-4-6")));
+        assertEquals(List.of("default", "opus", "claude-sonnet-4-6"),
+                ModelCatalogSelection.listForPicker(claudeCode, "anthropic", store).models());
+
+        ModelDiscovery.Result apiOutage = failure(ModelDiscovery.Status.UNAVAILABLE, "connection reset");
+        assertTrue(ModelCatalogSelection.listForPicker(apiOutage, "anthropic", store).models().isEmpty());
+        assertEquals(ModelCatalogSelection.SelectionDecision.MANUAL_ENTRY,
+                ModelCatalogSelection.decisionFor(apiOutage, "anthropic", "default", store));
+
+        // The Claude Code route keeps its own last known good catalog.
+        ModelDiscovery.Result claudeOutage = ModelDiscoveryHttp.claudeCliResult(List.of(), "timed out");
+        ModelCatalogSelection.CatalogList fallback =
+                ModelCatalogSelection.listForPicker(claudeOutage, "anthropic", store);
+        assertTrue(fallback.fromFallback());
+        assertEquals(List.of("default", "opus", "claude-sonnet-4-6"), fallback.models());
+        assertEquals(ModelCatalogSelection.SelectionDecision.FALLBACK_LIST,
+                ModelCatalogSelection.decisionFor(claudeOutage, "anthropic", "opus", store));
+    }
+
+    @Test
     void fallbackStoreIsolationBetweenProviders() throws Exception {
         Path store = tempDir.resolve("catalogs.json");
         ModelCatalogFallback.record("zai", List.of("glm-4.5"), null, store);

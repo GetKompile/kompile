@@ -11,7 +11,9 @@ import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
 import ai.kompile.cli.main.chat.config.ModelContextResolver;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -81,7 +83,7 @@ public final class WebModelCatalog {
      * Listing with an explicit fallback-store override; {@code null} uses the
      * default {@code ~/.kompile/cache/model-catalogs.json} location.
      */
-    static Listing listing(ChatConfig config, java.nio.file.Path fallbackStorePath) {
+    static Listing listing(ChatConfig config, Path fallbackStorePath) {
         if (config == null) {
             return new Listing("", null, List.of(), false,
                     "No chat configuration found; run `kompile chat --setup`.");
@@ -92,14 +94,14 @@ public final class WebModelCatalog {
         if (current != null) {
             entries.add(new Entry(current, current, contextLimit(provider, current)));
         }
-        ModelCatalogFallback.lookup(provider, fallbackStorePath).ifPresent(recorded -> {
+        ModelCatalogFallback.lookup(catalogKey(config), fallbackStorePath).ifPresent(recorded -> {
             for (String id : recorded.models()) {
                 if (entries.stream().noneMatch(entry -> entry.id().equalsIgnoreCase(id))) {
                     entries.add(new Entry(id, id, contextLimit(provider, id)));
                 }
             }
         });
-        String note = liveNote(recordedAge(provider, fallbackStorePath));
+        String note = liveNote(recordedAge(catalogKey(config), fallbackStorePath));
         return new Listing(provider == null ? "" : provider, current,
                 entries, false, note);
     }
@@ -110,7 +112,7 @@ public final class WebModelCatalog {
     }
 
     /** Validation with an explicit fallback-store override (tests/embedders). */
-    static Selection validate(ChatConfig config, String modelId, java.nio.file.Path fallbackStorePath) {
+    static Selection validate(ChatConfig config, String modelId, Path fallbackStorePath) {
         if (config == null || modelId == null || modelId.isBlank()) {
             return Selection.UNKNOWN;
         }
@@ -119,7 +121,7 @@ public final class WebModelCatalog {
                 ? "" : config.getModel().trim())) {
             return Selection.KNOWN;
         }
-        return ModelCatalogFallback.knows(config.getProvider(), candidate, fallbackStorePath)
+        return ModelCatalogFallback.knows(catalogKey(config), candidate, fallbackStorePath)
                 ? Selection.KNOWN : Selection.UNKNOWN;
     }
 
@@ -132,7 +134,7 @@ public final class WebModelCatalog {
     }
 
     /** Canonicalization with an explicit fallback-store override (tests/embedders). */
-    static String canonicalId(ChatConfig config, String modelId, java.nio.file.Path fallbackStorePath) {
+    static String canonicalId(ChatConfig config, String modelId, Path fallbackStorePath) {
         if (config == null || modelId == null || modelId.isBlank()) {
             return modelId == null ? "" : modelId.trim();
         }
@@ -140,11 +142,16 @@ public final class WebModelCatalog {
         if (config.getModel() != null && config.getModel().trim().equalsIgnoreCase(candidate)) {
             return config.getModel().trim();
         }
-        return ModelCatalogFallback.lookup(config.getProvider(), fallbackStorePath)
+        return ModelCatalogFallback.lookup(catalogKey(config), fallbackStorePath)
                 .flatMap(recorded -> recorded.models().stream()
                         .filter(id -> id.equalsIgnoreCase(candidate))
                         .findFirst())
                 .orElse(candidate);
+    }
+
+    /** The config route's catalog: Claude Code's is kept apart from the Anthropic API's. */
+    private static String catalogKey(ChatConfig config) {
+        return ModelCatalogFallback.catalogKey(config.getProvider(), config.isClaudeCliNative());
     }
 
     private static Integer contextLimit(String provider, String modelId) {
@@ -157,8 +164,8 @@ public final class WebModelCatalog {
         }
     }
 
-    private static String recordedAge(String provider, java.nio.file.Path fallbackStorePath) {
-        return ModelCatalogFallback.lookup(provider, fallbackStorePath)
+    private static String recordedAge(String catalogKey, Path fallbackStorePath) {
+        return ModelCatalogFallback.lookup(catalogKey, fallbackStorePath)
                 .map(recorded -> ModelCatalogFallback.ageLabel(recorded.recordedAt()))
                 .orElse("");
     }
@@ -195,7 +202,7 @@ public final class WebModelCatalog {
      * otherwise unlisted (never the kompile runtime-owned vendors).
      */
     public static List<VendorEntry> vendors(ChatConfig config) {
-        java.util.LinkedHashSet<String> vendorIds = new java.util.LinkedHashSet<>(
+        LinkedHashSet<String> vendorIds = new LinkedHashSet<>(
                 SetupWizard.providerPickerOrder());
         String currentVendor = config == null ? null
                 : SetupWizard.vendorForProvider(config.getProvider());

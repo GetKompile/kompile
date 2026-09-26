@@ -137,8 +137,10 @@ public final class NativeChatModels {
         ChatConfig selected = configuration(root, provider);
         ModelDiscovery.Result catalog;
         try {
-            catalog = ModelDiscoveryHttp.discoverResultWithAuth(
-                    selected.getProvider(), selected.resolveRequestAuth(), selected.getBaseUrl());
+            catalog = selected.isClaudeCliNative()
+                    ? ModelDiscoveryHttp.discoverClaudeCliResult()
+                    : ModelDiscoveryHttp.discoverResultWithAuth(
+                            selected.getProvider(), selected.resolveRequestAuth(), selected.getBaseUrl());
         } catch (RuntimeException unavailable) {
             // Auth/transport exceptions may contain credentials or endpoint query strings.
             catalog = ModelDiscovery.Result.failure(ModelDiscovery.Status.UNAVAILABLE, "", List.of());

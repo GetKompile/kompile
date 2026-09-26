@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.MessageQueue;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ScheduledLoopManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
@@ -121,6 +122,10 @@ public final class WebCommandResolver {
             if ("fast".equals(name)) {
                 return resolveFastCommand(raw.substring(Math.min(end, raw.length())),
                         command, input, stateStore, directory, configOverride);
+            }
+            if ("ultracode".equals(name)) {
+                return resolveUltracodeCommand(raw.substring(Math.min(end, raw.length())),
+                        command, directory, configOverride);
             }
             if ("reminder".equals(name) || "reminder-global".equals(name)
                     || "loop".equals(name) || "loop-global".equals(name)) {
@@ -350,7 +355,17 @@ public final class WebCommandResolver {
         if (!wireProvider.equalsIgnoreCase(config.getProvider())) {
             candidate.setApiKey(null);
             candidate.setBaseUrl(null);
-            candidate.setAuthenticationMethod(null);
+            candidate.setAuthenticationMethod(
+                    ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider));
+        }
+        if (candidate.isClaudeCliNative()) {
+            LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.claudeCodeLogin();
+            if (!login.loggedIn()) {
+                return new Resolution(Status.INVALID, command,
+                        login.describe() + " To use an Anthropic API key instead, configure Anthropic's "
+                                + "API-key route with /setup in the interactive CLI; "
+                                + "the current provider/model is still active.", null);
+            }
         }
         if (!candidate.isValid()) {
             return new Resolution(Status.INVALID, command,
@@ -374,7 +389,8 @@ public final class WebCommandResolver {
         state.put("model", modelPart);
         state.put("provider", wireProvider);
         return new Resolution(Status.INTERACTION_REQUIRED, command,
-                "Provider and model saved for this session: " + vendor + " / " + modelPart,
+                "Provider and model saved for this session: " + vendor + " / " + modelPart
+                        + (candidate.isClaudeCliNative() ? " (Claude Code login)" : ""),
                 null, data);
     }
 
@@ -426,7 +442,13 @@ public final class WebCommandResolver {
         data.put("currentModel", config == null ? null : config.getModel());
         data.put("liveListingAvailable", false);
         ArrayNode models = data.putArray("models");
-        for (String id : ModelCatalogFallback.lookup(wireProvider).map(r -> r.models()).orElse(List.of())) {
+        // The vendor's catalog for the route its selection runs on: the active
+        // route when current, else the one a switch lands on (Anthropic: Claude Code).
+        boolean current = config != null && wireProvider.equalsIgnoreCase(config.getProvider());
+        String catalogKey = ModelCatalogFallback.catalogKey(wireProvider, ChatConfig.isClaudeCliNative(
+                wireProvider, current ? config.getAuthenticationMethod()
+                        : ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider)));
+        for (String id : ModelCatalogFallback.lookup(catalogKey).map(r -> r.models()).orElse(List.of())) {
             ObjectNode model = models.addObject();
             model.put("id", id);
         }
@@ -654,6 +676,7 @@ public final class WebCommandResolver {
         RoleManager roleManager = new RoleManager(workDir);
         data.set("role", roleMenu("/config", store, sessionId, workDir, roleManager).data());
         data.set("fast", fastSnapshot(config));
+        data.set("ultracode", ultracodeSnapshot(config));
         ReminderManager sessionReminders = new ReminderManager(JsonUtils.standardMapper(),
                 sessionId == null ? "unknown-session" : sessionId, workDir);
         data.set("reminders", reminderSnapshot(ReminderManager.Scope.SESSION, sessionReminders));
@@ -858,7 +881,8 @@ public final class WebCommandResolver {
                     "Usage: /fast [on|off|status] (bare /fast reports the current state). "
                             + "No state was changed.", null);
         }
-        if (!"off".equals(rest) && (config == null || !config.supportsFastMode())) {
+        // No configuration at all has nothing to clear either; "off" would otherwise dereference null.
+        if (config == null || (!"off".equals(rest) && !config.supportsFastMode())) {
             return new Resolution(Status.INVALID, command,
                     "Fast mode is not supported for the configured provider/model. Use /model first; "
                             + "no state was changed.", null);
@@ -889,6 +913,64 @@ public final class WebCommandResolver {
         data.put("provider", config == null || config.getProvider() == null ? "" : config.getProvider());
         data.put("model", config == null || config.getModel() == null ? "" : config.getModel());
         String notice = config == null ? null : config.fastModeCapabilities().notice();
+        if (notice != null && !notice.isBlank()) {
+            data.put("note", notice);
+        }
+        return data;
+    }
+
+    /**
+     * Web /ultracode: same shape and persistence as /fast, gated on the Claude
+     * Code route. Web input never runs live model discovery, so per-model
+     * eligibility is stated rather than verified.
+     */
+    private static Resolution resolveUltracodeCommand(
+            String argumentRegion, String command, Path directory, Supplier<ChatConfig> configOverride) {
+        Path workDir = directory == null ? Path.of(".") : directory;
+        String rest = (argumentRegion == null ? "" : argumentRegion).strip().toLowerCase(Locale.ROOT);
+        ChatConfig config = configOverride != null ? configOverride.get()
+                : ChatConfig.loadOrFromEnv(workDir);
+        if (!"on".equals(rest) && !"off".equals(rest) && !"status".equals(rest) && !rest.isEmpty()) {
+            return new Resolution(Status.INVALID, command,
+                    "Usage: /ultracode [on|off|status] (bare /ultracode reports the current state). "
+                            + "No state was changed.", null);
+        }
+        if (config == null || (!"off".equals(rest) && !config.supportsUltracode())) {
+            return new Resolution(Status.INVALID, command,
+                    "Ultracode is only available on the Claude Code route (Anthropic signed in through "
+                            + "Claude Code). Use /model first; no state was changed.", null);
+        }
+        boolean turningOn = "on".equals(rest) || (rest.isEmpty() && config.isUltracode());
+        if (!"status".equals(rest)) {
+            config.setUltracode(turningOn);
+            try {
+                config.saveLoadedOrGlobal();
+            } catch (java.io.IOException error) {
+                return new Resolution(Status.INVALID, command,
+                        "Ultracode could not be persisted: " + error.getMessage()
+                                + "; no durable change was made.", null);
+            }
+        }
+        String requirement = config.supportsUltracode()
+                ? " It needs a model that offers " + config.ultracodeCapabilities().requiresEffort()
+                        + " effort; otherwise Claude Code starts at the model's highest level."
+                : "";
+        return new Resolution(Status.INTERACTION_REQUIRED, command,
+                "Ultracode " + (config.isUltracode() ? "ON (requested)" : "OFF")
+                        + " — applies to subsequent Claude Code turns; while on it replaces the effort level."
+                        + requirement,
+                null, ultracodeSnapshot(config));
+    }
+
+    /** Structured ultracode payload shared by the /ultracode command and the config snapshot. */
+    private static ObjectNode ultracodeSnapshot(ChatConfig config) {
+        ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+        data.put("menu", "ultracode");
+        data.put("ultracode", config != null && config.isUltracode());
+        data.put("supported", config != null && config.supportsUltracode());
+        data.put("provider", config == null || config.getProvider() == null ? "" : config.getProvider());
+        data.put("model", config == null || config.getModel() == null ? "" : config.getModel());
+        String notice = config == null ? null : config.ultracodeCapabilities().notice();
         if (notice != null && !notice.isBlank()) {
             data.put("note", notice);
         }

@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.skill.ManagedBlockOwnership;
 import ai.kompile.cli.main.chat.skill.ManagedFileLock;
 import ai.kompile.cli.main.chat.skill.SkillPathPolicy;
 
@@ -47,8 +48,8 @@ import java.util.*;
  *   <li><b>Claude</b>: {@code --append-system-prompt-file <path>}</li>
  *   <li><b>Qwen</b>: {@code --append-system-prompt "text"}</li>
  *   <li><b>Gemini</b>: {@code GEMINI_SYSTEM_MD=<path>} env var (writes temp file)</li>
- *   <li><b>Codex</b>: Prepends to project {@code AGENTS.md} (backup/restore)</li>
- *   <li><b>OpenCode</b>: Prepends to project {@code AGENTS.md} (backup/restore)</li>
+ *   <li><b>Codex</b>: Appends a managed block to project {@code AGENTS.md} (removed on cleanup)</li>
+ *   <li><b>OpenCode</b>: Appends a managed block to project {@code AGENTS.md} (removed on cleanup)</li>
  * </ul>
  */
 public class SystemPromptManager {
@@ -56,8 +57,10 @@ public class SystemPromptManager {
     private static final Path KOMPILE_HOME = KompileHome.homeDirectory().toPath();
     private static final Path DEFAULT_PROMPT_FILE = KOMPILE_HOME.resolve("system-prompt.md");
     private static final Path PER_AGENT_DIR = KOMPILE_HOME.resolve("system-prompts");
-    static final String MANAGED_PROMPT_BEGIN = "<!-- BEGIN KOMPILE MANAGED SYSTEM PROMPT -->";
-    static final String MANAGED_PROMPT_END = "<!-- END KOMPILE MANAGED SYSTEM PROMPT -->";
+    public static final String MANAGED_PROMPT_BEGIN = "<!-- BEGIN KOMPILE MANAGED SYSTEM PROMPT -->";
+    public static final String MANAGED_PROMPT_END = "<!-- END KOMPILE MANAGED SYSTEM PROMPT -->";
+    /** Tags a managed block's BEGIN line with the PID of the process that must remove it. */
+    static final String MANAGED_PROMPT_OWNER = ManagedBlockOwnership.OWNER_TOKEN;
 
     private final String centralPrompt;
     private final Map<String, String> perAgentPrompts;
@@ -197,7 +200,9 @@ public class SystemPromptManager {
     /**
      * Inject the system prompt into a file-based instruction mechanism for agents
      * that don't support CLI flags (Codex, OpenCode).
-     * Prepends the system prompt to the project's AGENTS.md file, backing up the original.
+     * Appends a managed block owned by this process to the project's AGENTS.md;
+     * {@link #cleanup()} removes it. Blocks left behind by processes that exited
+     * without cleaning up are reclaimed first.
      *
      * @param agentName  the agent name
      * @param workingDir the project working directory
@@ -224,16 +229,21 @@ public class SystemPromptManager {
             if (Files.exists(agentsMd, LinkOption.NOFOLLOW_LINKS) && !existed) {
                 throw new IOException("AGENTS.md is not a regular file: " + agentsMd);
             }
-            String rawExisting = existed ? readNoFollow(agentsMd) : "";
+            String onDisk = existed ? readNoFollow(agentsMd) : "";
+            String rawExisting = reclaimOrphanedBlocks(onDisk);
             boolean originalExisted = existed && !stripManagedPrompt(rawExisting).isBlank();
+            // A file holding nothing but orphaned blocks was created by a dead session;
+            // cleanup deletes it instead of leaving an empty AGENTS.md behind.
+            boolean restoreExisting = existed && (!rawExisting.isBlank() || onDisk.isBlank());
 
-            String managed = MANAGED_PROMPT_BEGIN + " " + UUID.randomUUID() + "\n"
+            String managed = MANAGED_PROMPT_BEGIN + " " + UUID.randomUUID()
+                    + " " + MANAGED_PROMPT_OWNER + ProcessHandle.current().pid() + "\n"
                     + "# Kompile System Instructions\n\n" + prompt.strip() + "\n"
                     + MANAGED_PROMPT_END;
             String installedContent = rawExisting.isBlank()
                     ? managed + "\n"
                     : rawExisting.stripTrailing() + "\n\n" + managed + "\n";
-            backups.add(new BackupEntry(agentsMd, existed, originalExisted, rawExisting,
+            backups.add(new BackupEntry(agentsMd, restoreExisting, originalExisted, rawExisting,
                     managed, installedContent));
             writeNoFollow(agentsMd, installedContent, existed);
             return agentsMd;
@@ -245,17 +255,18 @@ public class SystemPromptManager {
     }
 
     static String stripManagedPrompt(String content) {
-        if (content == null || content.isEmpty()) return "";
-        String remaining = content;
-        while (true) {
-            int start = remaining.indexOf(MANAGED_PROMPT_BEGIN);
-            if (start < 0) return remaining.strip();
-            int end = remaining.indexOf(
-                    MANAGED_PROMPT_END, start + MANAGED_PROMPT_BEGIN.length());
-            if (end < 0) return remaining.strip();
-            remaining = remaining.substring(0, start)
-                    + remaining.substring(end + MANAGED_PROMPT_END.length());
-        }
+        return ManagedBlockOwnership.stripManagedBlocks(
+                content, MANAGED_PROMPT_BEGIN, MANAGED_PROMPT_END);
+    }
+
+    /**
+     * Drop managed blocks whose owning process has exited, or that predate owner
+     * tracking, so a session that died before {@link #cleanup()} doesn't leave its
+     * block in AGENTS.md for good. Blocks owned by live processes are kept.
+     */
+    static String reclaimOrphanedBlocks(String content) {
+        return ManagedBlockOwnership.reclaimOrphanedBlocks(
+                content, MANAGED_PROMPT_BEGIN, MANAGED_PROMPT_END);
     }
 
     /**

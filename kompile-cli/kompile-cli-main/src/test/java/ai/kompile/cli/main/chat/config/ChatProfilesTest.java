@@ -159,9 +159,9 @@ class ChatProfilesTest {
     @Test void invalidJudgeProfilesAndDanglingSelectionsCannotBeSavedOver() throws Exception {
         assertThrows(IllegalArgumentException.class, () -> ChatProfiles.captureJudge("judge", "openai", "", null));
         assertThrows(IllegalArgumentException.class, () -> new ChatProfiles.Profile("judge", "anthropic", "judge",
-                "openai", "model", null, null, null, false, null));
+                "openai", "model", null, null, null, false, false, null));
         assertThrows(IllegalArgumentException.class, () -> new ChatProfiles.Profile("judge", "openai", "judge",
-                "openai", "model", null, "https://example.test", null, false, null));
+                "openai", "model", null, "https://example.test", null, false, false, null));
         Files.createDirectories(ChatProfiles.path(project).getParent());
         String invalid = "{\"activeJudges\":{\"openai\":\"missing\"}}";
         Files.writeString(ChatProfiles.path(project), invalid);

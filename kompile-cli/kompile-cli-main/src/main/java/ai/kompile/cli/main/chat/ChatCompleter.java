@@ -101,6 +101,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/permissions", "Manage permissions");
         COMMANDS.put("/model", "Switch or show model");
         COMMANDS.put("/fast", "Toggle premium fast mode (supported models only)");
+        COMMANDS.put("/ultracode", "Toggle Claude Code ultracode workflows (Claude Code route only)");
         COMMANDS.put("/mode", "Switch interaction mode");
 
         // Queue & jobs
@@ -251,6 +252,11 @@ public class ChatCompleter implements Completer {
                 new String[]{"on", "Request fast mode (higher cost)"},
                 new String[]{"off", "Use standard speed"},
                 new String[]{"status", "Show fast-mode preference"}
+        ));
+        SUB_ARGS.put("/ultracode", List.of(
+                new String[]{"on", "Plan workflows at xhigh effort (more tokens)"},
+                new String[]{"off", "Use the selected effort level"},
+                new String[]{"status", "Show ultracode preference"}
         ));
         SUB_ARGS.put("/mode", List.of(
                 new String[]{"standard", "Standard chat mode"},

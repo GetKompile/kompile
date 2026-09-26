@@ -24,6 +24,7 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.core.llm.ModelContextWindows;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
@@ -531,6 +532,10 @@ public class ChatCommandRouter {
                 handleFastModeCommand(rest.trim());
                 return true;
 
+            case "/ultracode":
+                handleUltracodeCommand(rest.trim());
+                return true;
+
             case "/enforce":
             case "/enforcer":
                 handleJudgeCommand(rest.trim());
@@ -854,6 +859,9 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
             if (repl.getChatConfig() != null && repl.getChatConfig().supportsFastMode()) {
                 body.append("  ").append(renderer.cyan("/fast")).append(" [on|off|status]  Toggle premium fast mode\n");
+            }
+            if (repl.getChatConfig() != null && repl.getChatConfig().supportsUltracode()) {
+                body.append("  ").append(renderer.cyan("/ultracode")).append(" [on|off|status]  Toggle Claude Code ultracode workflows\n");
             }
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
@@ -2032,6 +2040,69 @@ public class ChatCommandRouter {
         ChatCompleter.printAbove("Fast mode " + (config.isFastMode() ? "ON (requested)" : "OFF")
                 + " — applies to subsequent requests; reasoning effort is unchanged.");
         ChatCompleter.printAbove(config.fastModeCapabilities().notice());
+    }
+
+    private void handleUltracodeCommand(String rest) {
+        String action = rest.toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("", "on", "off", "status").contains(action)) {
+            ChatCompleter.printAbove("Usage: /ultracode [on|off|status] (no argument toggles)");
+            return;
+        }
+        ChatConfig config = repl.getChatConfig();
+        if (!localMode || config == null) {
+            ChatCompleter.printAbove("Ultracode is only configurable in local standard chat.");
+            return;
+        }
+        // Always allow clearing an old preference, even after the route changes.
+        if (!config.supportsUltracode() && !"off".equals(action)) {
+            ChatCompleter.printAbove("Ultracode is only available on the Claude Code route "
+                    + "(Anthropic signed in through Claude Code). Use /model.");
+            return;
+        }
+        boolean enable = "on".equals(action) || (action.isEmpty() && !config.isUltracode());
+        if (enable) {
+            String unavailable = ultracodeUnavailableReason(config);
+            if (unavailable != null) {
+                ChatCompleter.printAbove(renderer.yellow(unavailable + " No change was made."));
+                return;
+            }
+        }
+        if (!"status".equals(action)) {
+            config.setUltracode(enable);
+            try {
+                config.saveLoadedOrGlobal();
+            } catch (java.io.IOException error) {
+                ChatCompleter.printAbove(renderer.yellow(
+                        "Ultracode changed for this session, but could not be saved: " + error.getMessage()));
+            }
+            repl.refreshModelDisplay();
+        }
+        ChatCompleter.printAbove("Ultracode " + (config.isUltracode() ? "ON (requested)" : "OFF")
+                + " — applies to subsequent Claude Code turns; while on it replaces the effort level.");
+        String notice = config.ultracodeCapabilities().notice();
+        if (!notice.isBlank()) ChatCompleter.printAbove(notice);
+    }
+
+    /**
+     * Live per-model check, like {@code /model <id>}: without the effort level
+     * ultracode runs at, Claude Code silently starts at the model's highest
+     * level instead, so the request is refused rather than mislabeled.
+     */
+    private static String ultracodeUnavailableReason(ChatConfig config) {
+        String requires = config.ultracodeCapabilities().requiresEffort();
+        String model = config.getModel();
+        if (model == null || model.isBlank()) {
+            return "Choose a model with /model first; ultracode needs one that offers " + requires + " effort.";
+        }
+        ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(config.getProvider(), null, config);
+        if (!SetupWizard.ultracodeOptions(config.getProvider(), model, discovery).isEmpty()) {
+            return null;
+        }
+        String detail = discovery.status() == ModelDiscovery.Status.SUCCESS ? ""
+                : " Live discovery: " + (discovery.message().isBlank()
+                        ? discovery.status().name().toLowerCase(java.util.Locale.ROOT) : discovery.message()) + ".";
+        return "Ultracode needs a model that offers " + requires + " effort, and live discovery does not list it for "
+                + model + "." + detail + " Use /model to pick one that does.";
     }
 
     private void handleModelCommand(String rest) {

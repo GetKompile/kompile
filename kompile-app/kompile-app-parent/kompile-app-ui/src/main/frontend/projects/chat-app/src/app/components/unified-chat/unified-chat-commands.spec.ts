@@ -535,7 +535,8 @@ describe('UnifiedChat session configuration modal', () => {
     expect(slashMenu(fixture)).not.toBeNull();
     expect(slashMenu(fixture)!.querySelectorAll('[role="option"]').length).toBe(component.slashCommands.length);
     expect(input.getAttribute('aria-expanded')).toBe('true');
-    expect(component.slashCommands.map(item => item.command)).toEqual(['/help', '/model', '/role', '/fast', '/skills']);
+    expect(component.slashCommands.map(item => item.command))
+      .toEqual(['/help', '/model', '/role', '/fast', '/ultracode', '/skills']);
     typeInput('/Mo');
     const options = slashMenu(fixture)!.querySelectorAll('[role="option"]');
     expect(options.length).toBe(1);
@@ -661,11 +662,12 @@ describe('UnifiedChat session configuration modal', () => {
       menu: 'config', model: { menu: 'model', models: [{ id: 'm1', current: true }] },
       role: { menu: 'role', roles: [{ name: 'architect' }] },
       fast: { menu: 'fast', fastMode: false, supported: true },
+      ultracode: { menu: 'ultracode', ultracode: true, supported: true, note: 'Claude Code route only' },
       reminders: { menu: 'reminders', scope: 'session', reminders: [{ text: 'r1' }] },
       queue: { menu: 'queue', queued: [] }
     };
     const data: CommandConfigDialogData = {
-      modelMenu: null, roleMenu: null, fastMenu: null,
+      modelMenu: null, roleMenu: null, fastMenu: null, ultracodeMenu: null,
       reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
       queue: null,
       continueMenu: null,
@@ -677,6 +679,7 @@ describe('UnifiedChat session configuration modal', () => {
       selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
+      toggleUltracode: () => undefined,
       clearConversation: () => undefined
     };
     // The dialog owns the quiet snapshot fetch; stub the service methods it
@@ -703,6 +706,7 @@ describe('UnifiedChat session configuration modal', () => {
     expect(dialog.modelMenu?.models?.[0].id).toBe('m1');
     expect(dialog.roleMenu?.roles?.[0].name).toBe('architect');
     expect(dialog.fastMenu?.supported).toBeTrue();
+    expect(dialog.ultracodeMenu?.ultracode).toBeTrue();
     expect(dialog.reminders?.reminders?.[0].text).toBe('r1');
     expect(dialog.queue?.queued?.length).toBe(0);
     dialog.ngOnDestroy();
@@ -711,7 +715,7 @@ describe('UnifiedChat session configuration modal', () => {
   it('a failed quiet snapshot surfaces an error state instead of dispatching commands', async () => {
     const bus = new Subject<CommandOutcome>();
     const data: CommandConfigDialogData = {
-      modelMenu: null, roleMenu: null, fastMenu: null,
+      modelMenu: null, roleMenu: null, fastMenu: null, ultracodeMenu: null,
       reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
       queue: null,
       continueMenu: null,
@@ -722,6 +726,7 @@ describe('UnifiedChat session configuration modal', () => {
       selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
+      toggleUltracode: () => undefined,
       clearConversation: () => undefined
     };
     const svc = {
@@ -745,7 +750,7 @@ describe('UnifiedChat session configuration modal', () => {
   it('command outcomes update the modal data in place via the outcome bus, not only the transcript', async () => {
     const bus = new Subject<CommandOutcome>();
     const data: CommandConfigDialogData = {
-      modelMenu: null, roleMenu: null, fastMenu: null,
+      modelMenu: null, roleMenu: null, fastMenu: null, ultracodeMenu: null,
       reminders: null, remindersGlobal: null, loops: null, loopsGlobal: null,
       queue: null,
       continueMenu: null,
@@ -756,6 +761,7 @@ describe('UnifiedChat session configuration modal', () => {
       selectModel: () => undefined,
       selectRole: () => undefined,
       toggleFastMode: () => undefined,
+      toggleUltracode: () => undefined,
       clearConversation: () => undefined
     };
     const svc = {
@@ -786,6 +792,8 @@ describe('UnifiedChat session configuration modal', () => {
     expect(component.userInput).toBe('/role architect');
     component.toggleFastMode(true);
     expect(component.userInput).toBe('/fast on');
-    expect(send).toHaveBeenCalledTimes(3);
+    component.toggleUltracode(false);
+    expect(component.userInput).toBe('/ultracode off');
+    expect(send).toHaveBeenCalledTimes(4);
   });
 });

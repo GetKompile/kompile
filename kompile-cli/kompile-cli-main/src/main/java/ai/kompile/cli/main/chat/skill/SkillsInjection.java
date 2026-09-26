@@ -42,6 +42,9 @@ import java.util.*;
  */
 public class SkillsInjection {
 
+    public static final String SKILLS_BEGIN_PREFIX = "<!-- BEGIN KOMPILE MANAGED SKILLS ";
+    public static final String SKILLS_END_PREFIX = "<!-- END KOMPILE MANAGED SKILLS ";
+
     private final SkillRegistry skillRegistry;
     private final Path workingDirectory;
 
@@ -180,8 +183,9 @@ public class SkillsInjection {
             }
             String blockId = UUID.randomUUID().toString();
             StringBuilder skillsContent = new StringBuilder();
-            skillsContent.append("\n\n<!-- BEGIN KOMPILE MANAGED SKILLS ")
-                    .append(blockId).append(" -->\n\n# Kompile Skills\n\n");
+            skillsContent.append("\n\n").append(SKILLS_BEGIN_PREFIX).append(blockId)
+                    .append(' ').append(ManagedBlockOwnership.currentOwnerTag())
+                    .append(" -->\n\n# Kompile Skills\n\n");
             skillsContent.append("The following skills are available. Follow the instructions for the relevant skill when asked.\n\n");
 
             for (SkillConfig skill : skills) {
@@ -194,21 +198,24 @@ public class SkillsInjection {
                 skillsContent.append("\n\n");
                 skillsContent.append(template).append("\n\n");
             }
-            skillsContent.append("<!-- END KOMPILE MANAGED SKILLS ")
-                    .append(blockId).append(" -->\n");
+            skillsContent.append(SKILLS_END_PREFIX).append(blockId).append(" -->\n");
 
             boolean existed = Files.isRegularFile(instructionFile, LinkOption.NOFOLLOW_LINKS);
             if (Files.exists(instructionFile, LinkOption.NOFOLLOW_LINKS) && !existed) {
                 throw new IOException("Instruction path is not a regular file: "
                         + instructionFile);
             }
-            String existing = existed ? readNoFollow(instructionFile) : "";
-            boolean originalExisted = existed && !stripManagedSkillBlocks(existing).isBlank();
+            String onDisk = existed ? readNoFollow(instructionFile) : "";
+            String rawExisting = reclaimOrphanedSkillBlocks(onDisk);
+            boolean originalExisted = existed && !stripManagedSkillBlocks(rawExisting).isBlank();
+            // A file holding nothing but orphaned blocks was created by a dead session;
+            // cleanup deletes it instead of leaving an empty file behind.
+            boolean restoreExisting = existed && (!rawExisting.isBlank() || onDisk.isBlank());
             String block = skillsContent.toString();
-            String installedContent = existing + block;
+            String installedContent = rawExisting + block;
             writeNoFollow(instructionFile, installedContent, existed);
-            managedBlocks.add(new ManagedBlock(instructionFile, block, existed,
-                    originalExisted, existing, installedContent));
+            managedBlocks.add(new ManagedBlock(instructionFile, block, restoreExisting,
+                    originalExisted, rawExisting, installedContent));
             return skills.size();
             });
         } catch (IOException e) {
@@ -352,16 +359,18 @@ public class SkillsInjection {
     }
 
     private static String stripManagedSkillBlocks(String content) {
-        String remaining = content == null ? "" : content;
-        while (true) {
-            int start = remaining.indexOf("<!-- BEGIN KOMPILE MANAGED SKILLS ");
-            if (start < 0) return remaining.strip();
-            int end = remaining.indexOf("<!-- END KOMPILE MANAGED SKILLS ", start);
-            if (end < 0) return remaining.strip();
-            int close = remaining.indexOf("-->", end);
-            if (close < 0) return remaining.strip();
-            remaining = remaining.substring(0, start) + remaining.substring(close + 3);
-        }
+        return ManagedBlockOwnership.stripManagedBlocks(
+                content, SKILLS_BEGIN_PREFIX, SKILLS_END_PREFIX);
+    }
+
+    /**
+     * Drop skills blocks whose owning process has exited, or that predate owner
+     * tracking, so a session that died before {@link #cleanup()} doesn't leave its
+     * block behind for good. Blocks owned by live processes are kept.
+     */
+    private static String reclaimOrphanedSkillBlocks(String content) {
+        return ManagedBlockOwnership.reclaimOrphanedBlocks(
+                content, SKILLS_BEGIN_PREFIX, SKILLS_END_PREFIX);
     }
 
     private static String readNoFollow(Path file) throws IOException {

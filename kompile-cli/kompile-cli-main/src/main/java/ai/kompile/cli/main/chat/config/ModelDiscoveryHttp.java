@@ -49,6 +49,8 @@ public final class ModelDiscoveryHttp {
     private static final int MAX_HTTP_RESPONSE_BYTES = 4 * 1024 * 1024;
     private static final ObjectMapper MAPPER = ai.kompile.cli.common.util.JsonUtils.standardMapper();
     private static final ModelDiscoveryCache CACHE = new ModelDiscoveryCache();
+    /** Attempted-endpoint marker of a catalog read through the Claude Code login. */
+    static final String CLAUDE_CODE_ENDPOINT = "native:claude";
     private ModelDiscoveryHttp() {}
     public static ModelDiscovery.Result discoverResult(String provider, String key, String baseOverride) {
         return discoverResult(provider, key, null, baseOverride, false);
@@ -71,6 +73,41 @@ public final class ModelDiscoveryHttp {
     public static ModelDiscovery.Result refreshResultWithAuth(String provider,
             OAuthProviderFlow.RequestAuth auth, String baseOverride) {
         return discoverResult(provider, null, auth, baseOverride, true);
+    }
+
+    /** Discover models through the user's Claude Code login, not Anthropic API credentials. */
+    public static ModelDiscovery.Result discoverClaudeCliResult() {
+        StringBuilder reason = new StringBuilder();
+        List<LiveModelDiscovery.Model> models =
+                LiveModelDiscovery.discoverClaudeCliModels(null, reason::append);
+        return claudeCliResult(models, reason.toString());
+    }
+
+    static ModelDiscovery.Result claudeCliResult(List<LiveModelDiscovery.Model> models) {
+        return claudeCliResult(models, null);
+    }
+
+    /** {@code unavailableReason} is Claude Code's own explanation for an empty catalog. */
+    static ModelDiscovery.Result claudeCliResult(List<LiveModelDiscovery.Model> models,
+                                                 String unavailableReason) {
+        if (models == null) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.AUTH_REQUIRED,
+                    "Claude Code is not logged in. Run `claude auth login` to discover models.",
+                    List.of(CLAUDE_CODE_ENDPOINT));
+        }
+        if (models.isEmpty()) {
+            String reason = unavailableReason == null ? "" : unavailableReason.strip();
+            if (!reason.isEmpty() && !reason.endsWith(".")) {
+                reason += ".";
+            }
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.UNAVAILABLE,
+                    "Claude Code model list is unavailable" + (reason.isEmpty() ? "." : ": " + reason)
+                            + " Enter a model id or alias that `claude --model` accepts.",
+                    List.of(CLAUDE_CODE_ENDPOINT));
+        }
+        return ModelDiscovery.Result.success(models, List.of(CLAUDE_CODE_ENDPOINT));
     }
 
     public static void clearCache() {

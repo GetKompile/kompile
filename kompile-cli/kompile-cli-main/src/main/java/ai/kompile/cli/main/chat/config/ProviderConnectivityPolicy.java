@@ -73,6 +73,9 @@ public record ProviderConnectivityPolicy(
             case "kompile-local" -> local(3, 30, 10, 3);
             case "ollama" -> local(2, 30, 5, 3);
             case "opencode" -> nativeProcess(2, 10, 3);
+            // The claude -p transport is also a per-turn native process; the same
+            // local-process budget applies (CLI boot counts toward connect).
+            case "claude" -> nativeProcess(2, 10, 3);
 
             // The Kompile app is a local or LAN service with a persistent MCP/SSE lane.
             case "kompile" -> new ProviderConnectivityPolicy(

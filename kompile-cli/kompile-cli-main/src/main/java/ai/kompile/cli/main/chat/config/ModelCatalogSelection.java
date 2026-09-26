@@ -106,11 +106,12 @@ public final class ModelCatalogSelection {
             return new CatalogList(List.of(), false, authenticationNotice(discovery, provider), discovery);
         }
         List<String> live = SetupWizard.modelOptions(provider, discovery, null);
+        String catalogKey = catalogKey(discovery, provider);
         if (!live.isEmpty()) {
             // Interactive-only recording point: a verified live list becomes the
             // provider's last known good catalog. Non-interactive discovery never
             // writes the store, so fixture catalogs cannot pollute it.
-            ModelCatalogFallback.record(provider, live,
+            ModelCatalogFallback.record(catalogKey, live,
                     discovery.attemptedEndpoints().isEmpty()
                             ? null : discovery.attemptedEndpoints()
                             .get(discovery.attemptedEndpoints().size() - 1),
@@ -121,7 +122,7 @@ public final class ModelCatalogSelection {
             return new CatalogList(List.of(), false, "", discovery);
         }
         Optional<ModelCatalogFallback.RecordedCatalog> recorded =
-                ModelCatalogFallback.lookup(provider, storePath);
+                ModelCatalogFallback.lookup(catalogKey, storePath);
         if (recorded.isEmpty() || recorded.get().models().isEmpty()) {
             return new CatalogList(List.of(), false, "", discovery);
         }
@@ -168,7 +169,7 @@ public final class ModelCatalogSelection {
             // the provider validates the id on the next request.
             return SelectionDecision.UNLISTED;
         }
-        if (ModelCatalogFallback.knows(provider, id, storePath)) {
+        if (ModelCatalogFallback.knows(catalogKey(discovery, provider), id, storePath)) {
             return SelectionDecision.FALLBACK_LIST;
         }
         if (discovery.status() == ModelDiscovery.Status.SUCCESS_EMPTY
@@ -176,6 +177,12 @@ public final class ModelCatalogSelection {
             return SelectionDecision.UNKNOWN;
         }
         return SelectionDecision.MANUAL_ENTRY;
+    }
+
+    /** The discovery's route decides the catalog: Claude Code's is not the API's. */
+    private static String catalogKey(ModelDiscovery.Result discovery, String provider) {
+        return ModelCatalogFallback.catalogKey(provider, discovery != null
+                && discovery.attemptedEndpoints().contains(ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT));
     }
 
     /** Short note to print when a non-live selection is accepted. */

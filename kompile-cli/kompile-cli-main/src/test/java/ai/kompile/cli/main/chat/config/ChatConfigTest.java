@@ -1,5 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -97,16 +99,19 @@ class ChatConfigTest {
         System.setProperty("user.home", tempDir.toString());
         try {
             new ChatConfig("ollama", null, "global-model", null).saveGlobal();
-            ChatConfig project = new ChatConfig("anthropic", null, "project-model", null);
+            // A Kompile-managed OAuth vendor: anthropic oauth is now the claude
+            // CLI route (credential owned by Claude Code), so the managed-store
+            // guarantee is exercised on openai-codex instead.
+            ChatConfig project = new ChatConfig("openai-codex", null, "project-model", null);
             project.setAuthenticationMethod("oauth");
             project.saveProject(tempDir);
-            ai.kompile.cli.main.auth.CredentialStore.create().putOAuth("anthropic", "expired", "", 1L);
+            ai.kompile.cli.main.auth.CredentialStore.create().putOAuth("openai-codex", "expired", "", 1L);
             ChatConfig loaded = ChatConfig.loadOrFromEnv(tempDir);
-            assertEquals("anthropic", loaded.getProvider());
+            assertEquals("openai-codex", loaded.getProvider());
             assertFalse(loaded.isValid());
             assertThrows(ChatConfig.AuthenticationException.class, loaded::resolveRequestAuth);
             assertEquals(ModelDiscovery.Status.AUTH_REQUIRED,
-                    ModelDiscoveryHttp.refreshResult("anthropic", null, null).status());
+                    ModelDiscoveryHttp.refreshResult("openai-codex", null, null).status());
         } finally {
             System.setProperty("user.home", originalHome);
         }
@@ -360,6 +365,83 @@ class ChatConfigTest {
         assertFalse(config.isOpenAiCompatible());
         assertNull(ChatConfig.getDefaultBaseUrl("opencode"));
         assertArrayEquals(new String[0], ChatConfig.getDefaultModels("opencode"));
+    }
+
+    @Test
+    void anthropicNativeRouteRunsThroughTheClaudeCliTransportWhileApiKeyStaysDirectHttp() {
+        // Subscription route (wizard oauth choice): same anthropic vendor, turns
+        // run claude -p; Kompile resolves NO credential for it (Claude Code owns
+        // the login).
+        ChatConfig oauthConfig = new ChatConfig("anthropic", null, null, null);
+        oauthConfig.setAuthenticationMethod("oauth");
+        assertTrue(oauthConfig.isClaudeCliNative());
+        assertTrue(oauthConfig.isValid(),
+                "the claude CLI has a built-in default model, so a pick is optional");
+        assertFalse(oauthConfig.isOpenAiCompatible());
+        assertNull(oauthConfig.resolveRequestAuth(),
+                "the claude CLI route must never resolve a Kompile-managed credential");
+
+        // API-key route: unchanged direct Anthropic Messages HTTP transport.
+        ChatConfig apiKeyConfig = new ChatConfig("anthropic", "test-key", "claude-sonnet-4", null);
+        apiKeyConfig.setAuthenticationMethod("api-key");
+        assertFalse(apiKeyConfig.isClaudeCliNative());
+
+        try (DirectLlmClient client = new DirectLlmClient(
+                oauthConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
+            assertEquals(DirectLlmClient.WireProtocol.CLAUDE_CLI,
+                    client.resolveRoute(null).protocol());
+        }
+        try (DirectLlmClient client = new DirectLlmClient(
+                apiKeyConfig, new com.fasterxml.jackson.databind.ObjectMapper(), tempDir)) {
+            assertEquals(DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES,
+                    client.resolveRoute(null).protocol());
+        }
+    }
+
+    @Test
+    void anthropicRoutesNeverLendEachOtherCredentials() throws Exception {
+        // One provider id, two routes. A switch without an explicit choice lands
+        // on the Claude Code route; every other method is the API-key route,
+        // which only ever sends an API key.
+        assertEquals("oauth", ChatConfig.authenticationMethodAfterProviderSwitch("anthropic"));
+        assertNull(ChatConfig.authenticationMethodAfterProviderSwitch("openai"));
+        assertNull(ChatConfig.authenticationMethodAfterProviderSwitch(null));
+        assertTrue(ChatConfig.isClaudeCliNative("anthropic", "oauth"));
+        assertTrue(ChatConfig.isClaudeCliNative("anthropic", "native"));
+        assertFalse(ChatConfig.isClaudeCliNative("anthropic", null));
+        assertFalse(ChatConfig.isClaudeCliNative("anthropic", "api-key"));
+        assertFalse(ChatConfig.isClaudeCliNative("openai-codex", "oauth"));
+
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            CredentialStore.create().putOAuth("anthropic", "stored-oauth-token", "",
+                    System.currentTimeMillis() + 3_600_000L);
+            for (String method : new String[]{null, "api-key"}) {
+                ChatConfig apiRoute = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+                apiRoute.setAuthenticationMethod(method);
+                OAuthProviderFlow.RequestAuth auth = apiRoute.resolveRequestAuth();
+                // No key (or ANTHROPIC_API_KEY when the environment sets one) —
+                // never the stored OAuth token.
+                assertTrue(auth == null || (!auth.oauth() && !"stored-oauth-token".equals(auth.token())),
+                        "method " + method + " resolved " + auth);
+            }
+
+            CredentialStore.create().putApiKey("anthropic", "work", "stored-api-key", true);
+            ChatConfig apiRoute = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+            apiRoute.setAuthenticationMethod("api-key");
+            assertEquals("stored-api-key", apiRoute.resolveRequestAuth().token());
+
+            ChatConfig claudeCode = new ChatConfig("anthropic", null, null, null);
+            claudeCode.setAuthenticationMethod(ChatConfig.authenticationMethodAfterProviderSwitch("anthropic"));
+            assertNull(claudeCode.resolveRequestAuth(), "the Claude Code login is this route's credential");
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
+
+        String guidance = ChatConfig.missingCredential("anthropic").getMessage();
+        assertTrue(guidance.contains("API-key route") && guidance.contains("Claude Code route"), guidance);
+        assertFalse(ChatConfig.missingCredential("openai").getMessage().contains("Claude Code"));
     }
 
     @Test

@@ -16,9 +16,12 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
+import ai.kompile.cli.main.chat.skill.ManagedBlockOwnership;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.skill.SkillsMarkdownGenerator;
 
 import java.nio.file.Path;
@@ -89,9 +92,10 @@ public final class ProjectChatContext {
     /** Render the supplemental system-prompt fragment shared by local and server chat. */
     public String renderSystemPrompt() {
         StringBuilder prompt = new StringBuilder();
-        if (agentsMdContent != null && !agentsMdContent.isBlank()) {
+        String projectInstructions = stripLeakedManagedBlocks(agentsMdContent);
+        if (!projectInstructions.isBlank()) {
             prompt.append("# Project Instructions (from AGENTS.md)\n\n")
-                    .append(agentsMdContent.strip());
+                    .append(projectInstructions);
         }
         String skillsPrompt = renderSkillsPrompt();
         if (!skillsPrompt.isBlank()) {
@@ -99,6 +103,20 @@ public final class ProjectChatContext {
             prompt.append(skillsPrompt);
         }
         return prompt.toString();
+    }
+
+    /**
+     * Drop any KOMPILE MANAGED SYSTEM PROMPT or KOMPILE MANAGED SKILLS blocks found
+     * verbatim in AGENTS.md before it is inlined into a chat system prompt. Sessions
+     * that die without running cleanup() can leave these blocks behind in the file;
+     * without this, every future chat turn would duplicate that leaked content back
+     * into the model's context.
+     */
+    private static String stripLeakedManagedBlocks(String content) {
+        String withoutSystemPrompt = ManagedBlockOwnership.stripManagedBlocks(content,
+                SystemPromptManager.MANAGED_PROMPT_BEGIN, SystemPromptManager.MANAGED_PROMPT_END);
+        return ManagedBlockOwnership.stripManagedBlocks(withoutSystemPrompt,
+                SkillsInjection.SKILLS_BEGIN_PREFIX, SkillsInjection.SKILLS_END_PREFIX);
     }
 
     public String renderSkillsPrompt() {

@@ -32,7 +32,8 @@ import java.util.Optional;
  * recorded catalog with its age and the live failure reason, so a provider
  * switch never collapses into a blind manual id prompt.</p>
  *
- * <p>The store is deliberately small: one entry per provider id holding the
+ * <p>The store is deliberately small: one entry per catalog key (the provider
+ * id, or {@link #catalogKey} for Anthropic's Claude Code route) holding the
  * model ids from the most recent usable response, the base URL that served
  * it, and the recording time. It persists under
  * {@code ~/.kompile/cache/model-catalogs.json} so the fallback survives a
@@ -42,6 +43,7 @@ import java.util.Optional;
 public final class ModelCatalogFallback {
     private static final int SCHEMA_VERSION = 1;
     private static final int MAX_MODELS = 500;
+    private static final String CLAUDE_CODE_KEY_SUFFIX = "@claude-code";
     private static final Object LOCK = new Object();
     private static Map<String, RecordedCatalog> memory;
     private static Path memoryPath;
@@ -68,6 +70,17 @@ public final class ModelCatalogFallback {
             }
             return false;
         }
+    }
+
+    /**
+     * Store key for one provider route's catalog. The Claude Code route lists
+     * Claude Code's own models, including aliases such as {@code default} that
+     * only {@code claude --model} resolves, so it never shares the entry that
+     * holds the Anthropic API's model ids.
+     */
+    public static String catalogKey(String provider, boolean claudeCodeRoute) {
+        return claudeCodeRoute && provider != null && !provider.isBlank()
+                ? provider.trim() + CLAUDE_CODE_KEY_SUFFIX : provider;
     }
 
     /** Record a usable catalog response as the provider's last known good. */
@@ -117,9 +130,18 @@ public final class ModelCatalogFallback {
             return Optional.empty();
         }
         Path effective = storePath == null ? defaultStorePath() : storePath;
+        String key = normalize(provider);
+        RecordedCatalog recorded;
         synchronized (LOCK) {
-            return Optional.ofNullable(load(effective).get(normalize(provider)));
+            recorded = load(effective).get(key);
         }
+        // Older releases recorded Claude Code's catalog under the bare provider
+        // id; its aliases are not API model ids.
+        if (recorded != null && !key.endsWith(CLAUDE_CODE_KEY_SUFFIX)
+                && ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT.equals(recorded.baseUrl())) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(recorded);
     }
 
     /** Whether the model id appears in the provider's recorded catalog. */

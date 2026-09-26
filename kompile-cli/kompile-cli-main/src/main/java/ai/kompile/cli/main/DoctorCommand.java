@@ -50,6 +50,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
@@ -631,8 +632,16 @@ public class DoctorCommand implements Callable<Integer> {
 
             for (com.fasterxml.jackson.databind.JsonNode model : models) {
                 String modelId = model.path("id").asText("(unknown)");
-                boolean requiresDownload = model.path("staging").path("requiresDownload").asBoolean(false);
-                boolean hasArtifact = hasLocalModelArtifact(registryRoot, modelId, model);
+                // Manifest entries carry modelId / registryModelId / path and a flat
+                // metadata object — not a nested staging object and not localPath.
+                String modelIdField = model.path("modelId").asText(null);
+                String registryModelId = model.path("registryModelId").asText(null);
+                String artifactPath = model.path("path").asText(null);
+                String modelFile = model.path("metadata").path("registry.modelFile").asText(null);
+                boolean requiresDownload =
+                        model.path("metadata").path("staging.requiresDownload").asBoolean(false);
+                boolean hasArtifact = hasLocalModelArtifact(projectRoot, registryRoot,
+                        modelId, modelIdField, registryModelId, artifactPath, modelFile);
 
                 if (!hasArtifact && requiresDownload) {
                     out.add(CheckResult.of("Model: " + modelId, Status.OK,
@@ -640,7 +649,7 @@ public class DoctorCommand implements Callable<Integer> {
                 } else if (!hasArtifact) {
                     out.add(CheckResult.warn("Model: " + modelId,
                             "no local artifact found",
-                            "Download with: kompile install model " + modelId));
+                            "Download with: kompile-model download --model-id " + modelId));
                 } else {
                     out.add(CheckResult.ok("Model: " + modelId, "artifact present"));
                 }
@@ -651,36 +660,184 @@ public class DoctorCommand implements Callable<Integer> {
         return out;
     }
 
+    /** Artifact suffixes produced/consumed by model-staging and the model manager. */
+    private static final List<String> MODEL_ARTIFACT_SUFFIXES =
+            List.of(".sdz", ".sdnb", ".sdn", ".onnx", ".gguf", ".bin");
+
+    /**
+     * Mirrors the runtime artifact lookups for a project model:
+     * <ol>
+     *   <li>the manifest {@code path} (absolute or project-relative, file or directory),</li>
+     *   <li>the project-local staging registry {@code <root>/data/models/registry.json}
+     *       (written by {@code kompile project model-add}),</li>
+     *   <li>the global {@code ~/.kompile/models/registry.json} (entries under {@code models},
+     *       paths relative to {@code ~/.kompile/models}; ids matched case-insensitively),</li>
+     *   <li>the flat {@code ~/.kompile/models/<id>} directory, and</li>
+     *   <li>the VLM cache {@code ~/.kompile/models/vlm/<id>} (see VlmModelSetDownloader).</li>
+     * </ol>
+     * Recognizes the real artifact formats (sdz/sdnb/onnx/gguf/bin) and complete sdnb
+     * shard sets, mirroring KompileProjectStore.hasCompleteModelArtifact semantics.
+     */
     private boolean hasLocalModelArtifact(
+            Path projectRoot,
             com.fasterxml.jackson.databind.JsonNode registryRoot,
-            String modelId,
-            com.fasterxml.jackson.databind.JsonNode modelNode) {
-        // Check explicit localPath in the model node
-        String localPath = modelNode.path("localPath").asText(null);
-        if (localPath != null && !localPath.isBlank() && new File(localPath).isFile()) {
-            return true;
+            String id,
+            String modelIdField,
+            String registryModelId,
+            String manifestPath,
+            String modelFile) {
+        // 1. Explicit manifest path — file or directory form.
+        if (manifestPath != null && !manifestPath.isBlank()) {
+            Path p = Paths.get(manifestPath);
+            if (!p.isAbsolute()) {
+                p = projectRoot.resolve(manifestPath);
+            }
+            p = p.normalize();
+            if (Files.isRegularFile(p) && p.toFile().length() > 0) {
+                return true;
+            }
+            if (Files.isDirectory(p) && directoryHasArtifact(p, modelFile)) {
+                return true;
+            }
         }
-        // Check ~/.kompile/models/<id>/
-        Path modelDir = Paths.get(System.getProperty("user.home"), ".kompile", "models", modelId);
-        if (Files.isDirectory(modelDir)) {
+
+        // 2. Candidate ids: registryModelId, modelId, then id (case-insensitive registry matching).
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (String candidate : new String[]{registryModelId, modelIdField, id}) {
+            if (candidate != null && !candidate.isBlank()) {
+                ids.add(candidate);
+            }
+        }
+
+        // 3. Project-local staging registry.
+        Path projectRegistry = projectRoot.resolve("data").resolve("models").resolve("registry.json");
+        if (Files.isRegularFile(projectRegistry)) {
             try {
-                return Files.list(modelDir).anyMatch(p ->
-                        p.getFileName().toString().endsWith(".gguf")
-                        || p.getFileName().toString().endsWith(".bin")
-                        || p.getFileName().toString().endsWith(".onnx"));
-            } catch (IOException ignored) { }
-        }
-        // Check the global model registry
-        if (registryRoot != null) {
-            com.fasterxml.jackson.databind.JsonNode entry = registryRoot.path(modelId);
-            if (!entry.isMissingNode()) {
-                String regPath = entry.path("localPath").asText(null);
-                if (regPath != null && !regPath.isBlank() && new File(regPath).isFile()) {
+                if (registryHasArtifact(JSON.readTree(projectRegistry.toFile()), ids, modelFile)) {
                     return true;
                 }
+            } catch (IOException ignored) {
+            }
+        }
+
+        // 4. Global registry.
+        if (registryHasArtifact(registryRoot, ids, modelFile)) {
+            return true;
+        }
+
+        // 5. Flat ~/.kompile/models/<id>/.
+        for (String candidate : ids) {
+            if (directoryHasArtifact(Paths.get(System.getProperty("user.home"),
+                    ".kompile", "models", candidate), modelFile)) {
+                return true;
+            }
+        }
+
+        // 6. VLM cache ~/.kompile/models/vlm/<id>/.
+        for (String candidate : ids) {
+            if (directoryHasArtifact(Paths.get(System.getProperty("user.home"),
+                    ".kompile", "models", "vlm", candidate), modelFile)) {
+                return true;
             }
         }
         return false;
+    }
+
+    /** True when the registry document (project-local or global) holds a materialized entry for any candidate id. */
+    private static boolean registryHasArtifact(
+            com.fasterxml.jackson.databind.JsonNode registryRoot,
+            LinkedHashSet<String> ids,
+            String modelFile) {
+        if (registryRoot == null) {
+            return false;
+        }
+        JsonNode entries = registryRoot.path("models");
+        if (!entries.isObject()) {
+            return false;
+        }
+        for (String candidate : ids) {
+            JsonNode entry = entries.path(candidate);
+            if (!entry.isObject()) {
+                // Case-insensitive fallback: registry keys may differ in case from manifest ids
+                // (e.g. manifest ms-marco-minilm-l-6-v2 vs registry ms-marco-MiniLM-L-6-v2).
+                String lower = candidate.toLowerCase(Locale.ROOT);
+                for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> it = entries.fields();
+                        it.hasNext(); ) {
+                    java.util.Map.Entry<String, JsonNode> e = it.next();
+                    if (e.getKey().toLowerCase(Locale.ROOT).equals(lower)) {
+                        entry = e.getValue();
+                        break;
+                    }
+                }
+            }
+            if (!entry.isObject()) {
+                continue;
+            }
+            String entryPath = entry.path("path").asText(null);
+            if (entryPath == null || entryPath.isBlank()) {
+                continue;
+            }
+            String entryModelFile = firstNonBlankText(entry.path("model_file").asText(null), modelFile);
+            Path resolved = Paths.get(entryPath);
+            if (!resolved.isAbsolute()) {
+                resolved = Paths.get(System.getProperty("user.home"), ".kompile", "models")
+                        .resolve(entryPath);
+            }
+            resolved = resolved.normalize();
+            if (Files.isRegularFile(resolved)) {
+                return true;
+            }
+            if (Files.isDirectory(resolved) && directoryHasArtifact(resolved, entryModelFile)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True when the directory holds the named model file, a shard set for it, or any recognized artifact. */
+    private static boolean directoryHasArtifact(Path dir, String modelFile) {
+        if (dir == null || !Files.isDirectory(dir)) {
+            return false;
+        }
+        if (modelFile != null && !modelFile.isBlank()) {
+            Path named = dir.resolve(modelFile).normalize();
+            if (named.startsWith(dir)) {
+                if (Files.isRegularFile(named) && named.toFile().length() > 0) {
+                    return true;
+                }
+                // Complete zero-based sdnb shard sets share the artifact basename (see
+                // KompileProjectStore.hasCompleteModelArtifact).
+                String name = named.getFileName().toString();
+                int extIdx = name.lastIndexOf('.');
+                if (extIdx > 0) {
+                    String shardPrefix = name.substring(0, extIdx) + ".shard";
+                    try (java.util.stream.Stream<Path> list = Files.list(dir)) {
+                        if (list.anyMatch(p -> {
+                            String f = p.getFileName().toString();
+                            return f.startsWith(shardPrefix) && f.endsWith(".sdnb");
+                        })) {
+                            return true;
+                        }
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+        try (java.util.stream.Stream<Path> list = Files.list(dir)) {
+            return list.anyMatch(p -> {
+                String f = p.getFileName().toString().toLowerCase(Locale.ROOT);
+                return MODEL_ARTIFACT_SUFFIXES.stream().anyMatch(f::endsWith);
+            });
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private static String firstNonBlankText(String a, String b) {
+        if (a != null && !a.isBlank()) {
+            return a;
+        }
+        return b;
     }
 
     /**

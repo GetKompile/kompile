@@ -16,6 +16,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ModelCatalogFallbackTest {
@@ -83,6 +84,36 @@ class ModelCatalogFallbackTest {
         assertTrue(body.contains("recordedAt"));
         // Parsing again must not throw and must keep the provider entry.
         assertTrue(ModelCatalogFallback.knows("zai", "glm-4.6", store()));
+    }
+
+    @Test
+    void claudeCodeRouteHasItsOwnCatalogKey() {
+        assertEquals("anthropic@claude-code", ModelCatalogFallback.catalogKey("anthropic", true));
+        assertEquals("anthropic", ModelCatalogFallback.catalogKey("anthropic", false));
+        assertNull(ModelCatalogFallback.catalogKey(null, true));
+
+        ModelCatalogFallback.record(ModelCatalogFallback.catalogKey("anthropic", true),
+                List.of("default", "opus"), ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT, store());
+        ModelCatalogFallback.resetMemoryForTest();
+        assertTrue(ModelCatalogFallback.knows("anthropic@claude-code", "opus", store()));
+        assertFalse(ModelCatalogFallback.knows("anthropic", "opus", store()));
+    }
+
+    @Test
+    void legacyClaudeCodeCatalogUnderTheBareProviderIsIgnored() {
+        // Older releases recorded Claude Code's aliases under "anthropic",
+        // where the API-key route would have offered them as API model ids.
+        ModelCatalogFallback.record("anthropic", List.of("default", "opus"),
+                ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT, store());
+        ModelCatalogFallback.resetMemoryForTest();
+        assertTrue(ModelCatalogFallback.lookup("anthropic", store()).isEmpty());
+        assertFalse(ModelCatalogFallback.knows("anthropic", "default", store()));
+
+        // The API route's own catalog replaces it and is served.
+        ModelCatalogFallback.record("anthropic", List.of("claude-sonnet-4-6"),
+                "https://api.anthropic.com/v1", store());
+        assertEquals(List.of("claude-sonnet-4-6"),
+                ModelCatalogFallback.lookup("anthropic", store()).orElseThrow().models());
     }
 
     @Test

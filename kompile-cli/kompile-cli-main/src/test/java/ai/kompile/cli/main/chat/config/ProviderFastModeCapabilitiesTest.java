@@ -22,6 +22,7 @@ class ProviderFastModeCapabilitiesTest {
             assertFalse(capabilities.notice().isBlank());
         }
         var anthropic = ChatProviderRegistry.find("anthropic").fastModeCapabilities();
+        assertTrue(anthropic.supports("claude-opus-5-5"));
         assertTrue(anthropic.supports("claude-opus-5"));
         assertTrue(anthropic.supports("claude-opus-4-8"));
         assertFalse(anthropic.supports("claude-opus-4-7"), "retired fast mode must not be advertised");
@@ -34,6 +35,7 @@ class ProviderFastModeCapabilitiesTest {
     void pickerOnlyOffersSeparateSpeedChoicesForSupportedModels() {
         assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("openai-codex", "gpt-5.5"));
         assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("anthropic", "claude-opus-5"));
+        assertEquals(List.of("off", "on"), SetupWizard.fastModeOptions("anthropic", "claude-opus-5-5"));
         for (String provider : List.of("custom", "gemini", "openrouter", "github-copilot", "ollama", "opencode")) {
             assertTrue(SetupWizard.fastModeOptions(provider, "gpt-5.5").isEmpty());
             assertTrue(SetupWizard.fastModeOptions(provider, "claude-opus-5").isEmpty());

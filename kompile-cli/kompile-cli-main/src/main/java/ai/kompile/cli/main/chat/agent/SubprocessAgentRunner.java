@@ -354,20 +354,6 @@ public class SubprocessAgentRunner {
     }
 
     /**
-     * Inject system prompt file into the agent's working directory.
-     */
-    public void injectSystemPrompt() {
-        if (systemPromptManager != null) {
-            Path injectedPromptFile = systemPromptManager.injectInstructionFile(
-                    agent, Path.of(workingDir).toAbsolutePath());
-            if (injectedPromptFile != null) {
-                emitLine(GREEN + "  System prompt injected" + RESET
-                        + DIM + " (" + injectedPromptFile + ")" + RESET);
-            }
-        }
-    }
-
-    /**
      * Install skills into the agent's native command/skill infrastructure.
      * Claude: .claude/commands/name.md, Codex: ~/.agents/skills/name/SKILL.md,
      * Qwen: .qwen/commands/name.md, Codex: .agents/skills/name/SKILL.md,

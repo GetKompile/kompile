@@ -109,6 +109,9 @@ public class SetupWizard {
             java.util.function.BiConsumer<String, List<String>> pageRenderer) {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
+        if (method == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
+            return claudeCodeRouteSelection(reader, provider, method);
+        }
         if (method == AuthMethod.NATIVE) {
             // Native CLI credentials are owned by the provider CLI and are
             // machine-global; they cannot be pinned per session. Route them
@@ -422,7 +425,60 @@ public class SetupWizard {
                     return null;
                 }
 
-                if (!"kompile".equals(provider)) {
+                boolean claudeCliRoute = "anthropic".equalsIgnoreCase(provider)
+                        && providerSelection.authMethod() == AuthMethod.OAUTH;
+                if (claudeCliRoute) {
+                    // Flow: auth status → not logged in = indicator + stop;
+                    // logged in → Claude Code's own catalog → pick one → pick
+                    // its effort level → saved and passed to claude -p as
+                    // --model/--effort. Rows are exactly Claude Code's (Kompile
+                    // adds no pseudo-entry); the first is pre-selected. No
+                    // catalog → take an id or alias as typed; claude resolves it.
+                    List<LiveModelDiscovery.Model> claudeModels =
+                            LiveModelDiscovery.discoverClaudeCliModels(notice -> {
+                                if (notice != null && !notice.isBlank()) {
+                                    System.out.println("  → " + YELLOW + "Not logged in: "
+                                            + notice + RESET);
+                                    System.out.println("  Run `claude auth login` in a terminal, then retry.");
+                                }
+                            }, error -> {
+                                if (error != null && !error.isBlank()) {
+                                    System.out.println("  → " + YELLOW
+                                            + "Could not read the Claude model list: " + error + RESET);
+                                }
+                            });
+                    if (claudeModels == null) {
+                        return null; // not logged in — indicator already shown
+                    }
+                    if (claudeModels.isEmpty()) {
+                        String manual = promptManual(reader,
+                                "  Enter a model id or alias for `claude --model` (blank to cancel): ");
+                        model = manual == null ? null
+                                : ModelCatalogSelection.resolvePickerInput(manual, List.of());
+                        if (model == null) return null;
+                    } else {
+                        List<String> options = claudeModels.stream()
+                                .map(LiveModelDiscovery.Model::id)
+                                .toList();
+                        String defaultModel = options.get(0);
+                        int selected = selectNumberedWithDefault(
+                                reader, "Select Model:", options, defaultModel);
+                        if (selected < 0) return null;
+                        model = options.get(selected);
+                    }
+                    System.out.println("  → " + GREEN + model + RESET);
+                    System.out.println();
+
+                    // Effort levels are the ones the listing reported for this
+                    // model; a model without them keeps Claude Code's default.
+                    selectedDiscovery = ModelDiscoveryHttp.claudeCliResult(claudeModels);
+                    if (supportsThinkingSelection(
+                            provider, model, apiKey, null, selectedDiscovery)) {
+                        thinking = selectThinking(
+                                reader, provider, model, apiKey, null, selectedDiscovery);
+                        if (thinking == null) return null;
+                    }
+                } else if (!"kompile".equals(provider)) {
                     boolean sameProvider = existingConfig != null
                             && provider.equalsIgnoreCase(existingConfig.getProvider());
                     ChatConfig discoveryConfig = new ChatConfig(
@@ -465,6 +521,14 @@ public class SetupWizard {
                         fastModeOptions(provider, selectedModel));
                 if (fast < 0) return null;
                 config.setFastMode(fast == 1);
+            }
+            if ("standard".equals(chatMode) && config.supportsUltracode()
+                    && !ultracodeOptions(provider, selectedModel, selectedDiscovery).isEmpty()) {
+                System.out.println(YELLOW + "  " + config.ultracodeCapabilities().notice() + RESET);
+                int ultracode = selectNumbered(reader, "Ultracode (Claude Code workflows; default off):",
+                        ultracodeOptions(provider, selectedModel, selectedDiscovery));
+                if (ultracode < 0) return null;
+                config.setUltracode(ultracode == 1);
             }
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
@@ -509,6 +573,9 @@ public class SetupWizard {
                         System.out.println("  Thinking: " + BOLD
                                 + (config.getThinking() == null ? "provider/model default" : config.getThinking())
                                 + RESET);
+                    }
+                    if (config.useUltracode()) {
+                        System.out.println("  Ultracode: " + BOLD + "on (replaces thinking)" + RESET);
                     }
                     if (baseUrl != null) {
                         System.out.println("  Base URL: " + BOLD + baseUrl + RESET);
@@ -769,22 +836,40 @@ public class SetupWizard {
      * Returns the selected index (0-based), or -1 on cancel.
      */
     static int selectNumbered(LineReader reader, String title, List<String> items) {
+        return selectNumberedWithDefault(reader, title, items, null);
+    }
+
+    /**
+     * Show a numbered menu and read the user's choice. When {@code defaultItem}
+     * is non-null and present in the list, that row is labeled "(default)" and
+     * a blank Enter accepts it.
+     * Returns the selected index (0-based), or -1 on cancel.
+     */
+    static int selectNumberedWithDefault(
+            LineReader reader, String title, List<String> items, String defaultItem) {
+        int defaultIndex = defaultItem == null ? -1 : items.indexOf(defaultItem);
         System.out.println(BOLD + "  " + title + RESET);
         System.out.println();
         for (int i = 0; i < items.size(); i++) {
-            System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%n", i + 1, items.get(i));
+            String marker = i == defaultIndex ? YELLOW + "  (default)" + RESET : "";
+            System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%s%n", i + 1, items.get(i), marker);
         }
         System.out.println();
 
         while (true) {
             String input;
             try {
-                input = reader.readLine("  Choice (1-" + items.size() + ", or Ctrl+C to cancel): ");
+                input = reader.readLine("  Choice (1-" + items.size()
+                        + (defaultIndex >= 0 ? ", Enter = default" : "")
+                        + ", or Ctrl+C to cancel): ");
             } catch (Exception e) {
                 return -1;
             }
             if (input == null) return -1;
             String trimmed = input.trim();
+            if (trimmed.isEmpty() && defaultIndex >= 0) {
+                return defaultIndex;
+            }
             if (trimmed.equalsIgnoreCase("q") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("cancel")) {
                 return -1;
             }
@@ -952,12 +1037,21 @@ public class SetupWizard {
         return switch (authMethod) {
             case NONE -> vendor;
             case NATIVE -> {
-                if (!NativeCliAuth.isSupported(vendor)) {
+                // Anthropic takes the claude-CLI route (claude -p stream-json turns);
+                // authenticate() verifies the Claude Code login with `claude auth
+                // status`. Other vendors keep the registry gate.
+                if (!NativeCliAuth.isSupported(vendor)
+                        && !"anthropic".equalsIgnoreCase(vendor)) {
                     throw new IllegalArgumentException(vendor + " does not support native CLI authentication");
                 }
                 yield vendor;
             }
             case OAUTH -> {
+                if ("anthropic".equalsIgnoreCase(vendor)) {
+                    // Anthropic OAuth = the user's Claude Code login. Claude Code
+                    // owns that credential; authenticate() verifies it is signed in.
+                    yield vendor;
+                }
                 String oauthProvider = oauthProviderForVendor(vendor);
                 if (oauthProvider == null) {
                     throw new IllegalArgumentException(vendor + " does not support OAuth");
@@ -1020,6 +1114,9 @@ public class SetupWizard {
         String baseUrl = sameProvider ? config.getBaseUrl() : null;
         if (transientApiKey != null && !transientApiKey.isBlank()) {
             return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
+        }
+        if (sameProvider && config.isClaudeCliNative()) {
+            return ModelDiscoveryHttp.discoverClaudeCliResult();
         }
         if (sameProvider) {
             try {
@@ -1117,6 +1214,11 @@ public class SetupWizard {
                 && ZaiChatProvider.CREDITS_BASE_URL.equals(config.getBaseUrl().strip().replaceAll("/+$", ""))) {
             return AuthMethod.API_KEY_CREDITS;
         }
+        // Anthropic's two routes share one provider id; the saved method says which is active.
+        if (ChatConfig.isClaudeCliNativeProvider(provider) && config != null
+                && provider.equalsIgnoreCase(config.getProvider())) {
+            return config.isClaudeCliNative() ? AuthMethod.OAUTH : AuthMethod.API_KEY;
+        }
         return authMethodForProvider(provider);
     }
 
@@ -1157,6 +1259,9 @@ public class SetupWizard {
             return new AuthenticationSelection(provider, authMethod, null);
         }
         if (authMethod == AuthMethod.NATIVE) {
+            if ("anthropic".equalsIgnoreCase(vendor)) {
+                return claudeCodeRouteSelection(reader, provider, authMethod);
+            }
             int exitCode = NativeCliAuth.login(provider);
             if (exitCode != 0) {
                 System.err.println("  Native authentication failed for " + vendorLabel(vendor)
@@ -1164,6 +1269,9 @@ public class SetupWizard {
                 return null;
             }
             return new AuthenticationSelection(provider, authMethod, null);
+        }
+        if (authMethod == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
+            return claudeCodeRouteSelection(reader, provider, authMethod);
         }
         if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
             return null;
@@ -1198,6 +1306,34 @@ public class SetupWizard {
             System.err.println("  Could not save API key to managed credential storage: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * The Claude Code route has no Kompile credential to pick: the user's Claude
+     * Code login is the credential. Verify it with `claude auth status` and say
+     * which login the route uses. When Claude Code is not signed in, run its
+     * sign-in here (a link that opens on any device, then the code the page
+     * shows); with still no login, stop here instead of starting a chat on a
+     * route that cannot authenticate.
+     */
+    private static AuthenticationSelection claudeCodeRouteSelection(LineReader reader, String provider,
+                                                                    AuthMethod method) {
+        LiveModelDiscovery.ClaudeCodeLogin login;
+        try {
+            login = ClaudeCodeSignIn.ensureSignedIn(new WizardOAuthInteraction(reader));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("  → " + YELLOW + "Claude Code sign-in was interrupted." + RESET);
+            return null;
+        }
+        if (!login.loggedIn()) {
+            System.out.println("  → " + YELLOW + "Claude Code is still not signed in, so its route cannot be used."
+                    + RESET);
+            System.out.println("  Or choose Anthropic's API key authentication to use an API key.");
+            return null;
+        }
+        System.out.println(GREEN + "  ✓ " + login.describe() + RESET);
+        return new AuthenticationSelection(provider, method, null);
     }
 
     private static ProviderSelection selectStandardProvider(LineReader reader) {
@@ -1287,6 +1423,12 @@ public class SetupWizard {
         if ("custom".equalsIgnoreCase(vendor)) {
             return List.of(AuthMethod.NONE, AuthMethod.API_KEY);
         }
+        if ("anthropic".equalsIgnoreCase(vendor)) {
+            // One vendor, two auth routes (mirrors the OpenAI pattern):
+            // the Claude Code login and direct API-key HTTP. Kompile does NOT
+            // manage the Claude Code credential; it only verifies the login.
+            return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
+        }
         if (NativeCliAuth.isSupported(vendor)) {
             return List.of(AuthMethod.NATIVE);
         }
@@ -1332,6 +1474,9 @@ public class SetupWizard {
     }
 
     public static String authMethodLabel(String vendor, AuthMethod authMethod) {
+        if (authMethod == AuthMethod.OAUTH && ChatConfig.isClaudeCliNativeProvider(vendor)) {
+            return "Claude Code login (the claude CLI's own sign-in)";
+        }
         if (authMethod == AuthMethod.API_KEY) {
             ChatProvider provider = ChatProviderRegistry.find(vendor);
             String label = provider == null ? null : provider.apiKeyAuthLabel();
@@ -1358,6 +1503,20 @@ public class SetupWizard {
     public static List<String> fastModeOptions(String provider, String model) {
         return ProviderFastModeCapabilities.forProvider(provider).supports(model)
                 ? List.of("off", "on") : List.of();
+    }
+
+    /**
+     * Ultracode is offered only where the provider documents it and the model's
+     * effort options (live discovery first) include the level ultracode runs at.
+     */
+    public static List<String> ultracodeOptions(
+            String provider, String model, ModelDiscovery.Result discovery) {
+        ProviderUltracodeCapabilities capabilities = ProviderUltracodeCapabilities.forProvider(provider);
+        if (!capabilities.declared()) return List.of();
+        List<String> efforts = thinkingOptionsFromDiscovery(provider, model, discovery).stream()
+                .map(ThinkingOption::value)
+                .toList();
+        return capabilities.supportsEffortOptions(efforts) ? List.of("off", "on") : List.of();
     }
 
     public static List<ThinkingOption> thinkingOptions(String provider, String model) {

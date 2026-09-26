@@ -3,10 +3,15 @@ package ai.kompile.cli.main.auth.oauth;
 import ai.kompile.cli.common.auth.ManagedCredential;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -15,10 +20,15 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class OAuthProviderFlowsTest {
     private static final OAuthProviderFlow.LoginOptions MANUAL_BROWSER =
             new OAuthProviderFlow.LoginOptions("browser", true, null, null);
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void openAiCodexBrowserPkceExchangesCodeAndExtractsAccount() throws Exception {
@@ -269,14 +279,16 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
-    void googleLoginRequiresConfiguredClientId() {
-        GoogleOAuthFlow flow = new GoogleOAuthFlow(request -> {
-            throw new AssertionError("no HTTP before client id exists");
-        }, null);
+    void googleLoginRequiresConfiguredClientId() throws Throwable {
+        withoutConfiguredClients("KOMPILE_GOOGLE_CLIENT_ID", () -> {
+            GoogleOAuthFlow flow = new GoogleOAuthFlow(request -> {
+                throw new AssertionError("no HTTP before client id exists");
+            }, null);
 
-        IOException error = assertThrows(IOException.class,
-                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
-        assertTrue(error.getMessage().contains("KOMPILE_GOOGLE_CLIENT_ID"));
+            IOException error = assertThrows(IOException.class,
+                    () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+            assertTrue(error.getMessage().contains("KOMPILE_GOOGLE_CLIENT_ID"));
+        });
     }
 
     @Test
@@ -372,14 +384,16 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
-    void notionLoginRequiresClientCredentials() {
-        NotionOAuthFlow flow = new NotionOAuthFlow(request -> {
-            throw new AssertionError("no HTTP before credentials exist");
-        }, null, null);
+    void notionLoginRequiresClientCredentials() throws Throwable {
+        withoutConfiguredClients("KOMPILE_NOTION_CLIENT_ID", () -> {
+            NotionOAuthFlow flow = new NotionOAuthFlow(request -> {
+                throw new AssertionError("no HTTP before credentials exist");
+            }, null, null);
 
-        IOException error = assertThrows(IOException.class,
-                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
-        assertTrue(error.getMessage().contains("KOMPILE_NOTION_CLIENT_ID"));
+            IOException error = assertThrows(IOException.class,
+                    () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+            assertTrue(error.getMessage().contains("KOMPILE_NOTION_CLIENT_ID"));
+        });
     }
 
     @Test
@@ -433,14 +447,32 @@ class OAuthProviderFlowsTest {
     }
 
     @Test
-    void atlassianLoginRequiresClientCredentials() {
-        AtlassianOAuthFlow flow = new AtlassianOAuthFlow(request -> {
-            throw new AssertionError("no HTTP before credentials exist");
-        }, null, null);
+    void atlassianLoginRequiresClientCredentials() throws Throwable {
+        withoutConfiguredClients("KOMPILE_ATLASSIAN_CLIENT_ID", () -> {
+            AtlassianOAuthFlow flow = new AtlassianOAuthFlow(request -> {
+                throw new AssertionError("no HTTP before credentials exist");
+            }, null, null);
 
-        IOException error = assertThrows(IOException.class,
-                () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
-        assertTrue(error.getMessage().contains("KOMPILE_ATLASSIAN_CLIENT_ID"));
+            IOException error = assertThrows(IOException.class,
+                    () -> flow.login(MANUAL_BROWSER, new TestInteraction("code")));
+            assertTrue(error.getMessage().contains("KOMPILE_ATLASSIAN_CLIENT_ID"));
+        });
+    }
+
+    /**
+     * Client registrations are read from ~/.kompile/config/oauth-clients.json: the
+     * developer's real registrations must not reach a no-client-configured test.
+     */
+    private void withoutConfiguredClients(String clientIdEnvironment, Executable body) throws Throwable {
+        assumeTrue(System.getenv(clientIdEnvironment) == null,
+                clientIdEnvironment + " configures a client in this environment");
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            body.execute();
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
     }
 
     @Test

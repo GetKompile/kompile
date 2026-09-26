@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.CredentialFailure;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
@@ -78,6 +79,13 @@ public class ChatConfig {
     /** Explicit opt-in to the selected provider's premium fast mode. */
     @JsonProperty
     private volatile boolean fastMode;
+
+    /**
+     * Explicit opt-in to Claude Code ultracode on the claude CLI route. While on,
+     * its documented effort value replaces {@link #thinking} on the wire.
+     */
+    @JsonProperty
+    private volatile boolean ultracode;
 
     @JsonProperty
     private String baseUrl; // null = use provider default
@@ -152,7 +160,8 @@ public class ChatConfig {
 
     void pinActiveCredential(java.util.function.Function<String, String> environment) throws IOException {
         if (!"session".equals(authenticationScope) || provider == null || getCredentialName() != null
-                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)) return;
+                || "none".equalsIgnoreCase(authenticationMethod) || "native".equalsIgnoreCase(authenticationMethod)
+                || isClaudeCliNative()) return;
         CredentialStore store = CredentialStore.create();
         String name = store.defaultCredentialName(provider);
         if (name == null && !"oauth".equalsIgnoreCase(authenticationMethod)) {
@@ -261,21 +270,29 @@ public class ChatConfig {
         private final CredentialFailure failure;
 
         public AuthenticationException(String provider) {
-            this(provider, CredentialFailure.reauthRequired(), false);
+            this(provider, CredentialFailure.reauthRequired(), false, null);
+        }
+
+        /** Missing credential, with the vendor's route choices spelled out. */
+        public AuthenticationException(String provider, String guidance) {
+            this(provider, CredentialFailure.reauthRequired(), false, guidance);
         }
 
         public AuthenticationException(String provider, IOException cause) {
-            this(provider, CredentialFailure.classify(cause), false);
+            this(provider, CredentialFailure.classify(cause), false, null);
         }
 
-        private AuthenticationException(String provider, CredentialFailure failure, boolean afterUnauthorized) {
+        private AuthenticationException(String provider, CredentialFailure failure, boolean afterUnauthorized,
+                                        String guidance) {
             // Never retain the original exception: provider bodies and causes may echo tokens.
             // Recovery may fail on local I/O before any token refresh reaches the provider.
+            // Guidance states the actual cause; the generic sign-in advice would contradict it.
             super((afterUnauthorized ? "Credential recovery after HTTP 401 failed for "
-                    : "Could not prepare credentials for ") + provider + ". " + failure.message()
-                    + " " + failure.diagnostic()
+                    : "Could not prepare credentials for ") + provider + ". "
+                    + (guidance != null ? guidance
+                    : failure.message() + " " + failure.diagnostic()
                     + (failure.kind() == CredentialFailure.Kind.REAUTH_REQUIRED
-                    ? " Run `kompile auth login " + provider + "` to sign in again." : ""), null);
+                    ? " Run `kompile auth login " + provider + "` to sign in again." : "")), null);
             this.failure = failure;
         }
 
@@ -301,6 +318,7 @@ public class ChatConfig {
         ChatConfig copy = new ChatConfig(provider, apiKey, model, baseUrl);
         copy.thinking = thinking;
         copy.fastMode = fastMode;
+        copy.ultracode = ultracode;
         copy.localServingBinding = localServingBinding;
         copy.authenticationMethod = authenticationMethod;
         copy.authenticationScope = authenticationScope;
@@ -345,7 +363,10 @@ public class ChatConfig {
     @JsonIgnore
     public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
         if ("none".equalsIgnoreCase(authenticationMethod)
-                || "native".equalsIgnoreCase(authenticationMethod)) {
+                || "native".equalsIgnoreCase(authenticationMethod)
+                // The claude CLI route: the user's Claude Code login is the
+                // credential and Kompile never resolves one for it.
+                || isClaudeCliNative()) {
             return null;
         }
         try {
@@ -354,7 +375,12 @@ public class ChatConfig {
             throw new AuthenticationException(provider, e);
         }
         boolean oauthOnly = "oauth".equalsIgnoreCase(authenticationMethod);
-        boolean apiKeyOnly = "api-key".equalsIgnoreCase(authenticationMethod);
+        // Anthropic outside the Claude Code route (returned above) is its API-key
+        // route. Anthropic OAuth belongs to Claude Code, so a Kompile-stored
+        // Anthropic OAuth token is never sent. With no key this returns null like
+        // any keyless provider; DirectLlmClient refuses to send the request.
+        boolean anthropicApiKeyRoute = isClaudeCliNativeProvider(provider);
+        boolean apiKeyOnly = anthropicApiKeyRoute || "api-key".equalsIgnoreCase(authenticationMethod);
         if (!oauthOnly && apiKey != null && !apiKey.isBlank()) {
             return OAuthProviderFlow.RequestAuth.apiKey(apiKey);
         }
@@ -376,15 +402,76 @@ public class ChatConfig {
         } catch (IOException e) {
             throw new AuthenticationException(provider, e);
         }
-        if (oauthOnly || getCredentialName() != null) throw new AuthenticationException(provider);
+        if (oauthOnly || getCredentialName() != null) throw missingCredential(provider, getCredentialName());
         String environmentName = getEnvironmentVariable(provider);
-        if (environmentName == null) {
-            return null;
+        String value = environmentName == null ? null : System.getenv(environmentName);
+        if (value != null && !value.isBlank()) {
+            return OAuthProviderFlow.RequestAuth.apiKey(value);
         }
-        String value = System.getenv(environmentName);
-        return value == null || value.isBlank()
-                ? null
-                : OAuthProviderFlow.RequestAuth.apiKey(value);
+        return null;
+    }
+
+    private static final String ANTHROPIC_ROUTE_GUIDANCE = "The Anthropic API-key route has no API key: "
+            + "add one with `kompile auth login anthropic` or set ANTHROPIC_API_KEY. To use your Claude Code "
+            + "login instead, choose the Claude Code route (/model, the setup wizard, or --auth oauth).";
+
+    private static final String ANTHROPIC_OAUTH_SIGN_IN_GUIDANCE = "Anthropic credential '%s' is a stored "
+            + "OAuth sign-in, which Kompile never sends: a Claude subscription runs through Claude Code. "
+            + "Select an Anthropic API key (`kompile auth use anthropic <name>`), or choose the Claude Code "
+            + "route (/model, the setup wizard, or --auth oauth).";
+
+    /**
+     * The provider's route has no credential. For Anthropic the message names
+     * both routes, since its API-key and Claude Code routes share one provider id.
+     */
+    public static AuthenticationException missingCredential(String provider) {
+        return missingCredential(provider, null);
+    }
+
+    /** As {@link #missingCredential(String)}, naming a selected credential Kompile never sends. */
+    static AuthenticationException missingCredential(String provider, String credentialName) {
+        if (!isClaudeCliNativeProvider(provider)) return new AuthenticationException(provider);
+        String unusable = unusableCredentialReason(provider, credentialName);
+        return new AuthenticationException(provider, unusable != null ? unusable : ANTHROPIC_ROUTE_GUIDANCE);
+    }
+
+    /** Whether a stored credential is an Anthropic OAuth sign-in, which Kompile never sends. */
+    public static boolean isAnthropicOAuthSignIn(String provider, String credentialType) {
+        return isClaudeCliNativeProvider(provider) && ManagedCredential.OAUTH.equals(credentialType);
+    }
+
+    /**
+     * Why the named stored credential (the active one when null) can never serve
+     * a chat request, or null when it can. An Anthropic OAuth sign-in is that case:
+     * the Claude subscription belongs to Claude Code, so selecting one must say so
+     * instead of reading as a missing API key.
+     */
+    public static String unusableCredentialReason(String provider, String credentialName) {
+        if (!isClaudeCliNativeProvider(provider)) return null;
+        try {
+            CredentialStore store = CredentialStore.create();
+            String name = credentialName != null ? credentialName : store.activeCredentialName(provider);
+            if (name == null) return null;
+            return store.list(provider).stream()
+                    .filter(info -> name.equalsIgnoreCase(info.credentialName())
+                            && isAnthropicOAuthSignIn(provider, info.type()))
+                    .findFirst()
+                    .map(info -> String.format(ANTHROPIC_OAUTH_SIGN_IN_GUIDANCE, info.credentialName()))
+                    .orElse(null);
+        } catch (IOException unreadable) {
+            return null; // Credential resolution reports store failures itself.
+        }
+    }
+
+    /**
+     * Authentication route for a provider switch that carries no explicit choice.
+     * Anthropic serves two routes under one wire provider, so its route is never
+     * left implicit: the switch lands on the vendor's primary route, the user's
+     * Claude Code login (pick the API-key route explicitly to use a key). Every
+     * other provider implies its route by id, so it returns null.
+     */
+    public static String authenticationMethodAfterProviderSwitch(String provider) {
+        return isClaudeCliNativeProvider(provider) ? "oauth" : null;
     }
 
     /**
@@ -403,7 +490,7 @@ public class ChatConfig {
                     ? OAuthCredentialManager.create().refreshNamedAfterUnauthorized(provider, rejectedAuth)
                     : OAuthCredentialManager.create().refreshAfterUnauthorized(provider, rejectedAuth);
         } catch (IOException e) {
-            throw new AuthenticationException(provider, CredentialFailure.classify(e), true);
+            throw new AuthenticationException(provider, CredentialFailure.classify(e), true, null);
         }
     }
 
@@ -426,11 +513,14 @@ public class ChatConfig {
 
     /** Fetch the provider's current model ids from its live capability endpoint. */
     public List<String> getConfiguredModels(String provider) {
-        String discoveryBaseUrl = provider != null && provider.equalsIgnoreCase(this.provider)
-                ? getBaseUrl() : null;
-        OAuthProviderFlow.RequestAuth discoveryAuth =
-                provider != null && provider.equalsIgnoreCase(this.provider)
-                        ? resolveRequestAuth() : null;
+        boolean sameProvider = provider != null && provider.equalsIgnoreCase(this.provider);
+        if (sameProvider && isClaudeCliNative()) {
+            return ModelDiscoveryHttp.discoverClaudeCliResult().models().stream()
+                    .map(LiveModelDiscovery.Model::id)
+                    .toList();
+        }
+        String discoveryBaseUrl = sameProvider ? getBaseUrl() : null;
+        OAuthProviderFlow.RequestAuth discoveryAuth = sameProvider ? resolveRequestAuth() : null;
         return ModelDiscoveryHttp.discoverResultWithAuth(
                         provider, discoveryAuth, discoveryBaseUrl).models().stream()
                 .map(LiveModelDiscovery.Model::id)
@@ -464,6 +554,35 @@ public class ChatConfig {
     /** Recheck the effective request model, including per-request overrides. */
     public boolean useFastMode(String requestModel) {
         return fastMode && fastModeCapabilities().supports(requestModel);
+    }
+
+    public boolean isUltracode() { return ultracode; }
+    public void setUltracode(boolean ultracode) { this.ultracode = ultracode; }
+
+    @JsonIgnore
+    public ProviderUltracodeCapabilities ultracodeCapabilities() {
+        return ProviderUltracodeCapabilities.forProvider(provider);
+    }
+
+    /**
+     * Route gate only: the claude CLI route with a documented ultracode contract.
+     * Per-model eligibility (the required effort level) comes from live discovery
+     * when the model is selected.
+     */
+    @JsonIgnore
+    public boolean supportsUltracode() {
+        return isClaudeCliNative() && ultracodeCapabilities().declared();
+    }
+
+    @JsonIgnore
+    public boolean useUltracode() {
+        return ultracode && supportsUltracode();
+    }
+
+    /** Effort sent on the wire: ultracode's documented value replaces the selected level. */
+    @JsonIgnore
+    public String effectiveEffort() {
+        return useUltracode() ? ultracodeCapabilities().effort() : thinking;
     }
 
     public String getBaseUrl() { return baseUrl; }
@@ -568,6 +687,7 @@ public class ChatConfig {
         this.model = source.model;
         this.thinking = source.thinking;
         this.fastMode = source.useFastMode(source.model);
+        this.ultracode = source.useUltracode();
         this.baseUrl = source.baseUrl;
         this.localServingBinding = source.localServingBinding;
         this.authenticationMethod = source.authenticationMethod;
@@ -634,6 +754,11 @@ public class ChatConfig {
         if (provider == null || provider.isBlank()) return false;
         // Kompile instance mode doesn't need model or API key.
         if ("kompile".equals(provider)) return true;
+        // The native claude CLI has a built-in default model; an explicit pick is
+        // optional on the subscription route. Claude Code owns the login: it is
+        // verified with `claude auth status` when the route is selected, and the
+        // transport fails the turn with the fix when `claude -p` rejects it.
+        if (isClaudeCliNative()) return true;
         if (model == null || model.isBlank()) return false;
         // First-party Kompile serving and external local endpoints do not require an API key.
         if ("kompile-local".equals(provider)
@@ -720,6 +845,32 @@ public class ChatConfig {
         return "opencode".equalsIgnoreCase(provider);
     }
 
+    /**
+     * Whether the Anthropic vendor runs turns through the native claude CLI
+     * (subscription/OAuth route). Same vendor as the direct HTTP route;
+     * {@code isAnthropicFormat()} stays false here because the CLI owns the
+     * credentials and the wire protocol is Claude Code stream-json, not the
+     * Anthropic Messages API. Kompile never touches this credential — the user
+     * manages it with Claude Code (`claude auth login`).
+     */
+    @JsonIgnore
+    public boolean isClaudeCliNative() {
+        return isClaudeCliNative(provider, authenticationMethod);
+    }
+
+    /** Route check for a provider/method pair that is not (yet) a whole config. */
+    public static boolean isClaudeCliNative(String provider, String authenticationMethod) {
+        return isClaudeCliNativeProvider(provider)
+                && ("native".equalsIgnoreCase(authenticationMethod)
+                || "oauth".equalsIgnoreCase(authenticationMethod));
+    }
+
+    /** Vendor-level check: the Anthropic vendor's OAuth/native route is the claude CLI. */
+    @JsonIgnore
+    public static boolean isClaudeCliNativeProvider(String provider) {
+        return "anthropic".equalsIgnoreCase(provider);
+    }
+
     /** Whether this provider uses Pi's native messages protocol. */
     @JsonIgnore
     public boolean isPiMessagesFormat() {
@@ -731,7 +882,7 @@ public class ChatConfig {
      */
     @JsonIgnore
     public boolean isOpenAiCompatible() {
-        return !isOpenCodeNative() && !isAnthropicFormat()
+        return !isOpenCodeNative() && !isClaudeCliNative() && !isAnthropicFormat()
                 && !isOpenAiCodexFormat() && !isPiMessagesFormat();
     }
 

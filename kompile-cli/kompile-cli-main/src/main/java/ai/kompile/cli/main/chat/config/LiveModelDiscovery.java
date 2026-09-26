@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -27,6 +28,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Fetches model and vendor-native thinking capabilities from the selected vendor.
@@ -35,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * own discovery command; API vendors expose their own model endpoint.</p>
  */
 public final class LiveModelDiscovery {
-    private static final long PROCESS_TIMEOUT_SECONDS = 20;
+    static final long PROCESS_TIMEOUT_SECONDS = 20;
     private static final int MAX_NATIVE_OUTPUT_CHARS = 4 * 1024 * 1024;
     private static final ObjectMapper MAPPER = ai.kompile.cli.common.util.JsonUtils.standardMapper();
 
@@ -139,6 +142,285 @@ public final class LiveModelDiscovery {
             return List.of();
         }
         return discoverNative(agent);
+    }
+
+    /**
+     * Claude Code's own model catalog for the Claude Code route: the rows its
+     * model picker shows, each {@code value} exactly what {@code --model}
+     * accepts, with the effort levels Claude Code reports for that model.
+     * Flow: `claude auth status` gate first (not logged in → null +
+     * authNotice); logged in → the stream-json {@code initialize} handshake
+     * (the Agent SDK's supportedModels()). The handshake sends no user
+     * message, so no model turn runs, and Claude Code resolves its own login:
+     * Kompile never reads or uses Claude Code's credentials.
+     */
+    static List<Model> discoverClaudeCliModels() {
+        return discoverClaudeCliModels(null, null);
+    }
+
+    /**
+     * Same as {@link #discoverClaudeCliModels()} with two optional sinks:
+     * {@code authNotice} fires only when `claude auth status` says logged out;
+     * {@code listingError} fires when Claude Code is logged in but its catalog
+     * could not be read (Claude Code's own error text when it gave one).
+     */
+    static List<Model> discoverClaudeCliModels(Consumer<String> authNotice,
+            Consumer<String> listingError) {
+        String binary = claudeBinary();
+        if (binary == null) {
+            if (listingError != null) {
+                listingError.accept("No claude agent is registered.");
+            }
+            return List.of();
+        }
+        if (!claudeCodeLogin().loggedIn()) {
+            if (authNotice != null) {
+                authNotice.accept("claude is not logged in.");
+            }
+            return null;
+        }
+        ClaudeCatalog catalog = parseClaudeInitializeResponse(
+                runCaptured(claudeCatalogCommand(binary), CLAUDE_INITIALIZE_REQUEST));
+        if (catalog.models().isEmpty() && listingError != null) {
+            listingError.accept(catalog.error());
+        }
+        return catalog.models();
+    }
+
+    /** The control request Claude Code answers with its session catalog (models, effort levels). */
+    private static final String CLAUDE_INITIALIZE_REQUEST =
+            "{\"type\":\"control_request\",\"request_id\":\"kompile-model-discovery\","
+                    + "\"request\":{\"subtype\":\"initialize\"}}\n";
+
+    /**
+     * A headless Claude Code session that only answers the initialize handshake:
+     * MCP servers are not started (--strict-mcp-config with no --mcp-config)
+     * and nothing is saved to Claude Code's session history. Never --bare,
+     * which ignores the claude.ai login.
+     */
+    static List<String> claudeCatalogCommand(String binary) {
+        return List.of(binary, "-p",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json", "--verbose",
+                "--strict-mcp-config", "--no-session-persistence");
+    }
+
+    /** Claude Code's catalog, or the reason it could not be read. */
+    record ClaudeCatalog(List<Model> models, String error) {
+        ClaudeCatalog {
+            models = models == null ? List.of() : List.copyOf(models);
+            error = error == null ? "" : error;
+        }
+    }
+
+    /**
+     * Parse the initialize {@code control_response}: {@code models[]} rows as
+     * Claude Code serves them ({@code value} goes to {@code --model},
+     * {@code supportedEffortLevels} to {@code --effort}). Rows Claude Code
+     * marks disabled are skipped; nothing is invented.
+     */
+    static ClaudeCatalog parseClaudeInitializeResponse(String output) {
+        for (JsonNode event : jsonObjects(output)) {
+            if (!"control_response".equals(event.path("type").asText())) {
+                continue;
+            }
+            JsonNode response = event.path("response");
+            if (!"success".equals(response.path("subtype").asText())) {
+                String error = response.path("error").asText("");
+                return new ClaudeCatalog(List.of(), "Claude Code rejected the model catalog request"
+                        + (error.isBlank() ? "." : ": " + error));
+            }
+            Map<String, Model> models = new LinkedHashMap<>();
+            for (JsonNode row : response.path("response").path("models")) {
+                String value = row.path("value").asText("").trim();
+                if (value.isEmpty() || row.path("disabled").asBoolean(false)) {
+                    continue;
+                }
+                ModelBuilder model = new ModelBuilder(value);
+                for (JsonNode effort : row.path("supportedEffortLevels")) {
+                    model.addVariant(effort.asText(""), capitalize(effort.asText("")));
+                }
+                if (!model.variants.isEmpty()) {
+                    model.capabilitySource = "native:claude initialize";
+                }
+                models.putIfAbsent(value, model.build());
+            }
+            return new ClaudeCatalog(List.copyOf(models.values()),
+                    models.isEmpty() ? "Claude Code reported no available models." : "");
+        }
+        String detail = trimToMeaningful(output);
+        return new ClaudeCatalog(List.of(), "Claude Code did not answer the model catalog request"
+                + (detail.isBlank() ? "." : ": " + detail));
+    }
+
+    /** The registered claude CLI command, or null when no claude agent is registered. */
+    static String claudeBinary() {
+        AgentProvider agent = CliAgentRegistry.loadAll().stream()
+                .filter(candidate -> "claude".equalsIgnoreCase(candidate.getCommand())
+                        || "claude".equalsIgnoreCase(candidate.getName()))
+                .findFirst()
+                .orElse(null);
+        if (agent == null) {
+            return null;
+        }
+        return agent.getCommand() == null || agent.getCommand().isBlank()
+                ? "claude" : agent.getCommand();
+    }
+
+    /**
+     * Non-secret fields of `claude auth status`: whether and how Claude Code is
+     * signed in, as seen by the Claude Code route (which runs without
+     * ANTHROPIC_API_KEY). Never carries a token.
+     */
+    public record ClaudeCodeLogin(boolean loggedIn, String authMethod, String subscriptionType,
+                                  boolean apiKeyEnvironmentIgnored) {
+        /** One user-facing line stating exactly which login the Claude Code route uses. */
+        public String describe() {
+            if (!loggedIn) {
+                return "Claude Code is not logged in on this machine. Run `claude auth login` in a terminal.";
+            }
+            List<String> details = new ArrayList<>();
+            if (authMethod != null && !authMethod.isBlank()) details.add(authMethod);
+            if (subscriptionType != null && !subscriptionType.isBlank()) {
+                details.add(subscriptionType + " subscription");
+            }
+            return "Claude Code login verified" + (details.isEmpty() ? "" : " (" + String.join(", ", details) + ")")
+                    + " — Kompile stores no credential for this route."
+                    + (apiKeyEnvironmentIgnored
+                    ? " ANTHROPIC_API_KEY is ignored here; it belongs to the Anthropic API-key route." : "");
+        }
+    }
+
+    private static final Supplier<ClaudeCodeLogin> CLAUDE_AUTH_STATUS =
+            () -> {
+                String binary = claudeBinary();
+                return parseClaudeAuthStatus(binary == null ? "" : runCaptured(List.of(binary, "auth", "status")),
+                        hasText(System.getenv("ANTHROPIC_API_KEY")));
+            };
+
+    private static volatile Supplier<ClaudeCodeLogin> claudeCodeLoginProbe = CLAUDE_AUTH_STATUS;
+
+    /** Run `claude auth status` for the Claude Code route. Never reads Claude Code's credential files. */
+    public static ClaudeCodeLogin claudeCodeLogin() {
+        return claudeCodeLoginProbe.get();
+    }
+
+    /** Test seam: replace the `claude auth status` probe; null restores the real one. */
+    public static void useClaudeCodeLoginProbe(Supplier<ClaudeCodeLogin> probe) {
+        claudeCodeLoginProbe = probe == null ? CLAUDE_AUTH_STATUS : probe;
+    }
+
+    /** Parse `claude auth status` JSON (warnings may precede it); unreadable output is logged out. */
+    static ClaudeCodeLogin parseClaudeAuthStatus(String output, boolean apiKeyEnvironmentIgnored) {
+        int start = output == null ? -1 : output.indexOf('{');
+        int end = output == null ? -1 : output.lastIndexOf('}');
+        if (start < 0 || end < start) {
+            return new ClaudeCodeLogin(false, null, null, apiKeyEnvironmentIgnored);
+        }
+        try {
+            JsonNode status = MAPPER.readTree(output.substring(start, end + 1));
+            return new ClaudeCodeLogin(status.path("loggedIn").asBoolean(false),
+                    status.path("authMethod").asText(null),
+                    status.path("subscriptionType").asText(null),
+                    apiKeyEnvironmentIgnored);
+        } catch (IOException e) {
+            return new ClaudeCodeLogin(false, null, null, apiKeyEnvironmentIgnored);
+        }
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /** First non-warning, non-event line of CLI output, trimmed to a user-presentable size. */
+    private static String trimToMeaningful(String output) {
+        if (output == null) return "";
+        for (String line : output.split("\\R")) {
+            String value = line.trim();
+            if (!value.isBlank() && !value.startsWith("Warning:")
+                    && !value.startsWith("[claude-code:") && !value.startsWith("{")) {
+                return value.length() > 200 ? value.substring(0, 200) + "..." : value;
+            }
+        }
+        return "";
+    }
+
+    /** Run one command to completion with stdin on the null device, capturing merged stdout+stderr. */
+    private static String runCaptured(List<String> command) {
+        return runCaptured(command, null);
+    }
+
+    /**
+     * Run one command to completion, capturing merged stdout+stderr. When
+     * {@code input} is given it is written to stdin, which is then closed.
+     * A timeout or spawn failure comes back as its reason, so callers can show
+     * why a probe produced nothing.
+     */
+    private static String runCaptured(List<String> command, String input) {
+        Process process = null;
+        ExecutorService readerExecutor = null;
+        Future<String> outputTask = null;
+        try {
+            ProcessBuilder builder = ClaudeCliClient.withoutApiKeyEnvironment(
+                            NativeCliProcess.processBuilder(List.copyOf(command), null))
+                    .redirectErrorStream(true);
+            if (input != null) {
+                builder.redirectInput(ProcessBuilder.Redirect.PIPE);
+            }
+            process = builder.start();
+            if (input != null) {
+                try (OutputStream stdin = process.getOutputStream()) {
+                    stdin.write(input.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException exitedEarly) {
+                    // The process ended before reading stdin; its output says why.
+                }
+            }
+            Process running = process;
+            readerExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "claude-probe-reader");
+                thread.setDaemon(true);
+                return thread;
+            });
+            outputTask = readerExecutor.submit(() -> {
+                StringBuilder collected = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                        running.getInputStream(), StandardCharsets.UTF_8))) {
+                    char[] buffer = new char[8192];
+                    int read;
+                    while ((read = reader.read(buffer)) >= 0) {
+                        if (collected.length() >= MAX_NATIVE_OUTPUT_CHARS) continue;
+                        collected.append(buffer, 0, read);
+                    }
+                }
+                return collected.toString();
+            });
+            if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+                return "claude did not finish within " + PROCESS_TIMEOUT_SECONDS + " seconds.";
+            }
+            return outputTask.get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+                return "";
+            }
+            return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
+            if (process != null) {
+                try { process.getInputStream().close(); } catch (IOException ignored) { }
+            }
+            if (outputTask != null && !outputTask.isDone()) outputTask.cancel(true);
+            if (readerExecutor != null) {
+                readerExecutor.shutdownNow();
+                try {
+                    readerExecutor.awaitTermination(1, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
     }
 
     private static AgentProvider findAgent(String provider) {

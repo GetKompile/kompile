@@ -5,16 +5,24 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.EnumSet;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MemoryToolTest {
@@ -140,6 +148,79 @@ class MemoryToolTest {
     }
 
     @Test
+    void writeWithoutExplicitFileIsRejectedInsteadOfOverwritingTheIndex() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "write")
+                .put("scope", "project")
+                .put("content", "should not land in MEMORY.md");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("action='save'"));
+        assertFalse(Files.exists(tempDir.resolve(".kompile/memory/MEMORY.md")));
+    }
+
+    @Test
+    void appendWithoutExplicitFileIsRejectedInsteadOfMutatingTheIndex() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "append")
+                .put("scope", "project")
+                .put("content", "should not land in MEMORY.md");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("action='save'"));
+        assertFalse(Files.exists(tempDir.resolve(".kompile/memory/MEMORY.md")));
+    }
+
+    @Test
+    void writeWithExplicitMemoryMdFileStillEditsTheIndexOnPurpose() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "write")
+                .put("scope", "project")
+                .put("file", "MEMORY.md")
+                .put("content", "deliberate index edit");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result::getOutput);
+        assertEquals("deliberate index edit",
+                Files.readString(tempDir.resolve(".kompile/memory/MEMORY.md")));
+    }
+
+    @Test
+    void readWithoutFileStillDefaultsToMemoryMd() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        Path memoryDir = tempDir.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memoryDir);
+        Files.writeString(memoryDir.resolve("MEMORY.md"), "default index content");
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "read")
+                .put("scope", "project");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result::getOutput);
+        assertTrue(result.getOutput().contains("default index content"));
+    }
+
+    private ToolContext newContext() {
+        PermissionService permissions = new PermissionService();
+        permissions.setAutoApproveAll(true);
+        return new ToolContext("memory-tool-test-" + System.nanoTime(), null,
+                permissions, tempDir, new ToolRegistry(MAPPER));
+    }
+
+    @Test
     void schemaAdvertisesDirectClaudeReadAction() {
         MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
 
@@ -151,5 +232,116 @@ class MemoryToolTest {
                 .path("description").asText().contains("all provider memory"));
         assertEquals("integer", tool.parameterSchema().path("properties").path("top_k")
                 .path("type").asText());
+    }
+
+    @Test
+    void writeIsAtomicAndLeavesNoLeftoverTempFiles() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "write")
+                .put("scope", "project")
+                .put("file", "notes.md")
+                .put("content", "exact content for write");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result::getOutput);
+        Path memoryDir = tempDir.resolve(".kompile").resolve("memory");
+        assertEquals("exact content for write",
+                Files.readString(memoryDir.resolve("notes.md"), StandardCharsets.UTF_8));
+        assertNoLeftoverTempFiles(memoryDir);
+    }
+
+    @Test
+    void appendIsAtomicAndLeavesNoLeftoverTempFiles() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "append")
+                .put("scope", "project")
+                .put("file", "notes.md")
+                .put("content", "appended body");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result::getOutput);
+        Path memoryDir = tempDir.resolve(".kompile").resolve("memory");
+        String written = Files.readString(memoryDir.resolve("notes.md"), StandardCharsets.UTF_8);
+        assertTrue(written.endsWith("appended body"));
+        assertNoLeftoverTempFiles(memoryDir);
+    }
+
+    @Test
+    void saveIsAtomicAndLeavesNoLeftoverTempFiles() throws Exception {
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ToolContext context = newContext();
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("action", "save")
+                .put("scope", "project")
+                .put("memoryType", "project")
+                .put("name", "atomic write check")
+                .put("description", "regression test for atomic memory writes")
+                .put("content", "exact body for save");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result::getOutput);
+        Path memoryDir = tempDir.resolve(".kompile").resolve("memory");
+        String noteContent = Files.readString(memoryDir.resolve("atomic_write_check.md"),
+                StandardCharsets.UTF_8);
+        assertTrue(noteContent.endsWith("exact body for save\n"));
+        assertTrue(Files.readString(memoryDir.resolve("MEMORY.md"), StandardCharsets.UTF_8)
+                .contains("atomic_write_check.md"));
+        assertNoLeftoverTempFiles(memoryDir);
+    }
+
+    @Test
+    void failedAtomicRewriteLeavesMemoryIndexByteIdentical() throws Exception {
+        Path memoryDir = tempDir.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memoryDir);
+        Path indexFile = memoryDir.resolve("MEMORY.md");
+        String originalIndex = "# Kompile Memory Index\n\n"
+                + "- [Existing](existing.md) — [project] pre-existing entry\n";
+        Files.writeString(indexFile, originalIndex, StandardCharsets.UTF_8);
+
+        PosixFileAttributeView view =
+                Files.getFileAttributeView(memoryDir, PosixFileAttributeView.class);
+        Assumptions.assumeTrue(view != null, "requires a POSIX filesystem");
+
+        Set<PosixFilePermission> writable = view.readAttributes().permissions();
+        Set<PosixFilePermission> readOnly = EnumSet.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE,
+                PosixFilePermission.GROUP_READ, PosixFilePermission.GROUP_EXECUTE,
+                PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_EXECUTE);
+        try {
+            Files.setPosixFilePermissions(memoryDir, readOnly);
+            Assumptions.assumeTrue(!Files.isWritable(memoryDir),
+                    "process can still write the read-only directory (e.g. running as root)");
+
+            MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+            ToolContext context = newContext();
+            ObjectNode params = MAPPER.createObjectNode()
+                    .put("action", "save")
+                    .put("scope", "project")
+                    .put("memoryType", "project")
+                    .put("name", "should not persist")
+                    .put("content", "this write must not corrupt the index");
+
+            ToolResult result = tool.execute(params, context);
+
+            assertTrue(result.isError(), result::getOutput);
+        } finally {
+            Files.setPosixFilePermissions(memoryDir, writable);
+        }
+
+        assertEquals(originalIndex, Files.readString(indexFile, StandardCharsets.UTF_8));
+    }
+
+    private void assertNoLeftoverTempFiles(Path memoryDir) throws IOException {
+        try (var files = Files.list(memoryDir)) {
+            assertTrue(files.noneMatch(p -> p.getFileName().toString().endsWith(".tmp")),
+                    "leftover .tmp file(s) in " + memoryDir);
+        }
     }
 }

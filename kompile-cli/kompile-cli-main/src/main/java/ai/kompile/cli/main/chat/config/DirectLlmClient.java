@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
+import ai.kompile.cli.main.chat.ReminderManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -57,6 +58,9 @@ public class DirectLlmClient implements AutoCloseable {
 
     static final int OPENAI_INSTRUCTIONS_MAX_CHARS = 1_048_576;
     static final int OPENAI_PROMPT_CACHE_KEY_MAX_CHARS = 64;
+    private static final int CHARS_PER_TOKEN = 4;
+    private static final String MEMORY_CONTEXT_OPEN = "<memory_context>";
+    private static final String MEMORY_CONTEXT_CLOSE = "</memory_context>";
     private static final String OPENAI_INSTRUCTIONS_OMISSION =
             "\n\n[OpenAI instructions limit reached. Middle content was omitted; "
                     + "project instructions and saved tool results remain available through "
@@ -64,10 +68,13 @@ public class DirectLlmClient implements AutoCloseable {
 
     public interface ProviderActivityListener {
         void onToolStart(String callId, String name, String input);
+        default void onToolInput(String callId, String name, String input) { }
+        default void onToolOutput(String callId, String name, String output) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         default void onTokenUsage(long input, long output,
                                   long cacheRead, long cacheCreation) { }
+        default void onNotice(String text) { }
     }
 
     /** Provider-neutral terminal failure categories used by the chat coordinator. */
@@ -101,6 +108,8 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile RadiusGatewayConfig radiusGatewayConfig;
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
+    private volatile ClaudeCliClient claudeServeClient;
+    private volatile boolean claudeNeedsSeed = true;
     private volatile int nativeCompactionTriggerTokens;
     private volatile int wireMaxOutputTokens;
     private volatile int contextWindowTokens;
@@ -377,6 +386,9 @@ public class DirectLlmClient implements AutoCloseable {
                 if (route.protocol() == WireProtocol.OPENCODE) {
                     resetOpenCodeClient();
                 }
+                if (route.protocol() == WireProtocol.CLAUDE_CLI) {
+                    resetClaudeClient();
+                }
                 connectivityAttempt++;
             }
         }
@@ -402,6 +414,8 @@ public class DirectLlmClient implements AutoCloseable {
             case KOMPILE_LOCAL -> streamKompileServing(
                     userMessage, systemPrompt, toolDefs, toolResults, attachments);
             case OPENCODE -> streamOpenCode(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+            case CLAUDE_CLI -> streamClaudeCli(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
             case OPENAI_RESPONSES -> streamOpenAiResponses(
                     userMessage, systemPrompt, toolDefs, toolResults,
@@ -432,6 +446,13 @@ public class DirectLlmClient implements AutoCloseable {
         }
         if (config.isPiMessagesFormat()) {
             return new ResolvedRoute(WireProtocol.PI_MESSAGES, false,
+                    ProviderCompactionCapabilities.generic());
+        }
+        if (config.isClaudeCliNative()) {
+            // Anthropic vendor on the native/subscription route: turns run through
+            // the claude CLI's headless stream-json transport; the CLI owns the
+            // subscription (OAuth) credentials Kompile never sees.
+            return new ResolvedRoute(WireProtocol.CLAUDE_CLI, false,
                     ProviderCompactionCapabilities.generic());
         }
         if (config.isAnthropicFormat()) {
@@ -504,7 +525,7 @@ public class DirectLlmClient implements AutoCloseable {
     private static long estimateRequestInputTokens(ArrayNode messages, ArrayNode toolDefs) {
         long chars = messages.toString().length();
         if (toolDefs != null) chars += toolDefs.toString().length();
-        return chars / 4;
+        return chars / CHARS_PER_TOKEN;
     }
 
     /** Attempt an explicit provider-native compaction without generic fallback. */
@@ -642,7 +663,7 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("anthropic-version", "2023-06-01")
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
-        applyAnthropicAuthentication(builder, auth, false);
+        applyAnthropicAuthentication(builder, auth, config.getProvider(), false);
         if (nativeCompaction) {
             builder.setHeader("anthropic-beta",
                     mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
@@ -765,6 +786,7 @@ public class DirectLlmClient implements AutoCloseable {
     public enum WireProtocol {
         KOMPILE_LOCAL,
         OPENCODE,
+        CLAUDE_CLI,
         OPENAI_RESPONSES,
         PI_MESSAGES,
         ANTHROPIC_MESSAGES,
@@ -819,9 +841,7 @@ public class DirectLlmClient implements AutoCloseable {
             OpenCodeServeClient client = openCodeClient();
             String effectiveSystemPrompt = systemPrompt;
             if (openCodeNeedsSeed && !conversationHistory.isEmpty()) {
-                effectiveSystemPrompt = (systemPrompt == null ? "" : systemPrompt + "\n\n")
-                        + "[Portable conversation context restored by Kompile]\n"
-                        + portableHistoryText();
+                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
             }
             // OpenCode owns a durable native session. A turn that actually ran may
             // have mutated that provider-side history even when it failed, so such
@@ -904,11 +924,138 @@ public class DirectLlmClient implements AutoCloseable {
         return client;
     }
 
+    /**
+     * Stream one turn through the native Claude Code CLI (anthropic vendor on the
+     * native/subscription route). Mirrors {@link #streamOpenCode}: the provider
+     * owns a durable native session, so a turn that actually ran may have mutated
+     * provider-side history even when it failed and must not be replayed as if
+     * this were a stateless HTTP request. Failures before the turn begins
+     * (binary missing, spawn failure, credential rejection) surface as
+     * {@link ClaudeCliClient.TurnNotStartedException} instead: the provider never
+     * answered, so the connectivity retry loop may replay it against the fresh
+     * transport installed by {@link #resetClaudeClient()}.
+     */
+    private StreamResult streamClaudeCli(String userMessage, String systemPrompt,
+                                         ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                         String effectiveModel) {
+        StreamResult result = new StreamResult();
+        StringBuilder streamed = new StringBuilder();
+        try {
+            ClaudeCliClient client = claudeClient();
+            String effectiveSystemPrompt = systemPrompt;
+            if (claudeNeedsSeed && !conversationHistory.isEmpty()) {
+                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
+            }
+            // Ultracode replaces the effort level on this route; fast mode is
+            // rechecked against the effective request model like the HTTP routes.
+            String text = client.send(effectiveModel, config.effectiveEffort(),
+                    config.useFastMode(effectiveModel),
+                    effectiveSystemPrompt, userMessage,
+                    chunk -> {
+                        streamed.append(chunk);
+                        printStreamingChunk(chunk);
+                    }, new ClaudeCliClient.ActivityListener() {
+                        @Override
+                        public void onToolStart(String callId, String name, String input) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onToolStart(callId, name, input);
+                            }
+                        }
+
+                        @Override
+                        public void onToolInput(String callId, String name, String input) {
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onToolInput(callId, name, input);
+                        }
+
+                        @Override
+                        public void onToolOutput(String callId, String name, String output) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onToolOutput(callId, name, output);
+                        }
+
+                        @Override
+                        public void onNotice(String notice) {
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onNotice(notice);
+                        }
+
+                        @Override
+                        public void onToolComplete(String callId, String name, String output,
+                                                   int exitCode, boolean error) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onToolComplete(
+                                        callId, name, output, exitCode, error);
+                            }
+                        }
+
+                        @Override
+                        public void onTokenUsage(long input, long output,
+                                                 long cacheRead, long cacheCreation) {
+                            result.inputTokens += Math.max(0, input);
+                            result.outputTokens += Math.max(0, output);
+                            result.cacheReadTokens += Math.max(0, cacheRead);
+                            result.cacheCreationTokens += Math.max(0, cacheCreation);
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) {
+                                listener.onTokenUsage(
+                                        input, output, cacheRead, cacheCreation);
+                            }
+                        }
+
+                        @Override
+                        public void onThinking(String reasoningDelta) {
+                            // Same pipeline every other lane feeds: renders in the
+                            // live thinking renderer when installed, dropped
+                            // otherwise (capture lanes must not receive reasoning).
+                            printThinkingChunk(reasoningDelta);
+                        }
+                    });
+            result.text = text;
+            if (streamed.length() == 0) {
+                printStreamingChunk(text);
+            }
+            appendOpenCodeHistory(userMessage, text);
+            claudeNeedsSeed = false;
+        } catch (ClaudeCliClient.TurnNotStartedException e) {
+            // The turn never reached a provider (or credentials were rejected):
+            // replay-safe stays true and the retry loop can reconnect. An auth
+            // rejection warns the user with the actionable fix.
+            recordStreamFailure(result, e, "[Error: ");
+        } catch (Exception e) {
+            // The turn ran, so the native session may hold partial provider-side
+            // state; keep the result non-replayable.
+            result.providerSideEffectsObserved = true;
+            if (streamed.length() > 0) result.text = streamed.toString();
+            recordStreamFailure(result, e, "[Error: ");
+        }
+        return result;
+    }
+
+    private ClaudeCliClient claudeClient() {
+        ClaudeCliClient client = claudeServeClient;
+        if (client == null) {
+            synchronized (this) {
+                client = claudeServeClient;
+                if (client == null) {
+                    client = new ClaudeCliClient(workingDirectory);
+                    claudeServeClient = client;
+                }
+            }
+        }
+        return client;
+    }
+
     private void appendOpenCodeHistory(String userMessage, String assistantText) {
         if (userMessage != null) {
             ObjectNode user = objectMapper.createObjectNode();
             user.put("role", "user");
-            user.put("content", userMessage);
+            user.put("content", withoutTurnEnvelopes(userMessage));
             conversationHistory.add(user);
         }
         if (assistantText != null && !assistantText.isBlank()) {
@@ -922,6 +1069,7 @@ public class DirectLlmClient implements AutoCloseable {
     @Override
     public void close() {
         resetOpenCodeClient();
+        resetClaudeClient();
     }
 
     /**
@@ -931,6 +1079,7 @@ public class DirectLlmClient implements AutoCloseable {
         synchronized (historyLock) {
             conversationHistory.clear();
             resetOpenCodeClient();
+            resetClaudeClient();
         }
     }
 
@@ -1239,16 +1388,66 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
-    private String portableHistoryText() {
-        StringBuilder text = new StringBuilder();
-        for (ObjectNode message : conversationHistory) {
-            String role = message.path("role").asText("context");
-            JsonNode content = message.get("content");
-            text.append('[').append(role).append("]\n");
-            text.append(content != null && content.isTextual()
-                    ? content.asText() : String.valueOf(content)).append("\n\n");
+    /**
+     * System prompt that seeds a fresh native session (route switch, resume, reconnect,
+     * post-compaction) with the portable history. Only the newest messages that fit the
+     * auto-compaction share of the context window left after the system prompt and the
+     * new turn are restored; older ones collapse into an omission marker.
+     */
+    private String withPortableHistory(String systemPrompt, String userMessage) {
+        String prefix = (systemPrompt == null ? "" : systemPrompt + "\n\n")
+                + "[Portable conversation context restored by Kompile]\n";
+        long budgetChars = Long.MAX_VALUE;
+        if (contextWindowTokens > 0) {
+            budgetChars = (long) (contextWindowTokens * config.getAutoCompactThreshold())
+                    * CHARS_PER_TOKEN - prefix.length()
+                    - (userMessage == null ? 0 : userMessage.length());
         }
+        return prefix + portableHistoryText(budgetChars);
+    }
+
+    private String portableHistoryText(long budgetChars) {
+        List<String> kept = new ArrayList<>();
+        int omitted;
+        synchronized (historyLock) {
+            long used = 0;
+            int index = conversationHistory.size() - 1;
+            for (; index >= 0; index--) {
+                String message = portableMessageText(conversationHistory.get(index));
+                if (used + message.length() > budgetChars) break;
+                used += message.length();
+                kept.add(message);
+            }
+            omitted = index + 1;
+        }
+        StringBuilder text = new StringBuilder();
+        if (omitted > 0) {
+            text.append('[').append(omitted)
+                    .append(" earlier messages omitted to fit the context window]\n\n");
+        }
+        for (int i = kept.size() - 1; i >= 0; i--) text.append(kept.get(i));
         return text.toString().strip();
+    }
+
+    private static String portableMessageText(ObjectNode message) {
+        String role = message.path("role").asText("context");
+        JsonNode content = message.get("content");
+        String text = content != null && content.isTextual()
+                ? content.asText() : String.valueOf(content);
+        if ("user".equals(role)) text = withoutTurnEnvelopes(text);
+        return "[" + role + "]\n" + text + "\n\n";
+    }
+
+    /**
+     * The user's own text: drops the per-turn reminder block and injected memory
+     * context, which every new turn carries fresh.
+     */
+    private static String withoutTurnEnvelopes(String message) {
+        String text = ReminderManager.stripReminderBlock(message);
+        if (!text.startsWith(MEMORY_CONTEXT_OPEN)) return text;
+        int end = text.indexOf(MEMORY_CONTEXT_CLOSE);
+        return end < 0 ? text
+                : text.substring(end + MEMORY_CONTEXT_CLOSE.length()).stripLeading();
     }
 
     public int getHistorySize() {
@@ -3712,8 +3911,8 @@ public class DirectLlmClient implements AutoCloseable {
                     .header("anthropic-version", "2023-06-01")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
                     .timeout(connectivityPolicy.requestTimeout());
-            applyAnthropicAuthentication(
-                    requestBuilder, auth, "github-copilot".equals(config.getProvider()));
+            applyAnthropicAuthentication(requestBuilder, auth, config.getProvider(),
+                    "github-copilot".equals(config.getProvider()));
             if (nativeCompaction || fastMode) {
                 String beta = nativeCompaction ? "compact-2026-01-12" : "";
                 if (fastMode) beta += (beta.isEmpty() ? "" : ",") + "fast-mode-2026-02-01";
@@ -3849,9 +4048,14 @@ public class DirectLlmClient implements AutoCloseable {
     private static void applyAnthropicAuthentication(
             HttpRequest.Builder builder,
             OAuthProviderFlow.RequestAuth auth,
+            String provider,
             boolean bearerFallback) {
-        if (auth != null
-                && !hasHeader(auth.headers(), "Authorization")
+        // Never send a Messages request without a credential: the API would
+        // answer with a bare 401 instead of naming the route that has none.
+        if (auth == null) {
+            throw ChatConfig.missingCredential(provider);
+        }
+        if (!hasHeader(auth.headers(), "Authorization")
                 && !hasHeader(auth.headers(), "x-api-key")) {
             applyTokenAuthentication(builder, auth,
                     bearerFallback ? "Authorization" : "x-api-key",
@@ -4592,6 +4796,13 @@ public class DirectLlmClient implements AutoCloseable {
         if (client != null) client.close();
         openCodeServeClient = null;
         openCodeNeedsSeed = true;
+    }
+
+    private void resetClaudeClient() {
+        ClaudeCliClient client = claudeServeClient;
+        if (client != null) client.close();
+        claudeServeClient = null;
+        claudeNeedsSeed = true;
     }
 
     private boolean markCancelled(StreamResult result, Exception error) {

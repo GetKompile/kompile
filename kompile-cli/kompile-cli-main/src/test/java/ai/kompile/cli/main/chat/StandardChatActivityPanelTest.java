@@ -770,6 +770,33 @@ class StandardChatActivityPanelTest {
     }
 
     @Test
+    void updatedProviderToolInputAppearsInTheOpenedActivityDetail() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("provider-tool-input-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 4);
+            String callId = "provider-call-1";
+            panel.recordToolStart(callId, "external_tool", "{}");
+            String finalInput = "{\"path\":\"/tmp/final.txt\",\"extra\":\"complete\"}";
+            panel.updateToolInput(callId, "external_tool", finalInput);
+            panel.recordToolComplete(callId, "external_tool", finalInput,
+                    ToolResult.success("done"));
+
+            assertTrue(panel.selectNext());
+            StandardChatActivityPanel.ActivityView view = panel.openSelectedView();
+            assertNotNull(view);
+            assertTrue(view.content().contains("path=/tmp/final.txt"), view.content());
+            assertTrue(view.content().contains("extra=complete"), view.content());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void mainPaneKeepsOnlyFourMostRecentActivityRows() {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
         BackgroundProcessManager processes =

@@ -29,7 +29,7 @@ public final class ChatProfiles {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Profile(String name, String vendor, String mode, String provider,
                           String model, String thinking, String baseUrl, String authenticationMethod,
-                          boolean fastMode, String agent) {
+                          boolean fastMode, boolean ultracode, String agent) {
         public Profile {
             name = required(name, "Profile name");
             vendor = required(vendor, "Vendor").toLowerCase(Locale.ROOT);
@@ -46,7 +46,7 @@ public final class ChatProfiles {
                 if (!vendor.equals(JudgeDefaults.vendor(provider))) {
                     throw new IllegalArgumentException("Judge profile vendor must match its provider");
                 }
-                if (baseUrl != null || authenticationMethod != null || fastMode || agent != null) {
+                if (baseUrl != null || authenticationMethod != null || fastMode || ultracode || agent != null) {
                     throw new IllegalArgumentException("Judge profiles store model/thinking only, not chat routing");
                 }
             }
@@ -58,6 +58,7 @@ public final class ChatProfiles {
             config.setThinking(thinking);
             config.setAuthenticationMethod(authenticationMethod);
             config.setFastMode(fastMode);
+            config.setUltracode(ultracode);
             config.setChatMode("standard".equals(mode) ? "standard" : "passthrough");
             config.setPassthroughManaged(!"passthrough-direct".equals(mode));
             if (agent != null) config.setPassthroughAgent(agent);
@@ -79,13 +80,14 @@ public final class ChatProfiles {
         return new Profile(name, vendor, mode(config), passthrough ? null : config.getProvider(),
                 config.getModel(), config.getThinking(), passthrough ? null : config.getBaseUrl(),
                 passthrough ? null : config.getAuthenticationMethod(),
-                !passthrough && config.isFastMode(), passthrough ? config.getPassthroughAgent() : null);
+                !passthrough && config.isFastMode(), !passthrough && config.useUltracode(),
+                passthrough ? config.getPassthroughAgent() : null);
     }
 
     /** Model/thinking selections share the profile store, never the main chat's credentials or routing. */
     public static Profile captureJudge(String name, String provider, String model, String thinking) {
         return new Profile(name, JudgeDefaults.vendor(provider), "judge", provider,
-                model, thinking, null, null, false, null);
+                model, thinking, null, null, false, false, null);
     }
 
     public static String mode(ChatConfig config) {

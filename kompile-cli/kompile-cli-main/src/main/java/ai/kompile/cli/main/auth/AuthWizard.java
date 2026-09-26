@@ -75,6 +75,11 @@ final class AuthWizard implements AutoCloseable {
         if (kind == LoginKind.NATIVE) {
             return new LoginRequest(providerId, null, kind, null, null, true);
         }
+        if (kind == LoginKind.OAUTH && "anthropic".equalsIgnoreCase(providerId)) {
+            // Claude Code owns Anthropic's subscription login: there is no Kompile
+            // credential to name or activate.
+            return new LoginRequest(providerId, null, kind, null, null, true);
+        }
         String credentialProviderId = kind == LoginKind.OAUTH ? oauthProviderId : providerId;
 
         List<CredentialStore.CredentialInfo> existing = store.list(credentialProviderId);
