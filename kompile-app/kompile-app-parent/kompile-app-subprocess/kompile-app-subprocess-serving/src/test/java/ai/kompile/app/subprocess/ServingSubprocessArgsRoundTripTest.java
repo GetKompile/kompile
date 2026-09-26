@@ -51,7 +51,6 @@ class ServingSubprocessArgsRoundTripTest {
                 Boolean.TRUE,
                 Boolean.FALSE,
                 Boolean.TRUE,
-                Boolean.FALSE,
                 "chat-template-x",
                 "STATIC",
                 4096,
