@@ -14,6 +14,7 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class AgenticChatLoopWorkflowTest {
 
     @TempDir

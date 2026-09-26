@@ -4,6 +4,7 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.enforcer.*;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.workflow.*;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,6 +26,7 @@ import java.util.function.BiFunction;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class DirectSubagentSupervisionTest {
     @TempDir Path directory;
     final ObjectMapper mapper = new ObjectMapper();

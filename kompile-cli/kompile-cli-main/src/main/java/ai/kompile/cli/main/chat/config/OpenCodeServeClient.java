@@ -37,6 +37,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -79,6 +80,8 @@ final class OpenCodeServeClient implements AutoCloseable {
     /** Session creation runs right after server boot; give it boot-scale patience. */
     private static final Duration SESSION_CREATE_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration TURN_TIMEOUT = Duration.ofMinutes(30);
+    /** Bounds the abort request and the wait for the aborted turn to end. */
+    private static final Duration ABORT_TIMEOUT = Duration.ofSeconds(5);
 
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final ObjectMapper objectMapper;
@@ -89,6 +92,8 @@ final class OpenCodeServeClient implements AutoCloseable {
 
     private Process serverProcess;
     private volatile CompletableFuture<HttpResponse<String>> activeTurnRequest;
+    /** Returns true once the running turn is cancelled; null when nothing can cancel it. */
+    private volatile BooleanSupplier cancellationCheck;
     private String baseUrl;
     private String sessionId;
     private boolean closed;
@@ -117,6 +122,14 @@ final class OpenCodeServeClient implements AutoCloseable {
         this.httpClient = httpClient;
         this.baseUrl = baseUrl;
         this.sessionId = sessionId;
+    }
+
+    /**
+     * Cancels the running turn once it returns true. The turn then asks the
+     * server to abort the session's work, which also stops the tools it started.
+     */
+    void setCancellationCheck(BooleanSupplier check) {
+        cancellationCheck = check;
     }
 
     /** Send one turn through the native OpenCode session. */
@@ -174,18 +187,26 @@ final class OpenCodeServeClient implements AutoCloseable {
                 .build();
         activeTurnRequest = httpClient.sendAsync(request,
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        BooleanSupplier check = cancellationCheck;
         long turnDeadline = System.nanoTime() + TURN_TIMEOUT.toNanos();
         try {
+            // Every exit that stops waiting for the turn also aborts it on the
+            // server: dropping only the request leaves OpenCode running the turn
+            // and its tools.
             while (!activeTurnRequest.isDone()) {
+                if (cancelRequested(check)) {
+                    abortTurn(activeTurnRequest);
+                    throw new CancellationException("OpenCode turn cancelled");
+                }
                 long now = System.nanoTime();
                 if (!listener.isDegraded() && now - listener.lastActivityNanos()
                         >= connectivityPolicy.subprocessIdleTimeout().toNanos()) {
-                    activeTurnRequest.cancel(true);
+                    abortTurn(activeTurnRequest);
                     throw new IllegalStateException("OpenCode provider connection was idle for "
                             + connectivityPolicy.subprocessIdleTimeout().toMinutes() + " minutes");
                 }
                 if (now >= turnDeadline) {
-                    activeTurnRequest.cancel(true);
+                    abortTurn(activeTurnRequest);
                     throw new IllegalStateException("OpenCode turn timed out");
                 }
                 Thread.sleep(250);
@@ -220,12 +241,54 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
             throw new IllegalStateException("OpenCode turn request failed", cause);
         } catch (InterruptedException e) {
-            activeTurnRequest.cancel(true);
+            abortTurn(activeTurnRequest);
             Thread.currentThread().interrupt();
             throw e;
         } finally {
             activeTurnRequest = null;
             listener.stop();
+        }
+    }
+
+    /**
+     * Stop the running turn on the server, which also stops the tools it
+     * started, then drop the local request. Waits briefly for the aborted turn
+     * to end so the next turn does not reach a session that is still busy.
+     */
+    private void abortTurn(CompletableFuture<HttpResponse<String>> turn) {
+        try {
+            abortSession();
+            turn.handle((response, error) -> null)
+                    .completeOnTimeout(null, ABORT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                    .join();
+        } finally {
+            turn.cancel(true);
+        }
+    }
+
+    /**
+     * Ask the server to abort the session's running work. Best effort: joining
+     * the async request is not interruptible, so this still reaches the server
+     * from a thread that was interrupted.
+     */
+    private void abortSession() {
+        try {
+            httpClient.sendAsync(HttpRequest.newBuilder(
+                                    URI.create(baseUrl + "/session/" + sessionId + "/abort"))
+                            .timeout(ABORT_TIMEOUT)
+                            .POST(HttpRequest.BodyPublishers.noBody())
+                            .build(), HttpResponse.BodyHandlers.discarding())
+                    .join();
+        } catch (RuntimeException ignored) {
+            // Closing the transport still deletes the session and stops the server.
+        }
+    }
+
+    private static boolean cancelRequested(BooleanSupplier check) {
+        try {
+            return check != null && check.getAsBoolean();
+        } catch (RuntimeException e) {
+            return false; // A failing check must not end the turn.
         }
     }
 
@@ -421,6 +484,9 @@ final class OpenCodeServeClient implements AutoCloseable {
             if (closed) return;
             closed = true;
         if (baseUrl != null && sessionId != null) {
+            // A turn still running on the server keeps its tools running after
+            // the session is deleted and the server is stopped.
+            abortSession();
             try {
                 httpClient.send(HttpRequest.newBuilder(
                                 URI.create(baseUrl + "/session/" + sessionId))

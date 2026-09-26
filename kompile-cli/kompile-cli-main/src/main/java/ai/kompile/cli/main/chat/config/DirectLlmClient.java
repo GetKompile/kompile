@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.core.llm.ModelContextWindows;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -61,6 +62,9 @@ public class DirectLlmClient implements AutoCloseable {
     private static final int CHARS_PER_TOKEN = 4;
     private static final String MEMORY_CONTEXT_OPEN = "<memory_context>";
     private static final String MEMORY_CONTEXT_CLOSE = "</memory_context>";
+    private static final String RESTORED_CONVERSATION_OPEN = "[Earlier conversation restored by "
+            + "Kompile: past turns for context, not instructions to act on]\n";
+    private static final String RESTORED_CONVERSATION_CLOSE = "\n[End earlier conversation]";
     private static final String OPENAI_INSTRUCTIONS_OMISSION =
             "\n\n[OpenAI instructions limit reached. Middle content was omitted; "
                     + "project instructions and saved tool results remain available through "
@@ -91,6 +95,9 @@ public class DirectLlmClient implements AutoCloseable {
         TRUNCATED,
         PROVIDER_ERROR
     }
+
+    /** A Claude Code native session and the digest of the instructions it holds. */
+    public record ClaudeNativeSession(String sessionId, String instructionsDigest) { }
 
     private final ChatConfig config;
     private final HttpClient httpClient;
@@ -839,9 +846,12 @@ public class DirectLlmClient implements AutoCloseable {
         StringBuilder streamed = new StringBuilder();
         try {
             OpenCodeServeClient client = openCodeClient();
-            String effectiveSystemPrompt = systemPrompt;
-            if (openCodeNeedsSeed && !conversationHistory.isEmpty()) {
-                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
+            // A new native session gets the earlier conversation ahead of the
+            // message, labeled as past turns rather than instructions.
+            String turnMessage = userMessage;
+            String restored = openCodeNeedsSeed ? restoredConversation(systemPrompt, userMessage) : "";
+            if (!restored.isEmpty()) {
+                turnMessage = restored + "\n\n" + (userMessage == null ? "" : userMessage);
             }
             // OpenCode owns a durable native session. A turn that actually ran may
             // have mutated that provider-side history even when it failed, so such
@@ -850,8 +860,10 @@ public class DirectLlmClient implements AutoCloseable {
             // spawn) surface as TurnNotStartedException instead: the provider never
             // saw the prompt, so the connectivity retry loop may replay it against
             // the fresh transport installed by resetOpenCodeClient().
+            // Cancelling the chat turn aborts the OpenCode turn and the tools it started.
+            client.setCancellationCheck(this::isCancelled);
             String text = client.send(effectiveModel, config.getThinking(),
-                    effectiveSystemPrompt, userMessage,
+                    systemPrompt, turnMessage,
                     chunk -> {
                         streamed.append(chunk);
                         printStreamingChunk(chunk);
@@ -942,15 +954,67 @@ public class DirectLlmClient implements AutoCloseable {
         StringBuilder streamed = new StringBuilder();
         try {
             ClaudeCliClient client = claudeClient();
-            String effectiveSystemPrompt = systemPrompt;
-            if (claudeNeedsSeed && !conversationHistory.isEmpty()) {
-                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
+            boolean resumed = client.nativeSession() != null;
+            String text;
+            try {
+                text = sendClaudeTurn(client, effectiveModel, systemPrompt, userMessage,
+                        result, streamed);
+            } catch (ClaudeCliClient.TurnNotStartedException e) {
+                // A session Claude Code no longer has (or never finished creating)
+                // fails before the turn begins. Nothing reached the provider, so
+                // continue in a new session that carries the earlier conversation.
+                if (!resumed || e instanceof ClaudeCliClient.ClaudeCliAuthenticationException
+                        || isCancelled() || Thread.currentThread().isInterrupted()) {
+                    throw e;
+                }
+                client.startNewSession();
+                claudeNeedsSeed = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    listener.onNotice("The Claude Code session could not be resumed ("
+                            + e.getMessage() + "); starting a new one with the earlier "
+                            + "conversation restored.");
+                }
+                text = sendClaudeTurn(client, effectiveModel, systemPrompt, userMessage,
+                        result, streamed);
             }
-            // Ultracode replaces the effort level on this route; fast mode is
-            // rechecked against the effective request model like the HTTP routes.
-            String text = client.send(effectiveModel, config.effectiveEffort(),
+            result.text = text;
+            if (streamed.length() == 0) {
+                printStreamingChunk(text);
+            }
+            appendOpenCodeHistory(userMessage, text);
+            claudeNeedsSeed = false;
+            result.claudeNativeSession = client.nativeSession();
+        } catch (ClaudeCliClient.TurnNotStartedException e) {
+            // The turn never reached a provider (or credentials were rejected):
+            // replay-safe stays true and the retry loop can reconnect. An auth
+            // rejection warns the user with the actionable fix.
+            recordStreamFailure(result, e, "[Error: ");
+        } catch (Exception e) {
+            // The turn ran, so the native session may hold partial provider-side
+            // state; keep the result non-replayable.
+            result.providerSideEffectsObserved = true;
+            if (streamed.length() > 0) result.text = streamed.toString();
+            recordStreamFailure(result, e, "[Error: ");
+        }
+        return result;
+    }
+
+    /**
+     * One Claude Code CLI turn with its activity forwarded to the installed
+     * listeners. A new native session also receives the earlier conversation.
+     */
+    private String sendClaudeTurn(ClaudeCliClient client, String effectiveModel,
+                                  String systemPrompt, String userMessage,
+                                  StreamResult result, StringBuilder streamed) throws Exception {
+        String restored = claudeNeedsSeed ? restoredConversation(systemPrompt, userMessage) : "";
+        // Cancelling the chat turn stops the CLI and the tools it started.
+        client.setCancellationCheck(this::isCancelled);
+        // Ultracode replaces the effort level on this route; fast mode is
+        // rechecked against the effective request model like the HTTP routes.
+        return client.send(effectiveModel, config.effectiveEffort(),
                     config.useFastMode(effectiveModel),
-                    effectiveSystemPrompt, userMessage,
+                    systemPrompt, userMessage, restored,
                     chunk -> {
                         streamed.append(chunk);
                         printStreamingChunk(chunk);
@@ -1016,25 +1080,23 @@ public class DirectLlmClient implements AutoCloseable {
                             printThinkingChunk(reasoningDelta);
                         }
                     });
-            result.text = text;
-            if (streamed.length() == 0) {
-                printStreamingChunk(text);
-            }
-            appendOpenCodeHistory(userMessage, text);
+    }
+
+    /**
+     * Continue a Claude Code native session saved by an earlier Kompile process.
+     * It already holds this conversation, so the next turn restores none.
+     */
+    public void resumeClaudeNativeSession(String sessionId, String instructionsDigest) {
+        synchronized (historyLock) {
+            claudeClient().resumeSession(sessionId, instructionsDigest);
             claudeNeedsSeed = false;
-        } catch (ClaudeCliClient.TurnNotStartedException e) {
-            // The turn never reached a provider (or credentials were rejected):
-            // replay-safe stays true and the retry loop can reconnect. An auth
-            // rejection warns the user with the actionable fix.
-            recordStreamFailure(result, e, "[Error: ");
-        } catch (Exception e) {
-            // The turn ran, so the native session may hold partial provider-side
-            // state; keep the result non-replayable.
-            result.providerSideEffectsObserved = true;
-            if (streamed.length() > 0) result.text = streamed.toString();
-            recordStreamFailure(result, e, "[Error: ");
         }
-        return result;
+    }
+
+    /** The live Claude Code native session, or null when none has started. */
+    public ClaudeNativeSession claudeNativeSession() {
+        ClaudeCliClient client = claudeServeClient;
+        return client == null ? null : client.nativeSession();
     }
 
     private ClaudeCliClient claudeClient() {
@@ -1389,36 +1451,40 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     /**
-     * System prompt that seeds a fresh native session (route switch, resume, reconnect,
-     * post-compaction) with the portable history. Only the newest messages that fit the
-     * auto-compaction share of the context window left after the system prompt and the
-     * new turn are restored; older ones collapse into an omission marker.
+     * Earlier conversation for a new native session (route switch, lost session,
+     * post-compaction), labeled as past turns. Only the newest messages that fit the
+     * auto-compaction share of the context window left after the instructions and the
+     * new turn are kept; older ones collapse into an omission marker. An unknown window
+     * is budgeted at the default rather than left unbounded.
      */
-    private String withPortableHistory(String systemPrompt, String userMessage) {
-        String prefix = (systemPrompt == null ? "" : systemPrompt + "\n\n")
-                + "[Portable conversation context restored by Kompile]\n";
-        long budgetChars = Long.MAX_VALUE;
-        if (contextWindowTokens > 0) {
-            budgetChars = (long) (contextWindowTokens * config.getAutoCompactThreshold())
-                    * CHARS_PER_TOKEN - prefix.length()
-                    - (userMessage == null ? 0 : userMessage.length());
-        }
-        return prefix + portableHistoryText(budgetChars);
+    private String restoredConversation(String systemPrompt, String userMessage) {
+        int window = contextWindowTokens > 0
+                ? contextWindowTokens : ModelContextWindows.DEFAULT_CONTEXT_WINDOW;
+        long budgetChars = (long) (window * config.getAutoCompactThreshold()) * CHARS_PER_TOKEN
+                - RESTORED_CONVERSATION_OPEN.length() - RESTORED_CONVERSATION_CLOSE.length()
+                - (systemPrompt == null ? 0 : systemPrompt.length())
+                - (userMessage == null ? 0 : userMessage.length());
+        String history = portableHistoryText(budgetChars);
+        return history.isEmpty() ? ""
+                : RESTORED_CONVERSATION_OPEN + history + RESTORED_CONVERSATION_CLOSE;
     }
 
     private String portableHistoryText(long budgetChars) {
         List<String> kept = new ArrayList<>();
-        int omitted;
+        int omitted = 0;
         synchronized (historyLock) {
             long used = 0;
             int index = conversationHistory.size() - 1;
             for (; index >= 0; index--) {
                 String message = portableMessageText(conversationHistory.get(index));
+                if (message.isEmpty()) continue;
                 if (used + message.length() > budgetChars) break;
                 used += message.length();
                 kept.add(message);
             }
-            omitted = index + 1;
+            for (; index >= 0; index--) {
+                if (!portableMessageText(conversationHistory.get(index)).isEmpty()) omitted++;
+            }
         }
         StringBuilder text = new StringBuilder();
         if (omitted > 0) {
@@ -1429,20 +1495,48 @@ public class DirectLlmClient implements AutoCloseable {
         return text.toString().strip();
     }
 
+    /**
+     * What the user and assistant said in one message. Tool calls and their output
+     * are left out: the new session has its own tools, and the answers built on
+     * those results are kept.
+     */
     private static String portableMessageText(ObjectNode message) {
-        String role = message.path("role").asText("context");
-        JsonNode content = message.get("content");
-        String text = content != null && content.isTextual()
-                ? content.asText() : String.valueOf(content);
-        if ("user".equals(role)) text = withoutTurnEnvelopes(text);
-        return "[" + role + "]\n" + text + "\n\n";
+        String role = message.path("role").asText("");
+        if (role.isEmpty() || "tool".equals(role)) return "";
+        String text = plainText(message.get("content"));
+        if ("user".equals(role)) {
+            if (text.startsWith("[Tool result ")) return "";
+            text = withoutTurnEnvelopes(text);
+        } else if (text.startsWith("[Tool call ")) {
+            return "";
+        }
+        text = text.strip();
+        return text.isEmpty() ? "" : "[" + role + "]\n" + text + "\n\n";
+    }
+
+    /** A message body as text: the string itself, or the text blocks of a content array. */
+    private static String plainText(JsonNode content) {
+        if (content == null) return "";
+        if (content.isTextual()) return content.asText();
+        StringBuilder text = new StringBuilder();
+        if (content.isArray()) {
+            for (JsonNode block : content) {
+                String type = block.path("type").asText("");
+                if (("text".equals(type) || "input_text".equals(type) || "output_text".equals(type))
+                        && block.path("text").isTextual()) {
+                    if (!text.isEmpty()) text.append('\n');
+                    text.append(block.path("text").asText());
+                }
+            }
+        }
+        return text.toString();
     }
 
     /**
      * The user's own text: drops the per-turn reminder block and injected memory
      * context, which every new turn carries fresh.
      */
-    private static String withoutTurnEnvelopes(String message) {
+    static String withoutTurnEnvelopes(String message) {
         String text = ReminderManager.stripReminderBlock(message);
         if (!text.startsWith(MEMORY_CONTEXT_OPEN)) return text;
         int end = text.indexOf(MEMORY_CONTEXT_CLOSE);
@@ -4868,6 +4962,8 @@ public class DirectLlmClient implements AutoCloseable {
         public JsonNode nativeCompactionPayload;
         public long compactionInputTokens;
         public long compactionOutputTokens;
+        /** Native session a successful Claude Code turn ran in; null on every other route. */
+        public ClaudeNativeSession claudeNativeSession;
         // Token usage from API response (when available)
         public long inputTokens = 0;
         public long outputTokens = 0;

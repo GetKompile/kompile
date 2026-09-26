@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -15,6 +16,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.junit.jupiter.api.Assertions.*;
 
 @ResourceLock("SYSTEM_PROPERTIES")
+@TemporaryUserHome
 class DirectLlmClientAstraResponsesTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

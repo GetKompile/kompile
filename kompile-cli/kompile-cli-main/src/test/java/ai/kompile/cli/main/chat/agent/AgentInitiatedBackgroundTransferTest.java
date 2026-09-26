@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * detaches. The model receives the placeholder while the tool is still
  * blocked, and the real result reaches the completion consumer afterwards.
  */
+@TemporaryUserHome
 class AgentInitiatedBackgroundTransferTest {
 
     @TempDir

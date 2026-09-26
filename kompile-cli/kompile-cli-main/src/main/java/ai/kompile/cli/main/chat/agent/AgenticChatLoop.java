@@ -106,6 +106,8 @@ public class AgenticChatLoop {
     private static final int MAX_LIVE_TOOL_OUTPUT_CHARS = 30_000;
     private static final int MAX_LIVE_TOOL_LINE_CHARS = 4_000;
     private static final long LIVE_TOOL_FRAME_DELAY_MS = 50L;
+    /** Ledger transport name for Claude Code CLI native sessions. */
+    private static final String CLAUDE_NATIVE_TRANSPORT = "claude-cli";
 
     /**
      * Optional standard-chat side channel for tool lifecycle activity. The listener
@@ -805,6 +807,23 @@ public class AgenticChatLoop {
      */
     public boolean isDirectMode() {
         return directLlmClient != null && (baseUrl == null || baseUrl.isEmpty());
+    }
+
+    /**
+     * After a restart, continue the Claude Code session that holds exactly this
+     * conversation instead of restoring the history into a new one.
+     */
+    private void resumeClaudeNativeSessionIfCurrent() {
+        if (!isDirectMode() || !directLlmClient.getChatConfig().isClaudeCliNative()
+                || directLlmClient.claudeNativeSession() != null) {
+            return;
+        }
+        ConversationLedger.NativeSession saved =
+                conversationLedger.resumableNativeSession(CLAUDE_NATIVE_TRANSPORT);
+        if (saved != null) {
+            directLlmClient.resumeClaudeNativeSession(
+                    saved.sessionId(), saved.instructionsDigest());
+        }
     }
 
     /**
@@ -1890,6 +1909,7 @@ public class AgenticChatLoop {
         refreshCompactionBudget(agent);
         maybeAutoCompactBeforeTurn(
                 message, systemPrompt, initialToolDefs, agent.getModelOverride());
+        resumeClaudeNativeSessionIfCurrent();
 
         // Track conversation for compaction
         conversationLedger.append(CompactionService.ConversationEntry.user(message));
@@ -2088,6 +2108,12 @@ public class AgenticChatLoop {
                 fullResponse.append(result.text);
                 conversationLedger.append(
                         CompactionService.ConversationEntry.assistant(result.text));
+            }
+            if (result.claudeNativeSession != null) {
+                // The Claude Code session now holds everything the ledger does.
+                conversationLedger.recordNativeSession(CLAUDE_NATIVE_TRANSPORT,
+                        result.claudeNativeSession.sessionId(),
+                        result.claudeNativeSession.instructionsDigest());
             }
             if (rebuildAfterRejectedNativeCheckpoint && directLlmClient != null) {
                 rebuildDirectHistoryForProviderSwitch();
@@ -3598,6 +3624,7 @@ public class AgenticChatLoop {
         result.nativeCompactionSummary = directResult.nativeCompactionSummary;
         result.nativeCompactionStrategy = directResult.nativeCompactionStrategy;
         result.nativeCompactionPayload = directResult.nativeCompactionPayload;
+        result.claudeNativeSession = directResult.claudeNativeSession;
         result.contextInputTokens = contextInputTokens;
         for (DirectLlmClient.ToolCallOutput tc : directResult.toolCalls) {
             ToolCallRequest req = new ToolCallRequest();
@@ -3989,6 +4016,7 @@ public class AgenticChatLoop {
         String nativeCompactionSummary;
         String nativeCompactionStrategy;
         JsonNode nativeCompactionPayload;
+        DirectLlmClient.ClaudeNativeSession claudeNativeSession;
         long contextInputTokens;
     }
 

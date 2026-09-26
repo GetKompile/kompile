@@ -53,15 +53,21 @@ public class ToolCallIndex {
 
     private static ToolCallIndex instance;
 
-    private ToolCallIndex() {
-        this.toolCallsDir = KompileHome.homeDirectory().toPath()
-                .resolve("conversations").resolve(TOOL_CALLS_DIR);
+    private ToolCallIndex(Path toolCallsDir) {
+        this.toolCallsDir = toolCallsDir;
         this.combinedIndexFile = toolCallsDir.resolve(COMBINED_INDEX);
     }
 
+    /**
+     * Resolves {@code ~/.kompile} on every call like the rest of Kompile's home state,
+     * so a process whose {@code user.home} changes (tests) never keeps writing to the
+     * previous home.
+     */
     public static synchronized ToolCallIndex getInstance() {
-        if (instance == null) {
-            instance = new ToolCallIndex();
+        Path toolCallsDir = KompileHome.homeDirectory().toPath()
+                .resolve("conversations").resolve(TOOL_CALLS_DIR);
+        if (instance == null || !instance.toolCallsDir.equals(toolCallsDir)) {
+            instance = new ToolCallIndex(toolCallsDir);
         }
         return instance;
     }

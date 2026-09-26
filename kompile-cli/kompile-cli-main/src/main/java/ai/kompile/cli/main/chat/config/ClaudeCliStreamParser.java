@@ -33,7 +33,12 @@ final class ClaudeCliStreamParser {
     record ToolOutput(String callId, String name, String output) implements Event { }
     record ToolComplete(String callId, String name, String output, boolean error) implements Event { }
     record Notice(String text) implements Event { }
-    record TurnComplete(String result, boolean error, String errorMessage,
+    /**
+     * The terminal result of a turn. {@code started} is false when Claude Code
+     * refused the turn before any model request ({@code num_turns: 0}), for
+     * example an unknown {@code --resume} session.
+     */
+    record TurnComplete(String result, boolean error, String errorMessage, boolean started,
                         long inputTokens, long outputTokens,
                         long cacheReadTokens, long cacheCreationTokens) implements Event { }
 
@@ -216,9 +221,23 @@ final class ClaudeCliStreamParser {
         boolean error = node.path("is_error").asBoolean(false) || subtype.startsWith("error");
         String errorMessage = error
                 ? firstText(node, "error", "error_message", "message", "result") : "";
+        if (error && errorMessage.isBlank()) errorMessage = errorsText(node.path("errors"));
+        JsonNode turns = node.path("num_turns");
+        boolean started = !turns.isNumber() || turns.asLong() > 0;
         String result = node.path("result").asText("");
-        return List.of(new TurnComplete(result, error, errorMessage, input,
+        return List.of(new TurnComplete(result, error, errorMessage, started, input,
                 usage.path("output_tokens").asLong(0), cacheRead, cacheCreation));
+    }
+
+    /** The entries of a result's {@code errors} array, one per line. */
+    private static String errorsText(JsonNode errors) {
+        if (!errors.isArray()) return "";
+        List<String> lines = new ArrayList<>();
+        for (JsonNode entry : errors) {
+            String text = entry.isTextual() ? entry.asText() : entry.path("message").asText("");
+            if (!text.isBlank()) lines.add(text.strip());
+        }
+        return String.join("\n", lines);
     }
 
     private List<Event> startTool(Block block) {

@@ -8,19 +8,25 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.common.util.NativeCliProcess;
 import ai.kompile.cli.main.chat.ChatSessionContext;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
+import ai.kompile.cli.main.chat.render.ProcessManager;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.utils.HashUtils;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -28,13 +34,18 @@ import java.util.function.Consumer;
  *
  * <p>Follows the same provider-adapter pattern as {@link OpenCodeServeClient}:
  * one persistent native session per chat, one headless CLI turn per message.
- * Turns run {@code claude -p --output-format stream-json --verbose
- * --include-partial-messages [--resume <id>] "<prompt>"} with a closed stdin
- * ({@link NativeCliProcess}) and stdout parsed line-by-line through
- * {@link PassthroughStreamParser#parseClaudeLineMulti(String)} — the identical
- * parser the managed passthrough lane has streamed for years. stderr is kept
- * separate and used only for failure diagnosis, so CLI log noise can never leak
- * into an answer.</p>
+ * Turns run {@code claude -p "Read this file and act on the prompt in the file:
+ * <turn file>" --append-system-prompt-file <instructions file> --output-format
+ * stream-json --verbose --include-partial-messages (--session-id|--resume) <id>}
+ * with a closed stdin ({@link NativeCliProcess}) and stdout parsed line-by-line
+ * through {@link ClaudeCliStreamParser}. stderr is kept separate and used only
+ * for failure diagnosis, so CLI log noise can never leak into an answer.</p>
+ *
+ * <p><b>Instructions are a system prompt, not turn text.</b> Claude Code records
+ * the system prompt once per conversation and reuses that copy on every resume
+ * until the conversation is compacted, so the instructions are not re-sent with
+ * each message. Instructions that change during a session are sent once, in the
+ * next turn file, as an update.</p>
  *
  * <p><b>Auth belongs to Claude Code.</b> The CLI owns the login and Kompile
  * never sees it. Selection verifies it with {@code claude auth status}
@@ -119,6 +130,9 @@ final class ClaudeCliClient implements AutoCloseable {
             "credit balance",
             "billing");
 
+    /** How often a running turn checks whether it was cancelled. */
+    private static final long CANCEL_POLL_MILLIS = 100;
+
     private final ChatSessionContext sessionContext = ChatSessionContext.current();
     private final Path workingDirectory;
     private final StringBuilder errorOutput = new StringBuilder();
@@ -128,9 +142,13 @@ final class ClaudeCliClient implements AutoCloseable {
     private String sessionId;
     /** False until the first turn has created the native session. */
     private boolean sessionStarted;
+    /** Digest of the instructions the native session holds; null until a turn delivers them. */
+    private String deliveredInstructionsDigest;
     /** Settings file written by the one-time MCP injection; restored on close. */
     private Path injectedSettingsFile;
-    private Process turnProcess;
+    private volatile Process turnProcess;
+    /** Returns true once the running turn is cancelled; null when nothing can cancel it. */
+    private volatile BooleanSupplier cancellationCheck;
     private volatile boolean closed;
 
     ClaudeCliClient(Path workingDirectory) {
@@ -150,19 +168,60 @@ final class ClaudeCliClient implements AutoCloseable {
     }
 
     /**
-     * Send one turn through the native Claude Code session. The full prompt
-     * (system instructions + user message) is written to a temp file, and the
-     * `-p` argument is just the short instruction "Read this file and act on
-     * the prompt in the file: <path>" — so prompt content NEVER enters argv
-     * and "argument list too long" cannot happen on long conversations.
+     * Cancels the running turn once it returns true. Reading the CLI's output
+     * blocks without seeing a cancel or an interrupt, so the turn polls this
+     * check and stops the CLI and the tools it started.
+     */
+    void setCancellationCheck(BooleanSupplier check) {
+        cancellationCheck = check;
+    }
+
+    /**
+     * Continue a native session created by an earlier Kompile process: the next
+     * turn uses {@code --resume}. If Claude Code no longer has that session, the
+     * caller falls back to {@link #startNewSession()}.
+     *
+     * @param instructionsDigest digest of the instructions that session last received
+     */
+    synchronized void resumeSession(String nativeSessionId, String instructionsDigest) {
+        sessionId = nativeSessionId;
+        sessionStarted = true;
+        deliveredInstructionsDigest = instructionsDigest;
+    }
+
+    /** Drop the current native session; the next turn creates a new one. */
+    synchronized void startNewSession() {
+        sessionId = null;
+        sessionStarted = false;
+        deliveredInstructionsDigest = null;
+    }
+
+    /** The native session later turns resume, or null until a turn has created one. */
+    synchronized DirectLlmClient.ClaudeNativeSession nativeSession() {
+        return sessionStarted
+                ? new DirectLlmClient.ClaudeNativeSession(sessionId, deliveredInstructionsDigest)
+                : null;
+    }
+
+    /**
+     * Send one turn through the native Claude Code session. Kompile's
+     * instructions go to Claude Code as a system prompt through
+     * {@code --append-system-prompt-file}; the turn itself (the user's message
+     * first, then this turn's context) goes to a second temp file, and the
+     * {@code -p} argument is just "Read this file and act on the prompt in the
+     * file: <path>". Prompt content never enters argv, so "argument list too
+     * long" cannot happen on long conversations.
      *
      * @param model  Claude model id (e.g. sonnet); may be null to let the CLI use its default
      * @param effort Claude effort override (e.g. high, or ultracode); may be null
      * @param fastMode request Claude Code fast mode for this turn's session
+     * @param systemPrompt Kompile's instructions for this session
+     * @param restoredConversation earlier conversation for a new native session; empty otherwise
      * @return the final assistant text
      */
     synchronized String send(String model, String effort, boolean fastMode, String systemPrompt,
-                             String userMessage, Consumer<String> output,
+                             String userMessage, String restoredConversation,
+                             Consumer<String> output,
                              ActivityListener activityListener) throws Exception {
         if (closed) {
             throw new TurnNotStartedException("Claude CLI chat transport is closed");
@@ -175,17 +234,42 @@ final class ClaudeCliClient implements AutoCloseable {
         }
         injectKompileToolsOnce();
 
-        String prompt = composePrompt(systemPrompt, userMessage);
-        java.nio.file.Path promptFile = writePromptFile(prompt);
+        String instructions = systemPrompt == null ? "" : systemPrompt.strip();
+        String instructionsDigest = HashUtils.sha256Hex(instructions);
+        // An existing session keeps the system prompt Claude Code recorded when it
+        // began, so instructions that changed since then ride in this turn once.
+        String updatedInstructions = sessionStarted && !instructions.isEmpty()
+                && !instructionsDigest.equals(deliveredInstructionsDigest) ? instructions : "";
+        Path instructionsFile = null;
+        Path promptFile = null;
+        try {
+            try {
+                if (!instructions.isEmpty()) {
+                    instructionsFile = writeTurnFile("kompile-claude-instructions-", ".md",
+                            "[Kompile Chat system instructions]\n" + instructions
+                                    + "\n[End Kompile Chat system instructions]\n");
+                }
+                promptFile = writeTurnFile("kompile-claude-prompt-", ".txt",
+                        composeTurn(userMessage, updatedInstructions, restoredConversation));
+            } catch (IOException e) {
+                throw new TurnNotStartedException(
+                        "Could not write the Claude CLI turn files: " + e.getMessage(), e);
+            }
+            String text = runTurn(buildCommand(model, effort, fastMode, instructionsFile, promptFile),
+                    output, activityListener);
+            deliveredInstructionsDigest = instructionsDigest;
+            return text;
+        } finally {
+            deleteQuietly(promptFile);
+            deleteQuietly(instructionsFile);
+        }
+    }
 
+    /** Run one CLI turn and classify how it ended. */
+    private String runTurn(List<String> command, Consumer<String> output,
+                           ActivityListener activityListener) throws Exception {
         Process process;
         try {
-            // The prompt is passed BY FILE: it is written to a temp file and the
-            // CLI is invoked with the file path so it reads the prompt from disk
-            // — no argv bloat ("argument list too long" on long chats) and no
-            // pipes. This matches the remote-CLI prompt-passing convention used
-            // elsewhere in Kompile.
-            //
             // Streaming note: headless `claude -p --output-format stream-json
             // --include-partial-messages` flushes each delta to the pipe as it
             // arrives (verified live: init at T+0.1s, text deltas every ~30ms
@@ -193,17 +277,18 @@ final class ClaudeCliClient implements AutoCloseable {
             // passthrough lanes, which DO require script(1) to defeat full
             // stdout buffering. A PTY would merge stderr into stdout and mask
             // the real exit code, so it is deliberately NOT used.
-            ProcessBuilder builder = withoutApiKeyEnvironment(NativeCliProcess.processBuilder(
-                    buildCommand(model, effort, fastMode, promptFile), workingDirectory));
+            ProcessBuilder builder = withoutApiKeyEnvironment(
+                    NativeCliProcess.processBuilder(command, workingDirectory));
             process = builder.start();
         } catch (IOException e) {
-            deleteQuietly(promptFile);
             // Binary missing or unspawnable: the prompt never reached a provider.
             throw new TurnNotStartedException(
                     "Could not start the '" + binaryName() + "' CLI: " + e.getMessage(), e);
         }
         turnProcess = process;
         Thread errorDrain = drainStderr(process);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        watchForCancel(process, cancelled);
         try {
             TurnOutcome outcome = consumeTurn(process, output, activityListener);
             errorDrain.join(2_000);
@@ -218,15 +303,30 @@ final class ClaudeCliClient implements AutoCloseable {
                 }
             }
             reap(process);
+            if (!outcome.refusal.isBlank() && outcome.turnText.isBlank()
+                    && !outcome.providerSideEffectsObserved) {
+                // Claude Code refused the turn before any model request (an unknown
+                // --resume session, for one): no provider saw it and no session changed.
+                throwTurnFailure(outcome.exitCode, outcome.refusal);
+            }
             // The CLI acknowledged the session; later turns use --resume.
             sessionStarted = true;
+            if (cancelled.get()) {
+                // Stopped mid-turn: tools may already have run, so this is not
+                // reported as a turn that never started and cannot be replayed.
+                // The CLI has exited, so nothing above observed an interrupt.
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("Claude CLI turn interrupted");
+                }
+                throw new CancellationException("Claude CLI turn cancelled");
+            }
 
             if (!outcome.failure.isBlank()) {
                 throw new TurnFailedException(outcome.failure + diagnosticSuffix());
             }
             if (outcome.exitCode != 0) {
                 if (outcome.turnText.isBlank() && !outcome.providerSideEffectsObserved) {
-                    throwTurnFailure(outcome.exitCode);
+                    throwTurnFailure(outcome.exitCode, "");
                 }
                 throw new TurnFailedException("Claude CLI turn failed after partial output (exit "
                         + outcome.exitCode + ")" + diagnosticSuffix());
@@ -256,36 +356,36 @@ final class ClaudeCliClient implements AutoCloseable {
             throw e;
         } finally {
             turnProcess = null;
-            deleteQuietly(promptFile);
         }
     }
 
-    private static void deleteQuietly(java.nio.file.Path file) {
+    private static void deleteQuietly(Path file) {
         if (file == null) return;
         try {
-            java.nio.file.Files.deleteIfExists(file);
+            Files.deleteIfExists(file);
         } catch (IOException ignored) {
         }
     }
 
     /**
-     * Persist the turn prompt to a temp file next to the working directory so
-     * it can be streamed via stdin without touching argv. The file is deleted
-     * when the turn ends (normally or abnormally).
+     * Write one turn input to a private temp file (owner-only on POSIX). The
+     * caller deletes it when the turn ends.
      */
-    private java.nio.file.Path writePromptFile(String prompt) throws IOException {
-        java.nio.file.Path file = java.nio.file.Files.createTempFile(
-                "kompile-claude-prompt-", ".txt");
-        java.nio.file.Files.writeString(file, prompt, java.nio.charset.StandardCharsets.UTF_8);
+    private static Path writeTurnFile(String prefix, String suffix, String content)
+            throws IOException {
+        Path file = Files.createTempFile(prefix, suffix);
+        try {
+            Files.writeString(file, content, StandardCharsets.UTF_8);
+        } catch (IOException | RuntimeException e) {
+            deleteQuietly(file);
+            throw e;
+        }
         return file;
     }
 
-    /** Best-effort cancellation of an in-flight CLI turn. */
+    /** Stop an in-flight CLI turn and the tools it started. */
     void cancel() {
-        Process process = turnProcess;
-        if (process != null && process.isAlive()) {
-            process.destroy();
-        }
+        ProcessManager.killTree(turnProcess);
     }
 
     /**
@@ -311,7 +411,7 @@ final class ClaudeCliClient implements AutoCloseable {
     public synchronized void close() {
         closed = true;
         cancel();
-        java.nio.file.Path injected = injectedSettingsFile;
+        Path injected = injectedSettingsFile;
         injectedSettingsFile = null;
         if (injected != null) {
             try {
@@ -408,6 +508,10 @@ final class ClaudeCliClient implements AutoCloseable {
                             outcome.failure = turn.errorMessage().isBlank()
                                     ? "Claude reported an error for this turn"
                                     : "Claude reported an error: " + turn.errorMessage();
+                            if (!turn.started()) {
+                                outcome.refusal = turn.errorMessage().isBlank()
+                                        ? "Claude Code did not run the turn" : turn.errorMessage();
+                            }
                         }
                         if (streamed.length() == 0 && !turn.result().isBlank()) {
                             streamed.append(turn.result());
@@ -462,6 +566,42 @@ final class ClaudeCliClient implements AutoCloseable {
         return thread;
     }
 
+    /**
+     * Stop the turn's process tree when the turn is cancelled or its thread is
+     * interrupted, and record that in {@code cancelled}. The turn thread blocks
+     * reading the CLI's output, which sees neither, so without this the CLI
+     * keeps running tools until it finishes on its own.
+     */
+    private void watchForCancel(Process process, AtomicBoolean cancelled) {
+        BooleanSupplier check = cancellationCheck;
+        Thread owner = Thread.currentThread();
+        Thread thread = new Thread(sessionContext.wrap(() -> {
+            try {
+                while (!owner.isInterrupted() && !cancelRequested(check)) {
+                    if (process.waitFor(CANCEL_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+                        return;
+                    }
+                }
+                if (process.isAlive()) {
+                    cancelled.set(true);
+                    ProcessManager.killTree(process);
+                }
+            } catch (InterruptedException ignored) {
+                // Daemon thread: only JVM shutdown interrupts it.
+            }
+        }), "kompile-claude-cli-cancel");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private static boolean cancelRequested(BooleanSupplier check) {
+        try {
+            return check != null && check.getAsBoolean();
+        } catch (RuntimeException e) {
+            return false; // A failing check must not end the turn.
+        }
+    }
+
     private void reap(Process process) {
         if (process.isAlive()) {
             process.destroy();
@@ -486,8 +626,17 @@ final class ClaudeCliClient implements AutoCloseable {
         return builder;
     }
 
-    private void throwTurnFailure(int exitCode) {
+    /**
+     * Throw for a turn that never reached a provider: an authentication failure
+     * when the diagnostics say so, otherwise a replayable not-started failure.
+     *
+     * @param reported the error Claude Code reported in its result event, if any
+     */
+    private void throwTurnFailure(int exitCode, String reported) {
         String diagnostic = diagnosticText();
+        if (!reported.isBlank() && !diagnostic.contains(reported.strip())) {
+            diagnostic = reported.strip() + "\n" + diagnostic;
+        }
         String lower = diagnostic.toLowerCase(Locale.ROOT);
         for (String signature : AUTH_FAILURE_SIGNATURES) {
             if (lower.contains(signature)) {
@@ -498,7 +647,7 @@ final class ClaudeCliClient implements AutoCloseable {
             }
         }
         throw new TurnNotStartedException("Claude CLI turn failed (exit " + exitCode + ")"
-                + diagnosticSuffix());
+                + (diagnostic.isBlank() ? "" : ": " + trimForError(diagnostic)));
     }
 
     private String diagnosticText() {
@@ -513,22 +662,25 @@ final class ClaudeCliClient implements AutoCloseable {
     }
 
     /**
-     * Build the turn command. The full prompt is written to a temp file; the
-     * -p argument is just the short instruction telling claude to read and act
-     * on that file — so prompt content NEVER enters argv and "argument list
-     * too long" cannot happen on long conversations.
+     * Build the turn command. The instructions and the turn live in temp files
+     * and argv carries only their paths, so its size never grows with the
+     * conversation.
      */
     private List<String> buildCommand(String model, String effort, boolean fastMode,
-                                      java.nio.file.Path promptFile) {
+                                      Path instructionsFile, Path promptFile) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binaryName());
         cmd.add("--dangerously-skip-permissions");
         cmd.add("-p");
-        // Short argv instruction pointing claude at the prompt file. The file
-        // itself carries the actual prompt content (system instructions + user
-        // message), so argv stays tiny regardless of conversation length.
         cmd.add("Read this file and act on the prompt in the file: "
                 + promptFile.toAbsolutePath());
+        if (instructionsFile != null) {
+            // Passed on every launch. Claude Code records the system prompt once
+            // per conversation and reuses that copy on resume; where recording is
+            // not enabled it renders this file on each launch instead.
+            cmd.add("--append-system-prompt-file");
+            cmd.add(instructionsFile.toAbsolutePath().toString());
+        }
         cmd.add("--output-format");
         cmd.add("stream-json");
         cmd.add("--verbose");
@@ -574,14 +726,45 @@ final class ClaudeCliClient implements AutoCloseable {
                 .orElse(null);
     }
 
-    private static String composePrompt(String systemPrompt, String userMessage) {
-        if (systemPrompt == null || systemPrompt.isBlank()) {
-            return userMessage == null ? "" : userMessage;
+    /**
+     * The turn file: the user's message first, then this turn's Kompile context,
+     * changed instructions, and restored conversation, each labeled so none of
+     * them reads as a new request. A bare message is written as-is.
+     */
+    static String composeTurn(String userMessage, String updatedInstructions,
+                              String restoredConversation) {
+        String message = userMessage == null ? "" : userMessage;
+        String userText = DirectLlmClient.withoutTurnEnvelopes(message);
+        String turnContext = "";
+        if (message.endsWith(userText)) {
+            turnContext = message.substring(0, message.length() - userText.length()).strip();
+        } else {
+            userText = message;
         }
-        return "[Kompile Chat system instructions]\n"
-                + systemPrompt.trim()
-                + "\n[End Kompile Chat system instructions]\n\n"
-                + (userMessage == null ? "" : userMessage);
+        boolean hasUpdate = updatedInstructions != null && !updatedInstructions.isBlank();
+        boolean hasRestored = restoredConversation != null && !restoredConversation.isBlank();
+        if (turnContext.isEmpty() && !hasUpdate && !hasRestored) {
+            return message;
+        }
+        StringBuilder turn = new StringBuilder("[User message]\n")
+                .append(userText.strip())
+                .append("\n[End user message]\n");
+        if (!turnContext.isEmpty()) {
+            turn.append("\n[Kompile context for this turn: it applies to the user message above"
+                            + " and is not a new request]\n")
+                    .append(turnContext)
+                    .append("\n[End Kompile context]\n");
+        }
+        if (hasUpdate) {
+            turn.append("\n[Updated Kompile Chat system instructions: these replace the Kompile"
+                            + " Chat system instructions in your system prompt]\n")
+                    .append(updatedInstructions.strip())
+                    .append("\n[End updated Kompile Chat system instructions]\n");
+        }
+        if (hasRestored) {
+            turn.append('\n').append(restoredConversation.strip()).append('\n');
+        }
+        return turn.toString();
     }
 
     private static String trimForError(String value) {
@@ -598,6 +781,8 @@ final class ClaudeCliClient implements AutoCloseable {
         int exitCode;
         boolean providerSideEffectsObserved;
         String failure = "";
+        /** Why Claude Code refused the turn before any model request; blank when it ran. */
+        String refusal = "";
         /** Non-JSON prose lines seen on stdout (auth failures, CLI warnings). */
         final StringBuilder ignoredProse = new StringBuilder();
     }

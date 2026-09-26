@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.PatchTool;
 import ai.kompile.cli.main.chat.tools.ReadBatchTool;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class DirectLlmClientToolSchemaTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

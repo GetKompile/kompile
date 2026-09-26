@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class AuxiliaryChatReplTest {
 
     @Test

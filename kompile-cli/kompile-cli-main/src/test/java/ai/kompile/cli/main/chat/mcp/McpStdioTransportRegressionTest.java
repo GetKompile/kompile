@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.chat.mcp;
 
 import ai.kompile.cli.main.MainCommand;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * local knowledge-graph overview; the opt-in PDF crawl must not be started until this exchange
  * has produced a response.
  */
+@TemporaryUserHome
 class McpStdioTransportRegressionTest {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
     private static final long OVERVIEW_DEADLINE_SECONDS = 30L;
@@ -87,8 +89,13 @@ class McpStdioTransportRegressionTest {
     private McpStdioClient startClient(Path project, String transcript) throws IOException {
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
+        // The child shares the test's temporary home, so its tool-call logs and code
+        // index stay out of ~/.kompile, and the real native-library cache.
         List<String> args = List.of(
                 "-Xmx512m", "-XX:ActiveProcessorCount=2",
+                "-Duser.home=" + System.getProperty("user.home"),
+                "-Dorg.bytedeco.javacpp.cachedir="
+                        + System.getProperty("org.bytedeco.javacpp.cachedir"),
                 "-Dkompile.memory.dense.enabled=false",
                 "-Dkompile.coordination.systemRoot=" + project.resolve(".coordination"),
                 "-Dkompile.subprocess.watchdog.admissionMode=off",

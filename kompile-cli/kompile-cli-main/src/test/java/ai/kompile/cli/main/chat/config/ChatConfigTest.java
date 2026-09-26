@@ -2,6 +2,7 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class ChatConfigTest {
 
     @TempDir

@@ -4,6 +4,7 @@ import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * These tests verify the planning mode toggle and ExitPlanModeTool
  * wiring without requiring a live LLM connection.
  */
+@TemporaryUserHome
 class AgenticChatLoopPlanningTest {
 
     private AgenticChatLoop loop;

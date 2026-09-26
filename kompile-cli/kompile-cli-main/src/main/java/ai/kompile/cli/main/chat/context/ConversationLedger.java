@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -27,6 +28,10 @@ import java.util.Objects;
  * {@code coveredThroughSequence}, followed by all newer events verbatim. This
  * preserves the full audit trail while making compaction transactional and
  * resumable.</p>
+ *
+ * <p>A provider that keeps its own session (the Claude Code CLI) is recorded in a
+ * sidecar file with the ledger version it has seen. A later process continues that
+ * session only while the ledger is still at that version.</p>
  */
 public final class ConversationLedger {
 
@@ -39,6 +44,8 @@ public final class ConversationLedger {
     private long nextSequence = 1L;
     private CompactionCheckpoint checkpoint;
     private Path stateFile;
+    private Path nativeSessionFile;
+    private NativeSession nativeSession;
     private String sessionId;
 
     public ConversationLedger(ObjectMapper objectMapper) {
@@ -61,6 +68,7 @@ public final class ConversationLedger {
         }
         stateFile = KompileHome.homeDirectory().toPath()
                 .resolve("conversations").resolve(safeFileName + ".context.json");
+        nativeSessionFile = stateFile.resolveSibling(safeFileName + ".native-session.json");
         load();
     }
 
@@ -173,6 +181,39 @@ public final class ConversationLedger {
         return true;
     }
 
+    /**
+     * Record that a provider's own session now holds this conversation as of the
+     * current version, so a later process can continue it.
+     */
+    public synchronized void recordNativeSession(
+            String transport, String nativeSessionId, String instructionsDigest) {
+        if (transport == null || nativeSessionId == null || nativeSessionId.isBlank()) return;
+        nativeSession = new NativeSession(
+                transport, nativeSessionId, version, instructionsDigest, Instant.now());
+        if (nativeSessionFile == null) return;
+        try {
+            writeAtomically(nativeSessionFile, nativeSession);
+        } catch (IOException e) {
+            System.err.println("Warning: Could not persist the native session "
+                    + nativeSessionFile + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * The recorded session for {@code transport} if it holds exactly the current
+     * conversation; null once anything changed after it (a turn on another route,
+     * a compaction, a failed restore).
+     */
+    public synchronized NativeSession resumableNativeSession(String transport) {
+        NativeSession saved = nativeSession;
+        if (saved == null || !Objects.equals(saved.transport(), transport)
+                || saved.sessionId() == null || saved.sessionId().isBlank()
+                || version <= 0L || saved.syncedVersion() != version) {
+            return null;
+        }
+        return saved;
+    }
+
     /** Replace imported legacy context only when no durable ledger exists. */
     public synchronized void importLegacyTurns(
             List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns) {
@@ -197,6 +238,7 @@ public final class ConversationLedger {
         checkpoint = null;
         version = 0L;
         nextSequence = 1L;
+        loadNativeSession();
         if (stateFile == null || !Files.exists(stateFile)) return;
         try {
             State state = objectMapper.readValue(stateFile.toFile(), State.class);
@@ -218,26 +260,40 @@ public final class ConversationLedger {
         }
     }
 
+    private void loadNativeSession() {
+        nativeSession = null;
+        if (nativeSessionFile == null || !Files.exists(nativeSessionFile)) return;
+        try {
+            nativeSession = objectMapper.readValue(nativeSessionFile.toFile(), NativeSession.class);
+        } catch (Exception e) {
+            System.err.println("Warning: Could not restore the native session "
+                    + nativeSessionFile + ": " + e.getMessage());
+        }
+    }
+
     private boolean persist() {
         if (stateFile == null) return true;
         try {
-            Files.createDirectories(stateFile.getParent());
-            Path temporary = stateFile.resolveSibling(stateFile.getFileName() + ".tmp");
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(
-                    temporary.toFile(),
+            writeAtomically(stateFile,
                     new State(SCHEMA_VERSION, version, List.copyOf(events), checkpoint));
-            try {
-                Files.move(temporary, stateFile,
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, stateFile, StandardCopyOption.REPLACE_EXISTING);
-            }
             return true;
         } catch (IOException e) {
             System.err.println("Warning: Could not persist compacted context "
                     + stateFile + ": " + e.getMessage());
             return false;
+        }
+    }
+
+    private void writeAtomically(Path file, Object value) throws IOException {
+        Files.createDirectories(file.getParent());
+        Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
+        objectMapper.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), value);
+        try {
+            Files.move(temporary, file,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -273,6 +329,15 @@ public final class ConversationLedger {
             long version,
             List<Event> events,
             CompactionCheckpoint checkpoint) {
+    }
+
+    /** A provider's own session and the ledger version it holds. */
+    public record NativeSession(
+            String transport,
+            String sessionId,
+            long syncedVersion,
+            String instructionsDigest,
+            Instant updatedAt) {
     }
 
     public record Snapshot(

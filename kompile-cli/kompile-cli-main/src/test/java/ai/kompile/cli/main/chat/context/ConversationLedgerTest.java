@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat.context;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.render.CompactionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -12,8 +13,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class ConversationLedgerTest {
 
     @Test
@@ -94,6 +98,68 @@ class ConversationLedgerTest {
                     .contains("portable fallback"));
         } finally {
             Files.deleteIfExists(stateFile);
+        }
+    }
+
+    @Test
+    void recordedNativeSessionIsResumableOnlyWhileTheConversationIsUnchanged() throws Exception {
+        String sessionId = "ledger-native-session-" + UUID.randomUUID();
+        Path stateFile = contextFile(sessionId);
+        Path sidecar = stateFile.resolveSibling(sessionId + ".native-session.json");
+        try {
+            ConversationLedger ledger = new ConversationLedger(JsonUtils.standardMapper());
+            ledger.configureSession(sessionId);
+            assertNull(ledger.resumableNativeSession("claude-cli"), "nothing recorded yet");
+            ledger.append(CompactionService.ConversationEntry.user("request"));
+            ledger.append(CompactionService.ConversationEntry.assistant("response"));
+            ledger.recordNativeSession("claude-cli", "native-1", "digest-1");
+            assertTrue(Files.exists(sidecar), "the session must outlive this process");
+
+            // A later process continues the session that holds this conversation.
+            ConversationLedger restarted = new ConversationLedger(JsonUtils.standardMapper());
+            restarted.configureSession(sessionId);
+            ConversationLedger.NativeSession saved = restarted.resumableNativeSession("claude-cli");
+            assertNotNull(saved);
+            assertEquals("native-1", saved.sessionId());
+            assertEquals("digest-1", saved.instructionsDigest());
+            assertNull(restarted.resumableNativeSession("opencode"), "another transport's session");
+
+            // A turn that session did not see (another route, a failed turn) ends it,
+            // in this process and the next.
+            restarted.append(CompactionService.ConversationEntry.user("asked on another route"));
+            assertNull(restarted.resumableNativeSession("claude-cli"));
+            ConversationLedger later = new ConversationLedger(JsonUtils.standardMapper());
+            later.configureSession(sessionId);
+            assertNull(later.resumableNativeSession("claude-cli"));
+        } finally {
+            Files.deleteIfExists(stateFile);
+            Files.deleteIfExists(sidecar);
+        }
+    }
+
+    @Test
+    void compactionEndsTheRecordedNativeSession() throws Exception {
+        String sessionId = "ledger-native-compaction-" + UUID.randomUUID();
+        Path stateFile = contextFile(sessionId);
+        Path sidecar = stateFile.resolveSibling(sessionId + ".native-session.json");
+        try {
+            ConversationLedger ledger = new ConversationLedger(JsonUtils.standardMapper());
+            ledger.configureSession(sessionId);
+            ledger.append(CompactionService.ConversationEntry.user("old request"));
+            ledger.append(CompactionService.ConversationEntry.assistant("old response"));
+            ledger.append(CompactionService.ConversationEntry.user("recent request"));
+            ledger.recordNativeSession("claude-cli", "native-1", "digest-1");
+            assertNotNull(ledger.resumableNativeSession("claude-cli"));
+
+            ConversationLedger.Snapshot before = ledger.snapshot();
+            assertTrue(ledger.commitCompaction(
+                    before.version(), before.coveredThroughForPrefix(2), "portable summary",
+                    "generic", "anthropic", "claude-test", 1200, 200));
+            assertNull(ledger.resumableNativeSession("claude-cli"),
+                    "the native session still holds the uncompacted conversation");
+        } finally {
+            Files.deleteIfExists(stateFile);
+            Files.deleteIfExists(sidecar);
         }
     }
 

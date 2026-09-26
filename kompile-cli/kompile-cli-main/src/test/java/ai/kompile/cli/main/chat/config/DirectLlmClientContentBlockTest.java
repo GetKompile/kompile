@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests the content block builders in DirectLlmClient for multimodal messages.
  * Covers both OpenAI-compatible and Anthropic formats.
  */
+@TemporaryUserHome
 class DirectLlmClientContentBlockTest {
 
     private DirectLlmClient client;

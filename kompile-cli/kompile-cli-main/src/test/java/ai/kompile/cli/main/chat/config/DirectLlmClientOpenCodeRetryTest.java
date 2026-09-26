@@ -1,8 +1,18 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * even though nothing had streamed. A pre-turn failure touches no provider state,
  * so it must stay retryable AND replay-safe.</p>
  */
+@TemporaryUserHome
 class DirectLlmClientOpenCodeRetryTest {
 
     @Test
@@ -59,6 +70,42 @@ class DirectLlmClientOpenCodeRetryTest {
                         + "so the connectivity loop must not re-send the turn");
         assertFalse(result.isReplaySafe(),
                 "a turn that ran must not be replayed: provider-side history may exist");
+    }
+
+    @Test
+    void cancellingTheChatTurnAbortsTheOpenCodeTurn() throws Exception {
+        ChatConfig config = new ChatConfig("opencode", null, "opencode-go/model", null);
+        DirectLlmClient client = new DirectLlmClient(
+                config, new ObjectMapper(), fastPolicy());
+        client.setOutputConsumer(ignored -> { });
+        AtomicBoolean cancelled = new AtomicBoolean();
+        client.setCancelSignal(cancelled);
+        ExecutorService turnThread = Executors.newSingleThreadExecutor();
+        try (HangingOpenCodeServer server = new HangingOpenCodeServer("session-chat")) {
+            var transport = DirectLlmClient.class.getDeclaredField("openCodeServeClient");
+            transport.setAccessible(true);
+            transport.set(client, server.client(new ObjectMapper()));
+            var streamOpenCode = DirectLlmClient.class.getDeclaredMethod("streamOpenCode",
+                    String.class, String.class, ArrayNode.class, List.class, String.class);
+            streamOpenCode.setAccessible(true);
+            Future<Object> turn = turnThread.submit(() -> streamOpenCode.invoke(
+                    client, "run a long tool", null, null, List.of(), "opencode-go/model"));
+            assertTrue(server.turnStarted.await(10, TimeUnit.SECONDS),
+                    "the turn never reached the server");
+
+            cancelled.set(true);
+
+            DirectLlmClient.StreamResult result =
+                    (DirectLlmClient.StreamResult) turn.get(10, TimeUnit.SECONDS);
+            assertEquals(1, server.abortCalls.get(),
+                    "cancelling the chat turn must abort the OpenCode turn and its tools");
+            assertTrue(result.cancelled, "the turn must end as cancelled");
+            assertFalse(result.failed, "a cancelled turn is not a failure");
+            assertFalse(readRetryable(result), "a cancelled turn must not be retried");
+        } finally {
+            turnThread.shutdownNow();
+            client.close();
+        }
     }
 
     private static ProviderConnectivityPolicy fastPolicy() {

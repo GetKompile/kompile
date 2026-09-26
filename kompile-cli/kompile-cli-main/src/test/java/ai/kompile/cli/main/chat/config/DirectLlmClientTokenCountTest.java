@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -15,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class DirectLlmClientTokenCountTest {
 
     private final ObjectMapper mapper = new ObjectMapper();

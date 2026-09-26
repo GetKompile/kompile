@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
@@ -14,6 +15,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class DirectLlmClientFastModeTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

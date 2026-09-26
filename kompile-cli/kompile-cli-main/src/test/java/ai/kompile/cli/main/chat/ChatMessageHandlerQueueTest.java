@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class ChatMessageHandlerQueueTest {
 
     @Test

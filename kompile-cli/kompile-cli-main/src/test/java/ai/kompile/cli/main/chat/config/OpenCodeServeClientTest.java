@@ -12,9 +12,17 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -264,6 +272,51 @@ class OpenCodeServeClientTest {
             }
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    void cancellingATurnAbortsItOnTheServer() throws Exception {
+        // Dropping only the HTTP request left OpenCode running the turn and its
+        // tools; the cancel must reach the server's abort endpoint.
+        ExecutorService turnThread = Executors.newSingleThreadExecutor();
+        try (HangingOpenCodeServer server = new HangingOpenCodeServer("session-cancel");
+             OpenCodeServeClient client = server.client(objectMapper)) {
+            AtomicBoolean cancelled = new AtomicBoolean();
+            client.setCancellationCheck(cancelled::get);
+            Future<String> turn = turnThread.submit(() -> client.send(
+                    "opencode-go/deepseek-v4-pro", null, null, "run a long tool", ignored -> { }));
+            assertTrue(server.turnStarted.await(10, TimeUnit.SECONDS),
+                    "the turn never reached the server");
+
+            cancelled.set(true);
+
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> turn.get(10, TimeUnit.SECONDS));
+            assertInstanceOf(CancellationException.class, failure.getCause());
+            assertEquals(1, server.abortCalls.get(),
+                    "a cancelled turn must be aborted on the server");
+        } finally {
+            turnThread.shutdownNow();
+        }
+    }
+
+    @Test
+    void interruptingATurnAbortsItOnTheServer() throws Exception {
+        ExecutorService turnThread = Executors.newSingleThreadExecutor();
+        try (HangingOpenCodeServer server = new HangingOpenCodeServer("session-interrupt");
+             OpenCodeServeClient client = server.client(objectMapper)) {
+            Future<String> turn = turnThread.submit(() -> client.send(
+                    "opencode-go/deepseek-v4-pro", null, null, "run a long tool", ignored -> { }));
+            assertTrue(server.turnStarted.await(10, TimeUnit.SECONDS),
+                    "the turn never reached the server");
+
+            turn.cancel(true);
+
+            assertTrue(server.aborted.await(10, TimeUnit.SECONDS),
+                    "an interrupted turn must be aborted on the server");
+        } finally {
+            turnThread.shutdownNow();
         }
     }
 

@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.ToolResultStore;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class NormalChatProjectContextTest {
 
     @TempDir

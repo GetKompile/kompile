@@ -1,6 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 import static ai.kompile.cli.main.chat.config.DirectLlmClient.FailureKind.*;
 
+@TemporaryUserHome
 class DirectLlmClientFailureClassificationTest {
     private static final ProviderConnectivityPolicy POLICY = new ProviderConnectivityPolicy(
             Duration.ofSeconds(1), Duration.ofSeconds(3), Duration.ofMillis(200),

@@ -141,6 +141,24 @@ class ClaudeCliStreamParserTest {
     }
 
     @Test
+    void aTurnRefusedBeforeAnyModelRequestIsNotStarted() {
+        // Claude Code 2.1.282's stream-json result for `--resume <unknown id>`.
+        ClaudeCliStreamParser.TurnComplete refused = (ClaudeCliStreamParser.TurnComplete)
+                new ClaudeCliStreamParser().parse("""
+                        {"type":"result","subtype":"error_during_execution","duration_api_ms":0,"is_error":true,"num_turns":0,"session_id":"gone","errors":["No conversation found with session ID: gone"]}
+                        """.trim()).get(0);
+        assertTrue(refused.error());
+        assertFalse(refused.started());
+        assertEquals("No conversation found with session ID: gone", refused.errorMessage());
+
+        ClaudeCliStreamParser.TurnComplete ran = (ClaudeCliStreamParser.TurnComplete)
+                new ClaudeCliStreamParser().parse("""
+                        {"type":"result","subtype":"success","num_turns":2,"result":"done"}
+                        """.trim()).get(0);
+        assertTrue(ran.started());
+    }
+
+    @Test
     void toolProgressAndSystemNoticesArePreserved() {
         ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         parser.parse("""

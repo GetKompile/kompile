@@ -3,6 +3,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.project.LocalCrawlServingSession;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -35,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Exercises the real HTTP clients and pool lifecycle without loading a model. */
 @ResourceLock("local-serving-runtime-pool")
+@TemporaryUserHome
 class LocalServingIdleLifecycleTest {
     private static final long IDLE_MILLIS = 200;
     private final ObjectMapper mapper = JsonUtils.standardMapper();

@@ -5,6 +5,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -24,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * text, which the agentic loop cannot execute. Also covers the text-echo
  * rescue for models that already imitated the old format.
  */
+@TemporaryUserHome
 class DirectLlmClientToolReplayTest {
 
     private final ObjectMapper mapper = JsonUtils.standardMapper();

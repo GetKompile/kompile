@@ -9,6 +9,7 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class AgenticChatLoopSupervisorTest {
 
     @TempDir

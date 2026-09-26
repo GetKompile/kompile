@@ -23,6 +23,7 @@ import ai.kompile.cli.main.chat.enforcer.DirectionJudge;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.JudgeControl;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -48,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * redirect budget halts the turn through the supervisor feedback lane — and the one-shot
  * /judge override does NOT disarm direction monitoring.
  */
+@TemporaryUserHome
 class AgenticChatLoopDirectionJudgeTest {
 
     @TempDir

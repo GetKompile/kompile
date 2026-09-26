@@ -25,6 +25,7 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerPolicy;
 import ai.kompile.cli.main.chat.enforcer.EnforcerToolCallDecision;
 import ai.kompile.cli.main.chat.enforcer.JudgeControl;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
@@ -49,6 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Verifies the unified judge control contract: policy review is authoritative, the quality
  * advisory is not duplicated, and the session switch disables every local judge lane.
  */
+@TemporaryUserHome
 class AgenticChatLoopJudgeOverrideTest {
 
     @TempDir

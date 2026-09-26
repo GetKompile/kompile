@@ -4,6 +4,7 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -22,6 +23,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @Timeout(10)
+@TemporaryUserHome
 class WebHarnessControlsTest {
     @TempDir Path directory;
     private static ByteArrayInputStream bytes(String s) { return new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8)); }
