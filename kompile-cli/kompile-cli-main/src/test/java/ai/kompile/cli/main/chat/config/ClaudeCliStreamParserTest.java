@@ -158,4 +158,28 @@ class ClaudeCliStreamParserTest {
                         {"type":"system","subtype":"status","message":"Compacting context"}
                         """.trim()));
     }
+
+    @Test
+    void initSystemEventBindsSessionButLaterSystemEventsStayNotices() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        assertEquals(List.of(new ClaudeCliStreamParser.SessionInit("native-1")),
+                parser.parse("""
+                        {"type":"system","subtype":"init","session_id":"native-1"}
+                        """.trim()));
+        // A mid-stream system event carrying a session_id (e.g. compaction) must
+        // surface as a Notice, not be swallowed as a second session start.
+        assertEquals(List.of(new ClaudeCliStreamParser.Notice("Compacted context")),
+                parser.parse("""
+                        {"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual"},"session_id":"native-1","message":"Compacted context"}
+                        """.trim()));
+    }
+
+    @Test
+    void systemEventWithoutTextFallsBackToSubtype() {
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
+        assertEquals(List.of(new ClaudeCliStreamParser.Notice("hook_started")),
+                parser.parse("""
+                        {"type":"system","subtype":"hook_started","session_id":"native-1"}
+                        """.trim()));
+    }
 }

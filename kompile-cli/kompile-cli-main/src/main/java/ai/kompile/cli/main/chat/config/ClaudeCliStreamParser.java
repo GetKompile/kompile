@@ -68,9 +68,17 @@ final class ClaudeCliStreamParser {
     }
 
     private List<Event> parseSystem(JsonNode node) {
-        String session = node.path("session_id").asText("");
-        if (!session.isBlank()) return List.of(new SessionInit(session));
+        String subtype = node.path("subtype").asText("");
+        // Only the CLI's init handshake binds the native session id. Every other
+        // system event is a status/notice (compaction, tool permission, …) and may
+        // still carry a session_id — emitting SessionInit for those would swallow
+        // the notice, so they surface as Notice instead.
+        if ("init".equals(subtype)) {
+            String session = node.path("session_id").asText("");
+            return session.isBlank() ? List.of() : List.of(new SessionInit(session));
+        }
         String text = firstText(node, "message", "status", "description", "content");
+        if (text.isBlank() && !subtype.isBlank()) text = subtype;
         return text.isBlank() ? List.of() : List.of(new Notice(text));
     }
 

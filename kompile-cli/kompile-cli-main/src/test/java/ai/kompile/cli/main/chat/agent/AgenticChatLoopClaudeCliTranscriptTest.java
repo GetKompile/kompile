@@ -92,6 +92,9 @@ class AgenticChatLoopClaudeCliTranscriptTest {
                     response.strip().lines().toList(),
                     "prose on either side of a provider tool call stays on separate lines\n"
                             + diagnostics);
+            assertTrue(transcript.contains("[Claude] compact_boundary"),
+                    "a mid-stream system notice carrying a session_id must render (subtype "
+                            + "fallback), not be eaten as a session start\n" + diagnostics);
         } finally {
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
