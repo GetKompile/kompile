@@ -866,6 +866,32 @@ class VirtualTerminalTest {
         }
 
         @Test
+        void decSpecialGraphicsDrawsBoxGlyphs() {
+            // JLine sends box-drawing to xterm this way: │ is ESC ( 0 x ESC ( B.
+            vt.feed("\033(0lqqk\033(B\r\n");
+            vt.feed("\033(0x\033(B ok \033(0x\033(B\r\n");
+            vt.feed("\033(0mqqj\033(B xq");
+            assertEquals("┌──┐", vt.getRow(0).trim());
+            assertEquals("│ ok │", vt.getRow(1).trim());
+            assertEquals("└──┘ xq", vt.getRow(2).trim());
+        }
+
+        @Test
+        void shiftOutSelectsLineDrawingG1() {
+            vt.feed("\033)0");               // G1 = DEC Special Graphics
+            vt.feed("\016lqk\017 lqk");      // SO draws from G1, SI returns to G0
+            assertEquals("┌─┐ lqk", vt.getRow(0).trim());
+        }
+
+        @Test
+        void otherIntermediatesAndResetLeaveOrClearLineDrawing() {
+            vt.feed("\033(0\033#8q");        // DECALN does not redesignate G0
+            assertEquals("─", vt.getRow(0).trim());
+            vt.feed("\033cq");               // RIS returns G0 to ASCII
+            assertEquals("q", vt.getRow(0).trim());
+        }
+
+        @Test
         void applicationKeypadModeIgnored() {
             vt.feed("\033="); // DECKPAM
             vt.feed("A");

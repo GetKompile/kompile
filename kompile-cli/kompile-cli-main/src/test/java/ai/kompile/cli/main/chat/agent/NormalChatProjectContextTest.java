@@ -1,9 +1,11 @@
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.tools.ToolResultStore;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -81,6 +83,26 @@ class NormalChatProjectContextTest {
         assertNotNull(customSkill);
         assertTrue(customSkill.expandTemplate("requested work")
                 .contains("NORMAL_CHAT_SKILL_INSTRUCTION requested work"));
+    }
+
+    @Test
+    void systemPromptStripsLeakedManagedBlocksFromAgentsMd() throws Exception {
+        Path workingDirectory = tempDir.resolve("leaked-blocks-project");
+        Files.createDirectories(workingDirectory);
+        String systemPromptBlock = SystemPromptManager.MANAGED_PROMPT_BEGIN
+                + " leaked-session pid=1\nLEAKED_SYSTEM_PROMPT\n" + SystemPromptManager.MANAGED_PROMPT_END;
+        String skillsBlock = SkillsInjection.SKILLS_BEGIN_PREFIX + "leaked-block pid=1 -->\n\n"
+                + "LEAKED_SKILLS_BLOCK\n" + SkillsInjection.SKILLS_END_PREFIX + "leaked-block -->\n";
+        Files.writeString(workingDirectory.resolve("AGENTS.md"),
+                "USER_INSTRUCTIONS_MARKER\n\n" + systemPromptBlock + "\n\n" + skillsBlock);
+
+        String systemPrompt = ProjectChatContext.load(workingDirectory).renderSystemPrompt();
+
+        assertTrue(systemPrompt.contains("USER_INSTRUCTIONS_MARKER"));
+        assertFalse(systemPrompt.contains("LEAKED_SYSTEM_PROMPT"));
+        assertFalse(systemPrompt.contains("LEAKED_SKILLS_BLOCK"));
+        assertFalse(systemPrompt.contains(SystemPromptManager.MANAGED_PROMPT_BEGIN));
+        assertFalse(systemPrompt.contains(SkillsInjection.SKILLS_BEGIN_PREFIX));
     }
 
     @Test

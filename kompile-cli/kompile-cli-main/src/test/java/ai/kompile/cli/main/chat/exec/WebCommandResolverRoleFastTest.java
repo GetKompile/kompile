@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -262,6 +263,78 @@ class WebCommandResolverRoleFastTest {
         assertFalse(config.isFastMode(), "status must not write");
     }
 
+    @Test
+    void speedTogglesWithoutAnyChatConfigurationAreRejectedNotThrown() {
+        for (String raw : List.of("/fast off", "/fast", "/ultracode off", "/ultracode")) {
+            WebCommandResolver.Resolution resolution = WebCommandResolver.resolveInternal(
+                    input(raw), () -> null, new ChatSessionStateStore(), project, () -> null, null);
+            assertEquals(WebCommandResolver.Status.INVALID, resolution.status(), raw);
+        }
+    }
+
+    // ── /ultracode: Claude Code route gate, persistence, and menu payload ──
+
+    @Test
+    void ultracodeIsWebSupportedAndRejectsUsageErrorsAndOtherRoutes() {
+        assertEquals(ChatCommandCatalog.WebSupport.SUPPORTED,
+                ChatCommandCatalog.webSupport("ultracode"));
+        WebCommandResolver.Resolution usage = WebCommandResolver.resolve(input("/ultracode maybe"),
+                project, new ChatSessionStateStore(), claudeCodeConfig(), null);
+        assertEquals(WebCommandResolver.Status.INVALID, usage.status());
+        assertTrue(usage.text().contains("Usage: /ultracode"));
+
+        ChatConfig openai = eligibleFastConfig();
+        WebCommandResolver.Resolution otherRoute = WebCommandResolver.resolve(input("/ultracode on"),
+                project, new ChatSessionStateStore(), openai, null);
+        assertEquals(WebCommandResolver.Status.INVALID, otherRoute.status());
+        assertTrue(otherRoute.text().contains("Claude Code route"));
+        assertFalse(openai.isUltracode());
+        // The same vendor through an API key is the Messages API, not Claude Code.
+        ChatConfig apiKey = claudeCodeConfig();
+        apiKey.setAuthenticationMethod("api-key");
+        assertEquals(WebCommandResolver.Status.INVALID, WebCommandResolver.resolve(input("/ultracode on"),
+                project, new ChatSessionStateStore(), apiKey, null).status());
+    }
+
+    @Test
+    void ultracodeOnForClaudeCodeRoutePersistsAndStatesTheModelRequirement() {
+        WebCommandResolver.Resolution on = WebCommandResolver.resolve(input("/ultracode on"),
+                project, new ChatSessionStateStore(), claudeCodeConfig(), null);
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, on.status());
+        assertEquals("ultracode", on.data().path("menu").asText());
+        assertTrue(on.data().path("ultracode").asBoolean());
+        assertTrue(on.data().path("supported").asBoolean());
+        assertEquals("anthropic", on.data().path("provider").asText());
+        assertFalse(on.data().path("note").asText().isBlank());
+        assertTrue(on.text().contains("ON") && on.text().contains("xhigh"), on.text());
+        assertTrue(ChatConfig.loadOrFromEnv(project).isUltracode());
+
+        WebCommandResolver.Resolution off = WebCommandResolver.resolve(input("/ultracode off"),
+                project, new ChatSessionStateStore(), claudeCodeConfig(), null);
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, off.status());
+        assertFalse(off.data().path("ultracode").asBoolean());
+        assertFalse(ChatConfig.loadOrFromEnv(project).isUltracode());
+    }
+
+    @Test
+    void ultracodeStatusNeverWrites() {
+        ChatConfig config = claudeCodeConfig();
+        WebCommandResolver.Resolution status = WebCommandResolver.resolve(input("/ultracode status"),
+                project, new ChatSessionStateStore(), config, null);
+        assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, status.status());
+        assertFalse(status.data().path("ultracode").asBoolean());
+        assertFalse(config.isUltracode(), "status must not write");
+    }
+
+    private ChatConfig claudeCodeConfig() {
+        ChatConfig config = configuredChatConfig();
+        config.setProvider("anthropic");
+        config.setModel("claude-opus-5-5");
+        config.setBaseUrl(null);
+        config.setAuthenticationMethod("oauth");
+        return config;
+    }
+
     private ChatConfig configuredChatConfig() {
         ChatConfig config = new ChatConfig("custom", null, "base-model", "https://example.test/v1");
         config.setChatMode("standard");
@@ -489,6 +562,9 @@ class WebCommandResolverRoleFastTest {
         assertEquals("fast", data.path("fast").path("menu").asText());
         assertTrue(data.path("fast").has("fastMode"));
         assertTrue(data.path("fast").has("supported"));
+        assertEquals("ultracode", data.path("ultracode").path("menu").asText());
+        assertTrue(data.path("ultracode").has("ultracode"));
+        assertTrue(data.path("ultracode").has("supported"));
         assertEquals("reminders", data.path("reminders").path("menu").asText());
         assertEquals("session", data.path("reminders").path("scope").asText());
         assertEquals("reminders", data.path("remindersGlobal").path("menu").asText());

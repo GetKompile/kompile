@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
+import ai.kompile.cli.main.chat.ReminderManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -57,6 +58,9 @@ public class DirectLlmClient implements AutoCloseable {
 
     static final int OPENAI_INSTRUCTIONS_MAX_CHARS = 1_048_576;
     static final int OPENAI_PROMPT_CACHE_KEY_MAX_CHARS = 64;
+    private static final int CHARS_PER_TOKEN = 4;
+    private static final String MEMORY_CONTEXT_OPEN = "<memory_context>";
+    private static final String MEMORY_CONTEXT_CLOSE = "</memory_context>";
     private static final String OPENAI_INSTRUCTIONS_OMISSION =
             "\n\n[OpenAI instructions limit reached. Middle content was omitted; "
                     + "project instructions and saved tool results remain available through "
@@ -64,10 +68,13 @@ public class DirectLlmClient implements AutoCloseable {
 
     public interface ProviderActivityListener {
         void onToolStart(String callId, String name, String input);
+        default void onToolInput(String callId, String name, String input) { }
+        default void onToolOutput(String callId, String name, String output) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         default void onTokenUsage(long input, long output,
                                   long cacheRead, long cacheCreation) { }
+        default void onNotice(String text) { }
     }
 
     /** Provider-neutral terminal failure categories used by the chat coordinator. */
@@ -518,7 +525,7 @@ public class DirectLlmClient implements AutoCloseable {
     private static long estimateRequestInputTokens(ArrayNode messages, ArrayNode toolDefs) {
         long chars = messages.toString().length();
         if (toolDefs != null) chars += toolDefs.toString().length();
-        return chars / 4;
+        return chars / CHARS_PER_TOKEN;
     }
 
     /** Attempt an explicit provider-native compaction without generic fallback. */
@@ -834,9 +841,7 @@ public class DirectLlmClient implements AutoCloseable {
             OpenCodeServeClient client = openCodeClient();
             String effectiveSystemPrompt = systemPrompt;
             if (openCodeNeedsSeed && !conversationHistory.isEmpty()) {
-                effectiveSystemPrompt = (systemPrompt == null ? "" : systemPrompt + "\n\n")
-                        + "[Portable conversation context restored by Kompile]\n"
-                        + portableHistoryText();
+                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
             }
             // OpenCode owns a durable native session. A turn that actually ran may
             // have mutated that provider-side history even when it failed, so such
@@ -939,11 +944,12 @@ public class DirectLlmClient implements AutoCloseable {
             ClaudeCliClient client = claudeClient();
             String effectiveSystemPrompt = systemPrompt;
             if (claudeNeedsSeed && !conversationHistory.isEmpty()) {
-                effectiveSystemPrompt = (systemPrompt == null ? "" : systemPrompt + "\n\n")
-                        + "[Portable conversation context restored by Kompile]\n"
-                        + portableHistoryText();
+                effectiveSystemPrompt = withPortableHistory(systemPrompt, userMessage);
             }
-            String text = client.send(effectiveModel, config.getThinking(),
+            // Ultracode replaces the effort level on this route; fast mode is
+            // rechecked against the effective request model like the HTTP routes.
+            String text = client.send(effectiveModel, config.effectiveEffort(),
+                    config.useFastMode(effectiveModel),
                     effectiveSystemPrompt, userMessage,
                     chunk -> {
                         streamed.append(chunk);
@@ -956,6 +962,25 @@ public class DirectLlmClient implements AutoCloseable {
                             if (listener != null) {
                                 listener.onToolStart(callId, name, input);
                             }
+                        }
+
+                        @Override
+                        public void onToolInput(String callId, String name, String input) {
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onToolInput(callId, name, input);
+                        }
+
+                        @Override
+                        public void onToolOutput(String callId, String name, String output) {
+                            result.providerSideEffectsObserved = true;
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onToolOutput(callId, name, output);
+                        }
+
+                        @Override
+                        public void onNotice(String notice) {
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onNotice(notice);
                         }
 
                         @Override
@@ -981,6 +1006,14 @@ public class DirectLlmClient implements AutoCloseable {
                                 listener.onTokenUsage(
                                         input, output, cacheRead, cacheCreation);
                             }
+                        }
+
+                        @Override
+                        public void onThinking(String reasoningDelta) {
+                            // Same pipeline every other lane feeds: renders in the
+                            // live thinking renderer when installed, dropped
+                            // otherwise (capture lanes must not receive reasoning).
+                            printThinkingChunk(reasoningDelta);
                         }
                     });
             result.text = text;
@@ -1022,7 +1055,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (userMessage != null) {
             ObjectNode user = objectMapper.createObjectNode();
             user.put("role", "user");
-            user.put("content", userMessage);
+            user.put("content", withoutTurnEnvelopes(userMessage));
             conversationHistory.add(user);
         }
         if (assistantText != null && !assistantText.isBlank()) {
@@ -1355,16 +1388,66 @@ public class DirectLlmClient implements AutoCloseable {
         }
     }
 
-    private String portableHistoryText() {
-        StringBuilder text = new StringBuilder();
-        for (ObjectNode message : conversationHistory) {
-            String role = message.path("role").asText("context");
-            JsonNode content = message.get("content");
-            text.append('[').append(role).append("]\n");
-            text.append(content != null && content.isTextual()
-                    ? content.asText() : String.valueOf(content)).append("\n\n");
+    /**
+     * System prompt that seeds a fresh native session (route switch, resume, reconnect,
+     * post-compaction) with the portable history. Only the newest messages that fit the
+     * auto-compaction share of the context window left after the system prompt and the
+     * new turn are restored; older ones collapse into an omission marker.
+     */
+    private String withPortableHistory(String systemPrompt, String userMessage) {
+        String prefix = (systemPrompt == null ? "" : systemPrompt + "\n\n")
+                + "[Portable conversation context restored by Kompile]\n";
+        long budgetChars = Long.MAX_VALUE;
+        if (contextWindowTokens > 0) {
+            budgetChars = (long) (contextWindowTokens * config.getAutoCompactThreshold())
+                    * CHARS_PER_TOKEN - prefix.length()
+                    - (userMessage == null ? 0 : userMessage.length());
         }
+        return prefix + portableHistoryText(budgetChars);
+    }
+
+    private String portableHistoryText(long budgetChars) {
+        List<String> kept = new ArrayList<>();
+        int omitted;
+        synchronized (historyLock) {
+            long used = 0;
+            int index = conversationHistory.size() - 1;
+            for (; index >= 0; index--) {
+                String message = portableMessageText(conversationHistory.get(index));
+                if (used + message.length() > budgetChars) break;
+                used += message.length();
+                kept.add(message);
+            }
+            omitted = index + 1;
+        }
+        StringBuilder text = new StringBuilder();
+        if (omitted > 0) {
+            text.append('[').append(omitted)
+                    .append(" earlier messages omitted to fit the context window]\n\n");
+        }
+        for (int i = kept.size() - 1; i >= 0; i--) text.append(kept.get(i));
         return text.toString().strip();
+    }
+
+    private static String portableMessageText(ObjectNode message) {
+        String role = message.path("role").asText("context");
+        JsonNode content = message.get("content");
+        String text = content != null && content.isTextual()
+                ? content.asText() : String.valueOf(content);
+        if ("user".equals(role)) text = withoutTurnEnvelopes(text);
+        return "[" + role + "]\n" + text + "\n\n";
+    }
+
+    /**
+     * The user's own text: drops the per-turn reminder block and injected memory
+     * context, which every new turn carries fresh.
+     */
+    private static String withoutTurnEnvelopes(String message) {
+        String text = ReminderManager.stripReminderBlock(message);
+        if (!text.startsWith(MEMORY_CONTEXT_OPEN)) return text;
+        int end = text.indexOf(MEMORY_CONTEXT_CLOSE);
+        return end < 0 ? text
+                : text.substring(end + MEMORY_CONTEXT_CLOSE.length()).stripLeading();
     }
 
     public int getHistorySize() {

@@ -3257,7 +3257,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.selectCliCommand('/fast', enabled ? 'on' : 'off');
   }
 
-  /** Shared guard + send path for every CLI menu selection (model/role/fast). */
+  /**
+   * Ultracode toggle sends the raw CLI form; the CLI gates it on the Claude
+   * Code route and persists the toggle the same way as /fast.
+   */
+  toggleUltracode(enabled: boolean): void {
+    this.selectCliCommand('/ultracode', enabled ? 'on' : 'off');
+  }
+
+  /** Shared guard + send path for every CLI menu selection (model/role/fast/ultracode). */
   private selectCliCommand(command: string, argument: string): void {
     if (!argument || this.isStreaming || this.isLoading) return;
     this.userInput = command + ' ' + argument;
@@ -3289,7 +3297,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
    * outcome carrying that payload. Seeds the command-config modal. Scope
    * defaults to session when the CLI payload omits it.
    */
-  private latestMenu(kind: 'model' | 'role' | 'fast' | 'reminders' | 'loops' | 'queue' | 'continue' | 'judge',
+  private latestMenu(kind: 'model' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'continue' | 'judge',
                      scope?: 'project'): CommandEventData | null {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const data = this.messages[i].commandOutcome?.data;
@@ -3309,6 +3317,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       modelMenu: this.latestMenu('model'),
       roleMenu: this.latestMenu('role'),
       fastMenu: this.latestMenu('fast'),
+      ultracodeMenu: this.latestMenu('ultracode'),
       reminders: this.latestMenu('reminders'),
       remindersGlobal: this.latestMenu('reminders', 'project'),
       loops: this.latestMenu('loops'),
@@ -3327,6 +3336,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       selectModel: (modelId: string) => this.selectModel(modelId),
       selectRole: (roleName: string) => this.selectRole(roleName),
       toggleFastMode: (enabled: boolean) => this.toggleFastMode(enabled),
+      toggleUltracode: (enabled: boolean) => this.toggleUltracode(enabled),
       clearConversation: () => this.performConversationClear()
     };
     this.dialog.open(CommandConfigDialogComponent, {
@@ -3368,6 +3378,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     { command: '/model', description: 'Show or switch model' },
     { command: '/role', description: 'Show or switch role' },
     { command: '/fast', description: 'Show or toggle fast mode' },
+    { command: '/ultracode', description: 'Show or toggle Claude Code ultracode' },
     { command: '/skills', description: 'List available skills' }
   ];
   slashMenuOpen = false;

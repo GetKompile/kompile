@@ -114,6 +114,7 @@ public class AgenticChatLoop {
      */
     public interface ToolActivityListener {
         void onToolStart(String callId, String toolName, String rawInput);
+        default void onToolInput(String callId, String toolName, String rawInput) { }
         void onToolComplete(String callId, String toolName, String rawInput, ToolResult result);
         default void onToolDenied(String callId, String toolName, String rawInput, String reason) {
             onToolComplete(callId, toolName, rawInput, ToolResult.error(reason));
@@ -3168,8 +3169,8 @@ public class AgenticChatLoop {
     private final class ToolTranscriptBlock {
         private final String key;
         private final String toolName;
-        private final String rawInput;
-        private final String start;
+        private String rawInput;
+        private String start;
         private final Deque<String> liveOutput = new ArrayDeque<>();
         private int liveOutputChars;
         private long omittedOutputLines;
@@ -3215,6 +3216,20 @@ public class AgenticChatLoop {
                 omittedOutputLines++;
             }
             scheduleManagedUpdate();
+        }
+
+        private synchronized void updateInput(String input) {
+            if (input == null || input.isBlank() || input.equals(rawInput)) return;
+            rawInput = input;
+            // Provider tool calls start with empty input. A managed block repaints
+            // in place, so the header takes the arguments; append-only output can
+            // only show them as a follow-up line.
+            if (managed && backgroundOutputConsumer.get() == null) {
+                start = renderer.renderToolCallStart(toolName, input);
+                scheduleManagedUpdate();
+            } else {
+                appendOutput("arguments: " + input);
+            }
         }
 
         private synchronized void complete(ToolResult completed) {
@@ -3382,18 +3397,23 @@ public class AgenticChatLoop {
                 directLlmClient.getConnectivityEventConsumer();
         DirectLlmClient.ProviderActivityListener previousProviderActivityListener =
                 directLlmClient.getProviderActivityListener();
+        boolean claudeCliRoute = directLlmClient.getChatConfig().isClaudeCliNative();
         DirectLlmClient.StreamResult directResult;
         AtomicBoolean reconnecting = new AtomicBoolean();
-        directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
-            fireFirstOutput();
-            reconnecting.set(false);
-            setForegroundActivity("Responding");
-            markdownRenderer.accept(chunk);
-        }));
         // Line-buffered reasoning rendering: word-sized deltas coalesce into
         // complete transcript lines instead of one fragmented line per delta.
         ThinkingStreamRenderer thinkingRenderer =
                 new ThinkingStreamRenderer(this::emitLine, asciiRenderer.getTerminalRenderer());
+        Map<String, ToolTranscriptBlock> providerToolBlocks = new HashMap<>();
+        Map<String, String> providerToolInputs = new HashMap<>();
+        Map<String, String> providerToolNames = new HashMap<>();
+        directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
+            fireFirstOutput();
+            reconnecting.set(false);
+            setForegroundActivity("Responding");
+            thinkingRenderer.flush();
+            markdownRenderer.accept(chunk);
+        }));
         directLlmClient.setThinkingConsumer(sessionContext.wrapConsumer(chunk -> {
             if (chunk == null || chunk.isEmpty()) return;
             setForegroundActivity("Thinking");
@@ -3414,6 +3434,17 @@ public class AgenticChatLoop {
                     public void onToolStart(String callId, String name, String input) {
                         sessionContext.wrap(() -> {
                             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
+                            if (claudeCliRoute) {
+                                thinkingRenderer.flush();
+                                fireFirstOutput();
+                                setForegroundActivity("Working: "
+                                        + TerminalRenderer.summarizeToolCall(name, input, 96));
+                                String key = "provider-tool:" + conversationSessionId + ":" + callId;
+                                providerToolBlocks.put(callId,
+                                        new ToolTranscriptBlock(key, name, input));
+                                providerToolInputs.put(callId, input == null ? "" : input);
+                                providerToolNames.put(callId, name);
+                            }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onToolStart(callId, name, input);
                             }
@@ -3423,20 +3454,72 @@ public class AgenticChatLoop {
                     }
 
                     @Override
+                    public void onToolInput(String callId, String name, String input) {
+                        sessionContext.wrap(() -> {
+                            if (claudeCliRoute) {
+                                providerToolInputs.put(callId, input == null ? "" : input);
+                                ToolTranscriptBlock block = providerToolBlocks.get(callId);
+                                if (block != null) block.updateInput(input);
+                            }
+                            DirectLlmClient.ProviderActivityListener previous =
+                                    previousProviderActivityListener;
+                            if (previous != null) previous.onToolInput(callId, name, input);
+                            ToolActivityListener listener = toolActivityListener;
+                            if (listener != null) listener.onToolInput(callId, name, input);
+                        }).run();
+                    }
+
+                    @Override
+                    public void onToolOutput(String callId, String name, String output) {
+                        sessionContext.wrap(() -> {
+                            if (claudeCliRoute) {
+                                ToolTranscriptBlock block = providerToolBlocks.get(callId);
+                                if (block != null && output != null && !output.isEmpty()) {
+                                    block.appendOutput(output);
+                                }
+                            }
+                            DirectLlmClient.ProviderActivityListener previous =
+                                    previousProviderActivityListener;
+                            if (previous != null) previous.onToolOutput(callId, name, output);
+                        }).run();
+                    }
+
+                    @Override
                     public void onToolComplete(String callId, String name, String output,
                                                int exitCode, boolean error) {
                         sessionContext.wrap(() -> {
+                            String rawInput = "";
+                            String toolName = name;
+                            if (claudeCliRoute) {
+                                thinkingRenderer.flush();
+                                rawInput = providerToolInputs.remove(callId);
+                                if (rawInput == null) rawInput = "";
+                                toolName = providerToolNames.remove(callId);
+                                if (toolName == null || toolName.isBlank()) toolName = name;
+                            }
+                            ToolTranscriptBlock block = claudeCliRoute
+                                    ? providerToolBlocks.remove(callId) : null;
+                            ToolResult providerResult = error
+                                    ? ToolResult.error(output == null ? "" : output)
+                                    : ToolResult.success(output == null ? "" : output);
+                            if (claudeCliRoute) {
+                                if (block == null) {
+                                    block = new ToolTranscriptBlock(
+                                            "provider-tool:" + conversationSessionId + ":" + callId,
+                                            toolName, rawInput);
+                                } else {
+                                    block.updateInput(rawInput);
+                                }
+                                block.complete(providerResult);
+                            }
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onToolComplete(
-                                        callId, name, output, exitCode, error);
+                                        callId, toolName, output, exitCode, error);
                             }
                             ToolActivityListener listener = toolActivityListener;
                             if (listener != null) {
-                                ToolResult providerResult = error
-                                        ? ToolResult.error(output == null ? "" : output)
-                                        : ToolResult.success(output == null ? "" : output);
                                 listener.onToolComplete(
-                                        callId, name, "", providerResult);
+                                        callId, toolName, rawInput, providerResult);
                             }
                         }).run();
                     }
@@ -3451,6 +3534,20 @@ public class AgenticChatLoop {
                             }
                         }).run();
                     }
+
+                    @Override
+                    public void onNotice(String notice) {
+                        sessionContext.wrap(() -> {
+                            thinkingRenderer.flush();
+                            if (notice != null && !notice.isBlank()) {
+                                fireFirstOutput();
+                                emitLine(renderer.dim("[Claude] " + notice));
+                            }
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onNotice(notice);
+                            }
+                        }).run();
+                    }
                 });
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
@@ -3459,6 +3556,17 @@ public class AgenticChatLoop {
             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
             thinkingRenderer.flush();
             markdownRenderer.flush();
+            for (Map.Entry<String, ToolTranscriptBlock> entry : providerToolBlocks.entrySet()) {
+                String callId = entry.getKey();
+                String name = providerToolNames.getOrDefault(callId, "unknown");
+                String input = providerToolInputs.getOrDefault(callId, "");
+                ToolResult incomplete = ToolResult.error(
+                        "Claude stream ended before this tool reported a result.");
+                entry.getValue().complete(incomplete);
+                ToolActivityListener listener = toolActivityListener;
+                if (listener != null) listener.onToolComplete(callId, name, input, incomplete);
+            }
+            providerToolBlocks.clear();
             directLlmClient.setOutputConsumer(previousConsumer);
             directLlmClient.setThinkingConsumer(previousThinkingConsumer);
             directLlmClient.setConnectivityEventConsumer(previousConnectivityConsumer);

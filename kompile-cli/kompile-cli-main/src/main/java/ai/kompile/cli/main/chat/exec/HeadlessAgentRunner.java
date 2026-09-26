@@ -403,7 +403,7 @@ public final class HeadlessAgentRunner {
         effectiveConfiguration.put("provider", nullToEmpty(effectiveProvider));
         effectiveConfiguration.put("auth", serverMode ? "none" : effectiveAuth(config));
         effectiveConfiguration.put("thinking", serverMode
-                ? "" : nullToEmpty(config.getThinking()));
+                ? "" : nullToEmpty(config.effectiveEffort()));
         effectiveConfiguration.put("agent", effectiveAgent);
         effectiveConfiguration.put("role", durableRole != null && !durableRole.isBlank()
                 ? durableRole : nullToEmpty(opts.roleName()));

@@ -149,6 +149,15 @@ public class AuthCommand implements Callable<Integer> {
                 }
             }
 
+            if (useOAuth && "anthropic".equalsIgnoreCase(providerId)) {
+                // Anthropic OAuth is owned by the claude CLI (Claude Code owns the
+                // subscription login). Kompile never mints a managed token for it;
+                // the chat wizard's OAuth route is warn-and-pass-through.
+                System.err.println("Anthropic OAuth is owned by Claude Code. Run `claude login` in a terminal — "
+                        + "Kompile does not manage this credential.");
+                return 2;
+            }
+
             if (useOAuth) {
                 providerId = oauthCredentialProviderId(registry, providerId);
                 ensureClientRegistration(registry, providerId);

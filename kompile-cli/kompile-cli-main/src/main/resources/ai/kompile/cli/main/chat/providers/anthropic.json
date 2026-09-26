@@ -12,10 +12,20 @@
     "metadataSource": "DOCUMENTED_FALLBACK",
     "source": {
       "url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
-      "verifiedAt": "2026-09-06",
+      "verifiedAt": "2026-09-26",
       "notice": "Higher per-token cost; requires fast-mode access/usage credits and organization approval. Supported Opus models only; availability and capacity are provider-owned."
     },
-    "modelPatterns": ["^claude-opus-(?:5|4-8)(?:-[0-9]{8})?$"]
+    "modelPatterns": ["^claude-opus-(?:5-5|5|4-8)(?:-[0-9]{8})?$"]
+  },
+  "ultracode": {
+    "metadataSource": "DOCUMENTED_FALLBACK",
+    "source": {
+      "url": "https://code.claude.com/docs/en/model-config",
+      "verifiedAt": "2026-09-26",
+      "notice": "Claude Code route only: Claude plans a dynamic workflow for each substantive task at xhigh effort. Each request uses more tokens and takes longer; on a subscription it reaches usage limits sooner. Requires Claude Code v2.1.203+; unavailable when workflows are off or an effort cap is below xhigh."
+    },
+    "effort": "ultracode",
+    "requiresEffort": "xhigh"
   },
   "profiles": []
 }

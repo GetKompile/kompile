@@ -7,7 +7,6 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.util.NativeCliProcess;
 import ai.kompile.cli.main.chat.ChatSessionContext;
-import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
@@ -50,9 +49,19 @@ final class ClaudeCliClient implements AutoCloseable {
 
     interface ActivityListener {
         void onToolStart(String callId, String name, String input);
+        default void onToolInput(String callId, String name, String input) { }
+        default void onToolOutput(String callId, String name, String output) { }
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
+        default void onNotice(String text) { }
+        /**
+         * Live reasoning deltas from the claude stream. Forwarded to the same
+         * thinking pipeline every other route uses, so the CLI's boot/file-read/
+         * thinking/tool phase renders activity instead of dead silence.
+         */
+        default void onThinking(String text) {
+        }
     }
 
     /**
@@ -78,6 +87,13 @@ final class ClaudeCliClient implements AutoCloseable {
      */
     static final class ClaudeCliAuthenticationException extends TurnNotStartedException {
         ClaudeCliAuthenticationException(String message) {
+            super(message);
+        }
+    }
+
+    /** The CLI began responding, but the stream ended or reported an error. */
+    static final class TurnFailedException extends IllegalStateException {
+        TurnFailedException(String message) {
             super(message);
         }
     }
@@ -134,13 +150,18 @@ final class ClaudeCliClient implements AutoCloseable {
     }
 
     /**
-     * Send one turn through the native Claude Code session.
+     * Send one turn through the native Claude Code session. The full prompt
+     * (system instructions + user message) is written to a temp file, and the
+     * `-p` argument is just the short instruction "Read this file and act on
+     * the prompt in the file: <path>" — so prompt content NEVER enters argv
+     * and "argument list too long" cannot happen on long conversations.
      *
      * @param model  Claude model id (e.g. sonnet); may be null to let the CLI use its default
-     * @param effort Claude effort override (e.g. high); may be null
+     * @param effort Claude effort override (e.g. high, or ultracode); may be null
+     * @param fastMode request Claude Code fast mode for this turn's session
      * @return the final assistant text
      */
-    synchronized String send(String model, String effort, String systemPrompt,
+    synchronized String send(String model, String effort, boolean fastMode, String systemPrompt,
                              String userMessage, Consumer<String> output,
                              ActivityListener activityListener) throws Exception {
         if (closed) {
@@ -149,14 +170,34 @@ final class ClaudeCliClient implements AutoCloseable {
         if (sessionId == null) {
             sessionId = UUID.randomUUID().toString();
         }
+        synchronized (errorOutput) {
+            errorOutput.setLength(0);
+        }
         injectKompileToolsOnce();
+
+        String prompt = composePrompt(systemPrompt, userMessage);
+        java.nio.file.Path promptFile = writePromptFile(prompt);
 
         Process process;
         try {
-            process = NativeCliProcess.processBuilder(
-                            buildCommand(model, effort, systemPrompt, userMessage), workingDirectory)
-                    .start();
+            // The prompt is passed BY FILE: it is written to a temp file and the
+            // CLI is invoked with the file path so it reads the prompt from disk
+            // — no argv bloat ("argument list too long" on long chats) and no
+            // pipes. This matches the remote-CLI prompt-passing convention used
+            // elsewhere in Kompile.
+            //
+            // Streaming note: headless `claude -p --output-format stream-json
+            // --include-partial-messages` flushes each delta to the pipe as it
+            // arrives (verified live: init at T+0.1s, text deltas every ~30ms
+            // through a raw pipe), so no PTY is needed here — unlike the TUI
+            // passthrough lanes, which DO require script(1) to defeat full
+            // stdout buffering. A PTY would merge stderr into stdout and mask
+            // the real exit code, so it is deliberately NOT used.
+            ProcessBuilder builder = NativeCliProcess.processBuilder(
+                    buildCommand(model, effort, fastMode, promptFile), workingDirectory);
+            process = builder.start();
         } catch (IOException e) {
+            deleteQuietly(promptFile);
             // Binary missing or unspawnable: the prompt never reached a provider.
             throw new TurnNotStartedException(
                     "Could not start the '" + binaryName() + "' CLI: " + e.getMessage(), e);
@@ -166,12 +207,43 @@ final class ClaudeCliClient implements AutoCloseable {
         try {
             TurnOutcome outcome = consumeTurn(process, output, activityListener);
             errorDrain.join(2_000);
+            // Any prose the stdout parse skipped (malformed lines, banner text)
+            // lands in the diagnostic buffer so failure classification can use
+            // it — auth signatures sometimes surface on stdout.
+            if (outcome.ignoredProse.length() > 0) {
+                synchronized (errorOutput) {
+                    if (errorOutput.length() < 8_000) {
+                        errorOutput.append(outcome.ignoredProse);
+                    }
+                }
+            }
             reap(process);
             // The CLI acknowledged the session; later turns use --resume.
             sessionStarted = true;
 
-            if (outcome.exitCode != 0 && outcome.turnText.isBlank()) {
-                throwTurnFailure(outcome.exitCode);
+            if (!outcome.failure.isBlank()) {
+                throw new TurnFailedException(outcome.failure + diagnosticSuffix());
+            }
+            if (outcome.exitCode != 0) {
+                if (outcome.turnText.isBlank() && !outcome.providerSideEffectsObserved) {
+                    throwTurnFailure(outcome.exitCode);
+                }
+                throw new TurnFailedException("Claude CLI turn failed after partial output (exit "
+                        + outcome.exitCode + ")" + diagnosticSuffix());
+            }
+            if (!outcome.completed) {
+                if (outcome.turnText.isBlank() && !outcome.providerSideEffectsObserved) {
+                    throw new TurnNotStartedException(
+                            "Claude CLI returned no assistant text" + diagnosticSuffix());
+                }
+                throw new TurnFailedException("Claude CLI stream ended before its terminal result event"
+                        + diagnosticSuffix());
+            }
+            if (outcome.turnText.isBlank() && outcome.providerSideEffectsObserved) {
+                if (activityListener != null) {
+                    activityListener.onNotice("Claude completed tool activity without a final text response.");
+                }
+                return "";
             }
             if (outcome.turnText.isBlank()) {
                 throw new TurnNotStartedException(
@@ -184,7 +256,28 @@ final class ClaudeCliClient implements AutoCloseable {
             throw e;
         } finally {
             turnProcess = null;
+            deleteQuietly(promptFile);
         }
+    }
+
+    private static void deleteQuietly(java.nio.file.Path file) {
+        if (file == null) return;
+        try {
+            java.nio.file.Files.deleteIfExists(file);
+        } catch (IOException ignored) {
+        }
+    }
+
+    /**
+     * Persist the turn prompt to a temp file next to the working directory so
+     * it can be streamed via stdin without touching argv. The file is deleted
+     * when the turn ends (normally or abnormally).
+     */
+    private java.nio.file.Path writePromptFile(String prompt) throws IOException {
+        java.nio.file.Path file = java.nio.file.Files.createTempFile(
+                "kompile-claude-prompt-", ".txt");
+        java.nio.file.Files.writeString(file, prompt, java.nio.charset.StandardCharsets.UTF_8);
+        return file;
     }
 
     /** Best-effort cancellation of an in-flight CLI turn. */
@@ -236,57 +329,97 @@ final class ClaudeCliClient implements AutoCloseable {
                                     ActivityListener activityListener) throws IOException {
         TurnOutcome outcome = new TurnOutcome();
         StringBuilder streamed = new StringBuilder();
-        PassthroughStreamParser parser = new PassthroughStreamParser();
+        ClaudeCliStreamParser parser = new ClaudeCliStreamParser();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                List<PassthroughStreamParser.PassthroughEvent> events;
-                try {
-                    events = parser.parseClaudeLineMulti(line);
-                } catch (RuntimeException ignored) {
+                // stream-json always emits JSON objects. Non-JSON prose (auth
+                // failures, CLI warnings) must go to diagnostics, NEVER through
+                // the parser's lenient fallback where it would become
+                // "assistant text" and mask the failure.
+                String trimmedLine = line.trim();
+                if (!trimmedLine.startsWith("{")) {
+                    recordProse(outcome, line);
                     continue;
                 }
-                for (PassthroughStreamParser.PassthroughEvent event : events) {
-                    if (event instanceof PassthroughStreamParser.SessionInit init) {
+                List<ClaudeCliStreamParser.Event> events;
+                try {
+                    events = parser.parse(line);
+                } catch (RuntimeException ignored) {
+                    recordProse(outcome, line);
+                    continue;
+                }
+                if (events.isEmpty()) {
+                    // JSON-shaped but unrecognized — keep for diagnostics.
+                    recordProse(outcome, line);
+                    continue;
+                }
+                for (ClaudeCliStreamParser.Event event : events) {
+                    if (event instanceof ClaudeCliStreamParser.SessionInit init) {
                         // The CLI echoes its native session id on the init event;
                         // adopting it keeps --resume consistent with sessions the
                         // user can inspect under ~/.claude/projects.
                         if (init.sessionId() != null && !init.sessionId().isBlank()) {
                             sessionId = init.sessionId();
                         }
-                    } else if (event instanceof PassthroughStreamParser.TextChunk chunk) {
-                        if (!chunk.text().isEmpty()) {
-                            streamed.append(chunk.text());
-                            if (output != null) output.accept(chunk.text());
+                    } else if (event instanceof ClaudeCliStreamParser.Thinking thinking) {
+                        if (!thinking.text().isEmpty() && activityListener != null) {
+                            activityListener.onThinking(thinking.text());
                         }
-                    } else if (event instanceof PassthroughStreamParser.ToolUse use) {
+                    } else if (event instanceof ClaudeCliStreamParser.Text text) {
+                        if (!text.text().isEmpty()) {
+                            streamed.append(text.text());
+                            if (output != null) output.accept(text.text());
+                        }
+                    } else if (event instanceof ClaudeCliStreamParser.ToolStart start) {
+                        outcome.providerSideEffectsObserved = true;
+                        // Claude ends prose before a tool call without a newline. Close
+                        // that line first so the renderer paints it above the tool block
+                        // and the next message's text is not glued onto it.
+                        if (!streamed.isEmpty() && streamed.charAt(streamed.length() - 1) != '\n') {
+                            streamed.append('\n');
+                            if (output != null) output.accept("\n");
+                        }
                         if (activityListener != null) {
-                            // The claude stream-json ToolUse block carries no call id;
-                            // the tool name doubles as the correlation id.
-                            activityListener.onToolStart(use.name(), use.name(), use.input());
+                            activityListener.onToolStart(start.callId(), start.name(), start.input());
                         }
-                    } else if (event instanceof PassthroughStreamParser.ToolComplete complete) {
+                    } else if (event instanceof ClaudeCliStreamParser.ToolInput input) {
                         if (activityListener != null) {
-                            activityListener.onToolComplete(complete.name(), complete.name(),
-                                    complete.output(), complete.exitCode(), complete.error());
+                            activityListener.onToolInput(input.callId(), input.name(), input.input());
                         }
-                    } else if (event instanceof PassthroughStreamParser.TokenUsage usage) {
+                    } else if (event instanceof ClaudeCliStreamParser.ToolOutput toolOutput) {
+                        outcome.providerSideEffectsObserved = true;
                         if (activityListener != null) {
-                            activityListener.onTokenUsage(usage.inputTokens(), usage.outputTokens(),
-                                    usage.cacheReadTokens(), usage.cacheCreationTokens());
+                            activityListener.onToolOutput(toolOutput.callId(), toolOutput.name(),
+                                    toolOutput.output());
                         }
-                    } else if (event instanceof PassthroughStreamParser.TurnComplete turn) {
-                        // The terminal `result` event is the turn's authoritative end.
+                    } else if (event instanceof ClaudeCliStreamParser.ToolComplete complete) {
+                        outcome.providerSideEffectsObserved = true;
+                        if (activityListener != null) {
+                            activityListener.onToolComplete(complete.callId(), complete.name(),
+                                    complete.output(), complete.error() ? 1 : 0, complete.error());
+                        }
+                    } else if (event instanceof ClaudeCliStreamParser.Notice notice) {
+                        if (activityListener != null) activityListener.onNotice(notice.text());
+                    } else if (event instanceof ClaudeCliStreamParser.TurnComplete turn) {
                         outcome.completed = true;
-                        if (activityListener != null
-                                && (turn.inputTokens() > 0 || turn.outputTokens() > 0)) {
+                        if (turn.error()) {
+                            outcome.failure = turn.errorMessage().isBlank()
+                                    ? "Claude reported an error for this turn"
+                                    : "Claude reported an error: " + turn.errorMessage();
+                        }
+                        if (streamed.length() == 0 && !turn.result().isBlank()) {
+                            streamed.append(turn.result());
+                            if (output != null) output.accept(turn.result());
+                        }
+                        if (activityListener != null && (turn.inputTokens() > 0
+                                || turn.outputTokens() > 0 || turn.cacheReadTokens() > 0
+                                || turn.cacheCreationTokens() > 0)) {
                             activityListener.onTokenUsage(turn.inputTokens(), turn.outputTokens(),
                                     turn.cacheReadTokens(), turn.cacheCreationTokens());
                         }
                     }
-                    // ThinkingChunk is intentionally not forwarded: reasoning is a
-                    // liveness signal only in this lane, never transcript text.
                 }
             }
         }
@@ -298,6 +431,14 @@ final class ClaudeCliClient implements AutoCloseable {
             outcome.exitCode = -1;
         }
         return outcome;
+    }
+
+    /** Non-JSON prose line (auth failures, CLI warnings) kept for diagnostics. */
+    private static void recordProse(TurnOutcome outcome, String line) {
+        String value = line == null ? "" : line.trim();
+        if (!value.isBlank()) {
+            outcome.ignoredProse.append(value).append('\n');
+        }
     }
 
     private Thread drainStderr(Process process) {
@@ -361,11 +502,23 @@ final class ClaudeCliClient implements AutoCloseable {
         return diagnostic.isBlank() ? "" : ": " + trimForError(diagnostic);
     }
 
-    private List<String> buildCommand(String model, String effort, String systemPrompt, String userMessage) {
+    /**
+     * Build the turn command. The full prompt is written to a temp file; the
+     * -p argument is just the short instruction telling claude to read and act
+     * on that file — so prompt content NEVER enters argv and "argument list
+     * too long" cannot happen on long conversations.
+     */
+    private List<String> buildCommand(String model, String effort, boolean fastMode,
+                                      java.nio.file.Path promptFile) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binaryName());
+        cmd.add("--dangerously-skip-permissions");
         cmd.add("-p");
-        cmd.add(composePrompt(systemPrompt, userMessage));
+        // Short argv instruction pointing claude at the prompt file. The file
+        // itself carries the actual prompt content (system instructions + user
+        // message), so argv stays tiny regardless of conversation length.
+        cmd.add("Read this file and act on the prompt in the file: "
+                + promptFile.toAbsolutePath());
         cmd.add("--output-format");
         cmd.add("stream-json");
         cmd.add("--verbose");
@@ -383,6 +536,13 @@ final class ClaudeCliClient implements AutoCloseable {
         if (effort != null && !effort.isBlank()) {
             cmd.add("--effort");
             cmd.add(effort.trim());
+        }
+        if (fastMode) {
+            // Headless sessions honor fast mode only when launched with it in
+            // --settings (Claude Code v2.1.205+); it applies to this session only
+            // and never writes the user's settings file.
+            cmd.add("--settings");
+            cmd.add("{\"fastMode\":true}");
         }
         return cmd;
     }
@@ -426,5 +586,9 @@ final class ClaudeCliClient implements AutoCloseable {
         String turnText = "";
         boolean completed;
         int exitCode;
+        boolean providerSideEffectsObserved;
+        String failure = "";
+        /** Non-JSON prose lines seen on stdout (auth failures, CLI warnings). */
+        final StringBuilder ignoredProse = new StringBuilder();
     }
 }

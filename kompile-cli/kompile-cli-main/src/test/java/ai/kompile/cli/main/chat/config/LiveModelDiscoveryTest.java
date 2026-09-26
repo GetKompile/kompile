@@ -55,6 +55,83 @@ class LiveModelDiscoveryTest {
     }
 
     @Test
+    void claudeCliCatalogParserToleratesAuthFailureNoise() {
+        // Real expired-login output captured from `claude models list` — prose
+        // lines never parse as model rows; grammar-matching ids do.
+        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.parseClaudeCliOutput("""
+                "fable[1m]" isn't described by this version's model catalog; update Claude Code, or map it with behavesAs on a modelPicker row (or modelOverrides, if it is a provider id of a model this version knows).
+                [claude-code:unrecognized_model] {"model":"fable[1m]","query_source":"sdk"}
+                Failed to authenticate: OAuth session expired and could not be refreshed
+                claude-sonnet-4-5
+                claude-opus-4-8
+                opus
+                sonnet
+                haiku
+                fable
+                claude-sonnet-5[1m]
+                claude-3-7-sonnet-20250219
+                """);
+
+        assertEquals(List.of("claude-sonnet-4-5", "claude-opus-4-8", "opus",
+                        "sonnet", "haiku", "fable", "claude-sonnet-5[1m]",
+                        "claude-3-7-sonnet-20250219"),
+                models.stream().map(LiveModelDiscovery.Model::id).toList());
+    }
+
+    @Test
+    void claudeModelIdGrammarRejectsProseAndAcceptsClaudeShapes() {
+        assertTrue(LiveModelDiscovery.isClaudeModelId("opus"));
+        assertTrue(LiveModelDiscovery.isClaudeModelId("mythos"));
+        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-sonnet-4-5"));
+        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-3-7-sonnet-20250219"));
+        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-sonnet-5[1m]"));
+        assertFalse(LiveModelDiscovery.isClaudeModelId("Failed to authenticate"));
+        assertFalse(LiveModelDiscovery.isClaudeModelId("\"fable[1m]\" isn't described"));
+        assertFalse(LiveModelDiscovery.isClaudeModelId("[claude-code:unrecognized_model]"));
+        assertFalse(LiveModelDiscovery.isClaudeModelId("CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000"));
+        assertFalse(LiveModelDiscovery.isClaudeModelId("gpt-4o"));
+    }
+
+    @Test
+    void claudeCliDiscoveryNeverReturnsEmptyForAnInstalledCli() {
+        // parseClaudeCliOutput alone degrades to empty on garbage; the
+        // discovery entry point layers the tier-alias floor on top so the
+        // picker always has a selectable list.
+        assertTrue(LiveModelDiscovery.parseClaudeCliOutput(
+                "Failed to authenticate: OAuth session expired and could not be refreshed").isEmpty());
+    }
+
+    @Test
+    void claudeRouteModelsApiListingKeepsPerModelEffortLevels() {
+        // The Claude Code route lists models through GET /v1/models; each
+        // model's capabilities.effort block is the only source of the levels
+        // offered for --effort, so parsing must keep it per model.
+        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.parseModelsApiResponse("""
+                {"data":[
+                  {"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5",
+                   "capabilities":{"effort":{"supported":true,
+                     "low":{"supported":true},"medium":{"supported":true},
+                     "high":{"supported":true},"xhigh":{"supported":true},
+                     "max":{"supported":true}}}},
+                  {"type":"model","id":"claude-sonnet-4-6",
+                   "capabilities":{"effort":{"supported":true,
+                     "low":{"supported":true},"medium":{"supported":true},
+                     "high":{"supported":true},"xhigh":{"supported":false},
+                     "max":{"supported":true}}}},
+                  {"type":"model","id":"claude-haiku-4-5",
+                   "capabilities":{"effort":{"supported":false}}}
+                ],"has_more":false}
+                """);
+
+        assertEquals(List.of("claude-opus-5-5", "claude-sonnet-4-6", "claude-haiku-4-5"),
+                models.stream().map(LiveModelDiscovery.Model::id).toList());
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"), models.get(0).variants());
+        assertEquals("live:anthropic model metadata", models.get(0).capabilitySource());
+        assertEquals(List.of("low", "medium", "high", "max"), models.get(1).variants());
+        assertTrue(models.get(2).variants().isEmpty());
+    }
+
+    @Test
     @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
     void nativeDiscoverySpawnSeesStdinAtEofNotAnOpenPipe() throws Exception {
         // The zero-byte sibling regression: discoverNative spawns provider model-list

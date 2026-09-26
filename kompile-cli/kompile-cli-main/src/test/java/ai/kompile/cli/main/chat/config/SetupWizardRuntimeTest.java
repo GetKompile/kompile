@@ -164,6 +164,27 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
+    void anthropicOauthStaysExternallyManagedWhileOtherOauthVendorsKeepTheirWireProvider() {
+        // Anthropic OAuth is the user's Claude Code subscription login: the vendor
+        // id is the provider and Kompile never resolves a managed credential for it.
+        assertEquals("anthropic",
+                SetupWizard.resolveProviderForAuth("anthropic", SetupWizard.AuthMethod.OAUTH));
+
+        // Every other OAuth vendor keeps the registry mapping (openai's OAuth
+        // credential wire id is openai-codex; identity flows map to themselves).
+        assertEquals("openai-codex",
+                SetupWizard.resolveProviderForAuth("openai", SetupWizard.AuthMethod.OAUTH));
+        assertEquals("github-copilot",
+                SetupWizard.resolveProviderForAuth("github-copilot", SetupWizard.AuthMethod.OAUTH));
+        assertEquals("xai",
+                SetupWizard.resolveProviderForAuth("xai", SetupWizard.AuthMethod.OAUTH));
+        assertEquals("openrouter",
+                SetupWizard.resolveProviderForAuth("openrouter", SetupWizard.AuthMethod.OAUTH));
+        assertEquals("radius",
+                SetupWizard.resolveProviderForAuth("radius", SetupWizard.AuthMethod.OAUTH));
+    }
+
+    @Test
     void pickerReusesSetupVendorAuthenticationAndModelSources() {
         List<String> pickerProviders = SetupWizard.providerPickerOrder();
         assertTrue(pickerProviders.containsAll(SetupWizard.directVendorOrder()));
@@ -272,6 +293,46 @@ class SetupWizardRuntimeTest {
                         .stream().map(SetupWizard.ThinkingOption::value).toList());
         assertTrue(SetupWizard.thinkingOptions(
                 "openai", "gpt-4o", null, null, noThinking).isEmpty());
+    }
+
+    @Test
+    void claudeSubscriptionRouteOffersTheEffortLevelsItsListingReports() {
+        // The wizard and /model picker read effort levels from the Claude Code
+        // route's own discovery result; the chosen value reaches claude -p as
+        // --effort.
+        ModelDiscovery.Result discovery = ModelDiscoveryHttp.claudeCliResult(
+                LiveModelDiscovery.parseModelsApiResponse("""
+                        {"data":[
+                          {"id":"claude-opus-5-5","capabilities":{"effort":{"supported":true,
+                            "low":{"supported":true},"medium":{"supported":true},
+                            "high":{"supported":true},"xhigh":{"supported":true},
+                            "max":{"supported":true}}}},
+                          {"id":"claude-sonnet-4-6","capabilities":{"effort":{"supported":true,
+                            "low":{"supported":true},"medium":{"supported":true},
+                            "high":{"supported":true},"xhigh":{"supported":false},
+                            "max":{"supported":true}}}}
+                        ]}
+                        """));
+
+        assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
+                SetupWizard.thinkingOptions("anthropic", "claude-opus-5-5", null, null, discovery)
+                        .stream().map(SetupWizard.ThinkingOption::value).toList());
+        assertEquals(List.of("", "low", "medium", "high", "max"),
+                SetupWizard.thinkingOptions("anthropic", "claude-sonnet-4-6", null, null, discovery)
+                        .stream().map(SetupWizard.ThinkingOption::value).toList());
+        assertTrue(SetupWizard.supportsThinkingSelection(
+                "anthropic", "claude-opus-5-5", null, null, discovery));
+        assertEquals("xhigh", SetupWizard.compatibleThinking(
+                "anthropic", "claude-opus-5-5", "xhigh", discovery));
+        // A level the newly selected model does not list is dropped rather
+        // than carried over from the previous model.
+        assertNull(SetupWizard.compatibleThinking(
+                "anthropic", "claude-sonnet-4-6", "xhigh", discovery));
+        // Ultracode runs at xhigh, so only a model whose listing carries it offers the toggle.
+        assertEquals(List.of("off", "on"),
+                SetupWizard.ultracodeOptions("anthropic", "claude-opus-5-5", discovery));
+        assertTrue(SetupWizard.ultracodeOptions("anthropic", "claude-sonnet-4-6", discovery).isEmpty());
+        assertTrue(SetupWizard.ultracodeOptions("openai-codex", "claude-opus-5-5", discovery).isEmpty());
     }
 
     @Test

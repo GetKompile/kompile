@@ -79,6 +79,13 @@ public class ChatConfig {
     @JsonProperty
     private volatile boolean fastMode;
 
+    /**
+     * Explicit opt-in to Claude Code ultracode on the claude CLI route. While on,
+     * its documented effort value replaces {@link #thinking} on the wire.
+     */
+    @JsonProperty
+    private volatile boolean ultracode;
+
     @JsonProperty
     private String baseUrl; // null = use provider default
 
@@ -302,6 +309,7 @@ public class ChatConfig {
         ChatConfig copy = new ChatConfig(provider, apiKey, model, baseUrl);
         copy.thinking = thinking;
         copy.fastMode = fastMode;
+        copy.ultracode = ultracode;
         copy.localServingBinding = localServingBinding;
         copy.authenticationMethod = authenticationMethod;
         copy.authenticationScope = authenticationScope;
@@ -430,11 +438,14 @@ public class ChatConfig {
 
     /** Fetch the provider's current model ids from its live capability endpoint. */
     public List<String> getConfiguredModels(String provider) {
-        String discoveryBaseUrl = provider != null && provider.equalsIgnoreCase(this.provider)
-                ? getBaseUrl() : null;
-        OAuthProviderFlow.RequestAuth discoveryAuth =
-                provider != null && provider.equalsIgnoreCase(this.provider)
-                        ? resolveRequestAuth() : null;
+        boolean sameProvider = provider != null && provider.equalsIgnoreCase(this.provider);
+        if (sameProvider && isClaudeCliNative()) {
+            return ModelDiscoveryHttp.discoverClaudeCliResult().models().stream()
+                    .map(LiveModelDiscovery.Model::id)
+                    .toList();
+        }
+        String discoveryBaseUrl = sameProvider ? getBaseUrl() : null;
+        OAuthProviderFlow.RequestAuth discoveryAuth = sameProvider ? resolveRequestAuth() : null;
         return ModelDiscoveryHttp.discoverResultWithAuth(
                         provider, discoveryAuth, discoveryBaseUrl).models().stream()
                 .map(LiveModelDiscovery.Model::id)
@@ -468,6 +479,35 @@ public class ChatConfig {
     /** Recheck the effective request model, including per-request overrides. */
     public boolean useFastMode(String requestModel) {
         return fastMode && fastModeCapabilities().supports(requestModel);
+    }
+
+    public boolean isUltracode() { return ultracode; }
+    public void setUltracode(boolean ultracode) { this.ultracode = ultracode; }
+
+    @JsonIgnore
+    public ProviderUltracodeCapabilities ultracodeCapabilities() {
+        return ProviderUltracodeCapabilities.forProvider(provider);
+    }
+
+    /**
+     * Route gate only: the claude CLI route with a documented ultracode contract.
+     * Per-model eligibility (the required effort level) comes from live discovery
+     * when the model is selected.
+     */
+    @JsonIgnore
+    public boolean supportsUltracode() {
+        return isClaudeCliNative() && ultracodeCapabilities().declared();
+    }
+
+    @JsonIgnore
+    public boolean useUltracode() {
+        return ultracode && supportsUltracode();
+    }
+
+    /** Effort sent on the wire: ultracode's documented value replaces the selected level. */
+    @JsonIgnore
+    public String effectiveEffort() {
+        return useUltracode() ? ultracodeCapabilities().effort() : thinking;
     }
 
     public String getBaseUrl() { return baseUrl; }
@@ -572,6 +612,7 @@ public class ChatConfig {
         this.model = source.model;
         this.thinking = source.thinking;
         this.fastMode = source.useFastMode(source.model);
+        this.ultracode = source.useUltracode();
         this.baseUrl = source.baseUrl;
         this.localServingBinding = source.localServingBinding;
         this.authenticationMethod = source.authenticationMethod;
@@ -738,9 +779,15 @@ public class ChatConfig {
      */
     @JsonIgnore
     public boolean isClaudeCliNative() {
-        return "anthropic".equals(provider)
+        return isClaudeCliNativeProvider(provider)
                 && ("native".equalsIgnoreCase(authenticationMethod)
                 || "oauth".equalsIgnoreCase(authenticationMethod));
+    }
+
+    /** Vendor-level check: the Anthropic vendor's OAuth/native route is the claude CLI. */
+    @JsonIgnore
+    public static boolean isClaudeCliNativeProvider(String provider) {
+        return "anthropic".equalsIgnoreCase(provider);
     }
 
     /** Whether this provider uses Pi's native messages protocol. */

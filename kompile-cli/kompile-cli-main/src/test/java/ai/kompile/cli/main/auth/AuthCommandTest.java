@@ -142,6 +142,31 @@ class AuthCommandTest {
         }
     }
 
+    @Test
+    void anthropicOauthLoginIsRefusedBecauseClaudeCodeOwnsThatCredential() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        PrintStream originalError = System.err;
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        System.setProperty("user.home", tempDir.resolve("anthropic-oauth-guard").toString());
+        try (PrintStream captured = new PrintStream(errors, true, StandardCharsets.UTF_8)) {
+            System.setErr(captured);
+
+            int exit = new CommandLine(new AuthCommand()).execute(
+                    "login", "anthropic", "--oauth");
+
+            assertEquals(2, exit);
+            String error = errors.toString(StandardCharsets.UTF_8);
+            assertTrue(error.contains("owned by Claude Code"));
+            assertTrue(error.contains("`claude login`"));
+            // No managed credential may be minted for anthropic OAuth.
+            CredentialStore store = CredentialStore.create();
+            assertTrue(store.list("anthropic").isEmpty());
+        } finally {
+            System.setErr(originalError);
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
     private static ByteArrayInputStream input(String value) {
         return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
     }

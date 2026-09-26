@@ -137,7 +137,7 @@ final class StandardChatActivityPanel {
         private final String key;
         private final String id;
         private final String toolName;
-        private final String rawInput;
+        private volatile String rawInput;
         private final Instant startedAt;
         private volatile Instant updatedAt;
         private volatile ToolResult result;
@@ -314,6 +314,13 @@ final class StandardChatActivityPanel {
             toolActivities.put(key, new ToolActivity(key, id, toolName, rawInput));
             trimToolActivities();
         }
+        refresh();
+    }
+
+    void updateToolInput(String callId, String toolName, String rawInput) {
+        ToolActivity activity = toolActivity(callId, toolName, rawInput);
+        activity.rawInput = rawInput == null ? "" : rawInput;
+        activity.updatedAt = now.get();
         refresh();
     }
 

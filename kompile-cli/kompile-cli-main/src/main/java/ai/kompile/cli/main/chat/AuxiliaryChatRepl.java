@@ -137,7 +137,7 @@ public final class AuxiliaryChatRepl implements JudgeBackend {
         String provider = client.getConfiguredProvider();
         String model = modelOverride == null || modelOverride.isBlank()
                 ? client.getConfiguredModel() : modelOverride;
-        String thinking = client.getChatConfig().getThinking();
+        String thinking = client.getChatConfig().effectiveEffort();
         String description = (provider == null || provider.isBlank() ? "provider" : provider)
                 + "/" + (model == null || model.isBlank() ? "default" : model)
                 + " · thinking/effort: "

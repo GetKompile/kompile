@@ -434,7 +434,53 @@ public class SetupWizard {
 
                 boolean claudeCliRoute = "anthropic".equalsIgnoreCase(provider)
                         && providerSelection.authMethod() == AuthMethod.OAUTH;
-                if (!"kompile".equals(provider) && !claudeCliRoute) {
+                if (claudeCliRoute) {
+                    // Flow: auth status → not logged in = indicator + stop;
+                    // logged in → the CLI's real model slugs → pick one → pick
+                    // its effort level → saved and passed to claude -p as
+                    // --model/--effort. No "default model" pseudo-entry: the
+                    // first listed model IS the default and is pre-selected.
+                    List<LiveModelDiscovery.Model> claudeModels =
+                            LiveModelDiscovery.discoverClaudeCliModels(notice -> {
+                                if (notice != null && !notice.isBlank()) {
+                                    System.out.println("  → " + YELLOW + "Not logged in: "
+                                            + notice + RESET);
+                                    System.out.println("  Run `claude login` in a terminal, then retry.");
+                                }
+                            }, error -> {
+                                if (error != null && !error.isBlank()) {
+                                    System.out.println("  → " + YELLOW
+                                            + "Could not read the Claude model list: " + error + RESET);
+                                }
+                            });
+                    if (claudeModels == null) {
+                        return null; // not logged in — indicator already shown
+                    }
+                    if (claudeModels.isEmpty()) {
+                        System.err.println("  Claude model list is empty — cannot continue.");
+                        return null;
+                    }
+                    List<String> options = claudeModels.stream()
+                            .map(LiveModelDiscovery.Model::id)
+                            .toList();
+                    String defaultModel = options.get(0);
+                    int selected = selectNumberedWithDefault(
+                            reader, "Select Model:", options, defaultModel);
+                    if (selected < 0) return null;
+                    model = options.get(selected);
+                    System.out.println("  → " + GREEN + model + RESET);
+                    System.out.println();
+
+                    // Effort levels are the ones the listing reported for this
+                    // model; a model without them keeps Claude Code's default.
+                    selectedDiscovery = ModelDiscoveryHttp.claudeCliResult(claudeModels);
+                    if (supportsThinkingSelection(
+                            provider, model, apiKey, null, selectedDiscovery)) {
+                        thinking = selectThinking(
+                                reader, provider, model, apiKey, null, selectedDiscovery);
+                        if (thinking == null) return null;
+                    }
+                } else if (!"kompile".equals(provider)) {
                     boolean sameProvider = existingConfig != null
                             && provider.equalsIgnoreCase(existingConfig.getProvider());
                     ChatConfig discoveryConfig = new ChatConfig(
@@ -477,6 +523,14 @@ public class SetupWizard {
                         fastModeOptions(provider, selectedModel));
                 if (fast < 0) return null;
                 config.setFastMode(fast == 1);
+            }
+            if ("standard".equals(chatMode) && config.supportsUltracode()
+                    && !ultracodeOptions(provider, selectedModel, selectedDiscovery).isEmpty()) {
+                System.out.println(YELLOW + "  " + config.ultracodeCapabilities().notice() + RESET);
+                int ultracode = selectNumbered(reader, "Ultracode (Claude Code workflows; default off):",
+                        ultracodeOptions(provider, selectedModel, selectedDiscovery));
+                if (ultracode < 0) return null;
+                config.setUltracode(ultracode == 1);
             }
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
@@ -521,6 +575,9 @@ public class SetupWizard {
                         System.out.println("  Thinking: " + BOLD
                                 + (config.getThinking() == null ? "provider/model default" : config.getThinking())
                                 + RESET);
+                    }
+                    if (config.useUltracode()) {
+                        System.out.println("  Ultracode: " + BOLD + "on (replaces thinking)" + RESET);
                     }
                     if (baseUrl != null) {
                         System.out.println("  Base URL: " + BOLD + baseUrl + RESET);
@@ -781,22 +838,40 @@ public class SetupWizard {
      * Returns the selected index (0-based), or -1 on cancel.
      */
     static int selectNumbered(LineReader reader, String title, List<String> items) {
+        return selectNumberedWithDefault(reader, title, items, null);
+    }
+
+    /**
+     * Show a numbered menu and read the user's choice. When {@code defaultItem}
+     * is non-null and present in the list, that row is labeled "(default)" and
+     * a blank Enter accepts it.
+     * Returns the selected index (0-based), or -1 on cancel.
+     */
+    static int selectNumberedWithDefault(
+            LineReader reader, String title, List<String> items, String defaultItem) {
+        int defaultIndex = defaultItem == null ? -1 : items.indexOf(defaultItem);
         System.out.println(BOLD + "  " + title + RESET);
         System.out.println();
         for (int i = 0; i < items.size(); i++) {
-            System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%n", i + 1, items.get(i));
+            String marker = i == defaultIndex ? YELLOW + "  (default)" + RESET : "";
+            System.out.printf("  " + CYAN + "%2d" + RESET + "  %s%s%n", i + 1, items.get(i), marker);
         }
         System.out.println();
 
         while (true) {
             String input;
             try {
-                input = reader.readLine("  Choice (1-" + items.size() + ", or Ctrl+C to cancel): ");
+                input = reader.readLine("  Choice (1-" + items.size()
+                        + (defaultIndex >= 0 ? ", Enter = default" : "")
+                        + ", or Ctrl+C to cancel): ");
             } catch (Exception e) {
                 return -1;
             }
             if (input == null) return -1;
             String trimmed = input.trim();
+            if (trimmed.isEmpty() && defaultIndex >= 0) {
+                return defaultIndex;
+            }
             if (trimmed.equalsIgnoreCase("q") || trimmed.equalsIgnoreCase("quit") || trimmed.equalsIgnoreCase("cancel")) {
                 return -1;
             }
@@ -976,13 +1051,17 @@ public class SetupWizard {
                 yield vendor;
             }
             case OAUTH -> {
-                // Anthropic OAuth = the user's Claude Code subscription login.
-                // Claude Code owns that credential; Kompile cannot script it, so
-                // the selection proceeds and the wizard warns below.
-                if (!"anthropic".equalsIgnoreCase(vendor) && oauthProviderForVendor(vendor) == null) {
+                if ("anthropic".equalsIgnoreCase(vendor)) {
+                    // Anthropic OAuth = the user's Claude Code subscription login.
+                    // Claude Code owns that credential; Kompile cannot script it, so
+                    // the selection proceeds and the wizard warns below.
+                    yield vendor;
+                }
+                String oauthProvider = oauthProviderForVendor(vendor);
+                if (oauthProvider == null) {
                     throw new IllegalArgumentException(vendor + " does not support OAuth");
                 }
-                yield vendor;
+                yield oauthProvider;
             }
             case API_KEY, API_KEY_CREDITS -> {
                 if (authMethod == AuthMethod.API_KEY_CREDITS && !"zai".equalsIgnoreCase(vendor)) {
@@ -1040,6 +1119,9 @@ public class SetupWizard {
         String baseUrl = sameProvider ? config.getBaseUrl() : null;
         if (transientApiKey != null && !transientApiKey.isBlank()) {
             return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
+        }
+        if (sameProvider && config.isClaudeCliNative()) {
+            return ModelDiscoveryHttp.discoverClaudeCliResult();
         }
         if (sameProvider) {
             try {
@@ -1403,6 +1485,20 @@ public class SetupWizard {
     public static List<String> fastModeOptions(String provider, String model) {
         return ProviderFastModeCapabilities.forProvider(provider).supports(model)
                 ? List.of("off", "on") : List.of();
+    }
+
+    /**
+     * Ultracode is offered only where the provider documents it and the model's
+     * effort options (live discovery first) include the level ultracode runs at.
+     */
+    public static List<String> ultracodeOptions(
+            String provider, String model, ModelDiscovery.Result discovery) {
+        ProviderUltracodeCapabilities capabilities = ProviderUltracodeCapabilities.forProvider(provider);
+        if (!capabilities.declared()) return List.of();
+        List<String> efforts = thinkingOptionsFromDiscovery(provider, model, discovery).stream()
+                .map(ThinkingOption::value)
+                .toList();
+        return capabilities.supportsEffortOptions(efforts) ? List.of("off", "on") : List.of();
     }
 
     public static List<ThinkingOption> thinkingOptions(String provider, String model) {

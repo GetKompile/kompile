@@ -52,6 +52,7 @@ export interface SessionConfigSnapshot {
   model?: CommandEventData;
   role?: CommandEventData;
   fast?: CommandEventData;
+  ultracode?: CommandEventData;
   reminders?: CommandEventData;
   remindersGlobal?: CommandEventData;
   loops?: CommandEventData;

@@ -31,6 +31,8 @@ export interface CommandConfigDialogData {
   roleMenu: CommandEventData | null;
   /** Current fast-mode snapshot (may be null). */
   fastMenu: CommandEventData | null;
+  /** Current ultracode snapshot (may be null). */
+  ultracodeMenu: CommandEventData | null;
   /** Session reminder list snapshot (may be null until the CLI answers). */
   reminders: CommandEventData | null;
   /** Project-global reminder list snapshot (may be null). */
@@ -61,13 +63,15 @@ export interface CommandConfigDialogData {
   selectRole: (roleName: string) => void;
   /** Toggle fast mode (raw '/fast on|off' dispatch). */
   toggleFastMode: (enabled: boolean) => void;
+  /** Toggle Claude Code ultracode (raw '/ultracode on|off' dispatch). */
+  toggleUltracode: (enabled: boolean) => void;
   /** Start a fresh conversation (browser-side /clear hand-off). */
   clearConversation: () => void;
 }
 
 /**
  * Session configuration modal for the CLI harness pickers (model / role /
- * fast mode). Lives alongside the other configuration settings: opened from a
+ * fast mode / ultracode). Lives alongside the other configuration settings: opened from a
  * section in the settings sidebar. Every click dispatches the raw CLI command
  * through the normal send path; the CLI resolves, validates, and persists.
  */
@@ -186,6 +190,34 @@ export interface CommandConfigDialogData {
             <p class="cc-empty">
               State unknown.
               <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/fast')">Check fast mode</button>
+            </p>
+          </ng-template>
+        </section>
+
+        <!-- Ultracode (Claude Code route) -->
+        <section class="cc-section">
+          <header class="cc-section-header">
+            <span class="cc-title">Ultracode</span>
+          </header>
+          <ng-container *ngIf="ultracodeMenu; else ultracodeUnknown">
+            <div class="cc-fast-row">
+              <span class="cc-fast-state" [class.on]="ultracodeMenu!.ultracode">
+                {{ ultracodeMenu!.ultracode ? 'ON (requested)' : 'OFF' }}
+              </span>
+              <button type="button" class="cc-option cc-fast-toggle" *ngIf="ultracodeMenu!.supported"
+                [disabled]="busy()" (click)="toggleUltracode(!ultracodeMenu!.ultracode)">
+                {{ ultracodeMenu!.ultracode ? 'Turn off' : 'Turn on' }}
+              </button>
+            </div>
+            <p class="cc-hint" *ngIf="ultracodeMenu!.supported && ultracodeMenu!.note">{{ ultracodeMenu!.note }}</p>
+            <p class="cc-hint" *ngIf="!ultracodeMenu!.supported">
+              Only available on the Claude Code route (Anthropic signed in through Claude Code) — switch model first.
+            </p>
+          </ng-container>
+          <ng-template #ultracodeUnknown>
+            <p class="cc-empty">
+              State unknown.
+              <button type="button" class="cc-link" [disabled]="busy()" (click)="dispatch('/ultracode')">Check ultracode</button>
             </p>
           </ng-template>
         </section>
@@ -485,6 +517,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
   modelMenu: CommandEventData | null;
   roleMenu: CommandEventData | null;
   fastMenu: CommandEventData | null;
+  ultracodeMenu: CommandEventData | null;
   reminders: CommandEventData | null;
   remindersGlobal: CommandEventData | null;
   loops: CommandEventData | null;
@@ -514,6 +547,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     this.modelMenu = data.modelMenu;
     this.roleMenu = data.roleMenu;
     this.fastMenu = data.fastMenu;
+    this.ultracodeMenu = data.ultracodeMenu ?? null;
     this.reminders = data.reminders;
     this.remindersGlobal = data.remindersGlobal;
     this.loops = data.loops;
@@ -544,6 +578,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
           this.modelMenu = snapshot?.model ?? this.modelMenu;
           this.roleMenu = snapshot?.role ?? this.roleMenu;
           this.fastMenu = snapshot?.fast ?? this.fastMenu;
+          this.ultracodeMenu = snapshot?.ultracode ?? this.ultracodeMenu;
           this.reminders = snapshot?.reminders ?? this.reminders;
           this.remindersGlobal = snapshot?.remindersGlobal ?? this.remindersGlobal;
           this.loops = snapshot?.loops ?? this.loops;
@@ -697,6 +732,10 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     if (!this.busy()) this.data.toggleFastMode(enabled);
   }
 
+  toggleUltracode(enabled: boolean): void {
+    if (!this.busy()) this.data.toggleUltracode(enabled);
+  }
+
   clearConversation(): void {
     if (this.busy()) return;
     this.data.dispatch('/clear');
@@ -751,6 +790,7 @@ export class CommandConfigDialogComponent implements OnInit, OnDestroy {
     if (data.menu === 'model') this.modelMenu = data;
     if (data.menu === 'role') this.roleMenu = data;
     if (data.menu === 'fast') this.fastMenu = data;
+    if (data.menu === 'ultracode') this.ultracodeMenu = data;
     if (data.menu === 'reminders') {
       if (data.scope === 'project') this.remindersGlobal = data;
       else this.reminders = data;

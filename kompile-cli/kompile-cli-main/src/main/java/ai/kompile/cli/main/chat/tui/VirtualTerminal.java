@@ -102,6 +102,16 @@ public class VirtualTerminal {
     // Alternate screen state
     private boolean inAlternateScreen;
 
+    // Character sets: ESC ( F / ESC ) F designate G0 / G1, SO / SI shift between them.
+    // Only DEC Special Graphics (F = '0') is translated — it is how JLine and
+    // ncurses draw boxes on xterm (│ goes out as ESC ( 0 x ESC ( B).
+    private boolean g0LineDrawing;
+    private boolean g1LineDrawing;
+    private boolean shiftedOut;
+    private char escIntermediate;
+    /** DEC Special Graphics glyphs for 0x5F..0x7E. */
+    private static final String DEC_SPECIAL_GRAPHICS = " ◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
+
     // Parser state for handling escape sequences across feed() calls
     private static final int STATE_NORMAL = 0;
     private static final int STATE_ESC = 1;            // Saw ESC
@@ -216,6 +226,9 @@ public class VirtualTerminal {
                 case STATE_ESC_INTERMEDIATE:
                     // Consume exactly one character after the intermediate byte
                     // (e.g., charset designator after ESC (, or DEC test after ESC #)
+                    if (escIntermediate == '(') g0LineDrawing = c == '0';
+                    else if (escIntermediate == ')') g1LineDrawing = c == '0';
+                    escIntermediate = 0;
                     state = STATE_NORMAL;
                     break;
             }
@@ -628,12 +641,16 @@ public class VirtualTerminal {
         } else if (c == '\007') {
             // BEL — ignore
         } else if (c == '\016') {
-            // SO — Shift Out (switch to G1 charset) — ignore
+            // SO — Shift Out (switch to G1 charset)
+            shiftedOut = true;
         } else if (c == '\017') {
-            // SI — Shift In (switch to G0 charset) — ignore
+            // SI — Shift In (switch to G0 charset)
+            shiftedOut = false;
         } else if (c >= 0x20 && c != 0x7F) {
             // Printable character (including all of Unicode above 0x20)
-            putChar(c);
+            boolean lineDrawing = shiftedOut ? g1LineDrawing : g0LineDrawing;
+            putChar(lineDrawing && c >= 0x5F && c <= 0x7E
+                    ? DEC_SPECIAL_GRAPHICS.charAt(c - 0x5F) : c);
         }
         // Other control chars (0x00-0x1F not handled above) — ignore
     }
@@ -655,6 +672,7 @@ public class VirtualTerminal {
         } else if (c == '(' || c == ')' || c == '*' || c == '+') {
             // Charset designation (G0-G3) — consume one more char (designator)
             // e.g., ESC ( B = set G0 to US-ASCII, ESC ( 0 = set G0 to DEC Special Graphics
+            escIntermediate = c;
             state = STATE_ESC_INTERMEDIATE;
         } else if (c == '#') {
             // DEC double-width/double-height/alignment test — consume one more char
@@ -1218,6 +1236,9 @@ public class VirtualTerminal {
         }
         clear();
         currentStyle = 0L;
+        g0LineDrawing = false;
+        g1LineDrawing = false;
+        shiftedOut = false;
         scrollTop = 0;
         scrollBottom = rows - 1;
         savedCursorRow = 0;

@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +50,64 @@ class ModelDiscoveryHttpTest {
         assertEquals(ModelDiscovery.Status.SUCCESS_EMPTY, empty.status());
         assertFalse(empty.isUsable());
         assertEquals(ModelDiscovery.Status.UNAVAILABLE, unavailable.status());
+    }
+
+    @Test
+    void anthropicApiKeyDiscoveryUsesTheHttpCatalogInsteadOfClaudeCode() throws Exception {
+        AtomicReference<String> receivedApiKey = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/models", exchange -> {
+            receivedApiKey.set(exchange.getRequestHeaders().getFirst("x-api-key"));
+            byte[] body = "{\"data\":[{\"id\":\"fixture-model\"}],\"has_more\":false}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            try (var output = exchange.getResponseBody()) {
+                output.write(body);
+            }
+        });
+        server.start();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            OAuthProviderFlow.RequestAuth auth = new OAuthProviderFlow.RequestAuth(
+                    "fixture-key", base, Map.of(), false);
+
+            ModelDiscovery.Result result = ModelDiscoveryHttp.refreshResultWithAuth(
+                    "anthropic", auth, base);
+
+            assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
+            assertEquals(List.of("fixture-model"), result.models().stream()
+                    .map(LiveModelDiscovery.Model::id).toList());
+            assertEquals("fixture-key", receivedApiKey.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void claudeCliDiscoveryMapsLoggedOutNullToAuthRequired() {
+        ModelDiscovery.Result result = ModelDiscoveryHttp.claudeCliResult(null);
+
+        assertEquals(ModelDiscovery.Status.AUTH_REQUIRED, result.status());
+        assertTrue(result.message().contains("claude login"));
+        assertTrue(result.models().isEmpty());
+    }
+
+    @Test
+    void claudeCliDiscoveryKeepsAnEmptyCatalogDistinctFromMissingAuthentication() {
+        ModelDiscovery.Result result = ModelDiscoveryHttp.claudeCliResult(List.of());
+
+        assertEquals(ModelDiscovery.Status.UNAVAILABLE, result.status());
+        assertTrue(result.models().isEmpty());
+    }
+
+    @Test
+    void claudeCliDiscoveryReturnsDiscoveredModels() {
+        List<LiveModelDiscovery.Model> models = List.of(new LiveModelDiscovery.Model("sonnet", List.of()));
+
+        ModelDiscovery.Result result = ModelDiscoveryHttp.claudeCliResult(models);
+
+        assertEquals(ModelDiscovery.Status.SUCCESS, result.status());
+        assertEquals(models, result.models());
     }
 
     @Test

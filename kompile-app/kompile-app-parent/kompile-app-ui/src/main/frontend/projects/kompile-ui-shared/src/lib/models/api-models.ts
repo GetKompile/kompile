@@ -2972,11 +2972,11 @@ export interface CommandRoleEntry {
 /**
  * Structured payload of a command outcome. Browser-rendered shapes today:
  * {@code menu:"model"}, {@code menu:"role"}, {@code menu:"fast"},
- * {@code menu:"reminders"}, {@code menu:"loops"}, {@code menu:"queue"},
+ * {@code menu:"ultracode"}, {@code menu:"reminders"}, {@code menu:"loops"}, {@code menu:"queue"},
  * and {@code menu:"clear"}; unknown menus degrade to status text.
  */
 export interface CommandEventData {
-  menu?: 'model' | 'role' | 'fast' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
+  menu?: 'model' | 'role' | 'fast' | 'ultracode' | 'reminders' | 'loops' | 'queue' | 'clear' | 'continue' | 'judge';
   provider?: string;
   currentModel?: string;
   liveListingAvailable?: boolean;
@@ -2988,6 +2988,8 @@ export interface CommandEventData {
   roles?: CommandRoleEntry[];
   /** /fast payload. */
   fastMode?: boolean;
+  /** /ultracode payload (Claude Code route). */
+  ultracode?: boolean;
   supported?: boolean;
   /** Scope marker for reminders/loops payloads: 'session' | 'project'. */
   scope?: string;

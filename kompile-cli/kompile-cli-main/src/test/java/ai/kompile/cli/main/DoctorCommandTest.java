@@ -343,6 +343,110 @@ class DoctorCommandTest {
         assertEquals(DoctorCommand.Status.OK, manifest.status());
     }
 
+    // ── Project model artifact checks ────────────────────────────────────────
+
+    private static DoctorCommand.CheckResult modelResult(List<DoctorCommand.CheckResult> results, String id) {
+        return results.stream()
+                .filter(r -> r.name().equals("Model: " + id))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no check result for Model: " + id));
+    }
+
+    @Test
+    void modelArtifact_foundViaRelativeManifestFilePath(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("data/models/foo"));
+        Files.writeString(tmp.resolve("data/models/foo/model.sdz"), "stub");
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"m1","modelId":"m1","path":"data/models/foo/model.sdz",
+                  "metadata":{"registry.modelFile":"model.sdz"}}]}
+                """);
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "m1");
+        assertEquals(DoctorCommand.Status.OK, r.status(), r.detail());
+    }
+
+    @Test
+    void modelArtifact_foundViaManifestDirectory(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("data/models/bar"));
+        Files.writeString(tmp.resolve("data/models/bar/weights.sdz"), "stub");
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"m2","path":"data/models/bar"}]}
+                """);
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "m2");
+        assertEquals(DoctorCommand.Status.OK, r.status(), r.detail());
+    }
+
+    @Test
+    void modelArtifact_foundViaAbsoluteManifestPath(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("cache"));
+        Files.writeString(tmp.resolve("cache/qwen.gguf"), "stub");
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"m3","path":"%s"}]}
+                """.formatted(tmp.resolve("cache/qwen.gguf")));
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "m3");
+        assertEquals(DoctorCommand.Status.OK, r.status(), r.detail());
+    }
+
+    @Test
+    void modelArtifact_foundViaProjectRegistry_caseInsensitive(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("data/models/ms-marco-model"));
+        Files.writeString(tmp.resolve("data/models/ms-marco-model/model.sdz"), "stub");
+        Files.writeString(tmp.resolve("data/models/registry.json"), """
+                {"version":"1.0","models":{"ms-marco-MiniLM-L-6-v2":{
+                  "model_id":"ms-marco-MiniLM-L-6-v2","type":"cross_encoder",
+                  "path":"%s","model_file":"model.sdz"}},"installed_archives":{}}
+                """.formatted(tmp.resolve("data/models/ms-marco-model")));
+        // Manifest id differs only in case and has no registryModelId — exercises the
+        // case-insensitive registry fallback.
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"ms-marco-minilm-l-6-v2"}]}
+                """);
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "ms-marco-minilm-l-6-v2");
+        assertEquals(DoctorCommand.Status.OK, r.status(), r.detail());
+    }
+
+    @Test
+    void modelArtifact_foundViaSdnbShardSet(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("data/models/lfm"));
+        Files.writeString(tmp.resolve("data/models/lfm/model.shard0-of-2.sdnb"), "stub");
+        Files.writeString(tmp.resolve("data/models/lfm/model.shard1-of-2.sdnb"), "stub");
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"lfm","path":"data/models/lfm",
+                  "metadata":{"registry.modelFile":"model.sdnb"}}]}
+                """);
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "lfm");
+        assertEquals(DoctorCommand.Status.OK, r.status(), r.detail());
+    }
+
+    @Test
+    void modelArtifact_missingWarns_andRequiresDownloadIsOk(@TempDir Path tmp) throws IOException {
+        String unique = "doctor-unique-missing-model-" + System.nanoTime();
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[
+                  {"id":"%s"},
+                  {"id":"dl","metadata":{"staging.requiresDownload":"true"}}]}
+                """.formatted(unique));
+        List<DoctorCommand.CheckResult> results = new DoctorCommand().checkProject(tmp);
+        DoctorCommand.CheckResult missing = modelResult(results, unique);
+        assertEquals(DoctorCommand.Status.WARN, missing.status(),
+                "a model with no artifact anywhere must warn (guards against false positives from the real ~/.kompile)");
+        assertTrue(missing.detail().contains("no local artifact"));
+        DoctorCommand.CheckResult download = modelResult(results, "dl");
+        assertEquals(DoctorCommand.Status.OK, download.status(), download.detail());
+        assertTrue(download.detail().contains("download on first serve"));
+    }
+
+    @Test
+    void modelArtifact_emptySdzDoesNotCount(@TempDir Path tmp) throws IOException {
+        Files.createDirectories(tmp.resolve("data/models/empty"));
+        Files.writeString(tmp.resolve("data/models/empty/model.sdz"), "");
+        Files.writeString(tmp.resolve("kompile.project.json"), """
+                {"id":"t","models":[{"id":"empty-m","path":"data/models/empty/model.sdz"}]}
+                """);
+        DoctorCommand.CheckResult r = modelResult(new DoctorCommand().checkProject(tmp), "empty-m");
+        assertEquals(DoctorCommand.Status.WARN, r.status(),
+                "a zero-byte artifact must not count as materialized");
+    }
+
     // ── Instance registry GC ──────────────────────────────────────────────────
 
     @Test

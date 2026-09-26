@@ -24,11 +24,11 @@ public final class ChatCommandCatalog {
             "queue-move", "queue-clear", "queue-status", "loop", "loop-global", "jobs", "jobs-remove",
             "jobs-clear", "activity", "processes", "process-kill", "process-output", "process-status",
             "statusbar", "auto-dequeue", "stats", "passthrough", "resume", "resume-all", "mode", "menu",
-            "skills", "roles", "role", "model", "fast", "enforce", "enforcer", "judge", "judge-global",
+            "skills", "roles", "role", "model", "fast", "ultracode", "enforce", "enforcer", "judge", "judge-global",
             "direction", "forward", "image", "file", "attach", "attachments");
     private static final Set<String> TERMINAL = Set.of("quit", "exit", "auth", "setup", "menu", "copy", "statusbar");
     private static final Set<String> LIVE = Arrays.stream((
-            "clear restart reset reset-all compact auto-compact rag agent local-agent role fast title "
+            "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
             + "queue-clear queue-status loop loop-global jobs jobs-remove jobs-clear auto-dequeue passthrough "
             + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments")
@@ -40,7 +40,7 @@ public final class ChatCommandCatalog {
     }
     public static WebSupport webSupport(String name) {
         if ("help".equals(name) || "skills".equals(name) || "model".equals(name)
-                || "role".equals(name) || "fast".equals(name)
+                || "role".equals(name) || "fast".equals(name) || "ultracode".equals(name)
                 || "reminder".equals(name) || "reminder-global".equals(name)
                 || "continue".equals(name) || "judge".equals(name) || "judge-global".equals(name)
                 || "loop".equals(name) || "loop-global".equals(name)
@@ -66,6 +66,9 @@ public final class ChatCommandCatalog {
                 + "current selection (with an optional menu), the explicit form validates and "
                 + "persists it durably per session id + working directory; /role '' clears the "
                 + "selection and /fast on|off persists the toggle."
+                + "\n/ultracode is supported over web input like /fast (Claude Code route only): "
+                + "on|off persists the toggle; web input cannot run live model discovery, so a "
+                + "model without xhigh effort starts Claude Code at its highest level instead."
                 + "\n/reminder, /reminder-global, /loop, and /loop-global are fully supported over "
                 + "web input (list/add/clear/pause/resume/remove persist through the same managers "
                 + "as the interactive CLI); loop run-now requires a live chat process and reports "

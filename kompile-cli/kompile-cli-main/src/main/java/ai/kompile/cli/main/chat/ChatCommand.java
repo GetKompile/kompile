@@ -805,6 +805,7 @@ public class ChatCommand implements Callable<Integer> {
                 if (blankToNull(model) == null) config.setModel(null);
                 if (blankToNull(thinking) == null) config.setThinking(null);
                 config.setFastMode(false);
+                config.setUltracode(false);
                 if (contextWindowTokens == null) config.setContextWindowTokens(0);
                 if (maxOutputTokens == null) config.setMaxOutputTokens(0);
                 if (blankToNull(authenticationMethod) == null) {
@@ -832,12 +833,15 @@ public class ChatCommand implements Callable<Integer> {
         }
         if (blankToNull(providerBaseUrl) != null) config.setBaseUrl(providerBaseUrl.trim());
         if (blankToNull(model) != null) {
-            if (!model.trim().equals(config.getModel()) && blankToNull(thinking) == null) {
-                config.setThinking(null);
+            if (!model.trim().equals(config.getModel())) {
+                if (blankToNull(thinking) == null) config.setThinking(null);
+                // Ultracode eligibility is per model and needs live discovery.
+                config.setUltracode(false);
             }
             config.setModel(model.trim());
         }
         if (!config.supportsFastMode()) config.setFastMode(false);
+        if (!config.supportsUltracode()) config.setUltracode(false);
         if (blankToNull(thinking) != null) config.setThinking(thinking.trim());
         if (blankToNull(promptCacheRetention) != null) {
             config.setPromptCacheRetention(parsePromptCacheRetention(promptCacheRetention));
@@ -1082,6 +1086,7 @@ public class ChatCommand implements Callable<Integer> {
                 recorded.setBaseUrl(fallback.getBaseUrl());
                 recorded.setThinking(fallback.getThinking());
                 recorded.setFastMode(fallback.useFastMode(model));
+                recorded.setUltracode(fallback.useUltracode());
             }
             return recorded;
         } catch (IOException | RuntimeException ignored) {

@@ -26,9 +26,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -79,6 +81,11 @@ public class MemoryTool implements CliTool {
     private static final String DEFAULT_FILE = "MEMORY.md";
     private static final String INDEX_FILE = "MEMORY.md";
     private static final String GRAPH_FILE = "graph.jsonl";
+
+    private static final String MISSING_FLAT_FILE_ERROR =
+            "'file' is required for write/append (e.g. file=\"notes.md\"); for a new memory use "
+                    + "action='save' instead, which creates a typed memory file and updates the "
+                    + "MEMORY.md index for you, or pass file=\"MEMORY.md\" to edit the index on purpose.";
 
     private static final int MAX_MEMORY_FILE_SIZE = 50_000; // ~50KB
     private static final int MAX_MAIN_MEMORY_LINES = 200;
@@ -149,9 +156,10 @@ public class MemoryTool implements CliTool {
                         + "read_graph|search_nodes|open_nodes");
         addStringProp(props, "scope", "Memory scope: 'project' (default) or 'global'");
         addStringProp(props, "file",
-                "File name for flat ops (default: MEMORY.md). Use topic files like "
-                        + "'debugging.md' for detailed notes. Also selects a Claude Code auto-memory "
-                        + "file for read_claude (default: MEMORY.md).");
+                "File name for flat ops. Required for write/append — pass a topic file like "
+                        + "'debugging.md', or 'MEMORY.md' to deliberately edit the index; for a new "
+                        + "memory use action='save' instead. Defaults to MEMORY.md for read. Also "
+                        + "selects a Claude Code auto-memory file for read_claude (default: MEMORY.md).");
         addStringProp(props, "content", "Content to write/append/save");
         addStringProp(props, "query",
                 "Search query. Multi-word queries are tokenized and ranked; 'search' searches Kompile "
@@ -221,14 +229,18 @@ public class MemoryTool implements CliTool {
                 case "read":
                     return readMemory(memDir,
                             sanitizeFileName(params.path("file").asText(DEFAULT_FILE)), scope);
-                case "write":
-                    return writeMemory(memDir,
-                            sanitizeFileName(params.path("file").asText(DEFAULT_FILE)),
+                case "write": {
+                    String file = params.path("file").asText("").trim();
+                    if (file.isEmpty()) return ToolResult.error(MISSING_FLAT_FILE_ERROR);
+                    return writeMemory(memDir, sanitizeFileName(file),
                             params.path("content").asText(""), scope);
-                case "append":
-                    return appendMemory(memDir,
-                            sanitizeFileName(params.path("file").asText(DEFAULT_FILE)),
+                }
+                case "append": {
+                    String file = params.path("file").asText("").trim();
+                    if (file.isEmpty()) return ToolResult.error(MISSING_FLAT_FILE_ERROR);
+                    return appendMemory(memDir, sanitizeFileName(file),
                             params.path("content").asText(""), scope);
+                }
                 case "list":
                     return listMemoryFiles(context.getWorkingDirectory());
                 case "search":
@@ -337,7 +349,7 @@ public class MemoryTool implements CliTool {
         Path file = memDir.resolve(fileName);
         try {
             Files.createDirectories(memDir);
-            Files.writeString(file, content, StandardCharsets.UTF_8);
+            writeAtomically(file, content);
             int lines = content.split("\n").length;
 
             String warning = null;
@@ -380,7 +392,7 @@ public class MemoryTool implements CliTool {
                         + " chars). Use 'write' to replace or create a topic file.");
             }
 
-            Files.writeString(file, newContent, StandardCharsets.UTF_8);
+            writeAtomically(file, newContent);
             int lines = newContent.split("\n").length;
 
             return ToolResult.success("memory: appended to " + scope + "/" + fileName
@@ -415,6 +427,7 @@ public class MemoryTool implements CliTool {
         try (var files = Files.list(dir)) {
             var list = files.filter(p -> !Files.isDirectory(p))
                     .filter(p -> !p.getFileName().toString().startsWith(".memory-index.db"))
+                    .filter(p -> !p.getFileName().toString().endsWith(".tmp"))
                     .sorted()
                     .toList();
 
@@ -771,7 +784,7 @@ public class MemoryTool implements CliTool {
             return ToolResult.error("Memory content too large (" + mem.length()
                     + " chars). Max: " + MAX_MEMORY_FILE_SIZE);
         }
-        Files.writeString(file, mem.toString(), StandardCharsets.UTF_8);
+        writeAtomically(file, mem.toString());
 
         updateIndex(memDir, fileName, name, description, memoryType, true);
 
@@ -962,7 +975,7 @@ public class MemoryTool implements CliTool {
         }
 
         Files.createDirectories(memDir);
-        Files.writeString(indexFile, String.join("\n", lines) + "\n", StandardCharsets.UTF_8);
+        writeAtomically(indexFile, String.join("\n", lines) + "\n");
     }
 
     // ========================================================================
@@ -1042,7 +1055,7 @@ public class MemoryTool implements CliTool {
             n.put("relationType", r.relationType);
             sb.append(MAPPER.writeValueAsString(n)).append("\n");
         }
-        Files.writeString(memDir.resolve(GRAPH_FILE), sb.toString(), StandardCharsets.UTF_8);
+        writeAtomically(memDir.resolve(GRAPH_FILE), sb.toString());
     }
 
     private ToolResult createEntities(Path memDir, JsonNode params, String scope)
@@ -1406,6 +1419,30 @@ public class MemoryTool implements CliTool {
             return KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
         }
         return workDir.resolve(".kompile").resolve(MEMORY_DIR);
+    }
+
+    /**
+     * Writes {@code content} to {@code target} atomically: the new bytes go into a sibling
+     * temp file first, then a single rename swaps it into place. An in-place
+     * {@code Files.writeString} rewrite that fails partway through (disk full, I/O error,
+     * process killed) leaves the target truncated or corrupted — this is exactly what
+     * happened to a production MEMORY.md index, losing hundreds of entries. Every memory
+     * file write in this tool must go through here instead of writing the target directly.
+     */
+    private static void writeAtomically(Path target, String content) throws IOException {
+        Path dir = target.getParent();
+        Path temporary = Files.createTempFile(dir, "." + target.getFileName() + ".", ".tmp");
+        try {
+            Files.writeString(temporary, content, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private String sanitizeFileName(String name) {

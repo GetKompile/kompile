@@ -70,7 +70,7 @@ class ChatHarnessCapabilitiesTest {
         // Durable-session commands: the browser-config button surface contract.
         var durableNames = parsed.path("webInput").path("durableSessionCommandNames");
         assertTrue(durableNames.isArray());
-        assertEquals(java.util.List.of("model", "role", "fast"),
+        assertEquals(java.util.List.of("model", "role", "fast", "ultracode"),
                 java.util.stream.StreamSupport.stream(durableNames.spliterator(), false)
                         .map(JsonNode::asText).toList());
     }

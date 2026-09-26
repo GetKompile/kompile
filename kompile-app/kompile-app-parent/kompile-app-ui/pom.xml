@@ -167,6 +167,12 @@
                                     <target>
                                         <delete dir="${frontend.dir}/.angular/cache" quiet="true"/>
                                         <delete dir="${frontend.dir}/dist" quiet="true"/>
+                                        <!--
+                                            Bundle names are content-hashed and copy-resources only adds
+                                            files, so a surviving stage dir packs every earlier build's
+                                            main-*.js into the SPA jars alongside the live one.
+                                        -->
+                                        <delete dir="${spa.stage.dir}" quiet="true"/>
                                     </target>
                                 </configuration>
                             </execution>

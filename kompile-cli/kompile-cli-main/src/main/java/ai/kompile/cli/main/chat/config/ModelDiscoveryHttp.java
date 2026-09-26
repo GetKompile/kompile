@@ -73,6 +73,27 @@ public final class ModelDiscoveryHttp {
         return discoverResult(provider, null, auth, baseOverride, true);
     }
 
+    /** Discover models through the user's Claude Code login, not Anthropic API credentials. */
+    public static ModelDiscovery.Result discoverClaudeCliResult() {
+        return claudeCliResult(LiveModelDiscovery.discoverClaudeCliModels());
+    }
+
+    static ModelDiscovery.Result claudeCliResult(List<LiveModelDiscovery.Model> models) {
+        if (models == null) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.AUTH_REQUIRED,
+                    "Claude Code is not logged in. Run `claude login` to discover models.",
+                    List.of("native:claude"));
+        }
+        if (models.isEmpty()) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.UNAVAILABLE,
+                    "Claude Code model list is unavailable or empty.",
+                    List.of("native:claude"));
+        }
+        return ModelDiscovery.Result.success(models, List.of("native:claude"));
+    }
+
     public static void clearCache() {
         CACHE.clear();
     }
