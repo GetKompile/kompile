@@ -63,6 +63,28 @@ class AuthWizardTest {
     }
 
     @Test
+    void anthropicSubscriptionLoginIsClaudeCodesSoNoKompileCredentialIsNamed() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("anthropic-oauth-auth.json"));
+        ScriptedPrompter prompter = new ScriptedPrompter()
+                .selecting("Anthropic", "OAuth / subscription sign-in")
+                .answering("never-asked");
+
+        AuthWizard.LoginRequest request;
+        try (AuthWizard wizard = AuthWizard.using(prompter)) {
+            request = wizard.promptForLogin(new OAuthProviderRegistry(), store);
+        }
+
+        assertNotNull(request);
+        assertEquals("anthropic", request.providerId());
+        assertEquals(AuthWizard.LoginKind.OAUTH, request.kind());
+        assertNull(request.credentialName());
+        assertNull(request.oauthMethod());
+        // Claude Code keeps this login, so there is no credential name or activation to ask about.
+        assertEquals(List.of("never-asked"), List.copyOf(prompter.answers));
+        assertTrue(store.list().isEmpty());
+    }
+
+    @Test
     void nativeAgentAuthLeavesOAuthAndApiSelectionToTheAgent() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("native-auth.json"));
         ScriptedPrompter prompter = new ScriptedPrompter().selecting("OpenCode");

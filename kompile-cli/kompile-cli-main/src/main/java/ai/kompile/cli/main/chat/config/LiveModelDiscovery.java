@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -27,6 +28,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Fetches model and vendor-native thinking capabilities from the selected vendor.
@@ -35,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * own discovery command; API vendors expose their own model endpoint.</p>
  */
 public final class LiveModelDiscovery {
-    private static final long PROCESS_TIMEOUT_SECONDS = 20;
+    static final long PROCESS_TIMEOUT_SECONDS = 20;
     private static final int MAX_NATIVE_OUTPUT_CHARS = 4 * 1024 * 1024;
     private static final ObjectMapper MAPPER = ai.kompile.cli.common.util.JsonUtils.standardMapper();
 
@@ -142,14 +145,14 @@ public final class LiveModelDiscovery {
     }
 
     /**
-     * Anthropic model catalog for the Claude Code route. Source of truth is
-     * the official Anthropic Models API (GET /v1/models), authenticated with
-     * the OAuth access token Claude Code itself stored on disk — Kompile only
-     * READS that token to make the list call; it never refreshes, stores, or
-     * manages it. Flow: `claude auth status` gate first (not logged in → null
-     * + authNotice); logged in → API list; if the API path yields nothing,
-     * fall back to parsing `claude models list` and surface whichever error
-     * the user can act on.
+     * Claude Code's own model catalog for the Claude Code route: the rows its
+     * model picker shows, each {@code value} exactly what {@code --model}
+     * accepts, with the effort levels Claude Code reports for that model.
+     * Flow: `claude auth status` gate first (not logged in → null +
+     * authNotice); logged in → the stream-json {@code initialize} handshake
+     * (the Agent SDK's supportedModels()). The handshake sends no user
+     * message, so no model turn runs, and Claude Code resolves its own login:
+     * Kompile never reads or uses Claude Code's credentials.
      */
     static List<Model> discoverClaudeCliModels() {
         return discoverClaudeCliModels(null, null);
@@ -157,225 +160,224 @@ public final class LiveModelDiscovery {
 
     /**
      * Same as {@link #discoverClaudeCliModels()} with two optional sinks:
-     * {@code authNotice} fires only when auth fails (status says logged out,
-     * or the stored token was rejected); {@code listingError} fires when the
-     * user is authenticated but the catalog could not be read (the CLI's or
-     * API's own error text is passed so the user sees the real cause).
+     * {@code authNotice} fires only when `claude auth status` says logged out;
+     * {@code listingError} fires when Claude Code is logged in but its catalog
+     * could not be read (Claude Code's own error text when it gave one).
      */
-    static List<Model> discoverClaudeCliModels(java.util.function.Consumer<String> authNotice,
-            java.util.function.Consumer<String> listingError) {
+    static List<Model> discoverClaudeCliModels(Consumer<String> authNotice,
+            Consumer<String> listingError) {
+        String binary = claudeBinary();
+        if (binary == null) {
+            if (listingError != null) {
+                listingError.accept("No claude agent is registered.");
+            }
+            return List.of();
+        }
+        if (!claudeCodeLogin().loggedIn()) {
+            if (authNotice != null) {
+                authNotice.accept("claude is not logged in.");
+            }
+            return null;
+        }
+        ClaudeCatalog catalog = parseClaudeInitializeResponse(
+                runCaptured(claudeCatalogCommand(binary), CLAUDE_INITIALIZE_REQUEST));
+        if (catalog.models().isEmpty() && listingError != null) {
+            listingError.accept(catalog.error());
+        }
+        return catalog.models();
+    }
+
+    /** The control request Claude Code answers with its session catalog (models, effort levels). */
+    private static final String CLAUDE_INITIALIZE_REQUEST =
+            "{\"type\":\"control_request\",\"request_id\":\"kompile-model-discovery\","
+                    + "\"request\":{\"subtype\":\"initialize\"}}\n";
+
+    /**
+     * A headless Claude Code session that only answers the initialize handshake:
+     * MCP servers are not started (--strict-mcp-config with no --mcp-config)
+     * and nothing is saved to Claude Code's session history. Never --bare,
+     * which ignores the claude.ai login.
+     */
+    static List<String> claudeCatalogCommand(String binary) {
+        return List.of(binary, "-p",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json", "--verbose",
+                "--strict-mcp-config", "--no-session-persistence");
+    }
+
+    /** Claude Code's catalog, or the reason it could not be read. */
+    record ClaudeCatalog(List<Model> models, String error) {
+        ClaudeCatalog {
+            models = models == null ? List.of() : List.copyOf(models);
+            error = error == null ? "" : error;
+        }
+    }
+
+    /**
+     * Parse the initialize {@code control_response}: {@code models[]} rows as
+     * Claude Code serves them ({@code value} goes to {@code --model},
+     * {@code supportedEffortLevels} to {@code --effort}). Rows Claude Code
+     * marks disabled are skipped; nothing is invented.
+     */
+    static ClaudeCatalog parseClaudeInitializeResponse(String output) {
+        for (JsonNode event : jsonObjects(output)) {
+            if (!"control_response".equals(event.path("type").asText())) {
+                continue;
+            }
+            JsonNode response = event.path("response");
+            if (!"success".equals(response.path("subtype").asText())) {
+                String error = response.path("error").asText("");
+                return new ClaudeCatalog(List.of(), "Claude Code rejected the model catalog request"
+                        + (error.isBlank() ? "." : ": " + error));
+            }
+            Map<String, Model> models = new LinkedHashMap<>();
+            for (JsonNode row : response.path("response").path("models")) {
+                String value = row.path("value").asText("").trim();
+                if (value.isEmpty() || row.path("disabled").asBoolean(false)) {
+                    continue;
+                }
+                ModelBuilder model = new ModelBuilder(value);
+                for (JsonNode effort : row.path("supportedEffortLevels")) {
+                    model.addVariant(effort.asText(""), capitalize(effort.asText("")));
+                }
+                if (!model.variants.isEmpty()) {
+                    model.capabilitySource = "native:claude initialize";
+                }
+                models.putIfAbsent(value, model.build());
+            }
+            return new ClaudeCatalog(List.copyOf(models.values()),
+                    models.isEmpty() ? "Claude Code reported no available models." : "");
+        }
+        String detail = trimToMeaningful(output);
+        return new ClaudeCatalog(List.of(), "Claude Code did not answer the model catalog request"
+                + (detail.isBlank() ? "." : ": " + detail));
+    }
+
+    /** The registered claude CLI command, or null when no claude agent is registered. */
+    static String claudeBinary() {
         AgentProvider agent = CliAgentRegistry.loadAll().stream()
                 .filter(candidate -> "claude".equalsIgnoreCase(candidate.getCommand())
                         || "claude".equalsIgnoreCase(candidate.getName()))
                 .findFirst()
                 .orElse(null);
         if (agent == null) {
-            return List.of();
+            return null;
         }
-        String binary = agent.getCommand() == null || agent.getCommand().isBlank()
+        return agent.getCommand() == null || agent.getCommand().isBlank()
                 ? "claude" : agent.getCommand();
-        if (!isClaudeLoggedIn(binary)) {
-            if (authNotice != null) {
-                authNotice.accept("claude is not logged in.");
-            }
-            return null;
-        }
-
-        ClaudeApiResult api = fetchModelsViaClaudeApi();
-        if (api.authFailed) {
-            if (authNotice != null) {
-                authNotice.accept("Claude Code login expired — run `claude login`.");
-            }
-            return null;
-        }
-        if (!api.models.isEmpty()) {
-            return api.models;
-        }
-
-        // API path yielded nothing: fall back to the CLI listing, and report
-        // whichever error explains the empty catalog.
-        String cliOutput = runCaptured(List.of(binary, "models", "list"));
-        List<Model> models = parseClaudeCliOutput(cliOutput);
-        if (models.isEmpty() && listingError != null) {
-            String reason = trimToMeaningful(cliOutput);
-            listingError.accept(reason.isBlank()
-                    ? (api.error == null || api.error.isBlank()
-                            ? "'claude models list' returned no models" : api.error)
-                    : reason);
-        }
-        return models;
-    }
-
-    /** True when `claude auth status` reports loggedIn true. */
-    private static boolean isClaudeLoggedIn(String binary) {
-        String status = runCaptured(List.of(binary, "auth", "status"));
-        if (status == null || status.isBlank()) {
-            return false;
-        }
-        for (String line : status.split("\\R")) {
-            String value = line.trim();
-            if (value.startsWith("\"loggedIn\"")) {
-                return value.contains("true");
-            }
-        }
-        return false;
-    }
-
-    // ── Anthropic Models API via Claude Code's stored OAuth token ─────────
-
-    private record ClaudeApiResult(List<Model> models, String error, boolean authFailed) {
-        ClaudeApiResult {
-            models = models == null ? List.of() : List.copyOf(models);
-        }
-    }
-
-    /** Claude Code config dir: $CLAUDE_CONFIG_DIR or ~/.claude. */
-    private static java.nio.file.Path claudeConfigDir() {
-        String override = System.getenv("CLAUDE_CONFIG_DIR");
-        if (override != null && !override.isBlank()) {
-            return java.nio.file.Path.of(override);
-        }
-        return java.nio.file.Path.of(
-                System.getProperty("user.home"), ".claude");
     }
 
     /**
-     * Read the OAuth access token Claude Code stored for its own use. Never
-     * prints or logs the token; callers only put it in the Authorization
-     * header. Returns null when the file/field is absent.
+     * Non-secret fields of `claude auth status`: whether and how Claude Code is
+     * signed in, as seen by the Claude Code route (which runs without
+     * ANTHROPIC_API_KEY). Never carries a token.
      */
-    static String readClaudeAccessToken() {
+    public record ClaudeCodeLogin(boolean loggedIn, String authMethod, String subscriptionType,
+                                  boolean apiKeyEnvironmentIgnored) {
+        /** One user-facing line stating exactly which login the Claude Code route uses. */
+        public String describe() {
+            if (!loggedIn) {
+                return "Claude Code is not logged in on this machine. Run `claude auth login` in a terminal.";
+            }
+            List<String> details = new ArrayList<>();
+            if (authMethod != null && !authMethod.isBlank()) details.add(authMethod);
+            if (subscriptionType != null && !subscriptionType.isBlank()) {
+                details.add(subscriptionType + " subscription");
+            }
+            return "Claude Code login verified" + (details.isEmpty() ? "" : " (" + String.join(", ", details) + ")")
+                    + " — Kompile stores no credential for this route."
+                    + (apiKeyEnvironmentIgnored
+                    ? " ANTHROPIC_API_KEY is ignored here; it belongs to the Anthropic API-key route." : "");
+        }
+    }
+
+    private static final Supplier<ClaudeCodeLogin> CLAUDE_AUTH_STATUS =
+            () -> {
+                String binary = claudeBinary();
+                return parseClaudeAuthStatus(binary == null ? "" : runCaptured(List.of(binary, "auth", "status")),
+                        hasText(System.getenv("ANTHROPIC_API_KEY")));
+            };
+
+    private static volatile Supplier<ClaudeCodeLogin> claudeCodeLoginProbe = CLAUDE_AUTH_STATUS;
+
+    /** Run `claude auth status` for the Claude Code route. Never reads Claude Code's credential files. */
+    public static ClaudeCodeLogin claudeCodeLogin() {
+        return claudeCodeLoginProbe.get();
+    }
+
+    /** Test seam: replace the `claude auth status` probe; null restores the real one. */
+    public static void useClaudeCodeLoginProbe(Supplier<ClaudeCodeLogin> probe) {
+        claudeCodeLoginProbe = probe == null ? CLAUDE_AUTH_STATUS : probe;
+    }
+
+    /** Parse `claude auth status` JSON (warnings may precede it); unreadable output is logged out. */
+    static ClaudeCodeLogin parseClaudeAuthStatus(String output, boolean apiKeyEnvironmentIgnored) {
+        int start = output == null ? -1 : output.indexOf('{');
+        int end = output == null ? -1 : output.lastIndexOf('}');
+        if (start < 0 || end < start) {
+            return new ClaudeCodeLogin(false, null, null, apiKeyEnvironmentIgnored);
+        }
         try {
-            java.nio.file.Path credentials = claudeConfigDir().resolve(".credentials.json");
-            if (!java.nio.file.Files.isRegularFile(credentials)) {
-                return null;
-            }
-            JsonNode root = MAPPER.readTree(java.nio.file.Files.readAllBytes(credentials));
-            JsonNode oauth = root.path("claudeAiOauth");
-            String token = oauth.path("accessToken").asText(null);
-            if (token == null || token.isBlank()) {
-                token = root.path("accessToken").asText(null);
-            }
-            return token == null || token.isBlank() ? null : token.trim();
-        } catch (Exception ignored) {
-            return null;
+            JsonNode status = MAPPER.readTree(output.substring(start, end + 1));
+            return new ClaudeCodeLogin(status.path("loggedIn").asBoolean(false),
+                    status.path("authMethod").asText(null),
+                    status.path("subscriptionType").asText(null),
+                    apiKeyEnvironmentIgnored);
+        } catch (IOException e) {
+            return new ClaudeCodeLogin(false, null, null, apiKeyEnvironmentIgnored);
         }
     }
 
-    /** GET /v1/models with Claude Code's stored OAuth token. */
-    private static ClaudeApiResult fetchModelsViaClaudeApi() {
-        String token = readClaudeAccessToken();
-        if (token == null) {
-            return new ClaudeApiResult(List.of(),
-                    "No Claude Code OAuth credential found on disk.", true);
-        }
-        try {
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(10))
-                    .build();
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder(
-                            java.net.URI.create("https://api.anthropic.com/v1/models?limit=100"))
-                    .timeout(java.time.Duration.ofSeconds(20))
-                    .header("Authorization", "Bearer " + token)
-                    .header("anthropic-version", "2023-06-01")
-                    .GET()
-                    .build();
-            java.net.http.HttpResponse<String> response = client.send(
-                    request, java.net.http.HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 401 || response.statusCode() == 403) {
-                return new ClaudeApiResult(List.of(),
-                        "Claude Code credential was rejected (HTTP " + response.statusCode() + ").",
-                        true);
-            }
-            if (response.statusCode() / 100 != 2) {
-                return new ClaudeApiResult(List.of(),
-                        "Models API returned HTTP " + response.statusCode(), false);
-            }
-            return new ClaudeApiResult(parseModelsApiResponse(response.body()), "", false);
-        } catch (java.net.http.HttpTimeoutException e) {
-            return new ClaudeApiResult(List.of(), "Models API request timed out", false);
-        } catch (Exception e) {
-            return new ClaudeApiResult(List.of(),
-                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), false);
-        }
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
-    /**
-     * Parse the Models API response: {@code data[].id} slugs, newest first —
-     * exactly what the provider serves, no filtering, no invented entries.
-     * Uses the same Anthropic parser as the API-key route, so each model keeps
-     * the effort levels its {@code capabilities.effort} block reports; those
-     * are the values the Claude Code route passes as {@code --effort}.
-     */
-    static List<Model> parseModelsApiResponse(String body) {
-        return parseHttpModels(body, "anthropic");
-    }
-
-    /** First non-warning line of CLI output, trimmed to a user-presentable size. */
+    /** First non-warning, non-event line of CLI output, trimmed to a user-presentable size. */
     private static String trimToMeaningful(String output) {
         if (output == null) return "";
         for (String line : output.split("\\R")) {
             String value = line.trim();
             if (!value.isBlank() && !value.startsWith("Warning:")
-                    && !value.startsWith("[claude-code:")) {
+                    && !value.startsWith("[claude-code:") && !value.startsWith("{")) {
                 return value.length() > 200 ? value.substring(0, 200) + "..." : value;
             }
         }
         return "";
     }
 
-    /**
-     * Parse `claude models list` output against the model-id grammar Claude
-     * Code itself defines: full ids ({@code claude-<family>-<version>[1m]}),
-     * bare tier aliases ({@code opus}, {@code sonnet}, …), and their
-     * {@code [1m]} variants. Everything else the CLI prints — warnings,
-     * unrecognized-model notices, auth failures — is prose containing spaces or
-     * punctuation that cannot match a model id, so prose is never misparsed as
-     * a model row.
-     */
-    static List<Model> parseClaudeCliOutput(String output) {
-        if (output == null || output.isBlank()) {
-            return List.of();
-        }
-        LinkedHashSet<String> ids = new LinkedHashSet<>();
-        for (String line : output.split("\\R")) {
-            String value = line.trim();
-            if (isClaudeModelId(value)) {
-                ids.add(value);
-            }
-        }
-        return ids.stream().map(id -> new Model(id, List.of())).toList();
-    }
-
-    /** True when the token is a claude model id or tier alias the CLI resolves. */
-    static boolean isClaudeModelId(String token) {
-        if (token == null || token.isEmpty() || token.length() > 128) {
-            return false;
-        }
-        String base = token;
-        if (base.endsWith("[1m]")) {
-            base = base.substring(0, base.length() - 4);
-        }
-        // The two row shapes the CLI's picker emits: full ids
-        // (claude-<segments> — covers claude-sonnet-4-5, dated ids like
-        // claude-3-7-sonnet-20250219, claude-opus-4-8) and bare tier aliases
-        // (opus, sonnet, haiku, fable, mythos, …).
-        return base.matches("claude-[a-z0-9][a-z0-9.-]*")
-                || base.matches("[a-z]+");
-    }
-
-    /** Run one command to completion, capturing merged stdout+stderr. */
+    /** Run one command to completion with stdin on the null device, capturing merged stdout+stderr. */
     private static String runCaptured(List<String> command) {
+        return runCaptured(command, null);
+    }
+
+    /**
+     * Run one command to completion, capturing merged stdout+stderr. When
+     * {@code input} is given it is written to stdin, which is then closed.
+     * A timeout or spawn failure comes back as its reason, so callers can show
+     * why a probe produced nothing.
+     */
+    private static String runCaptured(List<String> command, String input) {
         Process process = null;
         ExecutorService readerExecutor = null;
         Future<String> outputTask = null;
         try {
-            process = NativeCliProcess.processBuilder(List.copyOf(command), null)
-                    .redirectErrorStream(true)
-                    .start();
+            ProcessBuilder builder = ClaudeCliClient.withoutApiKeyEnvironment(
+                            NativeCliProcess.processBuilder(List.copyOf(command), null))
+                    .redirectErrorStream(true);
+            if (input != null) {
+                builder.redirectInput(ProcessBuilder.Redirect.PIPE);
+            }
+            process = builder.start();
+            if (input != null) {
+                try (OutputStream stdin = process.getOutputStream()) {
+                    stdin.write(input.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException exitedEarly) {
+                    // The process ended before reading stdin; its output says why.
+                }
+            }
             Process running = process;
             readerExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "claude-model-list-reader");
+                Thread thread = new Thread(runnable, "claude-probe-reader");
                 thread.setDaemon(true);
                 return thread;
             });
@@ -395,20 +397,15 @@ public final class LiveModelDiscovery {
             if (!process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 process.waitFor(2, TimeUnit.SECONDS);
-                return "";
+                return "claude did not finish within " + PROCESS_TIMEOUT_SECONDS + " seconds.";
             }
-            String output = outputTask.get(2, TimeUnit.SECONDS);
-            if (process.exitValue() != 0) {
-                // Claude exits non-zero on auth problems even after printing the
-                // picker catalog; keep whatever model rows it managed to emit.
-                return output;
-            }
-            return output;
+            return outputTask.get(2, TimeUnit.SECONDS);
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
+                return "";
             }
-            return "";
+            return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
         } finally {
             if (process != null && process.isAlive()) process.destroyForcibly();
             if (process != null) {

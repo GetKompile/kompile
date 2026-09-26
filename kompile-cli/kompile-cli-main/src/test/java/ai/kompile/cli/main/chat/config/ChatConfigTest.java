@@ -1,5 +1,7 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -394,6 +396,52 @@ class ChatConfigTest {
             assertEquals(DirectLlmClient.WireProtocol.ANTHROPIC_MESSAGES,
                     client.resolveRoute(null).protocol());
         }
+    }
+
+    @Test
+    void anthropicRoutesNeverLendEachOtherCredentials() throws Exception {
+        // One provider id, two routes. A switch without an explicit choice lands
+        // on the Claude Code route; every other method is the API-key route,
+        // which only ever sends an API key.
+        assertEquals("oauth", ChatConfig.authenticationMethodAfterProviderSwitch("anthropic"));
+        assertNull(ChatConfig.authenticationMethodAfterProviderSwitch("openai"));
+        assertNull(ChatConfig.authenticationMethodAfterProviderSwitch(null));
+        assertTrue(ChatConfig.isClaudeCliNative("anthropic", "oauth"));
+        assertTrue(ChatConfig.isClaudeCliNative("anthropic", "native"));
+        assertFalse(ChatConfig.isClaudeCliNative("anthropic", null));
+        assertFalse(ChatConfig.isClaudeCliNative("anthropic", "api-key"));
+        assertFalse(ChatConfig.isClaudeCliNative("openai-codex", "oauth"));
+
+        String originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            CredentialStore.create().putOAuth("anthropic", "stored-oauth-token", "",
+                    System.currentTimeMillis() + 3_600_000L);
+            for (String method : new String[]{null, "api-key"}) {
+                ChatConfig apiRoute = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+                apiRoute.setAuthenticationMethod(method);
+                OAuthProviderFlow.RequestAuth auth = apiRoute.resolveRequestAuth();
+                // No key (or ANTHROPIC_API_KEY when the environment sets one) —
+                // never the stored OAuth token.
+                assertTrue(auth == null || (!auth.oauth() && !"stored-oauth-token".equals(auth.token())),
+                        "method " + method + " resolved " + auth);
+            }
+
+            CredentialStore.create().putApiKey("anthropic", "work", "stored-api-key", true);
+            ChatConfig apiRoute = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+            apiRoute.setAuthenticationMethod("api-key");
+            assertEquals("stored-api-key", apiRoute.resolveRequestAuth().token());
+
+            ChatConfig claudeCode = new ChatConfig("anthropic", null, null, null);
+            claudeCode.setAuthenticationMethod(ChatConfig.authenticationMethodAfterProviderSwitch("anthropic"));
+            assertNull(claudeCode.resolveRequestAuth(), "the Claude Code login is this route's credential");
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
+
+        String guidance = ChatConfig.missingCredential("anthropic").getMessage();
+        assertTrue(guidance.contains("API-key route") && guidance.contains("Claude Code route"), guidance);
+        assertFalse(ChatConfig.missingCredential("openai").getMessage().contains("Claude Code"));
     }
 
     @Test

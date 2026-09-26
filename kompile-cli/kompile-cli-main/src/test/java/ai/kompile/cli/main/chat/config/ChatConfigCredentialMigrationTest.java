@@ -67,8 +67,10 @@ class ChatConfigCredentialMigrationTest {
     }
 
     @Test
-    void storedAnthropicOauthResolvesBearerHeadersWithoutLeakingToConfig() throws Exception {
+    void storedAnthropicOauthSignInIsNeverSentAndIsNamedInsteadOfAMissingKey() throws Exception {
         withTemporaryHome(() -> {
+            // A Claude subscription belongs to Claude Code: the API-key route neither
+            // sends a stored Anthropic OAuth sign-in nor reports it as a missing key.
             CredentialStore.create().putOAuth(
                     "anthropic",
                     "sk-ant-oat-managed",
@@ -82,11 +84,14 @@ class ChatConfigCredentialMigrationTest {
 
             var auth = config.resolveRequestAuth();
 
-            assertNotNull(auth);
-            assertTrue(auth.oauth());
-            assertEquals("sk-ant-oat-managed", auth.token());
-            assertEquals("Bearer sk-ant-oat-managed", auth.headers().get("Authorization"));
-            assertEquals("https://api.anthropic.com", config.resolveBaseUrl(auth));
+            // An environment ANTHROPIC_API_KEY is the route's own key; the sign-in never is.
+            assertTrue(auth == null || (!auth.oauth() && !"sk-ant-oat-managed".equals(auth.token())));
+            String signIn = CredentialStore.create().activeCredentialName("anthropic");
+            String failure = ChatConfig.missingCredential("anthropic").getMessage();
+            assertTrue(failure.contains("'" + signIn + "' is a stored OAuth sign-in"), failure);
+            assertTrue(failure.contains("Claude Code route"), failure);
+            assertFalse(failure.contains("sk-ant-oat-managed"), failure);
+            assertFalse(failure.contains("Sign in again"), failure);
         });
     }
 
@@ -269,20 +274,46 @@ class ChatConfigCredentialMigrationTest {
     void activationReplacesOldAuthenticationRouteAndRetainsOauthHeaders() throws Exception {
         withTemporaryHome(() -> {
             CredentialStore store = CredentialStore.create();
-            store.putApiKey("anthropic", "key", "api-secret", true);
-            store.putOAuth("anthropic", "subscription", "oauth-access", "refresh",
+            store.putApiKey("xai", "key", "api-secret", true);
+            store.putOAuth("xai", "subscription", "oauth-access", "refresh",
                     System.currentTimeMillis() + 3_600_000, false);
-            ChatConfig config = new ChatConfig("anthropic", null, "model", null);
+            ChatConfig config = new ChatConfig("xai", null, "model", null);
             config.setAuthenticationMethod("api-key");
             config.bindSession("route-change");
-            store.switchCredential("anthropic", "subscription", true);
+            store.switchCredential("xai", "subscription", true);
             var oauth = config.resolveRequestAuth();
             assertTrue(oauth.oauth());
             assertEquals("Bearer oauth-access", oauth.headers().get("Authorization"));
             assertEquals("subscription", config.getCredentialName());
             assertTrue(ChatConfig.loadSession("route-change").resolveRequestAuth().oauth());
-            store.switchCredential("anthropic", "key", true);
+            store.switchCredential("xai", "key", true);
             assertFalse(config.resolveRequestAuth().oauth());
+            assertEquals("api-secret", config.getApiKey());
+        });
+    }
+
+    @Test
+    void activatingAStoredAnthropicOauthSignInFailsClosedAndNamesIt() throws Exception {
+        withTemporaryHome(() -> {
+            CredentialStore store = CredentialStore.create();
+            store.putApiKey("anthropic", "key", "api-secret", true);
+            store.putOAuth("anthropic", "subscription", "oauth-access", "refresh",
+                    System.currentTimeMillis() + 3_600_000, false);
+            assertNull(ChatConfig.unusableCredentialReason("anthropic", "key"));
+            assertNotNull(ChatConfig.unusableCredentialReason("anthropic", "subscription"));
+            ChatConfig config = new ChatConfig("anthropic", null, "model", null);
+            config.setAuthenticationMethod("api-key");
+            config.bindSession("route-change");
+            // The CLI refuses this activation; a raw store broadcast still reaches open chats.
+            store.switchCredential("anthropic", "subscription", true);
+
+            var failure = assertThrows(ChatConfig.AuthenticationException.class, config::resolveRequestAuth);
+
+            assertTrue(failure.getMessage().contains("'subscription' is a stored OAuth sign-in"),
+                    failure.getMessage());
+            assertFalse(failure.getMessage().contains("oauth-access"), failure.getMessage());
+            assertFalse(failure.getMessage().contains("Sign in again"), failure.getMessage());
+            store.switchCredential("anthropic", "key", true);
             assertEquals("api-secret", config.getApiKey());
         });
     }

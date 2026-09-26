@@ -327,6 +327,18 @@ class ClaudeCliClientTest {
         assertFalse(lines.get(1).contains("--settings"), lines.get(1));
     }
 
+    @Test
+    void claudeProcessesNeverInheritTheApiKeyRoutesKey() {
+        // claude prefers ANTHROPIC_API_KEY over its own login, which would move
+        // the Claude Code route onto the API-key route's billing and identity.
+        ProcessBuilder builder = new ProcessBuilder("claude");
+        builder.environment().put("ANTHROPIC_API_KEY", "api-route-key");
+        builder.environment().put("KOMPILE_TEST_MARKER", "kept");
+        ClaudeCliClient.withoutApiKeyEnvironment(builder);
+        assertFalse(builder.environment().containsKey("ANTHROPIC_API_KEY"));
+        assertEquals("kept", builder.environment().get("KOMPILE_TEST_MARKER"));
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     /** Writes an executable fake `claude` that logs argv to {@code cmdLog}. */

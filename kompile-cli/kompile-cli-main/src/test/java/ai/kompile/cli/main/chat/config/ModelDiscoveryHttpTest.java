@@ -88,7 +88,7 @@ class ModelDiscoveryHttpTest {
         ModelDiscovery.Result result = ModelDiscoveryHttp.claudeCliResult(null);
 
         assertEquals(ModelDiscovery.Status.AUTH_REQUIRED, result.status());
-        assertTrue(result.message().contains("claude login"));
+        assertTrue(result.message().contains("claude auth login"));
         assertTrue(result.models().isEmpty());
     }
 
@@ -98,6 +98,16 @@ class ModelDiscoveryHttpTest {
 
         assertEquals(ModelDiscovery.Status.UNAVAILABLE, result.status());
         assertTrue(result.models().isEmpty());
+
+        // Claude Code's own reason is shown, never a bare empty list, and the
+        // user is told a typed id or alias still works.
+        ModelDiscovery.Result explained = ModelDiscoveryHttp.claudeCliResult(List.of(),
+                "Claude Code did not answer the model catalog request: error: unknown option");
+        assertEquals("Claude Code model list is unavailable: Claude Code did not answer the model "
+                        + "catalog request: error: unknown option. Enter a model id or alias that "
+                        + "`claude --model` accepts.",
+                explained.message());
+        assertEquals(List.of(ModelDiscoveryHttp.CLAUDE_CODE_ENDPOINT), explained.attemptedEndpoints());
     }
 
     @Test

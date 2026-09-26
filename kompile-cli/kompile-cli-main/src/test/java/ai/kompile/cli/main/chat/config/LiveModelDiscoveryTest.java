@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -54,81 +55,104 @@ class LiveModelDiscoveryTest {
                 .findFirst().orElseThrow().variants());
     }
 
-    @Test
-    void claudeCliCatalogParserToleratesAuthFailureNoise() {
-        // Real expired-login output captured from `claude models list` — prose
-        // lines never parse as model rows; grammar-matching ids do.
-        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.parseClaudeCliOutput("""
-                "fable[1m]" isn't described by this version's model catalog; update Claude Code, or map it with behavesAs on a modelPicker row (or modelOverrides, if it is a provider id of a model this version knows).
-                [claude-code:unrecognized_model] {"model":"fable[1m]","query_source":"sdk"}
-                Failed to authenticate: OAuth session expired and could not be refreshed
-                claude-sonnet-4-5
-                claude-opus-4-8
-                opus
-                sonnet
-                haiku
-                fable
-                claude-sonnet-5[1m]
-                claude-3-7-sonnet-20250219
-                """);
+    /** Shape of Claude Code's initialize control_response, models only (no account data). */
+    private static final String CLAUDE_INITIALIZE_RESPONSE = """
+            {"type":"control_response","response":{"subtype":"success","request_id":"kompile-model-discovery",
+             "response":{"models":[
+              {"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)",
+               "supportedEffortLevels":["low","medium","high","xhigh","max"]},
+              {"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet 5",
+               "supportedEffortLevels":["low","medium","high","xhigh","max"]},
+              {"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku 4.5"},
+              {"value":"claude-sonnet-4-6","displayName":"Sonnet 4.6",
+               "supportedEffortLevels":["low","medium","high","max"]},
+              {"value":"claude-retired","displayName":"Retired","disabled":true},
+              {"value":"","displayName":"Blank"}]}}}
+            """;
 
-        assertEquals(List.of("claude-sonnet-4-5", "claude-opus-4-8", "opus",
-                        "sonnet", "haiku", "fable", "claude-sonnet-5[1m]",
-                        "claude-3-7-sonnet-20250219"),
-                models.stream().map(LiveModelDiscovery.Model::id).toList());
+    @Test
+    void claudeCatalogIsClaudeCodesInitializeModelsWithPerModelEffortLevels() {
+        // Rows are exactly Claude Code's: its values go to --model and its
+        // supportedEffortLevels to --effort. Disabled and blank rows are dropped.
+        LiveModelDiscovery.ClaudeCatalog catalog = LiveModelDiscovery.parseClaudeInitializeResponse(
+                "{\"type\":\"system\",\"subtype\":\"hook_started\"}\n" + CLAUDE_INITIALIZE_RESPONSE);
+
+        assertEquals("", catalog.error());
+        assertEquals(List.of("default", "sonnet", "haiku", "claude-sonnet-4-6"),
+                catalog.models().stream().map(LiveModelDiscovery.Model::id).toList());
+        assertEquals(List.of("low", "medium", "high", "xhigh", "max"), catalog.models().get(0).variants());
+        assertEquals("native:claude initialize", catalog.models().get(0).capabilitySource());
+        assertTrue(catalog.models().get(2).variants().isEmpty());
+        assertEquals(List.of("low", "medium", "high", "max"), catalog.models().get(3).variants());
     }
 
     @Test
-    void claudeModelIdGrammarRejectsProseAndAcceptsClaudeShapes() {
-        assertTrue(LiveModelDiscovery.isClaudeModelId("opus"));
-        assertTrue(LiveModelDiscovery.isClaudeModelId("mythos"));
-        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-sonnet-4-5"));
-        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-3-7-sonnet-20250219"));
-        assertTrue(LiveModelDiscovery.isClaudeModelId("claude-sonnet-5[1m]"));
-        assertFalse(LiveModelDiscovery.isClaudeModelId("Failed to authenticate"));
-        assertFalse(LiveModelDiscovery.isClaudeModelId("\"fable[1m]\" isn't described"));
-        assertFalse(LiveModelDiscovery.isClaudeModelId("[claude-code:unrecognized_model]"));
-        assertFalse(LiveModelDiscovery.isClaudeModelId("CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000"));
-        assertFalse(LiveModelDiscovery.isClaudeModelId("gpt-4o"));
+    void claudeCatalogFailureCarriesClaudeCodesOwnReason() {
+        assertEquals("Claude Code rejected the model catalog request: Unsupported control request",
+                LiveModelDiscovery.parseClaudeInitializeResponse("""
+                        {"type":"control_response","response":{"subtype":"error",
+                         "request_id":"kompile-model-discovery","error":"Unsupported control request"}}
+                        """).error());
+        LiveModelDiscovery.ClaudeCatalog prose = LiveModelDiscovery.parseClaudeInitializeResponse(
+                "Warning: an older CLI\nerror: unknown option '--strict-mcp-config'\n");
+        assertTrue(prose.models().isEmpty());
+        assertEquals("Claude Code did not answer the model catalog request: "
+                + "error: unknown option '--strict-mcp-config'", prose.error());
+        assertEquals("Claude Code did not answer the model catalog request.",
+                LiveModelDiscovery.parseClaudeInitializeResponse("").error());
+        assertEquals("Claude Code reported no available models.",
+                LiveModelDiscovery.parseClaudeInitializeResponse("""
+                        {"type":"control_response","response":{"subtype":"success","response":{"models":[]}}}
+                        """).error());
     }
 
     @Test
-    void claudeCliDiscoveryNeverReturnsEmptyForAnInstalledCli() {
-        // parseClaudeCliOutput alone degrades to empty on garbage; the
-        // discovery entry point layers the tier-alias floor on top so the
-        // picker always has a selectable list.
-        assertTrue(LiveModelDiscovery.parseClaudeCliOutput(
-                "Failed to authenticate: OAuth session expired and could not be refreshed").isEmpty());
+    void claudeCatalogCommandIsAHandshakeOnlySessionOnTheClaudeLogin() {
+        List<String> command = LiveModelDiscovery.claudeCatalogCommand("claude");
+
+        assertEquals(List.of("claude", "-p"), command.subList(0, 2));
+        assertEquals("stream-json", command.get(command.indexOf("--input-format") + 1));
+        assertEquals("stream-json", command.get(command.indexOf("--output-format") + 1));
+        assertTrue(command.containsAll(List.of("--strict-mcp-config", "--no-session-persistence")));
+        // --bare ignores the claude.ai login; `claude models ...` is not a
+        // command in Claude Code, it runs a prompt turn named "models".
+        assertFalse(command.contains("--bare"));
+        assertFalse(command.contains("models"));
     }
 
     @Test
-    void claudeRouteModelsApiListingKeepsPerModelEffortLevels() {
-        // The Claude Code route lists models through GET /v1/models; each
-        // model's capabilities.effort block is the only source of the levels
-        // offered for --effort, so parsing must keep it per model.
-        List<LiveModelDiscovery.Model> models = LiveModelDiscovery.parseModelsApiResponse("""
-                {"data":[
-                  {"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5",
-                   "capabilities":{"effort":{"supported":true,
-                     "low":{"supported":true},"medium":{"supported":true},
-                     "high":{"supported":true},"xhigh":{"supported":true},
-                     "max":{"supported":true}}}},
-                  {"type":"model","id":"claude-sonnet-4-6",
-                   "capabilities":{"effort":{"supported":true,
-                     "low":{"supported":true},"medium":{"supported":true},
-                     "high":{"supported":true},"xhigh":{"supported":false},
-                     "max":{"supported":true}}}},
-                  {"type":"model","id":"claude-haiku-4-5",
-                   "capabilities":{"effort":{"supported":false}}}
-                ],"has_more":false}
-                """);
+    void loggedOutClaudeCodeYieldsNoCatalogAndAnAuthNotice() {
+        List<String> notices = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        LiveModelDiscovery.useClaudeCodeLoginProbe(
+                () -> new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, false));
+        try {
+            assertNull(LiveModelDiscovery.discoverClaudeCliModels(notices::add, errors::add));
+        } finally {
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
+        }
+        assertEquals(List.of("claude is not logged in."), notices);
+        assertTrue(errors.isEmpty());
+    }
 
-        assertEquals(List.of("claude-opus-5-5", "claude-sonnet-4-6", "claude-haiku-4-5"),
-                models.stream().map(LiveModelDiscovery.Model::id).toList());
-        assertEquals(List.of("low", "medium", "high", "xhigh", "max"), models.get(0).variants());
-        assertEquals("live:anthropic model metadata", models.get(0).capabilitySource());
-        assertEquals(List.of("low", "medium", "high", "max"), models.get(1).variants());
-        assertTrue(models.get(2).variants().isEmpty());
+    @Test
+    void claudeAuthStatusKeepsNonSecretFieldsAndReadsNoiseAsLoggedOut() {
+        LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.parseClaudeAuthStatus("""
+                Warning: printed before the status
+                {"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}
+                """, true);
+
+        assertTrue(login.loggedIn());
+        assertEquals("claude.ai", login.authMethod());
+        assertEquals("max", login.subscriptionType());
+        assertTrue(login.describe().startsWith("Claude Code login verified (claude.ai, max subscription)"));
+        assertTrue(login.describe().contains("ANTHROPIC_API_KEY is ignored here"));
+        assertFalse(LiveModelDiscovery.parseClaudeAuthStatus("{\"loggedIn\":false}", false).loggedIn());
+        assertFalse(LiveModelDiscovery.parseClaudeAuthStatus(
+                "claude did not finish within 20 seconds.", false).loggedIn());
+        assertFalse(LiveModelDiscovery.parseClaudeAuthStatus(null, false).loggedIn());
+        assertTrue(LiveModelDiscovery.parseClaudeAuthStatus("", false).describe()
+                .contains("Run `claude auth login`"));
     }
 
     @Test

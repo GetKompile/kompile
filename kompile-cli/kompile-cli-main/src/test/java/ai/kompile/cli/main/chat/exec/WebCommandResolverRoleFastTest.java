@@ -6,6 +6,7 @@ package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.main.chat.ChatCommandCatalog;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -635,6 +636,42 @@ class WebCommandResolverRoleFastTest {
         assertEquals(WebCommandResolver.Status.INVALID, resolution.status());
         assertTrue(resolution.text().contains("credential"), resolution.text());
         assertNull(new ChatSessionStateStore().load("web-session-1", project));
+    }
+
+    @Test
+    void anthropicVendorSwitchRunsOnTheVerifiedClaudeCodeLogin() {
+        LiveModelDiscovery.useClaudeCodeLoginProbe(
+                () -> new LiveModelDiscovery.ClaudeCodeLogin(true, "claude.ai", "max", false));
+        try {
+            WebCommandResolver.Resolution resolution = WebCommandResolver.resolve(
+                    input("/model anthropic:claude-opus-5-5"), project, new ChatSessionStateStore(),
+                    configuredChatConfig(), null);
+            assertEquals(WebCommandResolver.Status.INTERACTION_REQUIRED, resolution.status(),
+                    resolution.text());
+            assertTrue(resolution.text().contains("(Claude Code login)"), resolution.text());
+            assertEquals("anthropic", resolution.data().path("state").path("provider").asText());
+        } finally {
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
+        }
+    }
+
+    @Test
+    void anthropicVendorSwitchWithoutClaudeCodeLoginFailsClosedAndSaysWhy() {
+        // Never an unauthenticated Anthropic route: no Claude Code login means
+        // no switch, and the notice names the fix and the API-key alternative.
+        LiveModelDiscovery.useClaudeCodeLoginProbe(
+                () -> new LiveModelDiscovery.ClaudeCodeLogin(false, null, null, true));
+        try {
+            WebCommandResolver.Resolution resolution = WebCommandResolver.resolve(
+                    input("/model anthropic:claude-opus-5-5"), project, new ChatSessionStateStore(),
+                    configuredChatConfig(), null);
+            assertEquals(WebCommandResolver.Status.INVALID, resolution.status());
+            assertTrue(resolution.text().contains("claude auth login"), resolution.text());
+            assertTrue(resolution.text().contains("API-key route"), resolution.text());
+            assertNull(new ChatSessionStateStore().load("web-session-1", project));
+        } finally {
+            LiveModelDiscovery.useClaudeCodeLoginProbe(null);
+        }
     }
 
     @Test

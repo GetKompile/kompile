@@ -330,6 +330,15 @@ class ExecJsonEventsTest {
     }
 
     @Test
+    void claudeCodeRouteReportsItsLoginInsteadOfNoAuth() {
+        // The route's credential is the Claude Code login, which Kompile never
+        // resolves; events name it rather than reporting "none".
+        ChatConfig claudeCode = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
+        claudeCode.setAuthenticationMethod("oauth");
+        assertEquals("claude-code", HeadlessAgentRunner.effectiveAuth(claudeCode));
+    }
+
+    @Test
     @ResourceLock("user.home")
     void headlessDirectProviderErrorIsTerminalFailure(@TempDir Path tempDir)
             throws Exception {

@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class DirectLlmClientOAuthTest {
@@ -308,41 +309,59 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
-    void anthropicOauthUsesBearerAndClaudeIdentityHeaders() throws Exception {
+    void anthropicApiKeyRouteNeverSendsAStoredOauthTokenOrAnAnonymousRequest() throws Exception {
+        // Anthropic OAuth belongs to Claude Code: a token Kompile once stored for it
+        // must not ride the API-key route, and a keyless request never goes out.
+        assumeTrue(System.getenv("ANTHROPIC_API_KEY") == null,
+                "ANTHROPIC_API_KEY is this route's environment credential");
         withTemporaryHome(() -> {
-            AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();
-            AtomicReference<String> requestBody = new AtomicReference<>();
+            AtomicInteger calls = new AtomicInteger();
             HttpServer server = server("/v1/messages", exchange -> {
-                headers.set(exchange.getRequestHeaders());
-                requestBody.set(new String(
-                        exchange.getRequestBody().readAllBytes(),
-                        StandardCharsets.UTF_8));
+                exchange.getRequestBody().readAllBytes();
+                calls.incrementAndGet();
                 respond(exchange, 400, "{\"error\":{\"message\":\"test\"}}");
             });
             try {
-                CredentialStore.create().putOAuth(
-                        "anthropic",
-                        "sk-ant-oat-managed",
-                        "refresh",
-                        System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1));
                 ChatConfig config = new ChatConfig(
                         "anthropic",
                         null,
                         "claude-sonnet-4-20250514",
                         baseUrl(server));
-                DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper());
+                try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                    client.setOutputConsumer(ignored -> { });
 
-                client.streamChat("hello", "Kompile system prompt", null, null);
+                    DirectLlmClient.StreamResult result =
+                            client.streamChat("hello", "Kompile system prompt", null, null);
 
-                assertEquals("Bearer sk-ant-oat-managed", first(headers.get(), "Authorization"));
-                assertNull(first(headers.get(), "x-api-key"));
-                assertTrue(first(headers.get(), "anthropic-beta").contains("oauth-2025-04-20"));
-                JsonNode request = new ObjectMapper().readTree(requestBody.get());
-                assertEquals("ephemeral",
-                        request.path("cache_control").path("type").asText());
-                assertFalse(request.path("cache_control").has("ttl"));
-                assertTrue(requestBody.get().contains(
-                        "You are Claude Code, Anthropic's official CLI for Claude."));
+                    assertTrue(result.failed);
+                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    assertTrue(result.failureMessage.contains("API-key route has no API key"),
+                            result.failureMessage);
+                    assertTrue(result.failureMessage.contains("Claude Code route"), result.failureMessage);
+                }
+
+                CredentialStore.create().putOAuth(
+                        "anthropic",
+                        "sk-ant-oat-managed",
+                        "refresh",
+                        System.currentTimeMillis() + TimeUnit.HOURS.toMillis(1));
+                String signIn = CredentialStore.create().activeCredentialName("anthropic");
+                try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
+                    client.setOutputConsumer(ignored -> { });
+
+                    DirectLlmClient.StreamResult result =
+                            client.streamChat("hello", "Kompile system prompt", null, null);
+
+                    // The stored sign-in is named, not reported as a missing key.
+                    assertTrue(result.failed);
+                    assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, result.failureKind);
+                    assertTrue(result.failureMessage.contains("'" + signIn + "' is a stored OAuth sign-in"),
+                            result.failureMessage);
+                    assertTrue(result.failureMessage.contains("Claude Code route"), result.failureMessage);
+                    assertFalse(result.failureMessage.contains("sk-ant-oat-managed"));
+                    assertFalse(result.text.contains("sk-ant-oat-managed"));
+                }
+                assertEquals(0, calls.get(), "no request reaches the Messages API");
             } finally {
                 server.stop(0);
             }
@@ -1603,46 +1622,46 @@ class DirectLlmClientOAuthTest {
 
     @Test
     void expiredNonRefreshableAuthFailsBeforeHttpAndReloginRepairsSameClient() throws Exception {
+        // A Kompile-managed OAuth route. (Anthropic OAuth is Claude Code's, never Kompile's.)
         withTemporaryHome(() -> {
             AtomicInteger calls = new AtomicInteger();
-            HttpServer server = server("/v1/messages", exchange -> {
+            HttpServer server = server("/codex/responses", exchange -> {
                 exchange.getRequestBody().readAllBytes();
                 calls.incrementAndGet();
                 respondSse(exchange, """
-                        data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}
+                        data: {"type":"response.output_text.delta","delta":"recovered"}
 
-                        data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"recovered"}}
+                        data: {"type":"response.completed","response":{"output":[]}}
 
-                        data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
-
-                        data: {"type":"message_stop"}
+                        data: [DONE]
 
                         """);
             });
             try {
                 CredentialStore store = CredentialStore.create();
                 Map<String, String> identity = Map.of("accountId", "test-account");
-                store.put("anthropic", "personal", ManagedCredential.oauth("expired-secret", "", 1L, identity), true);
-                ChatConfig config = new ChatConfig("anthropic", null, "claude-sonnet-4-6", baseUrl(server));
+                store.put("openai-codex", "personal", ManagedCredential.oauth("expired-secret", "", 1L, identity), true);
+                ChatConfig config = new ChatConfig("openai-codex", null, "gpt-5", baseUrl(server));
                 config.setAuthenticationMethod("oauth");
                 try (DirectLlmClient client = new DirectLlmClient(config, new ObjectMapper())) {
                     client.setOutputConsumer(ignored -> { });
                     DirectLlmClient.StreamResult rejected = client.streamChat("hello", "system", null, null);
                     assertTrue(rejected.failed);
                     assertEquals(DirectLlmClient.FailureKind.AUTHENTICATION, rejected.failureKind);
-                    assertTrue(rejected.failureMessage.contains("kompile auth login anthropic"));
+                    assertTrue(rejected.failureMessage.contains("kompile auth login openai-codex"),
+                            rejected.failureMessage);
                     assertFalse(rejected.text.contains("expired-secret"));
                     assertEquals(0, calls.get());
-                    assertNull(store.read("anthropic", "personal"), "Expired grant is purged before the request");
-                    store.put("anthropic", "another-name", ManagedCredential.oauth(
+                    assertNull(store.read("openai-codex", "personal"), "Expired grant is purged before the request");
+                    store.put("openai-codex", "another-name", ManagedCredential.oauth(
                             "new-secret", "new-refresh", System.currentTimeMillis() + 3_600_000L, identity), true);
                     DirectLlmClient.StreamResult recovered = client.streamChat("hello", "system", null, null);
                     assertFalse(recovered.failed, recovered.text);
                     assertEquals("recovered", recovered.text);
                     assertEquals(1, calls.get());
-                    assertEquals(1, store.list("anthropic").size());
-                    assertEquals("another-name", store.activeCredentialName("anthropic"));
-                    assertEquals("another-name", store.defaultCredentialName("anthropic"));
+                    assertEquals(1, store.list("openai-codex").size());
+                    assertEquals("another-name", store.activeCredentialName("openai-codex"));
+                    assertEquals("another-name", store.defaultCredentialName("openai-codex"));
                 }
             } finally {
                 server.stop(0);

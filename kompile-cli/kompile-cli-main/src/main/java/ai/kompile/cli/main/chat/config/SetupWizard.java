@@ -110,14 +110,7 @@ public class SetupWizard {
         String provider = resolveProviderForAuth(vendor, method);
         if (method == AuthMethod.NONE) return new AuthenticationSelection(provider, method, null);
         if (method == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
-            // Claude Code owns the subscription login and Kompile manages NO
-            // credential for it — there is nothing to select and nothing to
-            // sign into here. Warn and pass straight through to the chat;
-            // it is on the user to have run `claude login`.
-            System.out.println("  → " + YELLOW
-                    + "Claude Code owns this login. Run `claude login` in a terminal first — "
-                    + "Kompile does not manage this credential." + RESET);
-            return new AuthenticationSelection(provider, method, null);
+            return claudeCodeRouteSelection(reader, provider, method);
         }
         if (method == AuthMethod.NATIVE) {
             // Native CLI credentials are owned by the provider CLI and are
@@ -436,16 +429,17 @@ public class SetupWizard {
                         && providerSelection.authMethod() == AuthMethod.OAUTH;
                 if (claudeCliRoute) {
                     // Flow: auth status → not logged in = indicator + stop;
-                    // logged in → the CLI's real model slugs → pick one → pick
+                    // logged in → Claude Code's own catalog → pick one → pick
                     // its effort level → saved and passed to claude -p as
-                    // --model/--effort. No "default model" pseudo-entry: the
-                    // first listed model IS the default and is pre-selected.
+                    // --model/--effort. Rows are exactly Claude Code's (Kompile
+                    // adds no pseudo-entry); the first is pre-selected. No
+                    // catalog → take an id or alias as typed; claude resolves it.
                     List<LiveModelDiscovery.Model> claudeModels =
                             LiveModelDiscovery.discoverClaudeCliModels(notice -> {
                                 if (notice != null && !notice.isBlank()) {
                                     System.out.println("  → " + YELLOW + "Not logged in: "
                                             + notice + RESET);
-                                    System.out.println("  Run `claude login` in a terminal, then retry.");
+                                    System.out.println("  Run `claude auth login` in a terminal, then retry.");
                                 }
                             }, error -> {
                                 if (error != null && !error.isBlank()) {
@@ -457,17 +451,21 @@ public class SetupWizard {
                         return null; // not logged in — indicator already shown
                     }
                     if (claudeModels.isEmpty()) {
-                        System.err.println("  Claude model list is empty — cannot continue.");
-                        return null;
+                        String manual = promptManual(reader,
+                                "  Enter a model id or alias for `claude --model` (blank to cancel): ");
+                        model = manual == null ? null
+                                : ModelCatalogSelection.resolvePickerInput(manual, List.of());
+                        if (model == null) return null;
+                    } else {
+                        List<String> options = claudeModels.stream()
+                                .map(LiveModelDiscovery.Model::id)
+                                .toList();
+                        String defaultModel = options.get(0);
+                        int selected = selectNumberedWithDefault(
+                                reader, "Select Model:", options, defaultModel);
+                        if (selected < 0) return null;
+                        model = options.get(selected);
                     }
-                    List<String> options = claudeModels.stream()
-                            .map(LiveModelDiscovery.Model::id)
-                            .toList();
-                    String defaultModel = options.get(0);
-                    int selected = selectNumberedWithDefault(
-                            reader, "Select Model:", options, defaultModel);
-                    if (selected < 0) return null;
-                    model = options.get(selected);
                     System.out.println("  → " + GREEN + model + RESET);
                     System.out.println();
 
@@ -1039,11 +1037,9 @@ public class SetupWizard {
         return switch (authMethod) {
             case NONE -> vendor;
             case NATIVE -> {
-                // Anthropic takes the claude-CLI route (claude -p stream-json turns).
-                // Claude has no scriptable OAuth, so selection PROCEEDS without a
-                // pre-verified login: the CLI transport verifies credentials at
-                // runtime and warns with the fix when `claude -p` reports a login
-                // failure. Other vendors keep the registry gate.
+                // Anthropic takes the claude-CLI route (claude -p stream-json turns);
+                // authenticate() verifies the Claude Code login with `claude auth
+                // status`. Other vendors keep the registry gate.
                 if (!NativeCliAuth.isSupported(vendor)
                         && !"anthropic".equalsIgnoreCase(vendor)) {
                     throw new IllegalArgumentException(vendor + " does not support native CLI authentication");
@@ -1052,9 +1048,8 @@ public class SetupWizard {
             }
             case OAUTH -> {
                 if ("anthropic".equalsIgnoreCase(vendor)) {
-                    // Anthropic OAuth = the user's Claude Code subscription login.
-                    // Claude Code owns that credential; Kompile cannot script it, so
-                    // the selection proceeds and the wizard warns below.
+                    // Anthropic OAuth = the user's Claude Code login. Claude Code
+                    // owns that credential; authenticate() verifies it is signed in.
                     yield vendor;
                 }
                 String oauthProvider = oauthProviderForVendor(vendor);
@@ -1219,6 +1214,11 @@ public class SetupWizard {
                 && ZaiChatProvider.CREDITS_BASE_URL.equals(config.getBaseUrl().strip().replaceAll("/+$", ""))) {
             return AuthMethod.API_KEY_CREDITS;
         }
+        // Anthropic's two routes share one provider id; the saved method says which is active.
+        if (ChatConfig.isClaudeCliNativeProvider(provider) && config != null
+                && provider.equalsIgnoreCase(config.getProvider())) {
+            return config.isClaudeCliNative() ? AuthMethod.OAUTH : AuthMethod.API_KEY;
+        }
         return authMethodForProvider(provider);
     }
 
@@ -1260,13 +1260,7 @@ public class SetupWizard {
         }
         if (authMethod == AuthMethod.NATIVE) {
             if ("anthropic".equalsIgnoreCase(vendor)) {
-                // Claude has no scriptable direct OAuth login for Kompile to drive;
-                // the user's subscription credential is owned by the claude CLI.
-                // Proceed without pre-verification — the chat transport runs
-                // `claude -p` and warns with the fix when auth fails.
-                System.out.println("  → " + YELLOW
-                        + "Subscription auth is owned by the claude CLI; it is verified on the first message." + RESET);
-                return new AuthenticationSelection(provider, authMethod, null);
+                return claudeCodeRouteSelection(reader, provider, authMethod);
             }
             int exitCode = NativeCliAuth.login(provider);
             if (exitCode != 0) {
@@ -1277,13 +1271,7 @@ public class SetupWizard {
             return new AuthenticationSelection(provider, authMethod, null);
         }
         if (authMethod == AuthMethod.OAUTH && "anthropic".equalsIgnoreCase(vendor)) {
-            // Claude Code owns the subscription (OAuth) credential and Kompile
-            // cannot manage it. All we do is warn and let the user through to
-            // the chat; it is on them to have run `claude login`.
-            System.out.println("  → " + YELLOW
-                    + "Claude Code owns this login. Run `claude login` in a terminal first — "
-                    + "Kompile does not manage this credential." + RESET);
-            return new AuthenticationSelection(provider, authMethod, null);
+            return claudeCodeRouteSelection(reader, provider, authMethod);
         }
         if (!selectManagedCredential(reader, provider, authMethod, pageRenderer)) {
             return null;
@@ -1318,6 +1306,34 @@ public class SetupWizard {
             System.err.println("  Could not save API key to managed credential storage: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * The Claude Code route has no Kompile credential to pick: the user's Claude
+     * Code login is the credential. Verify it with `claude auth status` and say
+     * which login the route uses. When Claude Code is not signed in, run its
+     * sign-in here (a link that opens on any device, then the code the page
+     * shows); with still no login, stop here instead of starting a chat on a
+     * route that cannot authenticate.
+     */
+    private static AuthenticationSelection claudeCodeRouteSelection(LineReader reader, String provider,
+                                                                    AuthMethod method) {
+        LiveModelDiscovery.ClaudeCodeLogin login;
+        try {
+            login = ClaudeCodeSignIn.ensureSignedIn(new WizardOAuthInteraction(reader));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("  → " + YELLOW + "Claude Code sign-in was interrupted." + RESET);
+            return null;
+        }
+        if (!login.loggedIn()) {
+            System.out.println("  → " + YELLOW + "Claude Code is still not signed in, so its route cannot be used."
+                    + RESET);
+            System.out.println("  Or choose Anthropic's API key authentication to use an API key.");
+            return null;
+        }
+        System.out.println(GREEN + "  ✓ " + login.describe() + RESET);
+        return new AuthenticationSelection(provider, method, null);
     }
 
     private static ProviderSelection selectStandardProvider(LineReader reader) {
@@ -1409,9 +1425,8 @@ public class SetupWizard {
         }
         if ("anthropic".equalsIgnoreCase(vendor)) {
             // One vendor, two auth routes (mirrors the OpenAI pattern):
-            // OAuth/subscription via Claude Code and direct API-key HTTP.
-            // Kompile does NOT manage the subscription credential — Claude Code
-            // owns it; the wizard only warns and lets the user through.
+            // the Claude Code login and direct API-key HTTP. Kompile does NOT
+            // manage the Claude Code credential; it only verifies the login.
             return List.of(AuthMethod.OAUTH, AuthMethod.API_KEY);
         }
         if (NativeCliAuth.isSupported(vendor)) {
@@ -1459,6 +1474,9 @@ public class SetupWizard {
     }
 
     public static String authMethodLabel(String vendor, AuthMethod authMethod) {
+        if (authMethod == AuthMethod.OAUTH && ChatConfig.isClaudeCliNativeProvider(vendor)) {
+            return "Claude Code login (the claude CLI's own sign-in)";
+        }
         if (authMethod == AuthMethod.API_KEY) {
             ChatProvider provider = ChatProviderRegistry.find(vendor);
             String label = provider == null ? null : provider.apiKeyAuthLabel();

@@ -663,7 +663,7 @@ public class DirectLlmClient implements AutoCloseable {
                 .header("anthropic-version", "2023-06-01")
                 .POST(HttpRequest.BodyPublishers.ofString(
                         objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
-        applyAnthropicAuthentication(builder, auth, false);
+        applyAnthropicAuthentication(builder, auth, config.getProvider(), false);
         if (nativeCompaction) {
             builder.setHeader("anthropic-beta",
                     mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
@@ -3911,8 +3911,8 @@ public class DirectLlmClient implements AutoCloseable {
                     .header("anthropic-version", "2023-06-01")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
                     .timeout(connectivityPolicy.requestTimeout());
-            applyAnthropicAuthentication(
-                    requestBuilder, auth, "github-copilot".equals(config.getProvider()));
+            applyAnthropicAuthentication(requestBuilder, auth, config.getProvider(),
+                    "github-copilot".equals(config.getProvider()));
             if (nativeCompaction || fastMode) {
                 String beta = nativeCompaction ? "compact-2026-01-12" : "";
                 if (fastMode) beta += (beta.isEmpty() ? "" : ",") + "fast-mode-2026-02-01";
@@ -4048,9 +4048,14 @@ public class DirectLlmClient implements AutoCloseable {
     private static void applyAnthropicAuthentication(
             HttpRequest.Builder builder,
             OAuthProviderFlow.RequestAuth auth,
+            String provider,
             boolean bearerFallback) {
-        if (auth != null
-                && !hasHeader(auth.headers(), "Authorization")
+        // Never send a Messages request without a credential: the API would
+        // answer with a bare 401 instead of naming the route that has none.
+        if (auth == null) {
+            throw ChatConfig.missingCredential(provider);
+        }
+        if (!hasHeader(auth.headers(), "Authorization")
                 && !hasHeader(auth.headers(), "x-api-key")) {
             applyTokenAuthentication(builder, auth,
                     bearerFallback ? "Authorization" : "x-api-key",

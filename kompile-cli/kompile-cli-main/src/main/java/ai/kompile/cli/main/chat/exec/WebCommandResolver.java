@@ -6,6 +6,7 @@ import ai.kompile.cli.main.chat.MessageQueue;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ScheduledLoopManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
@@ -354,7 +355,17 @@ public final class WebCommandResolver {
         if (!wireProvider.equalsIgnoreCase(config.getProvider())) {
             candidate.setApiKey(null);
             candidate.setBaseUrl(null);
-            candidate.setAuthenticationMethod(null);
+            candidate.setAuthenticationMethod(
+                    ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider));
+        }
+        if (candidate.isClaudeCliNative()) {
+            LiveModelDiscovery.ClaudeCodeLogin login = LiveModelDiscovery.claudeCodeLogin();
+            if (!login.loggedIn()) {
+                return new Resolution(Status.INVALID, command,
+                        login.describe() + " To use an Anthropic API key instead, configure Anthropic's "
+                                + "API-key route with /setup in the interactive CLI; "
+                                + "the current provider/model is still active.", null);
+            }
         }
         if (!candidate.isValid()) {
             return new Resolution(Status.INVALID, command,
@@ -378,7 +389,8 @@ public final class WebCommandResolver {
         state.put("model", modelPart);
         state.put("provider", wireProvider);
         return new Resolution(Status.INTERACTION_REQUIRED, command,
-                "Provider and model saved for this session: " + vendor + " / " + modelPart,
+                "Provider and model saved for this session: " + vendor + " / " + modelPart
+                        + (candidate.isClaudeCliNative() ? " (Claude Code login)" : ""),
                 null, data);
     }
 
@@ -430,7 +442,13 @@ public final class WebCommandResolver {
         data.put("currentModel", config == null ? null : config.getModel());
         data.put("liveListingAvailable", false);
         ArrayNode models = data.putArray("models");
-        for (String id : ModelCatalogFallback.lookup(wireProvider).map(r -> r.models()).orElse(List.of())) {
+        // The vendor's catalog for the route its selection runs on: the active
+        // route when current, else the one a switch lands on (Anthropic: Claude Code).
+        boolean current = config != null && wireProvider.equalsIgnoreCase(config.getProvider());
+        String catalogKey = ModelCatalogFallback.catalogKey(wireProvider, ChatConfig.isClaudeCliNative(
+                wireProvider, current ? config.getAuthenticationMethod()
+                        : ChatConfig.authenticationMethodAfterProviderSwitch(wireProvider)));
+        for (String id : ModelCatalogFallback.lookup(catalogKey).map(r -> r.models()).orElse(List.of())) {
             ObjectNode model = models.addObject();
             model.put("id", id);
         }

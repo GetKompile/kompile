@@ -341,7 +341,8 @@ public final class HeadlessAgentRunner {
                         config.setProvider(persistedProvider);
                         config.setApiKey(null);
                         config.setBaseUrl(null);
-                        config.setAuthenticationMethod(null);
+                        config.setAuthenticationMethod(
+                                ChatConfig.authenticationMethodAfterProviderSwitch(persistedProvider));
                     }
                     config.setModel(persisted);
                 }
@@ -736,9 +737,11 @@ public final class HeadlessAgentRunner {
         return value == null ? "" : value;
     }
 
-    private static String effectiveAuth(ChatConfig config) {
+    /** The run's auth as reported in its events; package-private for tests. */
+    static String effectiveAuth(ChatConfig config) {
         if (config == null) return "none";
         if (config.isOpenCodeNative()) return "native";
+        if (config.isClaudeCliNative()) return "claude-code";
         var auth = config.resolveRequestAuth();
         if (auth == null || auth.token() == null || auth.token().isBlank()) return "none";
         return auth.oauth() ? "oauth" : "api-key";

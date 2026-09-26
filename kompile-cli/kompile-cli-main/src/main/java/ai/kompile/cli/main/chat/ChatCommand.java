@@ -809,7 +809,8 @@ public class ChatCommand implements Callable<Integer> {
                 if (contextWindowTokens == null) config.setContextWindowTokens(0);
                 if (maxOutputTokens == null) config.setMaxOutputTokens(0);
                 if (blankToNull(authenticationMethod) == null) {
-                    config.setAuthenticationMethod(null);
+                    config.setAuthenticationMethod(
+                            ChatConfig.authenticationMethodAfterProviderSwitch(resolvedProvider));
                 }
             }
             if (blankToNull(authenticationMethod) != null) {

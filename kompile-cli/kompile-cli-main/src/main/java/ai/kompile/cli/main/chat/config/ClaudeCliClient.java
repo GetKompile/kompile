@@ -36,14 +36,14 @@ import java.util.function.Consumer;
  * separate and used only for failure diagnosis, so CLI log noise can never leak
  * into an answer.</p>
  *
- * <p><b>Auth is verified at runtime, not at selection time.</b> Claude Code has
- * no scriptable direct OAuth; the CLI owns subscription (OAuth) credentials and
- * Kompile never sees them. Because the wizard lets the user proceed on the
- * native route without pre-verifying, this transport inspects the failure
- * output of a dead turn for known authentication/login signatures and raises
- * {@link ClaudeCliAuthenticationException} with an actionable message when it
- * matches — so a missing/expired subscription login surfaces as a clear
- * warning instead of an opaque failure.</p>
+ * <p><b>Auth belongs to Claude Code.</b> The CLI owns the login and Kompile
+ * never sees it. Selection verifies it with {@code claude auth status}
+ * ({@link LiveModelDiscovery#claudeCodeLogin()}); a login that expires later
+ * is caught here: the failure output of a dead turn is matched against known
+ * authentication signatures and raised as {@link ClaudeCliAuthenticationException}
+ * with an actionable message. Turns run without ANTHROPIC_API_KEY
+ * ({@link #withoutApiKeyEnvironment(ProcessBuilder)}), so the route always
+ * uses the Claude Code login it was verified against.</p>
  */
 final class ClaudeCliClient implements AutoCloseable {
 
@@ -129,7 +129,7 @@ final class ClaudeCliClient implements AutoCloseable {
     /** False until the first turn has created the native session. */
     private boolean sessionStarted;
     /** Settings file written by the one-time MCP injection; restored on close. */
-    private java.nio.file.Path injectedSettingsFile;
+    private Path injectedSettingsFile;
     private Process turnProcess;
     private volatile boolean closed;
 
@@ -193,8 +193,8 @@ final class ClaudeCliClient implements AutoCloseable {
             // passthrough lanes, which DO require script(1) to defeat full
             // stdout buffering. A PTY would merge stderr into stdout and mask
             // the real exit code, so it is deliberately NOT used.
-            ProcessBuilder builder = NativeCliProcess.processBuilder(
-                    buildCommand(model, effort, fastMode, promptFile), workingDirectory);
+            ProcessBuilder builder = withoutApiKeyEnvironment(NativeCliProcess.processBuilder(
+                    buildCommand(model, effort, fastMode, promptFile), workingDirectory));
             process = builder.start();
         } catch (IOException e) {
             deleteQuietly(promptFile);
@@ -476,15 +476,25 @@ final class ClaudeCliClient implements AutoCloseable {
         }
     }
 
+    /**
+     * The Claude Code route runs on the user's Claude Code login. ANTHROPIC_API_KEY
+     * belongs to Kompile's Anthropic API-key route, and claude gives it precedence
+     * over the claude.ai login, so it never reaches a Claude Code process.
+     */
+    static ProcessBuilder withoutApiKeyEnvironment(ProcessBuilder builder) {
+        builder.environment().remove("ANTHROPIC_API_KEY");
+        return builder;
+    }
+
     private void throwTurnFailure(int exitCode) {
         String diagnostic = diagnosticText();
         String lower = diagnostic.toLowerCase(Locale.ROOT);
         for (String signature : AUTH_FAILURE_SIGNATURES) {
             if (lower.contains(signature)) {
                 throw new ClaudeCliAuthenticationException(
-                        "Claude Code rejected its credentials (exit " + exitCode + ", "
-                                + trimForError(diagnostic) + "). Log in with `claude /login` "
-                                + "(subscription) or configure ANTHROPIC_API_KEY, then retry.");
+                        "Claude Code rejected its login (exit " + exitCode + ", "
+                                + trimForError(diagnostic) + "). Run `claude auth login` in a terminal "
+                                + "and retry, or switch to the Anthropic API-key route with /model.");
             }
         }
         throw new TurnNotStartedException("Claude CLI turn failed (exit " + exitCode + ")"

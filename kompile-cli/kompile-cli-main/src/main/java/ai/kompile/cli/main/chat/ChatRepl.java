@@ -37,6 +37,7 @@ import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.exec.ChatAttachmentLoader;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogSelection;
 import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -3708,41 +3709,18 @@ public class ChatRepl implements AutoCloseable {
                 boolean usedFallback = catalog.fromFallback();
                 while (true) {
                     // Claude Code route: auth is `claude auth status`; the model
-                    // list is `claude models list`. Not logged in → indicator
-                    // and exit. Logged in but empty list → show the CLI's own
-                    // error (never a vague empty list) and let the user refresh
-                    // or go back.
+                    // list is Claude Code's own catalog. Not logged in →
+                    // indicator and exit. Logged in but no catalog → the picker
+                    // below shows Claude Code's reason and takes a typed id or
+                    // alias, which the claude CLI resolves itself.
                     boolean claudeCliRoute = ChatConfig.isClaudeCliNativeProvider(selectedProvider)
                             && "oauth".equalsIgnoreCase(
                                     authentication.authMethod().configValue());
-                    if (claudeCliRoute && models.isEmpty()) {
-                        String notice = discovery.message() == null || discovery.message().isBlank()
-                                ? "'claude models list' returned no models."
-                                : discovery.message();
-                        boolean looksLoggedOut = notice.toLowerCase(Locale.ROOT).contains("not logged in");
-                        ChatCompleter.printAbove(renderer.yellow(
-                                "  ⚠ Claude Code model list unavailable: " + notice));
-                        if (looksLoggedOut) {
-                            ChatCompleter.printAbove(renderer.yellow(
-                                    "  Run `claude login` in a terminal, then /model refresh."));
-                            return;
-                        }
-                        ChatCompleter.printAbove(
-                                "  Commands: refresh to retry, back, or Esc to cancel.");
-                        String emptyInput = reader.readLine("claude models: ");
-                        if (emptyInput == null || "cancel".equalsIgnoreCase(emptyInput.trim())) {
-                            return;
-                        }
-                        if ("refresh".equalsIgnoreCase(emptyInput.trim())) {
-                            discovery = SetupWizard.refreshModelDiscovery(
-                                    selectedProvider, authentication.apiKey(), discoveryConfig);
-                            ModelCatalogSelection.CatalogList refreshed =
-                                    ModelCatalogSelection.listForPicker(discovery, selectedProvider);
-                            models = refreshed.models();
-                            fallbackBanner = refreshed.banner();
-                            usedFallback = refreshed.fromFallback();
-                        }
-                        continue;
+                    if (claudeCliRoute && models.isEmpty()
+                            && discovery.status() == ModelDiscovery.Status.AUTH_REQUIRED) {
+                        ChatCompleter.printAbove(renderer.yellow("  ⚠ " + discovery.message()
+                                + " Then run /model again."));
+                        return;
                     }
                     boolean authenticationBlocked = ModelCatalogSelection.authenticationBlocked(discovery);
                     String defaultModel = models.isEmpty() ? null : models.get(0);
@@ -4064,6 +4042,13 @@ public class ChatRepl implements AutoCloseable {
         try {
             var store = ai.kompile.cli.main.auth.CredentialStore.create();
             if (args.length == 0 || "list".equals(args[0])) {
+                if (chatConfig.isClaudeCliNative()) {
+                    ChatCompleter.printAbove("Authentication: Claude Code route — "
+                            + LiveModelDiscovery.claudeCodeLogin().describe());
+                    ChatCompleter.printAbove("Kompile-managed Anthropic credentials apply to the API-key route; "
+                            + "/model switches routes.");
+                    return;
+                }
                 ChatCompleter.printAbove("Authentication: " + chatConfig.getAuthenticationScope()
                         + " / " + chatConfig.getProvider() + " / "
                         + (chatConfig.getCredentialName() == null ? "vendor global default" : chatConfig.getCredentialName()));
@@ -4085,9 +4070,17 @@ public class ChatRepl implements AutoCloseable {
                 return;
             }
             if (args.length == 3 && "global".equals(args[0])) {
+                String unusable = ChatConfig.unusableCredentialReason(args[1], args[2]);
+                if (unusable != null) throw new IllegalArgumentException(unusable);
                 if (!store.switchCredential(args[1], args[2])) throw new IllegalArgumentException("Unknown credential");
                 ChatCompleter.printAbove("Global credential selected for " + args[1]
                         + "; global-mode sessions use it on their next request. Session pins are unchanged.");
+                return;
+            }
+            if (chatConfig.isClaudeCliNative()) {
+                // The route's credential is the Claude Code login; Kompile has none to pin.
+                ChatCompleter.printAbove("The Claude Code route uses your Claude Code login, so there is no "
+                        + "Kompile credential to pin. /model switches to Anthropic's API-key route.");
                 return;
             }
             ChatConfig candidate = chatConfig.copy();
@@ -4099,7 +4092,10 @@ public class ChatRepl implements AutoCloseable {
                 candidate.setAuthenticationScope("global");
                 candidate.setApiKey(null);
             } else throw new IllegalArgumentException("Use /auth for authentication commands");
-            candidate.setAuthenticationMethod(null);
+            // Anthropic keeps its route: dropping the method would leave its two routes implicit.
+            if (!ChatConfig.isClaudeCliNativeProvider(candidate.getProvider())) {
+                candidate.setAuthenticationMethod(null);
+            }
             candidate.resolveRequestAuth(); // Fail closed before changing the active session.
             if (updateChatConfig(candidate)) {
                 chatConfig.saveLoadedOrGlobal();
@@ -4171,7 +4167,7 @@ public class ChatRepl implements AutoCloseable {
         } else {
             candidate.setApiKey(null);
             candidate.setBaseUrl(baseUrlOverride);
-            candidate.setAuthenticationMethod(null);
+            candidate.setAuthenticationMethod(ChatConfig.authenticationMethodAfterProviderSwitch(provider));
         }
         return candidate;
     }

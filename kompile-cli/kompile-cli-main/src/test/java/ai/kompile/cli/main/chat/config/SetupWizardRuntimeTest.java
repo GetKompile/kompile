@@ -185,6 +185,27 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
+    void anthropicActiveRouteAndItsLabelFollowTheSavedMethod() {
+        ChatConfig claudeCode = new ChatConfig("anthropic", null, null, null);
+        claudeCode.setAuthenticationMethod("oauth");
+        assertEquals(SetupWizard.AuthMethod.OAUTH,
+                SetupWizard.authMethodForProvider("anthropic", claudeCode));
+        ChatConfig apiKey = new ChatConfig("anthropic", null, "claude-sonnet-4-6", null);
+        apiKey.setAuthenticationMethod("api-key");
+        assertEquals(SetupWizard.AuthMethod.API_KEY,
+                SetupWizard.authMethodForProvider("anthropic", apiKey));
+        // A config saved without a method runs the API-key route, and is shown as it.
+        apiKey.setAuthenticationMethod(null);
+        assertEquals(SetupWizard.AuthMethod.API_KEY,
+                SetupWizard.authMethodForProvider("anthropic", apiKey));
+
+        assertEquals("Claude Code login (the claude CLI's own sign-in)",
+                SetupWizard.authMethodLabel("anthropic", SetupWizard.AuthMethod.OAUTH));
+        assertEquals("OAuth / subscription sign-in",
+                SetupWizard.authMethodLabel("openai", SetupWizard.AuthMethod.OAUTH));
+    }
+
+    @Test
     void pickerReusesSetupVendorAuthenticationAndModelSources() {
         List<String> pickerProviders = SetupWizard.providerPickerOrder();
         assertTrue(pickerProviders.containsAll(SetupWizard.directVendorOrder()));
@@ -301,18 +322,12 @@ class SetupWizardRuntimeTest {
         // route's own discovery result; the chosen value reaches claude -p as
         // --effort.
         ModelDiscovery.Result discovery = ModelDiscoveryHttp.claudeCliResult(
-                LiveModelDiscovery.parseModelsApiResponse("""
-                        {"data":[
-                          {"id":"claude-opus-5-5","capabilities":{"effort":{"supported":true,
-                            "low":{"supported":true},"medium":{"supported":true},
-                            "high":{"supported":true},"xhigh":{"supported":true},
-                            "max":{"supported":true}}}},
-                          {"id":"claude-sonnet-4-6","capabilities":{"effort":{"supported":true,
-                            "low":{"supported":true},"medium":{"supported":true},
-                            "high":{"supported":true},"xhigh":{"supported":false},
-                            "max":{"supported":true}}}}
-                        ]}
-                        """));
+                LiveModelDiscovery.parseClaudeInitializeResponse("""
+                        {"type":"control_response","response":{"subtype":"success",
+                         "request_id":"kompile-model-discovery","response":{"models":[
+                          {"value":"claude-opus-5-5","supportedEffortLevels":["low","medium","high","xhigh","max"]},
+                          {"value":"claude-sonnet-4-6","supportedEffortLevels":["low","medium","high","max"]}]}}}
+                        """).models());
 
         assertEquals(List.of("", "low", "medium", "high", "xhigh", "max"),
                 SetupWizard.thinkingOptions("anthropic", "claude-opus-5-5", null, null, discovery)

@@ -705,6 +705,25 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void providerOverrideToAnthropicAlwaysLandsOnANamedRoute() {
+        // Without --auth the switch runs on the Claude Code login, never on an
+        // unstated route; --auth api-key picks Anthropic's API-key route.
+        ChatConfig fromOpenAi = new ChatConfig("openai", "openai-secret", "gpt-4.1", null);
+        fromOpenAi.setAuthenticationMethod("api-key");
+        parse("--provider", "anthropic").applyCommandLineOverrides(fromOpenAi);
+        assertEquals("anthropic", fromOpenAi.getProvider());
+        assertEquals("oauth", fromOpenAi.getAuthenticationMethod());
+        assertTrue(fromOpenAi.isClaudeCliNative());
+        assertNull(fromOpenAi.getApiKey(), "no credential crosses the provider switch");
+
+        ChatConfig apiRoute = new ChatConfig("openai", null, "gpt-4.1", null);
+        parse("--provider", "anthropic", "--auth", "api-key").applyCommandLineOverrides(apiRoute);
+        assertEquals("anthropic", apiRoute.getProvider());
+        assertEquals("api-key", apiRoute.getAuthenticationMethod());
+        assertFalse(apiRoute.isClaudeCliNative());
+    }
+
+    @Test
     void promptCacheRetentionOverrideIsValidatedAndApplied() {
         ChatConfig config = new ChatConfig("openai", null, "gpt-5.6-terra", null);
         ChatCommand longCache = parse("--prompt-cache-retention", "long");

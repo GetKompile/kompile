@@ -12,6 +12,9 @@ import ai.kompile.cli.main.auth.oauth.OAuthClientSettings;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.ClaudeCodeSignIn;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -149,16 +152,10 @@ public class AuthCommand implements Callable<Integer> {
                 }
             }
 
-            if (useOAuth && "anthropic".equalsIgnoreCase(providerId)) {
-                // Anthropic OAuth is owned by the claude CLI (Claude Code owns the
-                // subscription login). Kompile never mints a managed token for it;
-                // the chat wizard's OAuth route is warn-and-pass-through.
-                System.err.println("Anthropic OAuth is owned by Claude Code. Run `claude login` in a terminal — "
-                        + "Kompile does not manage this credential.");
-                return 2;
-            }
-
-            if (useOAuth) {
+            // Anthropic's subscription login belongs to Claude Code, never to a
+            // Kompile-managed token; the chat's Claude Code route runs on it.
+            boolean claudeCode = useOAuth && "anthropic".equalsIgnoreCase(providerId);
+            if (useOAuth && !claudeCode) {
                 providerId = oauthCredentialProviderId(registry, providerId);
                 ensureClientRegistration(registry, providerId);
             }
@@ -166,6 +163,9 @@ public class AuthCommand implements Callable<Integer> {
             try {
                 if (nativeAuth) {
                     return NativeCliAuth.login(providerId);
+                }
+                if (claudeCode) {
+                    return loginClaudeCode(interaction);
                 }
                 return useOAuth
                         ? loginOAuth(manager, store, interaction, activate)
@@ -299,6 +299,33 @@ public class AuthCommand implements Callable<Integer> {
             private static boolean envSet(String name) {
                 String value = System.getenv(name);
                 return value != null && !value.isBlank();
+            }
+        }
+
+        /**
+         * Run Claude Code's own sign-in (a link that opens on any device, then the
+         * code the page shows) and report the login `claude auth status` verifies.
+         * Kompile stores no credential for this route.
+         */
+        private Integer loginClaudeCode(OAuthProviderFlow.Interaction interaction) {
+            if (credentialName != null || noSwitch || stdin || environmentName != null
+                    || oauthMethod != null || enterpriseDomain != null || gateway != null) {
+                System.err.println("Claude Code owns the Anthropic subscription login, so Kompile credential "
+                        + "options do not apply to it.");
+                return 2;
+            }
+            try {
+                LiveModelDiscovery.ClaudeCodeLogin login = ClaudeCodeSignIn.ensureSignedIn(interaction);
+                if (!login.loggedIn()) {
+                    System.err.println("Claude Code is still not signed in.");
+                    return 1;
+                }
+                System.out.println(login.describe());
+                return 0;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Claude Code sign-in was interrupted.");
+                return 130;
             }
         }
 
@@ -583,6 +610,12 @@ public class AuthCommand implements Callable<Integer> {
                     return 1;
                 }
             }
+            // Open chats would be pinned to a credential they can never send.
+            String unusable = ChatConfig.unusableCredentialReason(providerId, credentialName);
+            if (unusable != null) {
+                System.err.println(unusable);
+                return 2;
+            }
             if (!store.switchCredential(providerId, credentialName, true)) {
                 System.err.println("No credential named '" + credentialName
                         + "' exists for provider " + providerId + ".");
@@ -740,7 +773,9 @@ public class AuthCommand implements Callable<Integer> {
                         credential.credentialName(),
                         credential.type(),
                         (credential.identity() == null ? "" : credential.identity() + " / ")
-                                + credential.status());
+                                + credential.status()
+                                + (ChatConfig.isAnthropicOAuthSignIn(credential.providerId(), credential.type())
+                                ? " (never sent: Claude Code owns Anthropic OAuth)" : ""));
             }
             return 0;
         }
