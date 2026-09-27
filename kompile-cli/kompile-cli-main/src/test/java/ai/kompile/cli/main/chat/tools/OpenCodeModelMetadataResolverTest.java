@@ -219,12 +219,12 @@ class OpenCodeModelMetadataResolverTest {
         Optional<OpenCodeModelMetadataResolver.ModelMetadata> metadata =
                 OpenCodeModelMetadataResolver.resolve(
                         "opencode",
-                        "deepseek-v4-flash-free",
+                        "deepseek-v4-flash",
                         Duration.ofSeconds(20));
 
         assumeTrue(metadata.isPresent(), "OpenCode CLI metadata is not available in this environment");
         assertEquals("opencode", metadata.get().providerId());
-        assertEquals("deepseek-v4-flash-free", metadata.get().modelId());
+        assertEquals("deepseek-v4-flash", metadata.get().modelId());
         assertTrue(metadata.get().contextWindow() > 0);
         assertTrue(metadata.get().maxOutputTokens() > 0);
     }
@@ -233,13 +233,13 @@ class OpenCodeModelMetadataResolverTest {
     @CsvSource({
             "opencode,big-pickle",
             "opencode,claude-haiku-4-5",
-            "opencode,deepseek-v4-flash-free",
+            "opencode,deepseek-v4-flash",
             "opencode,gpt-5",
             "opencode,gpt-5.5",
             "opencode-go,deepseek-v4-flash",
             "opencode-go,kimi-k2.7-code",
-            "github-copilot,claude-sonnet-4.5",
-            "github-copilot,gpt-5.5"
+            "github-copilot,claude-sonnet-5",
+            "github-copilot,gpt-5.4"
     })
     void probesInstalledOpenCodeMetadataForSeveralModelsWhenAvailable(String provider,
                                                                        String model) {
