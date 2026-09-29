@@ -266,4 +266,18 @@ describe('ProcessEngineDashboardComponent', () => {
       expect(component.pendingApprovalsCount).toBe(0);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 6. Runs tab elapsed timer
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('Runs tab elapsed timer', () => {
+    it('should not throw ExpressionChanged from the runs list when the clock advances between check passes', () => {
+      // The runs list is checked with the dashboard even while its tab is inactive.
+      // Each Date.now() call moves one second, so a template that reads the clock sees a new value per pass.
+      let clock = Date.now();
+      spyOn(Date, 'now').and.callFake(() => clock += 1000);
+      expect(() => fixture.detectChanges()).not.toThrow();
+    });
+  });
 });

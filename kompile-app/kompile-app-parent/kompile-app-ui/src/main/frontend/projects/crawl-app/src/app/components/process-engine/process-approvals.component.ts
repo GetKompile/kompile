@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
@@ -26,6 +26,8 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { Subject, interval } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
 import {
   ProcessEngineService,
   ApprovalRequest,
@@ -282,10 +284,15 @@ interface ApprovalState {
     .submitting-indicator { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #aaa; margin-top: 8px; }
   `]
 })
-export class ProcessApprovalsComponent implements OnInit {
+export class ProcessApprovalsComponent implements OnInit, OnDestroy {
   approvalStates: ApprovalState[] = [];
   loading = false;
   filterAssignee = '';
+
+  // Clock for SLA urgency; template helpers must not read Date.now() directly
+  now = Date.now();
+
+  private destroy$ = new Subject<void>();
 
   constructor(
     private processEngineService: ProcessEngineService,
@@ -294,6 +301,13 @@ export class ProcessApprovalsComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadApprovals();
+    // Re-evaluate SLA urgency every minute
+    interval(60000).pipe(takeUntil(this.destroy$)).subscribe(() => { this.now = Date.now(); });
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   loadApprovals(): void {
@@ -308,6 +322,7 @@ export class ProcessApprovalsComponent implements OnInit {
           delegateTo: '',
           submitting: false
         }));
+        this.now = Date.now();
         this.loading = false;
       },
       error: (err) => {
@@ -367,7 +382,7 @@ export class ProcessApprovalsComponent implements OnInit {
   isSlaUrgent(slaDeadline: string): boolean {
     try {
       const deadline = new Date(slaDeadline).getTime();
-      const nowPlus2h = Date.now() + 2 * 60 * 60 * 1000;
+      const nowPlus2h = this.now + 2 * 60 * 60 * 1000;
       return deadline < nowPlus2h;
     } catch {
       return false;

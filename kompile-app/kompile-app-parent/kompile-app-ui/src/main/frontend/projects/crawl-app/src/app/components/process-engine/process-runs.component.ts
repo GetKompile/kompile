@@ -428,6 +428,9 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
   runRiskLevels: Record<string, { level: string; score: number }> = {};
   riskLoadingRuns: Set<string> = new Set();
 
+  // Clock for elapsed-time display; template helpers must not read Date.now() directly
+  now = Date.now();
+
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -440,6 +443,8 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
     this.loadRuns();
     // Auto-refresh every 10 seconds
     interval(10000).pipe(takeUntil(this.destroy$)).subscribe(() => this.loadRuns());
+    // Tick the elapsed-time clock every second
+    interval(1000).pipe(takeUntil(this.destroy$)).subscribe(() => { this.now = Date.now(); });
   }
 
   ngOnDestroy(): void {
@@ -457,6 +462,7 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
     obs.subscribe({
       next: (runs) => {
         this.runs = runs;
+        this.now = Date.now();
         this.loading = false;
       },
       error: (err) => {
@@ -481,6 +487,7 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
       next: (run) => {
         this.snackBar.open('Run started: ' + run.id, 'Close', { duration: 3000 });
         this.runs = [...this.runs, run];
+        this.now = Date.now();
         this.starting = false;
         this.showStartForm = false;
         this.startProcessId = '';
@@ -607,7 +614,7 @@ export class ProcessRunsComponent implements OnInit, OnDestroy {
   }
 
   getElapsed(startedAt: string): string {
-    const sec = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+    const sec = Math.floor((this.now - new Date(startedAt).getTime()) / 1000);
     if (sec < 60) return `${sec}s`;
     if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
     return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;

@@ -1113,6 +1113,9 @@ export class ProcessRunDetailComponent implements OnChanges, OnDestroy {
   controlExplanations: Record<string, ProcessEventAlert> = {};
   controlExplainLoading: Record<string, boolean> = {};
 
+  // Clock for elapsed-time display; template helpers must not read Date.now() directly
+  now = Date.now();
+
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -1167,6 +1170,7 @@ export class ProcessRunDetailComponent implements OnChanges, OnDestroy {
     this.processEngineService.getRun(this.runId).subscribe({
       next: (run) => {
         this.run = run;
+        this.now = Date.now();
         this.loadError = null;
         this.resolveGraphNodeLabels();
       },
@@ -1273,8 +1277,7 @@ export class ProcessRunDetailComponent implements OnChanges, OnDestroy {
 
   getElapsed(startedAt: string): string {
     const start = new Date(startedAt).getTime();
-    const now = Date.now();
-    const sec = Math.floor((now - start) / 1000);
+    const sec = Math.floor((this.now - start) / 1000);
     if (sec < 60) return `${sec}s`;
     if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
     return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
@@ -1432,6 +1435,12 @@ export class ProcessRunDetailComponent implements OnChanges, OnDestroy {
         if (this.run && this.isActive(this.run.status)) {
           this.loadRun();
         }
+      });
+    // Tick the elapsed-time clock every second
+    interval(1000)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.now = Date.now();
       });
   }
 

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
@@ -336,5 +336,35 @@ describe('ProcessRunsComponent', () => {
       const result = component.formatDate('not-a-date');
       expect(typeof result).toBe('string');
     });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 9. Elapsed timer
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  describe('Elapsed timer', () => {
+    it('should not throw ExpressionChanged when the clock advances between check passes', () => {
+      mockService.listActiveRuns.and.returnValue(of([makeWorkflowRun()]));
+      component.loadRuns();
+      fixture.detectChanges();
+      // Each Date.now() call moves one second, so a template that reads the clock sees a new value per pass
+      let clock = Date.now();
+      spyOn(Date, 'now').and.callFake(() => clock += 1000);
+      expect(() => fixture.detectChanges()).not.toThrow();
+    });
+
+    it('should advance the elapsed text on the 1s clock tick', fakeAsync(() => {
+      mockService.listActiveRuns.and.returnValue(of([makeWorkflowRun()]));
+      const tickFixture = TestBed.createComponent(ProcessRunsComponent);
+      tickFixture.detectChanges();
+      const timerText = () => (tickFixture.nativeElement as HTMLElement).querySelector('.active-timer')?.textContent;
+      expect(timerText()).toContain('10s');
+
+      tick(1000);
+      tickFixture.detectChanges();
+      expect(timerText()).toContain('11s');
+
+      tickFixture.destroy();
+    }));
   });
 });

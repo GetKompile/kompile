@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
@@ -230,6 +230,33 @@ describe('ProcessApprovalsComponent', () => {
     const safeDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     expect(component.isSlaUrgent(safeDeadline)).toBeFalse();
   });
+
+  it('should not throw ExpressionChanged when the clock crosses the SLA window between check passes', () => {
+    let clock = Date.now();
+    // Deadline sits 1.5s outside the 2h window; each Date.now() call below moves one second
+    mockService.getPendingApprovals.and.returnValue(of([
+      { ...mockApprovals[0], slaDeadline: new Date(clock + 2 * 60 * 60 * 1000 + 1500).toISOString() }
+    ]));
+    component.loadApprovals();
+    spyOn(Date, 'now').and.callFake(() => clock += 1000);
+    expect(() => fixture.detectChanges()).not.toThrow();
+  });
+
+  it('should re-evaluate SLA urgency on the 1-minute clock tick', fakeAsync(() => {
+    mockService.getPendingApprovals.and.returnValue(of([
+      { ...mockApprovals[0], slaDeadline: new Date(Date.now() + 2 * 60 * 60 * 1000 + 30000).toISOString() }
+    ]));
+    const tickFixture = TestBed.createComponent(ProcessApprovalsComponent);
+    tickFixture.detectChanges();
+    const sla = () => (tickFixture.nativeElement as HTMLElement).querySelector('.sla') as HTMLElement;
+    expect(sla().classList.contains('sla-urgent')).toBeFalse();
+
+    tick(60000);
+    tickFixture.detectChanges();
+    expect(sla().classList.contains('sla-urgent')).toBeTrue();
+
+    tickFixture.destroy();
+  }));
 
   it('should format context entries', () => {
     const entries = component.getContextEntries({ amount: 4217, region: 'AMER' });
