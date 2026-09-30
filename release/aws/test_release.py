@@ -1,5 +1,7 @@
 import importlib.util
+import contextlib
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -21,6 +23,36 @@ BUILD_SPEC = importlib.util.spec_from_file_location("kompile_aws_build", ROOT / 
 BUILD_MODULE = importlib.util.module_from_spec(BUILD_SPEC)
 assert BUILD_SPEC.loader
 BUILD_SPEC.loader.exec_module(BUILD_MODULE)
+JAVA_MATRIX_SPEC = importlib.util.spec_from_file_location(
+    "kompile_java_matrix", REPOSITORY / "release" / "github" / "java_matrix.py")
+JAVA_MATRIX = importlib.util.module_from_spec(JAVA_MATRIX_SPEC)
+assert JAVA_MATRIX_SPEC.loader
+JAVA_MATRIX_SPEC.loader.exec_module(JAVA_MATRIX)
+# The full commit every Java distribution fixture is built from.
+JAVA_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def record_java_distribution(directory, row, version="1.2.3", commit=JAVA_COMMIT, run_id="7", data=None):
+    """Writes a row's archive, sidecar and variant.json into directory, as the variant job does."""
+    name = JAVA_MATRIX.archive_name(version, row)
+    directory.mkdir(parents=True, exist_ok=True)
+    archive = directory / name
+    archive.write_bytes(data if data is not None else f"{row['distributionClassifier']} archive\n".encode())
+    checksum = directory / f"{name}.sha256"
+    checksum.write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {name}\n", encoding="utf-8")
+    errors = io.StringIO()
+    with patch.dict(os.environ, {"ROW": json.dumps(row)}), \
+            contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+        status = JAVA_MATRIX.main([
+            "record", "--row-env", "ROW", "--version", version,
+            "--archive", str(archive), "--checksum", str(checksum),
+            "--commit", commit, "--repository", "GetKompile/kompile",
+            "--run-id", run_id, "--run-attempt", "1",
+            "--output", str(directory / "variant.json"),
+        ])
+    if status:
+        raise AssertionError(f"recording {name} failed: {errors.getvalue()}")
+    return directory / "variant.json"
 
 
 class ReleasePlanTest(unittest.TestCase):
@@ -2245,6 +2277,7 @@ class GithubWorkflowParityTest(unittest.TestCase):
         windows_jobs = {
             ("release.yml", "build"),
             ("build-java-distributions.yml", "build"),
+            ("build-java-distributions.yml", "variant"),
             ("build-native-windows-x86_64.yml", "build-nd4j-native"),
             ("build-native-windows-x86_64.yml", "build-kompile-native"),
             ("build-native-windows-cuda.yml", "build-nd4j-cuda"),
@@ -2386,6 +2419,7 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 ("release.yml", "build"),
                 ("release.yml", "full-dist-linux"),
                 ("build-java-distributions.yml", "build"),
+                ("build-java-distributions.yml", "variant"),
             },
             cached,
         )
@@ -2564,7 +2598,7 @@ set -euo pipefail
 if [ "$1" = --version ]; then echo aws-cli/2-stub; exit 0; fi
 [ "$1" = --endpoint-url ] || { echo "aws called without the R2 endpoint" >&2; exit 98; }
 echo "$2" > "${FAKE_R2}.endpoint"
-env | grep -E '^(AWS|R2)_' | LC_ALL=C sort > "${FAKE_R2}.env"
+env | grep -E '^(AWS|R2|MSYS)_' | LC_ALL=C sort > "${FAKE_R2}.env"
 shift 2
 option() {
   local key="$1"
@@ -2576,34 +2610,54 @@ option() {
 }
 case "$1 $2" in
   "s3 cp")
+    if [[ "$3" == s3://* ]]; then
+      object="${FAKE_R2}/${3#s3://}"
+      [ -f "${object}" ] || { echo "download failed: $3 does not exist" >&2; exit 1; }
+      cp "${object}" "$4"
+      exit 0
+    fi
     key="${4#s3://}"
     mkdir -p "$(dirname "${FAKE_R2}/${key}")"
     cp "$3" "${FAKE_R2}/${key}"
     echo "${key##*/}" >> "${FAKE_R2}.uploads"
     if [ "${DROP:-}" = "${key##*/}" ]; then rm "${FAKE_R2}/${key}"; fi
+    if [ "${SHORTEN:-}" = "${key##*/}" ]; then truncate -s 1 "${FAKE_R2}/${key}"; fi
     ;;
   "s3api list-objects-v2")
     bucket="$(option --bucket "$@")"
     prefix="$(option --prefix "$@")"
-    listed=0
-    for object in "${FAKE_R2}/${bucket}/${prefix}"*; do
-      [ -f "${object}" ] || continue
-      printf '%s\t%s\n' "${prefix}${object##*/}" "$(stat -c %s "${object}")"
-      listed=1
+    delimiter="$(option --delimiter "$@")"
+    root="${FAKE_R2}/${bucket}/"
+    objects=()
+    # With --delimiter / only the objects directly under the prefix are listed.
+    if [ -n "${delimiter}" ]; then
+      for object in "${root}${prefix}"*; do
+        if [ -f "${object}" ]; then objects+=("${object}"); fi
+      done
+    elif [ -d "${root}${prefix}" ]; then
+      mapfile -t objects < <(find "${root}${prefix}" -type f | LC_ALL=C sort)
+    fi
+    for object in ${objects[@]+"${objects[@]}"}; do
+      printf '%s\t%s\n' "${object#"${root}"}" "$(stat -c %s "${object}")"
     done
-    [ "${listed}" = 1 ] || echo None
+    [ "${#objects[@]}" -gt 0 ] || echo None
     ;;
   "s3api head-object")
     object="${FAKE_R2}/$(option --bucket "$@")/$(option --key "$@")"
     [ -f "${object}" ] || { echo "Not Found" >&2; exit 254; }
-    stat -c %s "${object}"
+    size="$(stat -c %s "${object}")"
+    # The AWS CLI on Windows ends its output with CRLF.
+    if [ -n "${CRLF:-}" ]; then printf '%s\r\n' "${size}"; else printf '%s\n' "${size}"; fi
     ;;
   *) echo "unexpected: aws $*" >&2; exit 98 ;;
 esac
 """
 
-    def _run_r2_mirror(self, root, assets, **environment):
-        """Run the mirror step's script against stub gh/aws and a directory bucket."""
+    def _run_r2_mirror(self, root, assets, existing=None, **environment):
+        """Run the mirror step's script against stub gh/aws and a directory bucket.
+
+        `existing` maps bucket keys to the bytes already stored under them.
+        """
         for tool in ("bash", "jq", "sha256sum", "truncate"):
             if shutil.which(tool) is None:
                 self.skipTest(f"{tool} is required to run the R2 mirror script")
@@ -2635,6 +2689,9 @@ esac
         }), encoding="utf-8")
         (root / "runner").mkdir()
         (root / "r2").mkdir()
+        for key, data in (existing or {}).items():
+            (root / "r2" / "dl4j-cache" / key).parent.mkdir(parents=True, exist_ok=True)
+            (root / "r2" / "dl4j-cache" / key).write_bytes(data)
         env = {
             "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
             "HOME": str(root),
@@ -2739,6 +2796,344 @@ esac
                 self.assertNotEqual(0, completed.returncode)
                 self.assertIn(message, completed.stderr)
                 self.assertFalse((prefix / "manifest.json").exists())
+
+    def test_r2_mirror_leaves_the_java_distributions_alone(self):
+        # build-java-distributions.yml keeps each classifier's archive under
+        # java/<distribution classifier>/ in the same release prefix. The mirror
+        # neither reports those as stray objects nor replaces java/manifest.json.
+        java = "kompile/releases/1.2.3/java"
+        existing = {
+            f"{java}/full-linux-x86_64-avx2/kompile-dist-1.2.3-full-linux-x86_64-avx2.zip": b"java archive\n",
+            f"{java}/full-linux-x86_64-avx2/variant.json": b"{}\n",
+            f"{java}/manifest.json": b"{}\n",
+            "kompile/releases/1.2.3/stray.txt": b"stray\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            completed, prefix = self._run_r2_mirror(
+                root, {"kompile-cli.jar": b"cli jar " * 32}, existing=existing
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                [
+                    "::warning::dl4j-cache/kompile/releases/1.2.3/stray.txt "
+                    "is not an asset of v1.2.3; left in place."
+                ],
+                [line for line in completed.stdout.splitlines() if line.startswith("::warning::")],
+            )
+            for key, data in existing.items():
+                self.assertEqual(data, (root / "r2" / "dl4j-cache" / key).read_bytes(), key)
+            manifest = json.loads((prefix / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(["kompile-cli.jar"], [entry["name"] for entry in manifest["assets"]])
+
+    def _bash_step(self, workflow, marker):
+        """The script of the one `run:` step in workflow whose script contains marker."""
+        steps = [(shell, script) for _, shell, script in self.shell_steps(workflow) if marker in script]
+        self.assertEqual(1, len(steps), f"{workflow} must have one step containing {marker!r}")
+        shell, script = steps[0]
+        self.assertEqual("bash", shell, f"{workflow}: the step containing {marker!r}")
+        return script
+
+    def _run_r2_step(self, root, script, cwd=None, **environment):
+        """Run a bash step's script as GitHub does, against stub aws and a directory bucket."""
+        for tool in ("bash", "find", "truncate"):
+            if shutil.which(tool) is None:
+                self.skipTest(f"{tool} is required to run the R2 step")
+        if subprocess.run(["stat", "-c", "%s", __file__], capture_output=True).returncode:
+            self.skipTest("GNU stat is required to run the R2 step")
+        stubs = root / "bin"
+        stubs.mkdir(exist_ok=True)
+        (stubs / "aws").write_text(self.R2_MIRROR_AWS_STUB, encoding="utf-8")
+        (stubs / "aws").chmod(0o755)
+        (root / "runner").mkdir(exist_ok=True)
+        (root / "r2").mkdir(exist_ok=True)
+        step = root / "step.sh"
+        step.write_text(script, encoding="utf-8")
+        env = {
+            "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+            "HOME": str(root),
+            "RUNNER_TEMP": str(root / "runner"),
+            "GITHUB_REPOSITORY": "GetKompile/kompile",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "7",
+            "R2_ENDPOINT": self.R2_ENDPOINT,
+            "R2_BUCKET": "dl4j-cache",
+            "R2_ACCESS_KEY_ID": " test-key-id ",
+            "R2_SECRET_ACCESS_KEY": "test-secret\n",
+            "AWS_SESSION_TOKEN": "ambient-session",
+            "AWS_PROFILE": "ambient-profile",
+            "FAKE_R2": str(root / "r2"),
+        }
+        env.update(environment)
+        # GitHub runs a `shell: bash` step as bash --noprofile --norc -eo pipefail {0}.
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(step)],
+            cwd=cwd or root, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    def test_java_variants_upload_each_distribution_then_the_manifest(self):
+        source = (
+            REPOSITORY / ".github" / "workflows" / "build-java-distributions.yml"
+        ).read_text(encoding="utf-8")
+        _, jobs = self.release_workflows()["build-java-distributions.yml"]
+        # A variants request replaces the distribution and platforms request.
+        self.assertIn("    if: needs.validate.outputs.variants == ''\n", jobs["build"])
+        for text in (
+            "      variants: ${{ steps.plan.outputs.variants }}\n",
+            "      variant_matrix: ${{ steps.plan.outputs.variant_matrix }}\n",
+            "python3 release/github/java_matrix.py plan \\\n",
+            '--github-output "${GITHUB_OUTPUT}"\n',
+        ):
+            self.assertIn(text, jobs["validate"])
+        variant = jobs["variant"]
+        for text in (
+            "    needs: validate\n",
+            "    if: needs.validate.outputs.variants != ''\n",
+            "    runs-on: ${{ matrix.runner }}\n",
+            "      fail-fast: false\n",
+            "      matrix: ${{ fromJSON(needs.validate.outputs.variant_matrix) }}\n",
+        ):
+            self.assertIn(text, variant)
+        # R2 is where each classifier's archive goes; a workflow artifact per
+        # classifier would also hold every CUDA archive in GitHub storage.
+        self.assertNotIn("actions/upload-artifact", variant)
+        steps = [
+            "Build Java distribution", "Smoke Java archive", "Record the distribution",
+            "Ensure the AWS CLI", "Upload the distribution to R2",
+        ]
+        positions = [variant.find(f"      - name: {step}\n") for step in steps]
+        self.assertNotIn(-1, positions, steps)
+        self.assertEqual(sorted(positions), positions)
+        self.assertEqual(2, variant.count("          ROW: ${{ toJSON(matrix) }}\n"))
+        self.assertEqual(2, variant.count("        if: inputs.upload_r2\n"))
+        collect = jobs["collect"]
+        for text in (
+            "    needs: [validate, variant]\n",
+            "    if: ${{ !cancelled() && needs.validate.result == 'success' "
+            "&& needs.validate.outputs.variants != '' && inputs.upload_r2 }}\n",
+            "      group: kompile-java-manifest-${{ needs.validate.outputs.version }}\n",
+            "      cancel-in-progress: false\n",
+            "          PLAN: ${{ needs.validate.outputs.variant_matrix }}\n",
+            "          COMMIT: ${{ github.sha }}\n",
+            "python3 release/github/java_matrix.py manifest \\\n",
+        ):
+            self.assertIn(text, collect)
+        for text in (
+            f"          R2_ENDPOINT: {self.R2_ENDPOINT}\n",
+            "          R2_BUCKET: dl4j-cache\n",
+            "          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}\n",
+            "          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}\n",
+        ):
+            self.assertEqual(1, variant.count(text), text)
+            self.assertEqual(1, collect.count(text), text)
+        for secret in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+            self.assertIn(f"      {secret}:\n        required: false\n", source)
+        for forbidden in ("GITHUB_ENV", "s3 rm", "--delete"):
+            self.assertNotIn(forbidden, source)
+
+    def test_java_variant_upload_writes_its_record_last(self):
+        script = self._bash_step(
+            "build-java-distributions.yml",
+            'PREFIX="kompile/releases/${VERSION}/java/${DISTRIBUTION_CLASSIFIER}"',
+        )
+        _, rows = JAVA_MATRIX.buildable_rows()
+        row = next(row for row in rows if row["classifier"] == "windows-x86_64-onednn")
+        classifier = row["distributionClassifier"]
+        name = JAVA_MATRIX.archive_name("1.2.3", row)
+        files = [name, f"{name}.sha256", "variant.json"]
+        prefix = f"kompile/releases/1.2.3/java/{classifier}"
+
+        def run(root, **environment):
+            dist = root / "dist"
+            record_java_distribution(dist, row)
+            completed = self._run_r2_step(
+                root, script,
+                VERSION="1.2.3",
+                DISTRIBUTION_CLASSIFIER=classifier,
+                ARCHIVE=str(dist / name),
+                CHECKSUM=str(dist / f"{name}.sha256"),
+                RECORD=str(dist / "variant.json"),
+                **environment,
+            )
+            uploads = root / "r2.uploads"
+            return completed, dist, (
+                uploads.read_text(encoding="utf-8").split() if uploads.exists() else []
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            # The AWS CLI on Windows ends what it prints with CRLF.
+            completed, dist, uploads = run(root, CRLF="1")
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(files, uploads)
+            for file in files:
+                self.assertEqual(
+                    (dist / file).read_bytes(),
+                    (root / "r2" / "dl4j-cache" / prefix / file).read_bytes(),
+                    file,
+                )
+            self.assertEqual(
+                self.R2_ENDPOINT,
+                (root / "r2.endpoint").read_text(encoding="utf-8").strip(),
+            )
+            aws_environment = dict(
+                line.split("=", 1)
+                for line in (root / "r2.env").read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual("test-key-id", aws_environment["AWS_ACCESS_KEY_ID"])
+            self.assertEqual("test-secret", aws_environment["AWS_SECRET_ACCESS_KEY"])
+            self.assertEqual("auto", aws_environment["AWS_DEFAULT_REGION"])
+            self.assertEqual("1", aws_environment["MSYS_NO_PATHCONV"])
+            for leaked in (
+                "AWS_SESSION_TOKEN", "AWS_PROFILE", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
+            ):
+                self.assertNotIn(leaked, aws_environment)
+            self.assertIn(f"Uploaded {classifier} to dl4j-cache/{prefix}/", completed.stdout)
+
+        for label, environment, message, uploaded in (
+            ("archive lost after upload", {"DROP": name}, "Not Found", [name]),
+            ("checksum short in R2", {"SHORTEN": f"{name}.sha256"},
+             f"ERROR: dl4j-cache/{prefix}/{name}.sha256 is 1 bytes, expected",
+             [name, f"{name}.sha256"]),
+            ("missing credentials", {"R2_ACCESS_KEY_ID": ""},
+             "must be configured as repository secrets", []),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                completed, _, uploads = run(root, **environment)
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(message, completed.stderr)
+                self.assertEqual(uploaded, uploads)
+                self.assertFalse((root / "r2" / "dl4j-cache" / prefix / "variant.json").exists())
+
+    def test_java_manifest_lists_the_recorded_distributions(self):
+        script = self._bash_step("build-java-distributions.yml", "java_matrix.py manifest")
+        _, rows = JAVA_MATRIX.buildable_rows()
+        planned = [
+            row for row in rows if row["classifier"] in ("linux-x86_64-avx2", "macosx-arm64-mps")
+        ]
+        classifiers = [row["distributionClassifier"] for row in planned]
+        prefix = "kompile/releases/1.2.3/java"
+
+        def run(root, recorded, **environment):
+            bucket = root / "r2" / "dl4j-cache" / prefix
+            for row in recorded:
+                record_java_distribution(bucket / row["distributionClassifier"], row)
+            # An earlier run's manifest is replaced, and a record nested below a
+            # distribution's directory is no distribution.
+            bucket.mkdir(parents=True, exist_ok=True)
+            (bucket / "manifest.json").write_text("{}\n", encoding="utf-8")
+            nested = bucket / classifiers[0] / "extra" / "variant.json"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("{}\n", encoding="utf-8")
+            completed = self._run_r2_step(
+                root, script, cwd=REPOSITORY,
+                VERSION="1.2.3",
+                PLAN=json.dumps({"include": planned}),
+                COMMIT=JAVA_COMMIT,
+                **environment,
+            )
+            uploads = root / "r2.uploads"
+            return completed, (
+                uploads.read_text(encoding="utf-8").split() if uploads.exists() else []
+            ), json.loads((bucket / "manifest.json").read_text(encoding="utf-8"))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            completed, uploads, manifest = run(root, planned)
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(["manifest.json"], uploads)
+            self.assertIn(f"Wrote dl4j-cache/{prefix}/manifest.json", completed.stdout)
+            self.assertEqual(prefix, manifest["prefix"])
+            self.assertEqual(JAVA_COMMIT, manifest["commit"])
+            self.assertEqual(
+                "https://github.com/GetKompile/kompile/actions/runs/7", manifest["generated_by"]
+            )
+            self.assertEqual({"id": "7", "planned": classifiers, "missing": []}, manifest["run"])
+            self.assertEqual(
+                [
+                    f"{prefix}/{row['distributionClassifier']}/{JAVA_MATRIX.archive_name('1.2.3', row)}"
+                    for row in planned
+                ],
+                [entry["archive"]["key"] for entry in manifest["variants"]],
+            )
+            self.assertFalse(manifest["complete"])
+            self.assertEqual([], manifest["stale"])
+            self.assertEqual(len(rows) - len(planned), len(manifest["missing"]))
+            self.assertFalse(
+                (root / "runner" / "java-manifest" / "records" / classifiers[0] / "extra").exists()
+            )
+
+        # A failed row leaves no record; the manifest still says what landed.
+        with tempfile.TemporaryDirectory() as temporary:
+            completed, uploads, manifest = run(pathlib.Path(temporary), planned[:1])
+            self.assertEqual(3, completed.returncode, completed.stderr)
+            self.assertIn(
+                f"ERROR: this run planned {classifiers[1]} but recorded no build of them.",
+                completed.stderr,
+            )
+            self.assertEqual(["manifest.json"], uploads)
+            self.assertEqual(
+                {"id": "7", "planned": classifiers, "missing": classifiers[1:]}, manifest["run"]
+            )
+            self.assertEqual(
+                classifiers[:1],
+                [entry["build"]["distributionClassifier"] for entry in manifest["variants"]],
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            completed, uploads, manifest = run(
+                pathlib.Path(temporary), planned, R2_SECRET_ACCESS_KEY=""
+            )
+            self.assertEqual(1, completed.returncode)
+            self.assertIn("must be configured as repository secrets", completed.stderr)
+            self.assertEqual([], uploads)
+            self.assertEqual({}, manifest)
+
+    def test_release_refuses_assets_github_cannot_publish(self):
+        script = self._bash_step("release.yml", "GitHub release assets must be under 2 GiB")
+        for tool in ("bash", "find", "sort", "sha256sum"):
+            if shutil.which(tool) is None:
+                self.skipTest(f"{tool} is required to run the release asset check")
+        if subprocess.run(["stat", "-c", "%s", __file__], capture_output=True).returncode:
+            self.skipTest("GNU stat is required to run the release asset check")
+
+        def run(root, artifact, name, data=b"", size=None):
+            directory = root / "artifacts" / artifact
+            directory.mkdir(parents=True)
+            archive = directory / name
+            if size is None:
+                archive.write_bytes(data)
+                digest = hashlib.sha256(data).hexdigest()
+            else:
+                # Sparse, so the test never writes the bytes.
+                with archive.open("wb") as stream:
+                    stream.truncate(size)
+                digest = "0" * 64
+            (directory / f"{name}.sha256").write_text(f"{digest}  {name}\n", encoding="utf-8")
+            (root / "step.sh").write_text(script, encoding="utf-8")
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(root / "step.sh")],
+                cwd=root, capture_output=True, text=True, timeout=120,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            name = "kompile-dist-1.2.3-cli-linux-x86_64.zip"
+            completed = run(pathlib.Path(temporary), "java-cli", name, data=b"cli archive\n")
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertIn(f"{name}: OK", completed.stdout)
+
+        limit = 2 * 1024 ** 3
+        with tempfile.TemporaryDirectory() as temporary:
+            name = "kompile-dist-1.2.3-full-linux-x86_64.zip"
+            completed = run(pathlib.Path(temporary), "java-full", name, size=limit)
+            self.assertEqual(1, completed.returncode)
+            self.assertIn(
+                f"ERROR: {name} is {limit} bytes; GitHub release assets must be under 2 GiB.",
+                completed.stderr,
+            )
+            # Refused before sha256sum reads the archive.
+            self.assertNotIn(name, completed.stdout)
 
     def test_build_workflows_have_read_only_contents_permissions(self):
         for name in (
@@ -2994,6 +3389,409 @@ esac
         self.assertIn("except BaseException:", controller)
         self.assertIn("serial schedule never overlaps quota usage", controller)
         self.assertIn('ec2.get_waiter("instance_terminated").wait', controller)
+
+
+class JavaMatrixTest(unittest.TestCase):
+    """release/github/java_matrix.py against the real build-common.sh and root pom.xml."""
+
+    # Rows whose build arguments differ from the plain CPU shape, as planned.
+    EXPECTED_ROWS = [
+        {
+            "classifier": "linux-arm64-armcompute", "platform": "linux-arm64",
+            "runner": "ubuntu-24.04-arm", "variant": "full",
+            "backendProfile": "cpu-armcompute", "cudaVersion": "",
+            "sdkClassifier": "linux-arm64-armcompute",
+            "distributionClassifier": "full-linux-arm64-armcompute",
+            "nd4jBackend": "nd4j-native", "nativeBackend": "nd4j-native",
+            "nativeClassifier": "linux-arm64-armcompute",
+        },
+        {
+            "classifier": "macosx-arm64-mps", "platform": "macosx-arm64",
+            "runner": "macos-14", "variant": "full",
+            "backendProfile": "cpu-mps", "cudaVersion": "",
+            "sdkClassifier": "macosx-arm64-mps",
+            "distributionClassifier": "full-macosx-arm64-mps",
+            "nd4jBackend": "nd4j-native", "nativeBackend": "nd4j-native",
+            "nativeClassifier": "macosx-arm64-mps",
+        },
+        {
+            "classifier": "linux-x86_64-cuda-12.9-cudnn", "platform": "linux-x86_64",
+            "runner": "ubuntu-22.04", "variant": "full",
+            "backendProfile": "cuda-12.9-cudnn", "cudaVersion": "12.9",
+            "sdkClassifier": "linux-x86_64-cudnn",
+            "distributionClassifier": "full-linux-x86_64-cuda-12.9-cudnn",
+            "nd4jBackend": "nd4j-cuda-12.9", "nativeBackend": "nd4j-cuda-12.9",
+            "nativeClassifier": "linux-x86_64-cudnn",
+        },
+        {
+            "classifier": "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4", "platform": "windows-x86_64",
+            "runner": "windows-2022", "variant": "full",
+            "backendProfile": "zluda-rocm-7.2.4", "cudaVersion": "12.9",
+            "sdkClassifier": "windows-x86_64-zluda-rocm-7.2.4",
+            "distributionClassifier": "full-windows-x86_64-cuda-12.9-zluda-rocm-7.2.4",
+            "nd4jBackend": "nd4j-zluda-12.9", "nativeBackend": "nd4j-zluda-12.9",
+            "nativeClassifier": "windows-x86_64-zluda-rocm-7.2.4",
+        },
+        {
+            "classifier": "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0", "platform": "linux-x86_64",
+            "runner": "ubuntu-22.04", "variant": "amd-zluda",
+            "backendProfile": "zluda-rocm-10.0.0", "cudaVersion": "12.9",
+            "sdkClassifier": "linux-x86_64-zluda-rocm-10.0.0",
+            "distributionClassifier": "amd-zluda-linux-x86_64-cuda-12.9-zluda-rocm-10.0.0",
+            "nd4jBackend": "nd4j-zluda-12.9", "nativeBackend": "nd4j-zluda-12.9",
+            "nativeClassifier": "linux-x86_64-zluda-rocm-10.0.0",
+        },
+        {
+            "classifier": "linux-x86_64-vulkan-compile", "platform": "linux-x86_64",
+            "runner": "ubuntu-22.04", "variant": "full",
+            "backendProfile": "vulkan-compile", "cudaVersion": "",
+            "sdkClassifier": "linux-x86_64-vulkan-compile",
+            "distributionClassifier": "full-linux-x86_64-vulkan-compile",
+            "nd4jBackend": "nd4j-vulkan", "nativeBackend": "nd4j-vulkan",
+            "nativeClassifier": "linux-x86_64-compile",
+        },
+    ]
+    PREFIX = "kompile/releases/1.2.3/java"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.matrix, cls.rows = JAVA_MATRIX.buildable_rows()
+        cls.platforms, _ = JAVA_MATRIX.resolve_classifiers([])
+
+    def planner(self):
+        """Serves the rows planned once for the class instead of resolving them again."""
+        return patch.object(JAVA_MATRIX, "buildable_rows", return_value=(self.matrix, self.rows))
+
+    def run_main(self, *argv, environment=None):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, environment or {}), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = JAVA_MATRIX.main(list(argv))
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def row(self, classifier):
+        return next(row for row in self.rows if row["classifier"] == classifier)
+
+    def run_manifest(self, bucket, planned, prefix=PREFIX):
+        """Run `manifest` over bucket, a directory laid out like the java/ prefix in R2."""
+        lines = [
+            f"{prefix}/{path.relative_to(bucket).as_posix()}\t{path.stat().st_size}"
+            for path in sorted(bucket.rglob("*")) if path.is_file()
+        ]
+        listing = bucket.parent / "listing.tsv"
+        # list-objects-v2 prints None for an empty prefix.
+        listing.write_text("\n".join(lines or ["None"]) + "\n", encoding="utf-8")
+        output = bucket.parent / "manifest.json"
+        with self.planner():
+            status, stdout, stderr = self.run_main(
+                "manifest", "--plan-env", "PLAN", "--listing", str(listing),
+                "--records", str(bucket), "--version", "1.2.3", "--commit", JAVA_COMMIT,
+                "--repository", "GetKompile/kompile", "--run-id", "7",
+                "--run-url", "https://github.com/GetKompile/kompile/actions/runs/7",
+                "--bucket", "dl4j-cache", "--prefix", prefix, "--output", str(output),
+                environment={"PLAN": json.dumps({"include": planned})},
+            )
+        manifest = json.loads(output.read_text(encoding="utf-8")) if output.exists() else None
+        return status, stdout, stderr, manifest
+
+    def test_matrix_lists_build_common_platforms_and_blocks_by_rule(self):
+        listed = [entry["classifier"] for entry in self.matrix["classifiers"]]
+        self.assertEqual(self.platforms, listed)
+        for entry in self.matrix["classifiers"]:
+            classifier = entry["classifier"]
+            if classifier.startswith("android-"):
+                expected = "android"
+            elif re.search(r"-cuda-(12\.6|13\.1)(-|$)", classifier):
+                expected = "dl4j-cuda-line"
+            elif classifier.endswith("-zluda"):
+                expected = "zluda-without-rocm"
+            else:
+                expected = None
+            self.assertEqual(expected, entry.get("blocked"), classifier)
+        self.assertEqual(
+            [entry["classifier"] for entry in self.matrix["classifiers"] if "variant" in entry],
+            [row["classifier"] for row in self.rows],
+        )
+        names = [row["distributionClassifier"] for row in self.rows]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_rows_carry_the_build_arguments_each_classifier_resolves_to(self):
+        by_classifier = {row["classifier"]: row for row in self.rows}
+        for expected in self.EXPECTED_ROWS:
+            self.assertEqual(expected, by_classifier[expected["classifier"]])
+        for row in self.rows:
+            self.assertEqual(JAVA_MATRIX.ROW_FIELDS, tuple(row))
+            self.assertEqual(f"{row['variant']}-{row['classifier']}", row["distributionClassifier"])
+            self.assertEqual(self.matrix["runners"][row["platform"]], row["runner"])
+            self.assertEqual(
+                "12.9" if "-cuda-12.9" in row["classifier"] else "", row["cudaVersion"], row["classifier"]
+            )
+
+    def test_only_rocm_10_builds_the_amd_zluda_variant(self):
+        variants = {row["classifier"]: row["variant"] for row in self.rows}
+        self.assertEqual(
+            {"linux-x86_64-cuda-12.9-zluda-rocm-10.0.0"},
+            {classifier for classifier, variant in variants.items() if variant == "amd-zluda"},
+        )
+        # The farm release plans build the same classifiers into the same
+        # variants. Their other variant entries are DL4J lanes and named
+        # distributions, which name no classifier.
+        for plan in ("aws", "azure"):
+            data = json.loads(
+                (REPOSITORY / "release" / plan / "release-plan.json").read_text(encoding="utf-8")
+            )
+            planned = {
+                item["classifier"]: item.get("kompileVariant", "full")
+                for shard in data["shards"]
+                for item in (shard.get("build") or {}).get("variants", [])
+                if "classifier" in item
+            }
+            self.assertEqual(
+                "amd-zluda", planned.get("linux-x86_64-cuda-12.9-zluda-rocm-10.0.0"), plan
+            )
+            for classifier, variant in planned.items():
+                if classifier in variants:
+                    self.assertEqual(variants[classifier], variant, f"{plan}: {classifier}")
+
+    def test_runners_match_the_platform_request_runners(self):
+        source = (
+            REPOSITORY / ".github" / "workflows" / "build-java-distributions.yml"
+        ).read_text(encoding="utf-8")
+        block = re.search(r"const runners = \{(.*?)\};", source, re.S)
+        self.assertIsNotNone(block)
+        self.assertEqual(
+            self.matrix["runners"], dict(re.findall(r"'([^']+)': '([^']+)'", block.group(1)))
+        )
+
+    def test_select_rows_refuses_what_it_cannot_build(self):
+        def select(request):
+            return JAVA_MATRIX.select_rows(self.matrix, self.rows, request)
+
+        self.assertEqual(self.rows, select(" all "))
+        # Matrix order, whatever order the request names them in.
+        self.assertEqual(
+            ["linux-x86_64-avx2", "macosx-arm64-mps"],
+            [row["classifier"] for row in select("macosx-arm64-mps, linux-x86_64-avx2")],
+        )
+        for request, message in (
+            ("linux-x86_64-avx3",
+             "linux-x86_64-avx3 is not a DL4J release classifier; see release/github/java-matrix.json"),
+            ("android-arm64",
+             "android-arm64 is not built as a JVM distribution: Android classifiers ship as APK/AAR"),
+            ("linux-x86_64-cuda-12.6",
+             "linux-x86_64-cuda-12.6 is not built as a JVM distribution: The DL4J release shards"),
+            ("linux-x86_64,linux-x86_64", "linux-x86_64 is requested twice"),
+            (" , ", "no classifiers were requested"),
+            ("all,linux-x86_64", "'all' cannot be combined with named classifiers"),
+        ):
+            with self.subTest(request=request):
+                with self.assertRaises(JAVA_MATRIX.MatrixError) as raised:
+                    select(request)
+                self.assertIn(message, str(raised.exception))
+
+    def test_plan_writes_one_line_github_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "github_output"
+            with self.planner():
+                status, stdout, stderr = self.run_main(
+                    "plan", "--classifiers", "macosx-arm64-mps,linux-x86_64-avx2",
+                    "--github-output", str(output),
+                )
+            self.assertEqual(0, status, stderr)
+            lines = output.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(2, len(lines))
+        self.assertEqual("variants=linux-x86_64-avx2,macosx-arm64-mps", lines[0])
+        key, _, value = lines[1].partition("=")
+        self.assertEqual("variant_matrix", key)
+        self.assertEqual(
+            {"include": [self.row("linux-x86_64-avx2"), self.row("macosx-arm64-mps")]},
+            json.loads(value),
+        )
+        self.assertIn(
+            "full-macosx-arm64-mps: macos-14, backend profile cpu-mps, nd4j-native:macosx-arm64-mps",
+            stdout,
+        )
+        with self.planner():
+            status, _, stderr = self.run_main("plan", "--classifiers", "android-arm64")
+        self.assertEqual(2, status)
+        self.assertIn("ERROR: android-arm64 is not built as a JVM distribution", stderr)
+
+    def test_record_describes_the_archive_it_was_given(self):
+        row = self.row("windows-x86_64-onednn")
+        name = "kompile-dist-1.2.3-full-windows-x86_64-onednn.zip"
+        data = b"archive bytes"
+        digest = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = record_java_distribution(pathlib.Path(temporary), row, data=data)
+            text = path.read_bytes()
+        record = json.loads(text)
+        self.assertEqual(1, record["schema"])
+        self.assertEqual("GetKompile/kompile", record["repository"])
+        self.assertEqual("1.2.3", record["version"])
+        self.assertEqual(JAVA_COMMIT, record["commit"])
+        self.assertEqual(("7", "1"), (record["run_id"], record["run_attempt"]))
+        self.assertEqual(row, record["build"])
+        self.assertEqual({"name": name, "size": len(data), "sha256": digest}, record["archive"])
+        self.assertRegex(record["built_at"], r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+        # Written as bytes, so a Windows runner writes LF too.
+        self.assertNotIn(b"\r", text)
+
+        def record(directory, sidecar, commit=JAVA_COMMIT, run_id="7", fields=row):
+            (directory / name).write_bytes(data)
+            (directory / f"{name}.sha256").write_bytes(sidecar.encode("utf-8"))
+            output = directory / "variant.json"
+            status, _, stderr = self.run_main(
+                "record", "--row-env", "ROW", "--version", "1.2.3",
+                "--archive", str(directory / name), "--checksum", str(directory / f"{name}.sha256"),
+                "--commit", commit, "--repository", "GetKompile/kompile",
+                "--run-id", run_id, "--run-attempt", "1", "--output", str(output),
+                environment={"ROW": json.dumps(fields)},
+            )
+            return status, stderr, output.exists()
+
+        # A sidecar may name the archive by a path, with a binary-mode marker, CRLF and upper case.
+        with tempfile.TemporaryDirectory() as temporary:
+            status, stderr, written = record(
+                pathlib.Path(temporary), f"{digest.upper()} *dist\\{name}\r\n"
+            )
+            self.assertEqual((0, True), (status, written), stderr)
+        for label, arguments, message in (
+            ("wrong digest", {"sidecar": f"{'0' * 64}  {name}\n"}, "does not describe"),
+            ("sidecar of another archive",
+             {"sidecar": f"{digest}  kompile-dist-1.2.3-full-linux-x86_64.zip\n"}, "does not describe"),
+            ("short commit", {"commit": "0123456"}, "invalid commit '0123456'"),
+            ("run id", {"run_id": "7a"}, "the run id and run attempt must be numbers"),
+            ("extra field", {"fields": {**row, "extra": "value"}}, "must hold exactly the string fields"),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                arguments = {"sidecar": f"{digest}  {name}\n", **arguments}
+                status, stderr, written = record(pathlib.Path(temporary), **arguments)
+                self.assertEqual((2, False), (status, written))
+                self.assertIn(message, stderr)
+
+    def test_manifest_is_complete_when_every_distribution_is_recorded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bucket = pathlib.Path(temporary) / "java"
+            for row in self.rows:
+                record_java_distribution(bucket / row["distributionClassifier"], row)
+            status, stdout, stderr, manifest = self.run_manifest(bucket, self.rows)
+        self.assertEqual(0, status, stderr)
+        self.assertTrue(manifest["complete"])
+        self.assertEqual([], manifest["missing"])
+        self.assertEqual([], manifest["stale"])
+        self.assertEqual(
+            [row["distributionClassifier"] for row in self.rows],
+            [entry["build"]["distributionClassifier"] for entry in manifest["variants"]],
+        )
+        self.assertEqual(
+            [entry["classifier"] for entry in self.matrix["classifiers"] if "blocked" in entry],
+            [entry["classifier"] for entry in manifest["blocked"]],
+        )
+        first, row = manifest["variants"][0], self.rows[0]
+        directory = f"{self.PREFIX}/{row['distributionClassifier']}"
+        name = JAVA_MATRIX.archive_name("1.2.3", row)
+        self.assertEqual(f"{directory}/{name}", first["archive"]["key"])
+        self.assertEqual(f"{directory}/{name}.sha256", first["checksum_key"])
+        self.assertEqual(f"{directory}/variant.json", first["record_key"])
+        self.assertIn(
+            f"{len(self.rows)} of {len(self.rows)} distributions are recorded for {JAVA_COMMIT}.", stdout
+        )
+
+    def test_manifest_leaves_out_records_that_are_not_current(self):
+        avx2, mps, onednn, cudnn, vulkan, armcompute = (self.row(classifier) for classifier in (
+            "linux-x86_64-avx2", "macosx-arm64-mps", "windows-x86_64-onednn",
+            "linux-x86_64-cuda-12.9-cudnn", "linux-x86_64-vulkan-compile", "linux-arm64-armcompute",
+        ))
+        with tempfile.TemporaryDirectory() as temporary:
+            bucket = pathlib.Path(temporary) / "java"
+
+            def directory(row):
+                return bucket / row["distributionClassifier"]
+
+            record_java_distribution(directory(avx2), avx2)
+            record_java_distribution(directory(mps), mps, commit="f" * 40)
+            # Planned by this run, which never replaced an earlier run's record.
+            record_java_distribution(directory(onednn), onednn, run_id="6")
+            record_java_distribution(directory(cudnn), cudnn)
+            cudnn_archive = directory(cudnn) / JAVA_MATRIX.archive_name("1.2.3", cudnn)
+            size = cudnn_archive.stat().st_size
+            cudnn_archive.write_bytes(b"x")
+            record_java_distribution(directory(vulkan), vulkan)
+            (directory(vulkan) / f"{JAVA_MATRIX.archive_name('1.2.3', vulkan)}.sha256").unlink()
+            record_java_distribution(directory(armcompute), {**armcompute, "runner": "ubuntu-22.04-arm"})
+            record_java_distribution(
+                bucket / "full-linux-x86_64-avx3", {**avx2, "distributionClassifier": "full-linux-x86_64-avx3"}
+            )
+            status, stdout, stderr, manifest = self.run_manifest(bucket, [avx2, onednn])
+        self.assertEqual(JAVA_MATRIX.INCOMPLETE, status)
+        self.assertIn(
+            f"ERROR: this run planned {onednn['distributionClassifier']} but recorded no build of them.",
+            stderr,
+        )
+        self.assertEqual(
+            [avx2["distributionClassifier"]],
+            [entry["build"]["distributionClassifier"] for entry in manifest["variants"]],
+        )
+        self.assertEqual(
+            {
+                "id": "7",
+                "planned": [avx2["distributionClassifier"], onednn["distributionClassifier"]],
+                "missing": [onednn["distributionClassifier"]],
+            },
+            manifest["run"],
+        )
+        self.assertEqual(
+            [row["distributionClassifier"] for row in self.rows if row is not avx2], manifest["missing"]
+        )
+
+        def key(name):
+            return f"{self.PREFIX}/{name}/variant.json"
+
+        self.assertEqual(
+            {
+                key("full-linux-x86_64-avx3"): "not a distribution this matrix builds",
+                key(mps["distributionClassifier"]): f"built from {'f' * 40}, not {JAVA_COMMIT}",
+                key(onednn["distributionClassifier"]):
+                    "recorded by run 6; this run did not finish rebuilding it",
+                key(cudnn["distributionClassifier"]):
+                    f"{JAVA_MATRIX.archive_name('1.2.3', cudnn)} is 1, expected {size} bytes",
+                key(vulkan["distributionClassifier"]):
+                    f"{JAVA_MATRIX.archive_name('1.2.3', vulkan)}.sha256 is missing",
+                key(armcompute["distributionClassifier"]): "its build fields no longer match the matrix",
+            },
+            {entry["key"]: entry["reason"] for entry in manifest["stale"]},
+        )
+        for entry in manifest["stale"]:
+            self.assertIn(f"Not listed: {entry['key']}: {entry['reason']}", stdout)
+
+    def test_manifest_of_an_empty_prefix_lists_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bucket = pathlib.Path(temporary) / "java"
+            bucket.mkdir()
+            status, _, stderr, manifest = self.run_manifest(bucket, [self.row("linux-x86_64-avx2")])
+        self.assertEqual(JAVA_MATRIX.INCOMPLETE, status)
+        self.assertEqual([], manifest["variants"])
+        self.assertEqual([], manifest["stale"])
+        self.assertEqual(len(self.rows), len(manifest["missing"]))
+        self.assertIn("ERROR: this run planned full-linux-x86_64-avx2 but recorded no build", stderr)
+
+    def test_manifest_refuses_a_plan_or_prefix_it_does_not_match(self):
+        avx2 = self.row("linux-x86_64-avx2")
+        with tempfile.TemporaryDirectory() as temporary:
+            bucket = pathlib.Path(temporary) / "java"
+            record_java_distribution(bucket / avx2["distributionClassifier"], avx2)
+            for label, planned, prefix, message in (
+                ("changed row", [{**avx2, "runner": "ubuntu-24.04"}], self.PREFIX,
+                 "this run's full-linux-x86_64-avx2 row no longer matches the matrix"),
+                ("another version", [avx2], "kompile/releases/1.2.4/java",
+                 "prefix kompile/releases/1.2.4/java is not kompile/releases/1.2.3/java"),
+                ("empty plan", [], self.PREFIX, "must hold this run's"),
+            ):
+                with self.subTest(label):
+                    status, _, stderr, manifest = self.run_manifest(bucket, planned, prefix=prefix)
+                    self.assertEqual(2, status)
+                    self.assertIn(message, stderr)
+                    self.assertIsNone(manifest)
 
 
 class EnvironmentWizardTest(unittest.TestCase):

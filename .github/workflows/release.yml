@@ -838,6 +838,20 @@ jobs:
               exit 1
             fi
           done
+          # GitHub rejects a release asset of 2 GiB or more only once the release
+          # already exists, so refuse one here, before anything is published.
+          LIMIT=$((2 * 1024 * 1024 * 1024))
+          TOO_LARGE=0
+          for FILE in *; do
+            BYTES="$(stat -c %s "${FILE}")"
+            if [ "${BYTES}" -ge "${LIMIT}" ]; then
+              echo "ERROR: ${FILE} is ${BYTES} bytes; GitHub release assets must be under 2 GiB." >&2
+              TOO_LARGE=1
+            fi
+          done
+          if [ "${TOO_LARGE}" != 0 ]; then
+            exit 1
+          fi
           sha256sum -c "${CHECKSUMS[@]}"
           ls -lh
 

@@ -1,5 +1,18 @@
 name: Build Java Distributions
 
+# Two request shapes share this workflow:
+#
+#   distribution + platforms  One cli and/or full archive per base platform,
+#                             uploaded as workflow artifacts. release.yml calls
+#                             it this way for the canonical GitHub Release.
+#   variants                  One archive per DL4J release classifier listed in
+#                             release/github/java-matrix.json, each uploaded to R2
+#                             under kompile/releases/<version>/java/<distribution
+#                             classifier>/ as the archive, its .sha256 and
+#                             variant.json (last). The collect job then writes
+#                             kompile/releases/<version>/java/manifest.json from
+#                             every record that matches this commit.
+
 on:
   workflow_call:
     inputs:
@@ -15,10 +28,22 @@ on:
         description: Comma-separated platform ids to build
         type: string
         default: linux-x86_64,linux-arm64,windows-x86_64,macosx-arm64
+      variants:
+        description: Comma-separated DL4J release classifiers, or all; builds one distribution per classifier instead of distribution and platforms
+        type: string
+        default: ''
+      upload_r2:
+        description: Upload per-classifier distributions and the Java manifest to R2
+        type: boolean
+        default: true
     secrets:
       DL4J_MAVEN_USERNAME:
         required: false
       DL4J_MAVEN_PASSWORD:
+        required: false
+      R2_ACCESS_KEY_ID:
+        required: false
+      R2_SECRET_ACCESS_KEY:
         required: false
   workflow_dispatch:
     inputs:
@@ -41,6 +66,16 @@ on:
         required: true
         type: string
         default: linux-x86_64,linux-arm64,windows-x86_64,macosx-arm64
+      variants:
+        description: Comma-separated DL4J release classifiers, or all (replaces distribution and platforms)
+        required: false
+        type: string
+        default: ''
+      upload_r2:
+        description: Upload per-classifier distributions and the Java manifest to R2
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -54,12 +89,14 @@ env:
 jobs:
   validate:
     name: Validate Java matrix request
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.request.outputs.version }}
       distribution: ${{ steps.request.outputs.distribution }}
       platforms: ${{ steps.request.outputs.platforms }}
       matrix: ${{ steps.request.outputs.matrix }}
+      variants: ${{ steps.plan.outputs.variants }}
+      variant_matrix: ${{ steps.plan.outputs.variant_matrix }}
     steps:
       - name: Require a GitHub-hosted runner
         if: runner.environment != 'github-hosted'
@@ -132,9 +169,32 @@ jobs:
           echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
           echo "Java distribution request: ${REQUESTED_DISTRIBUTION} on ${platforms}"
 
+      - name: Check out the classifier matrix and build scripts
+        if: inputs.variants != ''
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            build-scripts
+            release/github
+
+      - name: Plan the per-classifier distributions
+        id: plan
+        if: inputs.variants != ''
+        shell: bash
+        env:
+          REQUESTED_VARIANTS: ${{ inputs.variants }}
+        run: |
+          set -euo pipefail
+          # Each classifier resolves through build-scripts/build-common.sh and the
+          # root pom.xml; an unknown, blocked or mislabelled one fails the plan.
+          python3 release/github/java_matrix.py plan \
+            --classifiers "${REQUESTED_VARIANTS}" \
+            --github-output "${GITHUB_OUTPUT}"
+
   build:
     name: Java ${{ matrix.distribution }} (${{ matrix.platform }})
     needs: validate
+    if: needs.validate.outputs.variants == ''
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.distribution == 'full' && 180 || 90 }}
     strategy:
@@ -317,3 +377,438 @@ jobs:
       - name: Keep snapshots and Kompile artifacts out of the saved Maven cache
         if: always() && steps.checkout.outcome == 'success'
         uses: ./.github/actions/prune-maven-cache
+
+  variant:
+    name: Java ${{ matrix.distributionClassifier }}
+    needs: validate
+    if: needs.validate.outputs.variants != ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      # One row per classifier, planned by release/github/java_matrix.py: the
+      # runner, the backend profile and CUDA line build-dist.sh takes, and the
+      # ND4J artifacts the root pom.xml profile selects for it.
+      matrix: ${{ fromJSON(needs.validate.outputs.variant_matrix) }}
+
+    steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
+      - name: Enable Windows long paths
+        if: startsWith(matrix.platform, 'windows-')
+        shell: powershell
+        run: git config --global core.longpaths true
+
+      - name: Free disk space on Linux runners
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # CUDA distributions carry the NVIDIA redistributables in several fat
+          # JARs, which outgrows the free space a standard Linux runner starts with.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout selected branch commit
+        id: checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          # The same DL4J repository credentials as release.yml full-dist-linux.
+          server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
+          server-username: DL4J_MAVEN_USERNAME
+          server-password: DL4J_MAVEN_PASSWORD
+
+      - name: Drop snapshots and Kompile artifacts from the restored Maven cache
+        uses: ./.github/actions/prune-maven-cache
+
+      - name: Record runner capacity
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const os = require('os');
+          console.log(`platform=${process.platform} arch=${process.arch}`);
+          console.log(`cpus=${os.cpus().length} memoryGiB=${(os.totalmem() / 1024 ** 3).toFixed(1)}`);
+          NODE
+          java -version
+          mvn -version
+          df -h "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}"
+
+      - name: Set transient Maven release version
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
+            -DnewVersion="${VERSION}" \
+            -DprocessAllModules=true \
+            -DgenerateBackupPoms=false
+          mvn -B -ntp -N org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property \
+            -Dproperty=project.version \
+            -DnewVersion="${VERSION}" \
+            -DgenerateBackupPoms=false
+          mvn -B -ntp -N org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property \
+            -Dproperty=anserini.version \
+            -DnewVersion="${VERSION}" \
+            -DgenerateBackupPoms=false
+
+      - name: Build Java distribution
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          VARIANT: ${{ matrix.variant }}
+          PLATFORM: ${{ matrix.platform }}
+          BACKEND_PROFILE: ${{ matrix.backendProfile }}
+          CUDA_VERSION: ${{ matrix.cudaVersion }}
+          SDK_CLASSIFIER: ${{ matrix.sdkClassifier }}
+          DISTRIBUTION_CLASSIFIER: ${{ matrix.distributionClassifier }}
+          # Only build-dist.sh passes -Ddl4j.repository.url, which activates the
+          # root POM repository these settings.xml credentials authenticate.
+          DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
+          DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export GRAALVM_HOME="${JAVA_HOME}"
+          export KOMPILE_JAVA="${JAVA_HOME}/bin/java"
+          export OUTPUT_DIR="${RUNNER_TEMP}/kompile-java-dist"
+          ARGS=(
+            "${VARIANT}"
+            --jars-only
+            --skip-maven-install
+            --archive-format zip
+            --version "${VERSION}"
+            --platform "${PLATFORM}"
+            --backend-profile "${BACKEND_PROFILE}"
+            --sdk-classifier "${SDK_CLASSIFIER}"
+            --distribution-classifier "${DISTRIBUTION_CLASSIFIER}"
+            --output-dir "${OUTPUT_DIR}"
+          )
+          if [ -n "${CUDA_VERSION}" ]; then
+            ARGS+=(--cuda-version "${CUDA_VERSION}")
+          fi
+          ./build-dist.sh "${ARGS[@]}"
+          base="kompile-dist-${VERSION}-${DISTRIBUTION_CLASSIFIER}"
+          archive="${OUTPUT_DIR}/${base}.zip"
+          checksum="${archive}.sha256"
+          test -f "${archive}"
+          test -f "${checksum}"
+          # The staged tree holds the same bytes as the archive; only the archive ships.
+          rm -rf "${OUTPUT_DIR:?}/${base}"
+          df -h "${OUTPUT_DIR}"
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "checksum=${checksum}" >> "${GITHUB_OUTPUT}"
+          echo "base=${base}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke Java archive
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          BASE: ${{ steps.package.outputs.base }}
+          VARIANT: ${{ matrix.variant }}
+          PLATFORM: ${{ matrix.platform }}
+          ROW: ${{ toJSON(matrix) }}
+        run: |
+          set -euo pipefail
+          EXTRACTED="${RUNNER_TEMP}/kompile-java-smoke"
+          python3 - "${ARCHIVE}" "${EXTRACTED}" <<'PY'
+          from pathlib import Path
+          import sys
+          import zipfile
+
+          archive, destination = Path(sys.argv[1]), Path(sys.argv[2])
+          destination.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as value:
+              value.extractall(destination)
+          PY
+          DIST_ROOT="${EXTRACTED}/${BASE}"
+          python3 kompile-dist/src/main/build/verify-persona-artifacts.py \
+            --dist-root "${DIST_ROOT}" \
+            --variant "${VARIANT}" \
+            --platform "${PLATFORM}"
+          test -f "${DIST_ROOT}/lib/kompile-cli.jar"
+          # The archive must say it is the planned classifier, and the server must
+          # bundle the ND4J backend JAR that classifier's pom.xml profile selects.
+          python3 - "${DIST_ROOT}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import zipfile
+
+          root = Path(sys.argv[1])
+          row = json.loads(os.environ["ROW"])
+          info = json.loads((root / ".dist-info.json").read_text(encoding="utf-8"))
+          expected = {
+              "variant": row["variant"],
+              "platform": row["platform"],
+              "backendProfile": row["backendProfile"],
+              "sdkClassifier": row["sdkClassifier"],
+              "distributionClassifier": row["distributionClassifier"],
+              "backend": row["nd4jBackend"],
+          }
+          actual = {key: info.get(key) for key in expected}
+          assert actual == expected, f".dist-info.json records {actual}, expected {expected}"
+          assert info["components"]["cli"]["native"] is False
+          assert info["components"]["cli"]["jar"] is True
+          native = "BOOT-INF/lib/{}-{}-{}.jar".format(
+              row["nativeBackend"], os.environ["ND4J_VERSION"], row["nativeClassifier"])
+          with zipfile.ZipFile(root / "lib" / "kompile-server.jar") as server:
+              names = set(server.namelist())
+          print("\n".join(sorted(name for name in names if name.startswith("BOOT-INF/lib/nd4j-"))))
+          assert native in names, f"lib/kompile-server.jar does not bundle {native}"
+          PY
+          "${JAVA_HOME}/bin/java" -jar "${DIST_ROOT}/lib/kompile-cli.jar" --version
+          rm -rf "${EXTRACTED}"
+
+      - name: Record the distribution
+        id: record
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          ROW: ${{ toJSON(matrix) }}
+        run: |
+          set -euo pipefail
+          RECORD="${RUNNER_TEMP}/kompile-java-record/variant.json"
+          python3 release/github/java_matrix.py record \
+            --row-env ROW \
+            --version "${VERSION}" \
+            --archive "${ARCHIVE}" \
+            --checksum "${CHECKSUM}" \
+            --commit "$(git rev-parse HEAD)" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output "${RECORD}"
+          echo "path=${RECORD}" >> "${GITHUB_OUTPUT}"
+
+      - name: Ensure the AWS CLI
+        if: inputs.upload_r2
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v aws >/dev/null 2>&1; then
+            aws --version
+            exit 0
+          fi
+          # Standard runner images ship the AWS CLI; install AWS's own build where one does not.
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64) BUNDLE=awscli-exe-linux-x86_64.zip ;;
+            Linux-ARM64) BUNDLE=awscli-exe-linux-aarch64.zip ;;
+            *) echo "ERROR: this ${RUNNER_OS} ${RUNNER_ARCH} runner has no AWS CLI." >&2; exit 1 ;;
+          esac
+          curl -fsSL --retry 3 "https://awscli.amazonaws.com/${BUNDLE}" -o "${RUNNER_TEMP}/awscliv2.zip"
+          unzip -q "${RUNNER_TEMP}/awscliv2.zip" -d "${RUNNER_TEMP}/awscliv2"
+          "${RUNNER_TEMP}/awscliv2/aws/install" \
+            --install-dir "${RUNNER_TEMP}/aws-cli" --bin-dir "${RUNNER_TEMP}/aws-bin"
+          "${RUNNER_TEMP}/aws-bin/aws" --version
+          echo "${RUNNER_TEMP}/aws-bin" >> "${GITHUB_PATH}"
+
+      - name: Upload the distribution to R2
+        if: inputs.upload_r2
+        shell: bash
+        env:
+          R2_ENDPOINT: https://318204901782458555a243ad96f80e3f.r2.cloudflarestorage.com
+          R2_BUCKET: dl4j-cache
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          DISTRIBUTION_CLASSIFIER: ${{ matrix.distributionClassifier }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          RECORD: ${{ steps.record.outputs.path }}
+        run: |
+          set -euo pipefail
+          PREFIX="kompile/releases/${VERSION}/java/${DISTRIBUTION_CLASSIFIER}"
+
+          # Same credential handling as mirror-release-to-r2.yml: trim surrounding
+          # whitespace, refuse anything else malformed, and hand the keys only to
+          # aws, through its environment. MSYS_NO_PATHCONV keeps Git Bash on
+          # Windows from rewriting the arguments aws receives.
+          trim() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            printf '%s' "${value%"${value##*[![:space:]]}"}"
+          }
+          KEY_ID="$(trim "${R2_ACCESS_KEY_ID}")"
+          SECRET="$(trim "${R2_SECRET_ACCESS_KEY}")"
+          unset R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+          if [ -z "${KEY_ID}" ] || [ -z "${SECRET}" ]; then
+            echo "ERROR: R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must be configured as repository secrets." >&2
+            exit 1
+          fi
+          if [[ "${KEY_ID}${SECRET}" =~ [[:space:][:cntrl:]] ]]; then
+            echo "ERROR: the R2 credentials contain embedded whitespace or control characters." >&2
+            exit 1
+          fi
+          r2() (
+            unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+            export AWS_ACCESS_KEY_ID="${KEY_ID}" AWS_SECRET_ACCESS_KEY="${SECRET}" \
+              AWS_DEFAULT_REGION=auto \
+              AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+              AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED \
+              MSYS_NO_PATHCONV=1
+            aws --endpoint-url "${R2_ENDPOINT}" "$@"
+          )
+          aws --version
+
+          # variant.json goes last, so its presence means the archive and
+          # checksum beside it are complete. The AWS CLI on Windows ends its
+          # output with CRLF, which command substitution keeps the CR of.
+          for FILE in "${ARCHIVE}" "${CHECKSUM}" "${RECORD}"; do
+            NAME="${FILE##*/}"
+            r2 s3 cp "${FILE}" "s3://${R2_BUCKET}/${PREFIX}/${NAME}" \
+              --only-show-errors --no-progress
+            BYTES="$(wc -c < "${FILE}" | tr -d '[:space:]')"
+            REMOTE_BYTES="$(r2 s3api head-object --bucket "${R2_BUCKET}" --key "${PREFIX}/${NAME}" \
+              --query ContentLength --output text | tr -d '[:space:]')"
+            if [ "${REMOTE_BYTES}" != "${BYTES}" ]; then
+              echo "ERROR: ${R2_BUCKET}/${PREFIX}/${NAME} is ${REMOTE_BYTES} bytes, expected ${BYTES}." >&2
+              exit 1
+            fi
+          done
+          echo "Uploaded ${DISTRIBUTION_CLASSIFIER} to ${R2_BUCKET}/${PREFIX}/"
+
+      - name: Keep CUDA redistributables out of the saved Maven cache
+        if: always() && steps.checkout.outcome == 'success'
+        shell: bash
+        run: |
+          # Every row on a runner OS shares one setup-java cache key, and the
+          # first job to finish saves it. The CUDA redistributables are several
+          # gigabytes that no CPU row needs to restore.
+          rm -rf "${HOME}/.m2/repository/org/bytedeco/"cuda-redist*
+
+      - name: Keep snapshots and Kompile artifacts out of the saved Maven cache
+        if: always() && steps.checkout.outcome == 'success'
+        uses: ./.github/actions/prune-maven-cache
+
+  collect:
+    name: Publish the Java manifest to R2
+    needs: [validate, variant]
+    # Runs after failed rows too: the manifest records what did land, and this
+    # job still fails when a row this run planned has no record.
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.variants != '' && inputs.upload_r2 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: kompile-java-manifest-${{ needs.validate.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
+      - name: Check out the classifier matrix and build scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            build-scripts
+            release/github
+
+      - name: Write java/manifest.json from the recorded distributions
+        shell: bash
+        env:
+          R2_ENDPOINT: https://318204901782458555a243ad96f80e3f.r2.cloudflarestorage.com
+          R2_BUCKET: dl4j-cache
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PLAN: ${{ needs.validate.outputs.variant_matrix }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          PREFIX="kompile/releases/${VERSION}/java"
+
+          # Same credential handling as mirror-release-to-r2.yml.
+          trim() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            printf '%s' "${value%"${value##*[![:space:]]}"}"
+          }
+          KEY_ID="$(trim "${R2_ACCESS_KEY_ID}")"
+          SECRET="$(trim "${R2_SECRET_ACCESS_KEY}")"
+          unset R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+          if [ -z "${KEY_ID}" ] || [ -z "${SECRET}" ]; then
+            echo "ERROR: R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must be configured as repository secrets." >&2
+            exit 1
+          fi
+          if [[ "${KEY_ID}${SECRET}" =~ [[:space:][:cntrl:]] ]]; then
+            echo "ERROR: the R2 credentials contain embedded whitespace or control characters." >&2
+            exit 1
+          fi
+          r2() (
+            unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+            export AWS_ACCESS_KEY_ID="${KEY_ID}" AWS_SECRET_ACCESS_KEY="${SECRET}" \
+              AWS_DEFAULT_REGION=auto \
+              AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+              AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+            aws --endpoint-url "${R2_ENDPOINT}" "$@"
+          )
+          aws --version
+
+          # Every distribution recorded under the prefix counts, whichever run
+          # built it; java_matrix.py lists only records that match this commit
+          # and the objects beside them.
+          WORK="${RUNNER_TEMP}/java-manifest"
+          rm -rf "${WORK}"
+          mkdir -p "${WORK}/records"
+          r2 s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "${PREFIX}/" \
+            --query 'Contents[].[Key, Size]' --output text > "${WORK}/listing.tsv"
+          while IFS=$'\t' read -r KEY _; do
+            case "${KEY}" in
+              "${PREFIX}/"*/variant.json)
+                CLASSIFIER="${KEY#"${PREFIX}/"}"
+                CLASSIFIER="${CLASSIFIER%/variant.json}"
+                if [ -z "${CLASSIFIER}" ] || [[ "${CLASSIFIER}" == */* ]]; then
+                  continue
+                fi
+                mkdir -p "${WORK}/records/${CLASSIFIER}"
+                r2 s3 cp "s3://${R2_BUCKET}/${KEY}" "${WORK}/records/${CLASSIFIER}/variant.json" \
+                  --only-show-errors --no-progress < /dev/null
+                ;;
+            esac
+          done < "${WORK}/listing.tsv"
+
+          # Exit 3: the manifest was written, but a row this run planned has no
+          # current record. It is still uploaded, then the job fails.
+          STATUS=0
+          python3 release/github/java_matrix.py manifest \
+            --plan-env PLAN \
+            --listing "${WORK}/listing.tsv" \
+            --records "${WORK}/records" \
+            --version "${VERSION}" \
+            --commit "${COMMIT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --bucket "${R2_BUCKET}" \
+            --prefix "${PREFIX}" \
+            --output "${WORK}/manifest.json" || STATUS=$?
+          if [ "${STATUS}" != 0 ] && [ "${STATUS}" != 3 ]; then
+            exit "${STATUS}"
+          fi
+          r2 s3 cp "${WORK}/manifest.json" "s3://${R2_BUCKET}/${PREFIX}/manifest.json" \
+            --only-show-errors --no-progress
+          BYTES="$(wc -c < "${WORK}/manifest.json" | tr -d '[:space:]')"
+          REMOTE_BYTES="$(r2 s3api head-object --bucket "${R2_BUCKET}" --key "${PREFIX}/manifest.json" \
+            --query ContentLength --output text | tr -d '[:space:]')"
+          if [ "${REMOTE_BYTES}" != "${BYTES}" ]; then
+            echo "ERROR: ${R2_BUCKET}/${PREFIX}/manifest.json is ${REMOTE_BYTES} bytes, expected ${BYTES}." >&2
+            exit 1
+          fi
+          echo "Wrote ${R2_BUCKET}/${PREFIX}/manifest.json"
+          exit "${STATUS}"

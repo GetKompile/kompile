@@ -171,8 +171,11 @@ jobs:
           done
 
           # Every asset must be in the bucket at its release size before
-          # manifest.json marks the release as mirrored.
-          r2 s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "${PREFIX}/" \
+          # manifest.json marks the release as mirrored. The delimiter lists only
+          # the objects directly under the prefix, so the per-classifier Java
+          # distributions under java/ (build-java-distributions.yml) are not
+          # reported as stray objects.
+          r2 s3api list-objects-v2 --bucket "${R2_BUCKET}" --prefix "${PREFIX}/" --delimiter / \
             --query 'Contents[].[Key, Size]' --output text > "${WORK}/listing.tsv"
           declare -A REMOTE=()
           while IFS=$'\t' read -r KEY BYTES; do
