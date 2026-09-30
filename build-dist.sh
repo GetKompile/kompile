@@ -199,7 +199,7 @@ INCLUDE_PRODUCT_EXTRAS=true # web personas, SDK server, C/Python bindings, app c
 CHAT_JAR=false             # lib/kompile-chat.jar only (CLI web handoff; no native, no runtime)
 ND4J_BACKEND=""            # Java backend artifact; empty = no local models
 KOMPILE_BACKEND_PROFILE="" # exact root-POM profile matching the DL4J classifier matrix
-CUDA_FLAG=""               # compatibility switch used by downstream native-image configuration
+CUDA_FLAG=""               # -Dkompile.cuda: true = NVIDIA (CPU fallback + NVIDIA redists), zluda = AMD (CPU fallback only)
 EXTRA_MVN_FLAGS=""
 
 case "${VARIANT}" in
@@ -267,7 +267,7 @@ case "${VARIANT}" in
         STAGING_NATIVE=true
         ND4J_BACKEND="nd4j-zluda-12.9"
         KOMPILE_BACKEND_PROFILE="zluda-rocm-7.2.4"
-        CUDA_FLAG="-Dkompile.cuda=true"
+        CUDA_FLAG="-Dkompile.cuda=zluda"
         EXTRA_MVN_FLAGS="-Dkompile.zluda=true"
         ;;
     *)
@@ -288,8 +288,8 @@ if [ -n "${BACKEND_PROFILE_OVERRIDE}" ]; then
         cuda-12.6*) ND4J_BACKEND="nd4j-cuda-12.6"; CUDA_VERSION="12.6"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         cuda-12.9*) ND4J_BACKEND="nd4j-cuda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true" ;;
         cuda-13.1) ND4J_BACKEND="nd4j-cuda-13.1"; CUDA_VERSION="13.1"; CUDA_FLAG="-Dkompile.cuda=true" ;;
-        zluda) ND4J_BACKEND="nd4j-zluda"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
-        zluda-rocm-7.2.4|zluda-rocm-10.0.0) ND4J_BACKEND="nd4j-zluda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=true"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
+        zluda) ND4J_BACKEND="nd4j-zluda"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=zluda"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
+        zluda-rocm-7.2.4|zluda-rocm-10.0.0) ND4J_BACKEND="nd4j-zluda-12.9"; CUDA_VERSION="12.9"; CUDA_FLAG="-Dkompile.cuda=zluda"; EXTRA_MVN_FLAGS="-Dkompile.zluda=true" ;;
         vulkan*) ND4J_BACKEND="nd4j-vulkan" ;;
         hexagon) ND4J_BACKEND="nd4j-hexagon" ;;
         tpu) ND4J_BACKEND="nd4j-tpu" ;;

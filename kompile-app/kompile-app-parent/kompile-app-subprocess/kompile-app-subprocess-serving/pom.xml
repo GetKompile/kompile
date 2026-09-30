@@ -37,13 +37,11 @@
         <!-- Native-image consumes the regular classes/dependency classpath, not the
              multi-gigabyte executable JAR. Distribution JVM packaging leaves this false. -->
         <shade.skip>false</shade.skip>
-        <!-- Module-owned backend selection, following the platform-tests
-             backend.artifactId convention: the property is declared HERE so a CLI
-             -Dnd4j.backend=nd4j-cuda-12.9 override reaches this module's dependency
-             resolution (pom-declared parent properties do not accept CLI -D overrides
-             the same way). Default matches the parent default. -->
-        <nd4j.backend>nd4j-native</nd4j.backend>
-        <nd4j.native.backend>${nd4j.backend}</nd4j.native.backend>
+        <!-- nd4j.backend and nd4j.native.backend come from the root backend-*
+             profiles, as in app-main, pipeline-serving and kompile-model-staging.
+             Do not redeclare them here: a module-level value overrides the profile,
+             which pins this worker to nd4j-native under every -Dkompile.backend.
+             -Dnd4j.backend still overrides the inherited value. -->
     </properties>
 
     <dependencies>
@@ -261,7 +259,7 @@
                                 <configuration>
                                     <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
                                     <includeTypes>jar</includeTypes>
-                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/*.kpack,**/shared-runtime-manifest.txt</includes>
                                 </configuration>
                             </execution>
                         </executions>
@@ -314,7 +312,9 @@
         </profile>
         <!-- CUDA distributions retain the CPU backend classes too, matching the
              staging worker and allowing the existing backend manager to fall back
-             when CUDA is hidden or unavailable. Native payloads remain side-loaded. -->
+             when CUDA is hidden or unavailable. Native payloads remain side-loaded.
+             Any kompile.cuda value activates this: true selects NVIDIA CUDA and zluda
+             selects ZLUDA on AMD. -->
         <profile>
             <id>cuda-dual-backend</id>
             <activation>
@@ -334,8 +334,22 @@
                     <version>${nd4j.version}</version>
                     <classifier>${javacpp.platform}</classifier>
                 </dependency>
-                <!-- CUDA JNI bridges do not contain the redistributable runtime.
-                     Each native worker owns the matching side-loaded payload. -->
+            </dependencies>
+        </profile>
+        <!-- CUDA JNI bridges do not contain the redistributable runtime.
+             Each native worker owns the matching side-loaded payload. Only
+             -Dkompile.cuda=true (NVIDIA CUDA) gets NVIDIA's; -Dkompile.cuda=zluda
+             (ZLUDA on AMD) keeps the CPU fallback above but never these, because
+             nd4j-zluda bundles its own runtime. -->
+        <profile>
+            <id>nvidia-cuda-redist</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <dependencies>
                 <dependency>
                     <groupId>org.bytedeco</groupId>
                     <artifactId>cuda-redist</artifactId>

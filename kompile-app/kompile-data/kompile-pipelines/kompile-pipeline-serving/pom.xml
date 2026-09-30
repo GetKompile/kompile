@@ -227,7 +227,7 @@
                                 <configuration>
                                     <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
                                     <includeTypes>jar</includeTypes>
-                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/*.kpack,**/shared-runtime-manifest.txt</includes>
                                 </configuration>
                             </execution>
                         </executions>
@@ -273,13 +273,18 @@
                 </plugins>
             </build>
         </profile>
-        <!-- Match app-main's CUDA activation and platform redist lane; the
-             standalone worker must not depend on app-main or a host toolkit. -->
+        <!-- Match app-main's NVIDIA activation and platform redist lane; the
+             standalone worker must not depend on app-main or a host toolkit.
+             -Dkompile.cuda=true selects NVIDIA CUDA. -Dkompile.cuda=zluda selects
+             ZLUDA on AMD and never gets these: nd4j-zluda bundles its own runtime.
+             This worker has no CPU-fallback dependencies, so it needs no
+             cuda-dual-backend profile. -->
         <profile>
-            <id>cuda-dual-backend</id>
+            <id>nvidia-cuda-redist</id>
             <activation>
                 <property>
                     <name>kompile.cuda</name>
+                    <value>true</value>
                 </property>
             </activation>
             <dependencies>

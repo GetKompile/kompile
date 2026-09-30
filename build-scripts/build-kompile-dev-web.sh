@@ -111,8 +111,12 @@ IFS='|' read -r backend_type cuda_version backend_alias < <(_resolve_backend_fro
 javacpp_platform="$(_resolve_javacpp_platform "${PLATFORM_ARG}")"
 
 BACKEND_ARGS=(-Dkompile.backend="${backend_alias}" -Djavacpp.platform="${javacpp_platform}")
+# ZLUDA bundles its own AMD runtime, so it never gets NVIDIA CUDA redists.
 if [ "${backend_type}" = "cuda" ]; then
-  BACKEND_ARGS+=(-Dkompile.cuda=true)
+  case "${backend_alias}" in
+    zluda*) BACKEND_ARGS+=(-Dkompile.cuda=zluda) ;;
+    *)      BACKEND_ARGS+=(-Dkompile.cuda=true) ;;
+  esac
 fi
 
 VERSION="$(grep -m1 '<version>' "${KOMPILE_ROOT}/pom.xml" | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')"

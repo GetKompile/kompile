@@ -7,6 +7,7 @@ assembly are executed.
 """
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -90,11 +91,12 @@ class NativePayloadProducersTest(unittest.TestCase):
         for module in (APP, *WORKERS):
             with self.subTest(module=module):
                 pom = ET.parse(ROOT / module / "pom.xml")
-                profile = pom.find("m:profiles/m:profile[m:id='cuda-dual-backend']", NS)
+                profile = pom.find("m:profiles/m:profile[m:id='nvidia-cuda-redist']", NS)
                 self.assertIsNotNone(profile)
+                # Only kompile.cuda=true (NVIDIA) activates it; kompile.cuda=zluda does not.
                 prop = profile.find("m:activation/m:property", NS)
                 self.assertEqual("kompile.cuda", prop.findtext("m:name", namespaces=NS))
-                self.assertIsNone(prop.find("m:value", NS))
+                self.assertEqual("true", prop.findtext("m:value", namespaces=NS))
                 redists = [d for d in pom.findall(".//m:dependency", NS)
                            if d.findtext("m:artifactId", default="", namespaces=NS)
                            .startswith("cuda-redist")]
@@ -107,6 +109,82 @@ class NativePayloadProducersTest(unittest.TestCase):
                                             ("version", "${kompile.cuda.redist.version}"),
                                             ("classifier", "${javacpp.platform}")):
                         self.assertEqual(expected, dependency.findtext(f"m:{field}", namespaces=NS))
+
+    def test_cpu_fallback_profiles_never_carry_nvidia_redists(self):
+        # cuda-dual-backend activates for any kompile.cuda value, zluda included.
+        fallback = {}
+        for directory, children, files in os.walk(ROOT):
+            children[:] = [c for c in children
+                           if not c.startswith(".") and c not in ("target", "node_modules")]
+            pom = Path(directory) / "pom.xml"
+            if "pom.xml" in files and "cuda-dual-backend" in pom.read_text(encoding="utf-8"):
+                profile = ET.parse(pom).find("m:profiles/m:profile[m:id='cuda-dual-backend']", NS)
+                if profile is not None:
+                    fallback[str(pom.parent.relative_to(ROOT))] = profile
+        self.assertLessEqual({APP, WORKERS[0]}, set(fallback))
+        for module, profile in fallback.items():
+            with self.subTest(module=module):
+                prop = profile.find("m:activation/m:property", NS)
+                self.assertEqual("kompile.cuda", prop.findtext("m:name", namespaces=NS))
+                self.assertIsNone(prop.find("m:value", NS))
+                ids = [d.findtext("m:artifactId", namespaces=NS)
+                       for d in profile.findall("m:dependencies/m:dependency", NS)]
+                self.assertEqual([], [i for i in ids if i.startswith("cuda-redist")])
+                if module in (APP, WORKERS[0]):
+                    self.assertEqual(["nd4j-native", "nd4j-native"], ids)
+
+    def test_dist_zluda_producers_pass_zluda_and_nvidia_producers_pass_true(self):
+        # kompile.cuda=true adds NVIDIA redists; ZLUDA bundles its own AMD runtime.
+        arms, flags = [], []
+        for line in (ROOT / "build-dist.sh").read_text().splitlines():
+            indent = len(line) - len(line.lstrip())
+            arm = re.match(r"\s*([\w.*|-]+)\)", line)
+            if arm:
+                arms.append((indent, arm.group(1)))
+            flag = re.search(r'CUDA_FLAG="(-D[^"]*)"', line)
+            if flag:
+                label = arm.group(1) if arm else next(
+                    name for depth, name in reversed(arms) if depth < indent)
+                flags.append((label, flag.group(1)))
+        self.assertEqual(["cuda", "amd-zluda", "cuda-12.6*", "cuda-12.9*", "cuda-13.1",
+                          "zluda", "zluda-rocm-7.2.4|zluda-rocm-10.0.0"],
+                         [label for label, _ in flags])
+        for label, flag in flags:
+            with self.subTest(arm=label):
+                expected = "zluda" if "zluda" in label else "true"
+                self.assertEqual(f"-Dkompile.cuda={expected}", flag)
+
+    def test_alias_producers_pass_zluda_only_for_zluda_classifiers(self):
+        # ZLUDA classifiers resolve to backend_type cuda; the alias selects the flag.
+        platforms = {"linux-x86_64-cuda-12.9-zluda": "zluda",
+                     "linux-x86_64-cuda-12.9-zluda-rocm-7.2.4": "zluda",
+                     "windows-x86_64-cuda-12.9-zluda-rocm-7.2.4": "zluda",
+                     "linux-x86_64-cuda-12.9-zluda-rocm-10.0.0": "zluda",
+                     "linux-x86_64-cuda-12.9": "true", "linux-arm64-cuda-13.1": "true",
+                     "linux-x86_64-cuda-12.6-cudnn": "true"}
+        env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+        env.update({"LC_ALL": "C", "DL4J_PROJECT_ROOT": "/nonexistent-kompile-contract-dl4j"})
+        for script, array in (("build-common.sh", "extra_mvn_args"),
+                              ("build-kompile-dev-cli.sh", "BACKEND_ARGS"),
+                              ("build-kompile-dev-web.sh", "BACKEND_ARGS")):
+            block = re.search(r'^( *)if \[ "\$\{backend_type\}" = "cuda" \]; then\n.*?^\1fi$',
+                              (ROOT / "build-scripts" / script).read_text(),
+                              re.DOTALL | re.MULTILINE).group(0)
+            for platform, expected in platforms.items():
+                with self.subTest(script=script, platform=platform):
+                    # Source only the resolvers and run only the flag selection block.
+                    result = subprocess.run(
+                        ["bash", "-eu", "-o", "pipefail", "-c",
+                         'source "$1"\nIFS="|" read -r backend_type _ backend_alias '
+                         '< <(_resolve_backend_from_platform "$2")\n'
+                         f'{array}=()\n{block}\nprintf "ARG|%s\\n" "${{{array}[@]}}"',
+                         "contract", ROOT / "build-scripts/build-common.sh", platform],
+                        env=env, text=True, capture_output=True,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual([f"ARG|-Dkompile.cuda={expected}"],
+                                     [line for line in result.stdout.splitlines()
+                                      if line.startswith("ARG|")])
 
     def test_cuda12_and_cuda13_complete_closures(self):
         for backend in ("nd4j-cuda-12.6", "nd4j-cuda-12.9", "nd4j-cuda-13.1"):
@@ -152,6 +230,22 @@ class NativePayloadProducersTest(unittest.TestCase):
                                      actual.findtext(path, namespaces=NS))
                 self.assertIn("shared-runtime-manifest.txt",
                               actual.findtext(paths[-1], namespaces=NS))
+
+    def test_app_and_workers_take_backend_from_root_profiles(self):
+        # A module-level nd4j.backend overrides the root backend-* profiles and pins
+        # the module to nd4j-native (e.g. nd4j-native:<platform>-zluda-rocm-7.2.4).
+        for module in (APP, *WORKERS):
+            with self.subTest(module=module):
+                pom = ET.parse(ROOT / module / "pom.xml")
+                for name in ("nd4j.backend", "nd4j.native.backend"):
+                    self.assertEqual([], pom.findall(f".//m:properties/m:{name}", NS))
+                backend = [(d.findtext("m:artifactId", namespaces=NS),
+                            d.findtext("m:classifier", namespaces=NS))
+                           for d in pom.findall("m:dependencies/m:dependency", NS)
+                           if "${nd4j." in d.findtext("m:artifactId", default="", namespaces=NS)]
+                self.assertEqual([("${nd4j.backend}", None),
+                                  ("${nd4j.native.backend}",
+                                   "${javacpp.platform}${javacpp.platform.extension}")], backend)
 
     def test_cli_only_cuda_stages_cli_and_both_workers_not_app(self):
         result = dispatch(workers=True)

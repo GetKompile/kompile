@@ -1784,8 +1784,13 @@ kompile_build_for_platform() {
     "-Dkompile.backend=${backend_alias}"
     "-Djavacpp.platform=${javacpp_platform}"
   )
+  # ZLUDA classifiers resolve to backend_type cuda but bundle their own AMD
+  # runtime: kompile.cuda=zluda keeps the CPU fallback without NVIDIA redists.
   if [ "${backend_type}" = "cuda" ]; then
-    extra_mvn_args+=("-Dkompile.cuda=true")
+    case "${backend_alias}" in
+      zluda*) extra_mvn_args+=("-Dkompile.cuda=zluda") ;;
+      *) extra_mvn_args+=("-Dkompile.cuda=true") ;;
+    esac
   fi
   # GraalVM's Windows PE/COFF relocation layout can fail for large release
   # images at -O2. This property must be attached here (the native images are

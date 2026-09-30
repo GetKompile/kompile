@@ -1592,7 +1592,10 @@
              classpath)". This profile pins nd4j-native alongside nd4j-cuda-* so both
              backends coexist at runtime; BackendManager auto-picks CUDA when GPUs are
              present and silently falls back to CPU (CUDA_VISIBLE_DEVICES=-1 / priority=CPU)
-             without crashing. -->
+             without crashing.
+             Any kompile.cuda value activates it: -Dkompile.cuda=true selects NVIDIA CUDA and
+             -Dkompile.cuda=zluda selects ZLUDA on AMD, and both keep this CPU fallback. The
+             NVIDIA runtime is added separately by nvidia-cuda-redist below. -->
         <profile>
             <id>cuda-dual-backend</id>
             <activation>
@@ -1612,9 +1615,27 @@
                     <version>${nd4j.version}</version>
                     <classifier>${javacpp.platform}</classifier>
                 </dependency>
-                <!-- JavaCPP publishes the CUDA JNI bridge and CUDA redistributables
-                     as separate artifacts. Native images side-load both from dist/lib,
-                     so the distribution must stage the matching platform redist lane. -->
+            </dependencies>
+        </profile>
+
+        <!-- NVIDIA CUDA redistributables. JavaCPP publishes the CUDA JNI bridge and CUDA
+             redistributables as separate artifacts. Native images side-load both from
+             dist/lib, so the distribution must stage the matching platform redist lane;
+             kompile.cuda.redist.version comes from the root pom's backend-cuda-* profiles.
+             Only -Dkompile.cuda=true (NVIDIA CUDA; a bare -Dkompile.cuda also means true)
+             activates this. -Dkompile.cuda=zluda (ZLUDA on AMD) never does: the nd4j-zluda
+             classifier bundles its own runtime (ZLUDA's libcuda ABI, its AMD-backed
+             cuBLAS/cuBLASLt/cuSPARSE/cuFFT, HIP and HSA), so NVIDIA redists would add
+             gigabytes of dead weight and could be loaded in place of ZLUDA's libraries. -->
+        <profile>
+            <id>nvidia-cuda-redist</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <dependencies>
                 <dependency>
                     <groupId>org.bytedeco</groupId>
                     <artifactId>cuda-redist</artifactId>

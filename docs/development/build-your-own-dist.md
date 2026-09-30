@@ -65,10 +65,14 @@ Linux-only candidate and remains opt-in until its `nd4j-zluda-12.9` classifier
 is published; the legacy unversioned `zluda` profile remains available only for
 older repositories.
 
-`-Dkompile.cuda=true` is a script-level marker only — it activates **nothing**
-in the poms; the backend property is what selects the artifact. `build-dist.sh`
-propagates `-Dnd4j.backend` to every Maven invocation (reactor install,
-exec-jar, and all native-image steps).
+`-Dkompile.cuda` activates two pom profiles; the backend property still selects
+the nd4j artifact. Any non-empty value activates `cuda-dual-backend`, the
+nd4j-native CPU fallback. Only `-Dkompile.cuda=true` (or a bare
+`-Dkompile.cuda`) activates `nvidia-cuda-redist`, which adds the NVIDIA CUDA
+redistributables. ZLUDA producers pass `-Dkompile.cuda=zluda` because
+`nd4j-zluda-12.9` bundles its own AMD runtime. `build-dist.sh` propagates
+`-Dnd4j.backend` to every Maven invocation (reactor install, exec-jar, and all
+native-image steps).
 
 ## One-shot distribution
 
