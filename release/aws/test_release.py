@@ -2268,11 +2268,13 @@ class GithubWorkflowParityTest(unittest.TestCase):
     def shell_steps(self, name):
         """Yields (line, shell, script) for every `run:` step in a workflow.
 
-        `shell` is None when the step names none. GitHub expressions become a
-        plain word, since the runner substitutes them before the shell parses
-        the script.
+        `name` is a workflow file name, or the path of another file with steps,
+        such as a composite action. `shell` is None when the step names none.
+        GitHub expressions become a plain word, since the runner substitutes
+        them before the shell parses the script.
         """
-        lines = (REPOSITORY / ".github" / "workflows" / name).read_text(encoding="utf-8").splitlines()
+        path = name if isinstance(name, pathlib.Path) else REPOSITORY / ".github" / "workflows" / name
+        lines = path.read_text(encoding="utf-8").splitlines()
         for number, line in enumerate(lines):
             run = re.match(r"^( *)(- )?run:[ \t]*(.*)$", line)
             if not run or not run.group(3).strip():
@@ -2340,6 +2342,88 @@ class GithubWorkflowParityTest(unittest.TestCase):
                         self.fail(f"{name}:{line} {delimiter} heredoc: {error}")
         self.assertGreater(scripts, 100)
         self.assertGreater(heredocs, 0)
+
+    PRUNE_MAVEN_CACHE = "uses: ./.github/actions/prune-maven-cache"
+
+    def test_release_maven_caches_hold_no_snapshots_or_kompile_artifacts(self):
+        # setup-java and setup-graalvm restore ~/.m2/repository on an exact key
+        # match and save it after the job. build-dist.sh resolves with
+        # --no-snapshot-updates, so a restored DL4J snapshot would ship in place
+        # of the published one, and every run would add its reactor build to the
+        # saved repository. Each job prunes right after the restore, and again as
+        # its last step, which runs before the post step that saves the cache.
+        workflows = self.release_workflows()
+        cached = set()
+        for name in ("release.yml", "build-java-distributions.yml"):
+            for job, body in workflows[name][1].items():
+                steps = re.split(r"^      - ", body, flags=re.M)[1:]
+                restores = [
+                    index for index, step in enumerate(steps)
+                    if re.search(r"^ +cache: *['\"]?maven['\"]? *$", step, re.M)
+                ]
+                if not restores:
+                    continue
+                where = f"{name}:{job}"
+                cached.add((name, job))
+                self.assertEqual(1, len(restores), where)
+                checkouts = [index for index, step in enumerate(steps) if "uses: actions/checkout@" in step]
+                self.assertEqual(1, len(checkouts), where)
+                self.assertIn("\n        id: checkout\n", steps[checkouts[0]], where)
+                self.assertLess(checkouts[0], restores[0], where)
+                self.assertIn(
+                    self.PRUNE_MAVEN_CACHE, steps[restores[0] + 1], f"{where} must prune the restored cache first",
+                )
+                self.assertIn(self.PRUNE_MAVEN_CACHE, steps[-1], f"{where} must prune the cache last")
+                self.assertIn("if: always() && steps.checkout.outcome == 'success'", steps[-1], where)
+        self.assertEqual(
+            {
+                ("release.yml", "build"),
+                ("release.yml", "full-dist-linux"),
+                ("build-java-distributions.yml", "build"),
+            },
+            cached,
+        )
+
+    def test_maven_cache_prune_keeps_only_third_party_releases(self):
+        action = REPOSITORY / ".github" / "actions" / "prune-maven-cache" / "action.yml"
+        steps = list(self.shell_steps(action))
+        self.assertEqual(1, len(steps))
+        _, shell, script = steps[0]
+        self.assertEqual("bash", shell)
+        # The command line GitHub Actions runs a bash step with.
+        bash = ["bash", "--noprofile", "--norc", "-eo", "pipefail"]
+        kept = (
+            "org/springframework/spring-core/6.1.6/spring-core-6.1.6.jar",
+            "org/bytedeco/mkl/2025.3-1.5.13/mkl-2025.3-1.5.13-linux-x86_64-redist.jar",
+            "org/eclipse/deeplearning4j/nd4j-native/1.0.0-M2.1/nd4j-native-1.0.0-M2.1.jar",
+        )
+        dropped = (
+            "ai/kompile/kompile-app-main/0.0.0-dev-java4/kompile-app-main-0.0.0-dev-java4-exec.jar",
+            "io/anserini/anserini/0.0.0-dev-java4/anserini-0.0.0-dev-java4.jar",
+            "org/eclipse/deeplearning4j/nd4j-native/1.0.0-SNAPSHOT/"
+            "nd4j-native-1.0.0-20260923.101010-709-linux-x86_64.jar",
+            "com/example/tool/2.0-SNAPSHOT/tool-2.0-SNAPSHOT.jar",
+        )
+        with tempfile.TemporaryDirectory() as home:
+            repository = pathlib.Path(home) / ".m2" / "repository"
+            for relative in kept + dropped:
+                (repository / relative).parent.mkdir(parents=True, exist_ok=True)
+                (repository / relative).write_bytes(b"PK")
+            pruned = subprocess.run(
+                bash, input=script, text=True, capture_output=True, env={**os.environ, "HOME": home},
+            )
+            self.assertEqual(0, pruned.returncode, pruned.stderr)
+            for relative in kept:
+                self.assertTrue((repository / relative).is_file(), relative)
+            for relative in dropped:
+                self.assertFalse((repository / relative).parent.exists(), relative)
+            self.assertFalse((repository / "ai" / "kompile").exists())
+            self.assertFalse((repository / "io" / "anserini").exists())
+        with tempfile.TemporaryDirectory() as home:
+            missing = subprocess.run(
+                bash, input=script, text=True, capture_output=True, env={**os.environ, "HOME": home},
+            )
+            self.assertEqual(0, missing.returncode, missing.stderr)
 
     def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
         workflows = REPOSITORY / ".github" / "workflows"

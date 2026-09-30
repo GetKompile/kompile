@@ -1,0 +1,26 @@
+name: Prune the Maven dependency cache
+description: 'Remove Kompile reactor output and every snapshot version from ~/.m2/repository, so the cached repository holds only third-party releases'
+
+# Run this right after the step that restores the Maven cache, so the build
+# resolves every snapshot from its repository, and again as the job's last step,
+# so the cache that setup-java or setup-graalvm saves afterwards stays small.
+
+runs:
+  using: composite
+  steps:
+    - name: Remove Kompile artifacts and snapshots
+      shell: bash
+      run: |
+        set -euo pipefail
+        repository="${HOME}/.m2/repository"
+        if [ ! -d "${repository}" ]; then
+          echo "No local Maven repository at ${repository}"
+          exit 0
+        fi
+        # Every build installs the reactor (ai.kompile and the vendored
+        # io.anserini modules) at the version it releases, so none of it is reused.
+        rm -rf "${repository}/ai/kompile" "${repository}/io/anserini"
+        # build-dist.sh resolves with --no-snapshot-updates, so a restored DL4J
+        # snapshot would be bundled instead of the one published now.
+        find "${repository}" -type d -name '*-SNAPSHOT' -prune -exec rm -rf {} +
+        du -sh "${repository}"

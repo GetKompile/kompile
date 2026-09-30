@@ -287,6 +287,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout
+        id: checkout
         if: steps.platform.outputs.selected == 'true'
         uses: actions/checkout@v4
 
@@ -299,6 +300,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: 'true'
           cache: 'maven'
+
+      - name: Drop snapshots and Kompile artifacts from the restored Maven cache
+        if: steps.platform.outputs.selected == 'true'
+        uses: ./.github/actions/prune-maven-cache
 
       - name: Resolve version
         id: ver
@@ -442,6 +447,10 @@ jobs:
             ${{ steps.pkg.outputs.compatibility_archive }}.sha256
           if-no-files-found: error
 
+      - name: Keep snapshots and Kompile artifacts out of the saved Maven cache
+        if: always() && steps.checkout.outcome == 'success'
+        uses: ./.github/actions/prune-maven-cache
+
   # ── JVM distribution: shaded/exec JARs + jlink runtime on a standard runner ──
   full-dist-linux:
     name: build full JVM (linux-x86_64)
@@ -460,6 +469,7 @@ jobs:
           exit 1
 
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v4
 
       - name: Set up Temurin JDK 21
@@ -471,6 +481,9 @@ jobs:
           server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
           server-username: DL4J_MAVEN_USERNAME
           server-password: DL4J_MAVEN_PASSWORD
+
+      - name: Drop snapshots and Kompile artifacts from the restored Maven cache
+        uses: ./.github/actions/prune-maven-cache
 
       - name: Resolve version
         id: ver
@@ -558,6 +571,10 @@ jobs:
             kompile-crawl-manager.jar
             kompile-model-staging.jar
           if-no-files-found: error
+
+      - name: Keep snapshots and Kompile artifacts out of the saved Maven cache
+        if: always() && steps.checkout.outcome == 'success'
+        uses: ./.github/actions/prune-maven-cache
 
   # ── Smoke-test the full-dist archive before publishing ───────────────────
   smoke-full-dist:

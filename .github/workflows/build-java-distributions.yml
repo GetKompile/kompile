@@ -154,6 +154,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout selected branch commit
+        id: checkout
         uses: actions/checkout@v4
 
       - name: Set up Temurin JDK 21
@@ -166,6 +167,9 @@ jobs:
           server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
           server-username: DL4J_MAVEN_USERNAME
           server-password: DL4J_MAVEN_PASSWORD
+
+      - name: Drop snapshots and Kompile artifacts from the restored Maven cache
+        uses: ./.github/actions/prune-maven-cache
 
       - name: Record runner capacity
         shell: bash
@@ -309,3 +313,7 @@ jobs:
           path: ${{ steps.jars.outputs.dir }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Keep snapshots and Kompile artifacts out of the saved Maven cache
+        if: always() && steps.checkout.outcome == 'success'
+        uses: ./.github/actions/prune-maven-cache
