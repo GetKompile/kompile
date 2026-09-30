@@ -281,6 +281,11 @@ jobs:
             fi
           fi
 
+      - name: Enable Windows long paths
+        if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'windows'
+        shell: powershell
+        run: git config --global core.longpaths true
+
       - name: Checkout
         if: steps.platform.outputs.selected == 'true'
         uses: actions/checkout@v4

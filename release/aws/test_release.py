@@ -2185,26 +2185,25 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 jobs[current].append(line)
         return {job: "\n".join(body) + "\n" for job, body in jobs.items()}
 
-    def test_release_workflows_run_on_github_hosted_runners(self):
+    def release_workflows(self):
+        """Maps every workflow the release entry points reach to (text, jobs).
+
+        Follows each local reusable-workflow call, so a workflow a release starts
+        calling is checked too. Comment lines are removed from the text.
+        """
         workflows = REPOSITORY / ".github" / "workflows"
-        # Follow every local reusable-workflow call from the release entry
-        # points, so a workflow a release starts calling is checked too.
         pending = ["release.yml", "publish-release.yml", "publish-external-aws-release.yml"]
-        reached = set()
+        reached = {}
         while pending:
             name = pending.pop()
             if name in reached:
                 continue
-            reached.add(name)
             executable = "\n".join(
                 line for line in (workflows / name).read_text(encoding="utf-8").splitlines()
                 if not line.lstrip().startswith("#")
             )
-            self.assertIn("runs-on:", executable, name)
-            self.assertNotIn("self-hosted", executable, name)
-            self.assertNotIn("release/azure", executable, name)
             jobs = self.workflow_jobs(executable)
-            self.assertTrue(jobs, name)
+            reached[name] = (executable, jobs)
             for job, body in jobs.items():
                 call = re.search(r"^    uses: (\S+)\s*$", body, re.M)
                 if call:
@@ -2212,13 +2211,6 @@ class GithubWorkflowParityTest(unittest.TestCase):
                     target = re.fullmatch(r"\./\.github/workflows/([A-Za-z0-9._-]+\.yml)", call.group(1))
                     self.assertIsNotNone(target, f"{name}:{job} calls {call.group(1)}")
                     pending.append(target.group(1))
-                    continue
-                self.assertIn("\n    steps:\n", "\n" + body, f"{name}:{job}")
-                first_step = ("\n" + body).split("\n    steps:\n", 1)[1]
-                self.assertTrue(
-                    first_step.startswith(self.RUNNER_GUARD),
-                    f"{name}:{job} must start with the GitHub-hosted runner guard",
-                )
         self.assertLessEqual(
             {
                 "release.yml", "build-java-distributions.yml", "mirror-release-to-r2.yml",
@@ -2227,8 +2219,51 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 "build-native-mac-arm64.yml", "build-native-windows-x86_64.yml",
                 "build-native-linux-cuda.yml", "build-native-windows-cuda.yml",
             },
-            reached,
+            set(reached),
         )
+        return reached
+
+    def test_release_workflows_run_on_github_hosted_runners(self):
+        for name, (executable, jobs) in self.release_workflows().items():
+            self.assertIn("runs-on:", executable, name)
+            self.assertNotIn("self-hosted", executable, name)
+            self.assertNotIn("release/azure", executable, name)
+            self.assertTrue(jobs, name)
+            for job, body in jobs.items():
+                if re.search(r"^    uses: ", body, re.M):
+                    continue
+                self.assertIn("\n    steps:\n", "\n" + body, f"{name}:{job}")
+                first_step = ("\n" + body).split("\n    steps:\n", 1)[1]
+                self.assertTrue(
+                    first_step.startswith(self.RUNNER_GUARD),
+                    f"{name}:{job} must start with the GitHub-hosted runner guard",
+                )
+
+    def test_release_windows_checkouts_enable_long_paths(self):
+        # Tracked paths pass Windows MAX_PATH, so a Windows checkout without
+        # core.longpaths fails before the build starts.
+        windows_jobs = {
+            ("release.yml", "build"),
+            ("build-java-distributions.yml", "build"),
+            ("build-native-windows-x86_64.yml", "build-nd4j-native"),
+            ("build-native-windows-x86_64.yml", "build-kompile-native"),
+            ("build-native-windows-cuda.yml", "build-nd4j-cuda"),
+        }
+        checked = set()
+        for name, (_, jobs) in self.release_workflows().items():
+            for job, body in jobs.items():
+                on_windows = re.search(r"^ +(runs-on|- runner): .*windows", body, re.M | re.I)
+                if (name, job) not in windows_jobs and not on_windows:
+                    continue
+                checked.add((name, job))
+                checkout = body.find("uses: actions/checkout@")
+                longpaths = body.find("run: git config --global core.longpaths true")
+                self.assertGreaterEqual(checkout, 0, f"{name}:{job}")
+                self.assertTrue(
+                    0 <= longpaths < checkout,
+                    f"{name}:{job} must enable core.longpaths before its first checkout",
+                )
+        self.assertEqual(windows_jobs, checked)
 
     def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
         workflows = REPOSITORY / ".github" / "workflows"
