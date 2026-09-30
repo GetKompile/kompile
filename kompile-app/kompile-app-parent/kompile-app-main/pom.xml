@@ -759,7 +759,7 @@
                                 <configuration>
                                     <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
                                     <includeTypes>jar</includeTypes>
-                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/*.kpack,**/shared-runtime-manifest.txt</includes>
                                 </configuration>
                             </execution>
                         </executions>
@@ -958,7 +958,7 @@
                                 <configuration>
                                     <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
                                     <includeTypes>jar</includeTypes>
-                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/*.kpack,**/shared-runtime-manifest.txt</includes>
                                 </configuration>
                             </execution>
                         </executions>

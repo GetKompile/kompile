@@ -2,10 +2,19 @@
 # Kompile release pipeline
 #
 # Publishes both execution forms without paying AOT runner costs for the JVM tier:
-# a cross-platform GraalVM CLI image and a complete Linux JVM distribution built
-# with `build-dist.sh --jars-only`. Both use the canonical distribution builder,
+# cross-platform GraalVM CLI images and complete JVM distributions built with
+# `build-dist.sh --jars-only`. Both use the canonical distribution builder,
 # include SHA-256 checksums, and are attached to one GitHub Release. ZIP is the
-# primary release artifact; tar.gz remains available for installer compatibility.
+# primary release artifact; the AOT and Linux x64 JVM jobs also publish tar.gz
+# for installer compatibility.
+#
+# Every job runs on GitHub Actions and the default labels are GitHub-hosted
+# runners. The release/aws and release/azure VM farms never build or publish
+# these assets.
+#
+# GitHub Releases is the download source. Once the release job has published,
+# mirror-r2 (mirror-release-to-r2.yml) copies every asset and a manifest.json to
+# Cloudflare R2 at dl4j-cache/kompile/releases/<version>/.
 #
 # Archive naming (must match install.sh + docs/getting-started/installation.md):
 #   kompile-dist-<version>-<variant>-<os>-<arch>.zip
@@ -31,10 +40,16 @@
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
 #   Linux x64 and macOS ARM64 can use their standard hosted defaults. Configure a
 #   larger GitHub-hosted or self-hosted label for Windows AOT until its trial passes.
+#   The cross-platform JVM matrix uses the fixed GitHub-hosted labels in
+#   build-java-distributions.yml.
 #
 # Variants:
-#   This workflow publishes cross-platform AOT `cli-only` archives and the
-#   canonical Linux JVM `full` archive (CLI/service JARs + Java runtime).
+#   Tag pushes publish AOT `cli-only` archives (linux-x86_64, macosx-arm64,
+#   windows-x86_64), the smoke-tested Linux x64 JVM `full` archive with its
+#   standalone JARs (full-dist-linux), and JVM `full` ZIPs for linux-arm64,
+#   macosx-arm64 and windows-x86_64 (build-java-distributions.yml). A JVM
+#   `full` archive bundles the CLI/service JARs and a Java runtime. The release
+#   job refuses to publish when two builds produce the same asset name.
 #   Native CPU/GPU service variants remain self-hosted builds produced through
 #   build-dist.sh; they must use the same release job when enabled.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -103,17 +118,80 @@ env:
   ND4J_VERSION: ${{ vars.DL4J_VERSION || '1.0.0-SNAPSHOT' }}
 
 jobs:
+  plan:
+    name: Plan release builds
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      java_distribution: ${{ steps.plan.outputs.java_distribution }}
+      java_platforms: ${{ steps.plan.outputs.java_platforms }}
+    steps:
+      - name: Resolve version and JVM matrix
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_EXECUTION: ${{ inputs.execution }}
+          INPUT_DISTRIBUTION: ${{ inputs.distribution }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          JAVA_DISTRIBUTION=""
+          JAVA_PLATFORMS=""
+          if [ "${EVENT_NAME}" = "push" ]; then
+            VERSION="${REF_NAME#v}"
+            # full-dist-linux owns linux-x86_64 (smoke test + standalone JARs);
+            # the JVM matrix covers every other supported platform.
+            JAVA_DISTRIBUTION=full
+            JAVA_PLATFORMS=linux-arm64,windows-x86_64,macosx-arm64
+          else
+            VERSION="${INPUT_VERSION}"
+            if [ "${INPUT_EXECUTION}" = "java" ] || [ "${INPUT_EXECUTION}" = "both" ]; then
+              JAVA_DISTRIBUTION="${INPUT_DISTRIBUTION}"
+              JAVA_PLATFORMS="${INPUT_PLATFORMS//[[:space:]]/}"
+              if [ -z "${JAVA_PLATFORMS}" ]; then
+                echo "ERROR: execution=${INPUT_EXECUTION} needs at least one platform." >&2
+                exit 2
+              fi
+            fi
+            # JVM and AOT cli-only archives share one file name per platform.
+            if [ "${INPUT_PUBLISH}" = "true" ] && [ "${INPUT_EXECUTION}" = "both" ] \
+                && [ "${INPUT_DISTRIBUTION}" != "full" ]; then
+              echo "ERROR: execution=both with distribution=${INPUT_DISTRIBUTION} builds JVM and AOT cli-only archives under the same names." >&2
+              echo "A release carries one cli-only archive per platform: publish with distribution=full, or with execution=java or native alone." >&2
+              exit 2
+            fi
+          fi
+          if [[ ! "${VERSION}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid release version: ${VERSION}" >&2
+            exit 2
+          fi
+          {
+            echo "version=${VERSION}"
+            echo "java_distribution=${JAVA_DISTRIBUTION}"
+            echo "java_platforms=${JAVA_PLATFORMS}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release ${VERSION}: JVM ${JAVA_DISTRIBUTION:-none} on ${JAVA_PLATFORMS:-no platforms}"
+
   java-distributions:
     name: Java distributions
-    if: github.event_name == 'workflow_dispatch' && (inputs.execution == 'java' || inputs.execution == 'both')
+    needs: plan
+    if: needs.plan.outputs.java_platforms != ''
     uses: ./.github/workflows/build-java-distributions.yml
     with:
-      version: ${{ inputs.version }}
-      distribution: ${{ inputs.distribution }}
-      platforms: ${{ inputs.platforms }}
+      version: ${{ needs.plan.outputs.version }}
+      distribution: ${{ needs.plan.outputs.java_distribution }}
+      platforms: ${{ needs.plan.outputs.java_platforms }}
+    secrets:
+      DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
+      DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
 
   build:
     name: build ${{ matrix.variant }} (${{ matrix.os_id }}-${{ matrix.arch }})
+    needs: plan
     if: github.event_name == 'push' || inputs.execution == 'native' || inputs.execution == 'both'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -348,6 +426,7 @@ jobs:
   # ── JVM distribution: shaded/exec JARs + jlink runtime on a standard runner ──
   full-dist-linux:
     name: build full JVM (linux-x86_64)
+    needs: plan
     if: github.event_name == 'push'
     runs-on: ${{ vars.KOMPILE_JAVA_RUNNER || 'ubuntu-22.04' }}
     env:
@@ -641,7 +720,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [java-distributions, build, full-dist-linux, smoke-full-dist]
+    needs: [plan, java-distributions, build, full-dist-linux, smoke-full-dist]
     runs-on: ${{ vars.KOMPILE_RELEASE_RUNNER || 'ubuntu-22.04' }}
     if: >-
       always() &&
@@ -670,8 +749,41 @@ jobs:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
+
+      - name: Collect and verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # One directory per artifact. Flatten by file name and refuse duplicates
+          # instead of letting one build silently overwrite another's asset.
+          mkdir -p dist
+          declare -A SOURCE=()
+          while IFS= read -r -d '' FILE; do
+            NAME="$(basename "${FILE}")"
+            if [ -n "${SOURCE[${NAME}]:-}" ]; then
+              echo "ERROR: release asset ${NAME} is produced by both ${SOURCE[${NAME}]} and ${FILE}." >&2
+              exit 1
+            fi
+            SOURCE[${NAME}]="${FILE}"
+            mv "${FILE}" "dist/${NAME}"
+          done < <(find artifacts -type f -print0 | sort -z)
+
+          cd dist
+          shopt -s nullglob
+          CHECKSUMS=(*.sha256)
+          if [ "${#CHECKSUMS[@]}" -eq 0 ]; then
+            echo "ERROR: no checksummed release archives were built." >&2
+            exit 1
+          fi
+          for ARCHIVE in *.zip *.tar.gz; do
+            if [ ! -f "${ARCHIVE}.sha256" ]; then
+              echo "ERROR: ${ARCHIVE} has no ${ARCHIVE}.sha256" >&2
+              exit 1
+            fi
+          done
+          sha256sum -c "${CHECKSUMS[@]}"
+          ls -lh
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -682,6 +794,21 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+
+  mirror-r2:
+    name: Mirror release to R2
+    needs: [plan, release]
+    # A skipped optional build upstream must not skip the mirror; it runs only
+    # after the release job has published.
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mirror-release-to-r2.yml
+    with:
+      tag: v${{ needs.plan.outputs.version }}
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Template: hosted / GPU variants (needs a dedicated or self-hosted runner)

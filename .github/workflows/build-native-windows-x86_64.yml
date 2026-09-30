@@ -25,7 +25,9 @@ on:
         type: string
         default: 'true'
     secrets:
-      AZURE_SCCACHE_CONNECTION_STRING:
+      R2_ACCESS_KEY_ID:
+        required: false
+      R2_SECRET_ACCESS_KEY:
         required: false
   workflow_dispatch:
     inputs:
@@ -305,8 +307,6 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-    env:
-      KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING: ${{ secrets.AZURE_SCCACHE_CONNECTION_STRING }}
     steps:
       - name: Disable Windows Defender
         continue-on-error: true
@@ -395,36 +395,41 @@ jobs:
             }
           }
 
-      - name: Install Azure CLI for durable AOT cache
-        if: env.KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING != ''
-        shell: powershell
-        run: |
-          if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-            choco install azure-cli -y --no-progress
-            $azureCliBin = Join-Path ${env:ProgramFiles} 'Microsoft SDKs\Azure\CLI2\wbin'
-            Add-Content -Path $env:GITHUB_PATH -Value $azureCliBin
-            $env:Path = "$azureCliBin;$env:Path"
-          }
-          az version --output none
-
-      - name: Configure durable Azure AOT cache
+      # The durable AOT cache lives in DL4J's Cloudflare R2 bucket under the same
+      # key root the Azure container used, so migrated entries stay valid. Only
+      # non-secret settings go to GITHUB_ENV; the R2 key pair is mapped into the
+      # steps that transfer objects and is never written to disk.
+      - name: Configure durable R2 AOT cache
         shell: bash
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
-          if [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" ]; then
-            command -v az >/dev/null 2>&1 || {
-              echo "::error::Azure CLI is required when AZURE_SCCACHE_CONNECTION_STRING is configured"
-              exit 1
-            }
+          if [ -n "${R2_ACCESS_KEY_ID}" ] && [ -n "${R2_SECRET_ACCESS_KEY}" ]; then
             {
               echo "KOMPILE_NATIVE_CACHE_REMOTE_ROOT=deeplearning4j/releases/kompile-native-cache/v1"
-              echo "KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER=releases"
-              echo "KOMPILE_NATIVE_CACHE_REMOTE_TOOL=azure-cli"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER=dl4j-cache"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_TOOL=aws-cli"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT=https://318204901782458555a243ad96f80e3f.r2.cloudflarestorage.com"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_REGION=auto"
             } >> "${GITHUB_ENV}"
-            echo "Azure AOT cache enabled: releases/deeplearning4j/releases/kompile-native-cache/v1"
+            echo "R2 AOT cache enabled: dl4j-cache/deeplearning4j/releases/kompile-native-cache/v1"
           else
             echo "KOMPILE_NATIVE_CACHE_REMOTE_ROOT=" >> "${GITHUB_ENV}"
-            echo "Azure AOT cache disabled (AZURE_SCCACHE_CONNECTION_STRING is not configured)"
+            echo "R2 AOT cache disabled (R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY are not configured)"
           fi
+
+      - name: Ensure AWS CLI for durable R2 AOT cache
+        if: env.KOMPILE_NATIVE_CACHE_REMOTE_ROOT != ''
+        shell: powershell
+        run: |
+          if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+            choco install awscli -y --no-progress
+            $awsCliBin = Join-Path ${env:ProgramFiles} 'Amazon\AWSCLIV2'
+            Add-Content -Path $env:GITHUB_PATH -Value $awsCliBin
+            $env:Path = "$awsCliBin;$env:Path"
+          }
+          aws --version
 
       - name: Configure Maven settings for snapshots
         shell: bash
@@ -497,6 +502,8 @@ jobs:
           MAVEN_OPTS: "-Xmx4g"
           KOMPILE_NATIVE_CACHE: "1"
           KOMPILE_NATIVE_PLATFORM: "windows-x86_64"
+          KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           TARGETS=""
           REQUESTED_TARGETS="${{ inputs.nativeTargets || 'all' }}"
@@ -510,25 +517,37 @@ jobs:
           echo "=== Native images built ==="
           ls -lh kompile-cli/kompile-*/target/kompile-*.exe 2>/dev/null || true
 
-      - name: Verify durable Azure AOT cache activity
-        if: env.KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING != ''
+      - name: Verify durable R2 AOT cache activity
+        if: env.KOMPILE_NATIVE_CACHE_REMOTE_ROOT != ''
         shell: bash
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           if ! grep -Eq 'REMOTE CACHE HIT|Published native image' kompile-native.log; then
-            echo "::error::Native build produced no durable Azure cache hit or publish receipt"
+            echo "::error::Native build produced no durable R2 cache hit or publish receipt"
             exit 1
           fi
-          cache_count="$(az storage blob list \
-            --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
-            --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
+          # Same credential handling as build-common.sh: trimmed keys, no ambient
+          # AWS profile or session token, DL4J's R2 checksum settings. aws.exe
+          # ends lines with CRLF, so the count is stripped of all whitespace.
+          unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+          AWS_ACCESS_KEY_ID="$(printf '%s' "${R2_ACCESS_KEY_ID}" | tr -d '[:space:]')"
+          AWS_SECRET_ACCESS_KEY="$(printf '%s' "${R2_SECRET_ACCESS_KEY}" | tr -d '[:space:]')"
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+          export AWS_DEFAULT_REGION="${KOMPILE_NATIVE_CACHE_REMOTE_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+          cache_count="$(aws s3api list-objects-v2 \
+            --endpoint-url "${KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT}" \
+            --bucket "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
             --prefix "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT%/}/" \
-            --num-results 1000 --query 'length(@)' -o tsv)"
+            --max-items 1000 --query 'length(Contents || `[]`)' --output text | tr -d '[:space:]')"
           if [ "${cache_count:-0}" -lt 1 ]; then
-            echo "::error::Durable Azure AOT cache prefix is empty"
+            echo "::error::Durable R2 AOT cache prefix is empty"
             exit 1
           fi
-          echo "Durable Azure AOT cache objects: ${cache_count}"
+          echo "Durable R2 AOT cache objects: ${cache_count}"
 
       - name: Collect native binaries
         shell: bash

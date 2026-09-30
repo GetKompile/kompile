@@ -125,6 +125,113 @@ unset -f cygpath
 OSTYPE="${_saved_ostype}"
 MSYSTEM="${_saved_msystem}"
 
+# GitHub release lanes keep this cache in Cloudflare R2 through the S3 API.
+# Drive the real transport against a fake aws CLI that records its argv and
+# credential environment and keeps objects under a local directory.
+FAKE_AWS_BIN="${TEST_ROOT}/fake-aws-bin"
+FAKE_AWS_LOG="${TEST_ROOT}/fake-aws"
+FAKE_S3_ROOT="${TEST_ROOT}/fake-s3"
+mkdir -p "${FAKE_AWS_BIN}" "${FAKE_S3_ROOT}"
+: > "${FAKE_AWS_LOG}.argv"
+: > "${FAKE_AWS_LOG}.env"
+cat > "${FAKE_AWS_BIN}/aws" <<'FAKE_AWS'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_AWS_LOG}.argv"
+printf 'key=%s secret=%s region=%s profile=%s session=%s request=%s response=%s\n' \
+  "${AWS_ACCESS_KEY_ID-unset}" "${AWS_SECRET_ACCESS_KEY-unset}" "${AWS_DEFAULT_REGION-unset}" \
+  "${AWS_PROFILE-unset}" "${AWS_SESSION_TOKEN-unset}" \
+  "${AWS_REQUEST_CHECKSUM_CALCULATION-unset}" "${AWS_RESPONSE_CHECKSUM_VALIDATION-unset}" \
+  >> "${FAKE_AWS_LOG}.env"
+[[ "$1 $2" == "s3 cp" ]] || exit 2
+case "$3" in
+  s3://*)
+    object="${FAKE_S3_ROOT}/${3#s3://}"
+    if [[ ! -f "${object}" ]]; then
+      printf 'fatal error: An error occurred (404) when calling the HeadObject operation: Key "%s" does not exist\n' \
+        "${3#s3://}" >&2
+      exit 1
+    fi
+    cp "${object}" "$4"
+    ;;
+  *)
+    object="${FAKE_S3_ROOT}/${4#s3://}"
+    mkdir -p "$(dirname "${object}")"
+    rm -f -- "${object}"
+    cp "$3" "${object}"
+    ;;
+esac
+FAKE_AWS
+chmod +x "${FAKE_AWS_BIN}/aws"
+fake_aws_calls() {
+  printf '%s' "$(($(wc -l < "${FAKE_AWS_LOG}.argv")))"
+}
+(
+  export PATH="${FAKE_AWS_BIN}:${PATH}" FAKE_AWS_LOG FAKE_S3_ROOT
+  export AWS_PROFILE=ambient-profile AWS_SESSION_TOKEN=ambient-session
+  KOMPILE_NATIVE_CACHE_DIR="${TEST_ROOT}/r2-cache"
+  KOMPILE_NATIVE_CACHE_REMOTE_ROOT=deeplearning4j/releases/kompile-native-cache/v1
+  KOMPILE_NATIVE_CACHE_REMOTE_TOOL=aws-cli
+  KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER=dl4j-cache
+  KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT=https://r2.example.invalid
+  KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID=$' test-key-id\n'
+  KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY=$'test-secret-value\r\n'
+  r2_image="${TEST_ROOT}/r2-target/native-worker"
+  mkdir -p "$(dirname "${r2_image}")"
+  printf 'r2-native-image' > "${r2_image}"
+  chmod +x "${r2_image}"
+  r2_aot="$(printf 'r2-aot' | kompile_sha256_stdin)"
+  r2_runtime="$(printf 'r2-runtime' | kompile_sha256_stdin)"
+
+  kompile_publish_cached_native_image fixture "${r2_image}" "${r2_aot}" "${r2_runtime}"
+  r2_object="${FAKE_S3_ROOT}/dl4j-cache/${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/fixture/${r2_aot}/native-worker"
+  [[ -f "${r2_object}" && -f "${r2_object}.native-cache" ]] ||
+    fail 'R2 publish did not store the image and receipt under the logical cache key'
+  r2_sha="$(kompile_sha256_file "${r2_image}")"
+  printf 'corrupted-local-target' > "${r2_image}"
+  rm -rf -- "${KOMPILE_NATIVE_CACHE_DIR}"
+  kompile_restore_cached_native_image fixture "${r2_image}" "${r2_aot}" "${r2_runtime}" ||
+    fail 'R2 cache did not restore into an empty local cache'
+  [[ "$(kompile_sha256_file "${r2_image}")" == "${r2_sha}" ]] || fail 'R2 restored image checksum mismatch'
+  [[ "$(fake_aws_calls)" -eq 4 ]] || fail 'R2 publish and restore should take two uploads and two downloads'
+
+  while IFS= read -r call; do
+    [[ "${call}" == *"--endpoint-url https://r2.example.invalid"* ]] ||
+      fail "aws call did not target the configured endpoint: ${call}"
+    [[ "${call}" != *test-key-id* && "${call}" != *test-secret-value* ]] ||
+      fail 'R2 credentials leaked into aws argv'
+  done < "${FAKE_AWS_LOG}.argv"
+  while IFS= read -r call_env; do
+    [[ "${call_env}" == 'key=test-key-id secret=test-secret-value region=auto profile=unset session=unset request=WHEN_REQUIRED response=WHEN_REQUIRED' ]] ||
+      fail "aws saw unexpected credential environment: ${call_env/test-secret-value/<secret>}"
+  done < "${FAKE_AWS_LOG}.env"
+
+  # log may be DL4J's stderr logger, so capture both streams.
+  if r2_miss="$(kompile_native_remote_copy "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/fixture/missing/native-worker" \
+      "${TEST_ROOT}/r2-miss" 2>&1)"; then
+    fail 'missing R2 object was reported as a hit'
+  fi
+  [[ "${r2_miss}" == *"(404)"* ]] || fail 'R2 miss did not surface the aws error'
+  [[ "$(fake_aws_calls)" -eq 5 ]] || fail 'R2 miss did not query the bucket exactly once'
+
+  # Refused configurations never reach aws, so they cannot sign with bad input.
+  KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY='test secret'
+  if kompile_native_remote_copy "${r2_object}" "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/refused" >/dev/null 2>&1; then
+    fail 'malformed R2 secret was accepted'
+  fi
+  KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY=test-secret-value
+  KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID=$'\n'
+  if kompile_native_remote_copy "${r2_object}" "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/refused" >/dev/null 2>&1; then
+    fail 'blank R2 access key id was accepted'
+  fi
+  KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID=test-key-id
+  KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT=
+  if kompile_native_remote_copy "${r2_object}" "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/refused" >/dev/null 2>&1; then
+    fail 'R2 copy ran without an endpoint'
+  fi
+  [[ "$(fake_aws_calls)" -eq 5 ]] || fail 'a refused R2 configuration still invoked aws'
+)
+
 REMOTE_STORE="${TEST_ROOT}/remote-cache"
 kompile_native_remote_copy() {
   local source="$1"
@@ -206,4 +313,4 @@ kompile_publish_cached_native_image fixture "$TARGET_IMAGE" "$key_b" "$RUNTIME_R
    -d "$KOMPILE_NATIVE_CACHE_DIR/fixture/$key_c" ]] || fail 'unsafe bucket pruned'
 # A valid target remains usable even when its shared entry is unsafe.
 kompile_restore_cached_native_image fixture "$TARGET_IMAGE" "$key_b" "$RUNTIME_RECEIPT_V2" || fail 'normal target hit lost'
-printf 'PASS: independent Native Image AOT/runtime cache tiers and bounded local retention\n'
+printf 'PASS: independent Native Image AOT/runtime cache tiers, R2 transport and bounded local retention\n'

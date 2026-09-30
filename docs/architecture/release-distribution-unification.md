@@ -169,8 +169,8 @@ tier* keeps runtime multi-backend selection (`BackendManager`, both jars on clas
 |---|---|
 | `build-dist.sh` | **Kept — variant orchestrator.** Fixed broken CLI path (`kompile-cli/kompile-cli-main/target/…`), emits canon names + back-compat symlinks, bundles jar tier + jbang files into every variant. Layout must match `dist.xml`. |
 | `kompile-dist/` assembly | **Kept — canonical layout definition** (`src/main/assembly/dist.xml`). `prepare-package` stages copies in `target/portable-bin` and applies the shared ELF normalizer before assembly. |
-| `install.sh` | Kept. Default `auto` selection tries the published Linux `full` variant first and falls back to `cli-only`; explicit native CPU/CUDA variants remain opt-in. |
-| `release.yml` | **Sole canonical release owner.** Owns the `v*` tag, release creation, AOT `cli-only` archives, the JVM `full` archive, checksums, and stable jar assets. Manual dispatch may publish the selected branch SHA as a prerelease. JVM and AOT jobs use separate runner variables. |
+| `install.sh` | Kept. Default `auto` selection tries the published `full` variant first (every release platform has one) and falls back to `cli-only`; explicit native CPU/CUDA variants remain opt-in. |
+| `release.yml` | **Sole canonical release owner.** Owns the `v*` tag, release creation, AOT `cli-only` archives, the JVM `full` archives for every release platform, checksums, and stable jar assets. Every job runs on GitHub Actions; the `release/aws` and `release/azure` VM farms never publish here. Manual dispatch may publish the selected branch SHA as a prerelease. JVM and AOT jobs use separate runner variables. |
 | `publish-release.yml` | Manual supplemental SDK builder/uploader only. It shares per-version concurrency, requires an existing canonical release, and never creates, edits, or clobbers release assets. |
 | Root `Dockerfile`, `Dockerfile.rockylinux8` | **Deprecated in-place** (headers added). Use `build-scripts/Dockerfile.cpu` / `.cuda`. |
 | Root `native-image/` | **Legacy/unwired** (README added). Canonical metadata is per-module `META-INF/native-image/`. |
@@ -245,17 +245,56 @@ duplicates. Get-started text notes that `kompile project init` works fully only 
 
 ### Assets now published per release
 
+Since 2026-09-29, tag pushes also build the JVM `full` ZIP for linux-arm64, macosx-arm64 and
+windows-x86_64 through `build-java-distributions.yml` on its fixed GitHub-hosted runner labels.
+The release job keeps one directory per artifact, refuses duplicate asset names, and verifies
+every `.sha256` before publishing. Each archive below ships with a `<archive>.sha256` sibling.
+
 | Asset | Source |
 |---|---|
-| `kompile-dist-<V>-cli-only-linux-x86_64.tar.gz` | AOT `build` matrix job |
-| `kompile-dist-<V>-cli-only-macosx-arm64.tar.gz` | AOT `build` matrix job |
-| `kompile-dist-<V>-cli-only-windows-x86_64.zip` | AOT `build` matrix job |
-| `kompile-dist-<V>-full-linux-x86_64.tar.gz` | JVM `full-dist-linux` job (`--jars-only`) |
+| `kompile-dist-<V>-cli-only-linux-x86_64.{zip,tar.gz}` | AOT `build` matrix job |
+| `kompile-dist-<V>-cli-only-macosx-arm64.{zip,tar.gz}` | AOT `build` matrix job |
+| `kompile-dist-<V>-cli-only-windows-x86_64.{zip,tar.gz}` | AOT `build` matrix job |
+| `kompile-dist-<V>-full-linux-x86_64.{zip,tar.gz}` | JVM `full-dist-linux` job (`--jars-only`), smoke-tested by `smoke-full-dist` |
+| `kompile-dist-<V>-full-linux-arm64.zip` | `build-java-distributions.yml` (`--jars-only`) |
+| `kompile-dist-<V>-full-macosx-arm64.zip` | `build-java-distributions.yml` (`--jars-only`) |
+| `kompile-dist-<V>-full-windows-x86_64.zip` | `build-java-distributions.yml` (`--jars-only`) |
 | `kompile-server.jar` | stable name, from full-dist `lib/` |
 | `kompile-model-staging.jar` | stable name, from full-dist `lib/` |
 | `kompile-cli.jar` | stable name, from full-dist `lib/` |
 | `kompile-chat.jar` | stable name, from full-dist `lib/` |
 | `kompile-crawl-manager.jar` | stable name, from full-dist `lib/` |
+
+### Cloudflare R2 mirror
+
+GitHub Releases stays the download source (`install.sh`). After a release changes, a copy
+lands in DL4J's private R2 bucket beside the native AOT cache
+(`deeplearning4j/releases/kompile-native-cache/v1`):
+
+```
+dl4j-cache/kompile/releases/<V>/<asset>
+dl4j-cache/kompile/releases/<V>/manifest.json
+```
+
+`mirror-release-to-r2.yml` runs on a GitHub-hosted `ubuntu-24.04` runner. Three publishers
+call it: `release.yml` (`mirror-r2`, once the `release` job has published),
+`publish-release.yml` (after `collect-and-publish`) and `publish-external-aws-release.yml`
+(after `verify-and-attach`). Dispatch it with `tag=v<V>` to backfill an existing release.
+
+- Assets stream through the runner one at a time. Each download must match the size GitHub
+  lists, and an asset with a `<asset>.sha256` sidecar must match that digest.
+- A listing then confirms that every asset is in the bucket at its release size.
+- `manifest.json` records the tag, commit, release URL, prerelease flag, and the name, size
+  and SHA-256 of every asset. It is uploaded only after that listing, so its presence means
+  the whole release landed.
+- Existing objects under the prefix are overwritten and never deleted. An object that is not
+  an asset of the release produces a warning and stays in place.
+- Requests use the same R2 settings as DL4J's client: region `auto` and `WHEN_REQUIRED`
+  request/response checksums. Ambient AWS profiles and session tokens are dropped.
+- Credentials come from the repository secrets `R2_ACCESS_KEY_ID` and
+  `R2_SECRET_ACCESS_KEY`, the same ones the native AOT cache uses. Without them the mirror
+  fails after the release is already published. Add the secrets, then dispatch the
+  workflow for that tag.
 
 ## 8. Further design directions (suggested, not implemented)
 

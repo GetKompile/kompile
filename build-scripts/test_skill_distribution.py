@@ -26,7 +26,7 @@ class SkillDistributionTest(unittest.TestCase):
     def test_shell_staging_copies_complete_packages(self):
         script = (ROOT / "build-dist.sh").read_text()
         start = script.index("# First-party skill packages,")
-        end = script.index("# Default application configuration", start)
+        end = script.index("# The agent CLI is part of the CLI contract", start)
         with tempfile.TemporaryDirectory() as tmp:
             install = Path(tmp) / "dist with spaces"
             env = dict(os.environ, DIST_DIR=str(install))

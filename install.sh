@@ -7,8 +7,8 @@
 # configuration.
 #
 # Usage:
-#   curl -fsSL https://get.kompile.ai/install.sh | bash
-#   curl -fsSL https://get.kompile.ai/install.sh | bash -s -- --version 1.0.0
+#   curl -fsSL https://raw.githubusercontent.com/GetKompile/kompile/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/GetKompile/kompile/main/install.sh | bash -s -- --version 1.0.0
 #   bash install.sh --dev
 #
 #   --dev installs straight from the local checkout: the newest shaded/exec JAR

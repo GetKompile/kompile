@@ -1388,12 +1388,6 @@ if [ "${WHEEL_FOUND}" = false ]; then
     echo "  SKIP: no Python wheel found at ${PYTHON_DIST}/ (build kompile-python to include)"
 fi
 
-# First-party skill packages, including references/scripts, are managed payload.
-# Never collect release skills from the build machine's vendor or user directories.
-mkdir -p "${DIST_DIR}/lib/skills"
-cp -R skills/. "${DIST_DIR}/lib/skills/"
-echo "  lib/skills/ (first-party skill packages)"
-
 # Default application configuration → conf/  (matches dist.xml conf/ fileSet)
 CONF_SRC="kompile-app/kompile-app-parent/kompile-app-main/src/main/resources"
 if [ -d "${CONF_SRC}" ]; then
@@ -1436,6 +1430,14 @@ if [ "${CLI_NATIVE}" = true ]; then
     require_native_component "component CLI" "kompile-component${EXE_SUFFIX}"
 fi
 fi
+
+# First-party skill packages, including references/scripts, are managed payload.
+# Never collect release skills from the build machine's vendor or user directories.
+# The CLI loads its bundled defaults from lib/skills in every variant, so this
+# stays outside the product-extras block above (dist.xml ships them the same way).
+mkdir -p "${DIST_DIR}/lib/skills"
+cp -R skills/. "${DIST_DIR}/lib/skills/"
+echo "  lib/skills/ (first-party skill packages)"
 
 # The agent CLI is part of the CLI contract, not a product extra. Keep it in
 # native cli-only/local archives as well as full product distributions.

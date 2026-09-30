@@ -3,7 +3,7 @@
 ## Install script (recommended)
 
 ```bash
-curl -fsSL https://get.kompile.ai/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GetKompile/kompile/main/install.sh | bash
 ```
 
 This detects your OS/arch, downloads the matching archive from
@@ -12,14 +12,17 @@ extracts it to `~/.kompile`, and prints how to add `bin/` to your `PATH`. Overri
 
 ```bash
 # specific version / variant / install dir
-curl -fsSL https://get.kompile.ai/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/GetKompile/kompile/main/install.sh | bash -s -- \
   --version 0.1.0 --variant cli-only --dir ~/.kompile
 ```
 
-**Variants:** `cli-only` (the cross-platform `kompile` CLI plus the chat handoff JAR that backs
+**Variants:** `full` (the CLI, the server and service JARs, and a bundled Java runtime; published
+for linux-x86\_64, linux-arm64, macosx-arm64 and windows-x86\_64), `cli-only` (the
+cross-platform `kompile` CLI plus the chat handoff JAR that backs
 `kompile web` — server personas and the local backend are fetched on demand via
 `kompile install kompile-app`), `hosted` (CLI **plus** the bundled app-main server),
-`cpu-intel`, `cpu-arm`, `cuda`, `amd-zluda`. The ZLUDA variant defaults to ROCm 7.2.4;
+`cpu-intel`, `cpu-arm`, `cuda`, `amd-zluda`. Without `--variant` the script installs `full` and
+falls back to `cli-only` when no `full` archive exists for the platform. The ZLUDA variant defaults to ROCm 7.2.4;
 after the candidate artifacts are published, select ROCm 10 explicitly with
 `--variant amd-zluda --backend-profile zluda-rocm-10.0.0`.
 
@@ -74,7 +77,8 @@ The release lane begins with `<os>-<arch>` and retains backend qualifiers when p
 for example, ROCm 10 uses
 `kompile-dist-0.1.0-amd-zluda-linux-x86_64-cuda-12.9-zluda-rocm-10.0.0.tar.gz`.
 Here `os` ∈ {`linux`, `macosx`, `windows`}, `arch` ∈ {`x86_64`, `arm64`}, and `ext` is
-`tar.gz` (Linux/macOS) or `zip` (Windows). For example:
+`zip` for every archive. The `cli-only` archives and the Linux x86\_64 `full` archive are also
+published as `tar.gz`, which the install script prefers on Linux and macOS. For example:
 
 | Platform | Example archive |
 |----------|-----------------|

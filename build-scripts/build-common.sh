@@ -245,12 +245,19 @@ KOMPILE_NATIVE_CACHE_DIR="${KOMPILE_NATIVE_CACHE_DIR:-${HOME}/.cache/kompile/nat
 KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR="${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR:-${KOMPILE_NATIVE_CACHE_DIR}/dependency-manifests}"
 # Optional durable cache endpoint. Azure workers set this to a Blob prefix and
 # authenticate the configured tool with managed identity or a short-lived
-# connection string. The endpoint is deliberately empty for local/AWS builds,
-# preserving local-only cache behavior unless a backend explicitly opts in.
+# connection string. GitHub-hosted runners use Cloudflare R2 through the S3 API
+# (TOOL=aws-cli): CONTAINER is the bucket, ENDPOINT the account endpoint, and
+# the access key pair comes from the job environment. The endpoint is
+# deliberately empty for local/AWS builds, preserving local-only cache behavior
+# unless a backend explicitly opts in.
 KOMPILE_NATIVE_CACHE_REMOTE_ROOT="${KOMPILE_NATIVE_CACHE_REMOTE_ROOT:-}"
 KOMPILE_NATIVE_CACHE_REMOTE_TOOL="${KOMPILE_NATIVE_CACHE_REMOTE_TOOL:-azcopy}"
 KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER="${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER:-releases}"
 KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING="${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING:-}"
+KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT="${KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT:-}"
+KOMPILE_NATIVE_CACHE_REMOTE_REGION="${KOMPILE_NATIVE_CACHE_REMOTE_REGION:-auto}"
+KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID="${KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID:-}"
+KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY="${KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY:-}"
 
 # Bash on Windows is supplied by MSYS2/Git Bash while Maven and GraalVM are
 # native Windows processes. Keep shell-owned cache paths in the MSYS namespace,
@@ -1070,9 +1077,67 @@ kompile_native_remote_copy() {
     return
   fi
 
+  if [ "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" = "aws-cli" ]; then
+    kompile_native_remote_s3_copy "${source}" "${destination}"
+    return
+  fi
+
   command -v "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" >/dev/null 2>&1 || return 1
   "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" copy "${source}" "${destination}" \
     --overwrite=true >/dev/null 2>&1
+}
+
+kompile_native_trim_space() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+# S3-compatible transport (Cloudflare R2 on GitHub-hosted runners). Object keys
+# are the full logical cache path, the same names the Azure container uses, so
+# migrated entries resolve unchanged. Like the Azure branch, a failure is a miss.
+kompile_native_remote_s3_copy() {
+  local source="$1"
+  local destination="$2"
+  local malformed='[[:space:][:cntrl:]]'
+  local key_id secret remote_name error
+
+  command -v aws >/dev/null 2>&1 || return 1
+  [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT}" ] || return 1
+  # CI secrets are often pasted with a trailing newline. Trim surrounding
+  # whitespace, but refuse to sign with anything else malformed.
+  key_id="$(kompile_native_trim_space "${KOMPILE_NATIVE_CACHE_REMOTE_ACCESS_KEY_ID}")"
+  secret="$(kompile_native_trim_space "${KOMPILE_NATIVE_CACHE_REMOTE_SECRET_ACCESS_KEY}")"
+  if [ -z "${key_id}" ] || [ -z "${secret}" ] || [[ "${key_id}${secret}" =~ ${malformed} ]]; then
+    log "WARNING: R2 cache credentials are missing or malformed"
+    return 1
+  fi
+
+  if [ -f "${source}" ]; then
+    remote_name="${destination}"
+    set -- "${source}" "s3://${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}/${remote_name}"
+  else
+    remote_name="${source}"
+    mkdir -p "${destination}" || return 1
+    set -- "s3://${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}/${remote_name}" \
+      "${destination}/$(basename "${source}")"
+  fi
+  # Credentials reach aws only through its environment, never argv. Ambient
+  # profiles and session tokens are dropped so a runner's own AWS identity can
+  # never sign an R2 request; the checksum settings match DL4J's R2 client.
+  if ! error="$( (
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+    export AWS_ACCESS_KEY_ID="${key_id}" AWS_SECRET_ACCESS_KEY="${secret}" \
+      AWS_DEFAULT_REGION="${KOMPILE_NATIVE_CACHE_REMOTE_REGION}" \
+      AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
+      AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
+    aws s3 cp "$1" "$2" --endpoint-url "${KOMPILE_NATIVE_CACHE_REMOTE_ENDPOINT}" \
+      --only-show-errors --no-progress
+  ) 2>&1 >/dev/null)"; then
+    log "WARNING: R2 cache transfer failed for ${remote_name}: ${error##*$'\n'}"
+    return 1
+  fi
 }
 
 kompile_native_remote_path() {

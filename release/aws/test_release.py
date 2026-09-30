@@ -977,6 +977,9 @@ class BuildPlatformParityTest(unittest.TestCase):
             root = pathlib.Path(temporary)
             shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
             (root / "build-dist.sh").chmod(0o755)
+            # Like a release checkout, carry the first-party skill packages that
+            # build-dist.sh ships as managed payload and fails closed without.
+            shutil.copytree(REPOSITORY / "skills", root / "skills")
             (root / "pom.xml").write_text(
                 "<project><modelVersion>4.0.0</modelVersion>"
                 "<groupId>ai.kompile</groupId><artifactId>synthetic-root</artifactId>"
@@ -1067,6 +1070,17 @@ class BuildPlatformParityTest(unittest.TestCase):
             )
             self.assertTrue((installed / f"{base}.zip").is_file())
             self.assertTrue((installed / f"{base}.tar.gz").is_file())
+            # The CLI loads its bundled first-party skills from lib/skills, so
+            # even the smallest archive carries the complete packages.
+            with zipfile.ZipFile(output / f"{base}.zip") as contents:
+                names = set(contents.namelist())
+            skills = REPOSITORY / "skills"
+            for skill in skills.rglob("*"):
+                if skill.is_file():
+                    self.assertIn(
+                        f"{base}/lib/skills/" + skill.relative_to(skills).as_posix(),
+                        names,
+                    )
 
     def test_archive_format_zip_opt_out_halves_maven_assemblies(self):
         """--archive-format zip skips the tar.gz: output, checksum, and Maven copy."""
@@ -1080,6 +1094,9 @@ class BuildPlatformParityTest(unittest.TestCase):
             root = pathlib.Path(temporary)
             shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
             (root / "build-dist.sh").chmod(0o755)
+            # Like a release checkout, carry the first-party skill packages that
+            # build-dist.sh ships as managed payload and fails closed without.
+            shutil.copytree(REPOSITORY / "skills", root / "skills")
             (root / "pom.xml").write_text(
                 "<project><modelVersion>4.0.0</modelVersion>"
                 "<groupId>ai.kompile</groupId><artifactId>synthetic-root</artifactId>"
@@ -1323,6 +1340,9 @@ class BuildPlatformParityTest(unittest.TestCase):
             root = pathlib.Path(temporary)
             shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
             (root / "build-dist.sh").chmod(0o755)
+            # Like a release checkout, carry the first-party skill packages that
+            # build-dist.sh ships as managed payload and fails closed without.
+            shutil.copytree(REPOSITORY / "skills", root / "skills")
             (root / "pom.xml").write_text(
                 "<project><modelVersion>4.0.0</modelVersion>"
                 "<groupId>ai.kompile</groupId><artifactId>synthetic-root</artifactId>"
@@ -1408,6 +1428,36 @@ class BuildPlatformParityTest(unittest.TestCase):
                 "/bin/true", backend_manifest.parent / "libjnind4jcpu.so"
             )
 
+            # cpu-intel sets LOCAL_RUNTIME=true (ND4J_BACKEND is non-empty), so
+            # build-dist.sh also stages each request-scoped serving worker's own
+            # native-library tree (stage-native-libs.sh calls for
+            # kompile-app-subprocess-serving and kompile-pipeline-serving): every
+            # module needs its own producer-owned nd4j-native manifest, same as
+            # app-main above.
+            for local_runtime_module in (
+                "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving",
+                "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving",
+            ):
+                runtime_manifest = (
+                    root / local_runtime_module / "target" / "native-libs" /
+                    "org" / "nd4j" / "linalg" / "cpu" / "nativecpu" / "bindings" /
+                    "linux-x86_64-avx2" / "shared-runtime-manifest.txt"
+                )
+                runtime_manifest.parent.mkdir(parents=True)
+                runtime_manifest.write_text(
+                    "# nd4j-shared-runtime-manifest-v1\n"
+                    "# runtime-count=2\n"
+                    "libnd4jcpu.so\n"
+                    "libjnind4jcpu.so\n",
+                    encoding="utf-8",
+                )
+                shutil.copy2(
+                    "/bin/true", runtime_manifest.parent / "libnd4jcpu.so"
+                )
+                shutil.copy2(
+                    "/bin/true", runtime_manifest.parent / "libjnind4jcpu.so"
+                )
+
             sdk = root / "sdk-assets"
             (sdk / "jars").mkdir(parents=True)
             (sdk / "runtime.zip").write_bytes(b"PK\x03\x04runtime")
@@ -1455,6 +1505,13 @@ class BuildPlatformParityTest(unittest.TestCase):
                     names,
                 )
                 self.assertIn(prefix + "lib/kompile-server.jar", names)
+                skills = REPOSITORY / "skills"
+                for skill in skills.rglob("*"):
+                    if skill.is_file():
+                        self.assertIn(
+                            prefix + "lib/skills/" + skill.relative_to(skills).as_posix(),
+                            names,
+                        )
                 manifest = contents.read(prefix + "manifest.sha256").decode()
                 self.assertIn("sdx-sdk/runtime.zip", manifest)
                 self.assertIn("lib/kompile-server.jar", manifest)
@@ -2104,6 +2161,285 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("release publication never moves an existing tag", source)
         self.assertNotIn("7z a -tzip", source)
 
+    def test_release_workflows_run_on_github_hosted_runners(self):
+        workflows = REPOSITORY / ".github" / "workflows"
+        for name in (
+            "release.yml", "build-java-distributions.yml", "publish-release.yml",
+            "publish-external-aws-release.yml", "mirror-release-to-r2.yml",
+        ):
+            executable = "\n".join(
+                line for line in (workflows / name).read_text(encoding="utf-8").splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            self.assertIn("runs-on:", executable, name)
+            self.assertNotIn("self-hosted", executable, name)
+            self.assertNotIn("release/azure", executable, name)
+
+    def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
+        workflows = REPOSITORY / ".github" / "workflows"
+        release = (workflows / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("JAVA_PLATFORMS=linux-arm64,windows-x86_64,macosx-arm64", release)
+        self.assertIn(
+            "needs: [plan, java-distributions, build, full-dist-linux, smoke-full-dist]",
+            release,
+        )
+        self.assertIn("is produced by both", release)
+        self.assertIn('sha256sum -c "${CHECKSUMS[@]}"', release)
+        self.assertNotIn("merge-multiple: true", release)
+        java = (workflows / "build-java-distributions.yml").read_text(encoding="utf-8")
+        self.assertIn("server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}", java)
+        self.assertIn("name: java-full-linux-x86_64-jars", java)
+        self.assertIn("kompile-model-staging.jar", java)
+
+    R2_ENDPOINT = "https://318204901782458555a243ad96f80e3f.r2.cloudflarestorage.com"
+
+    def test_release_publishers_mirror_the_release_to_r2(self):
+        workflows = REPOSITORY / ".github" / "workflows"
+        mirror = (workflows / "mirror-release-to-r2.yml").read_text(encoding="utf-8")
+        for expected in (
+            "runs-on: ubuntu-24.04",
+            "contents: read",
+            f"R2_ENDPOINT: {self.R2_ENDPOINT}",
+            "R2_BUCKET: dl4j-cache",
+            'PREFIX="kompile/releases/${RELEASE_TAG#v}"',
+            "unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_SECURITY_TOKEN",
+            "AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED",
+            "AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED",
+        ):
+            self.assertIn(expected, mirror)
+        for forbidden in (
+            "contents: write", "gh release upload", "gh release create",
+            "gh release edit", "--clobber", "s3 rm", "--delete", "GITHUB_ENV",
+        ):
+            self.assertNotIn(forbidden, mirror)
+        callers = {
+            "release.yml": (
+                "tag: v${{ needs.plan.outputs.version }}",
+                "needs.release.result == 'success'",
+            ),
+            "publish-release.yml": (
+                "tag: ${{ needs.setup.outputs.release_tag }}",
+                "needs.collect-and-publish.result == 'success'",
+            ),
+            "publish-external-aws-release.yml": (
+                "tag: ${{ inputs.releaseTag }}",
+                "needs: verify-and-attach",
+            ),
+        }
+        for name, expected in callers.items():
+            source = (workflows / name).read_text(encoding="utf-8")
+            for text in (
+                "uses: ./.github/workflows/mirror-release-to-r2.yml",
+                "R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}",
+                "R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}",
+                *expected,
+            ):
+                self.assertIn(text, source, name)
+
+    R2_MIRROR_GH_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${R2_ACCESS_KEY_ID:-}${R2_SECRET_ACCESS_KEY:-}${AWS_ACCESS_KEY_ID:-}" ]; then
+  echo "gh received R2 credentials" >&2
+  exit 97
+fi
+case "$1 $2" in
+  "release view") cat "${FIXTURE}/release.json" ;;
+  "api repos/GetKompile/kompile/commits/v1.2.3") echo 0123456789abcdef0123456789abcdef01234567 ;;
+  "release download")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --pattern) name="$2"; shift 2 ;;
+        --dir) dir="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp "${FIXTURE}/assets/${name}" "${dir}/${name}"
+    if [ "${TRUNCATE:-}" = "${name}" ]; then truncate -s 1 "${dir}/${name}"; fi
+    ;;
+  *) echo "unexpected: gh $*" >&2; exit 98 ;;
+esac
+"""
+
+    R2_MIRROR_AWS_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = --version ]; then echo aws-cli/2-stub; exit 0; fi
+[ "$1" = --endpoint-url ] || { echo "aws called without the R2 endpoint" >&2; exit 98; }
+echo "$2" > "${FAKE_R2}.endpoint"
+env | grep -E '^(AWS|R2)_' | LC_ALL=C sort > "${FAKE_R2}.env"
+shift 2
+option() {
+  local key="$1"
+  shift
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "${key}" ]; then echo "$2"; return; fi
+    shift
+  done
+}
+case "$1 $2" in
+  "s3 cp")
+    key="${4#s3://}"
+    mkdir -p "$(dirname "${FAKE_R2}/${key}")"
+    cp "$3" "${FAKE_R2}/${key}"
+    echo "${key##*/}" >> "${FAKE_R2}.uploads"
+    if [ "${DROP:-}" = "${key##*/}" ]; then rm "${FAKE_R2}/${key}"; fi
+    ;;
+  "s3api list-objects-v2")
+    bucket="$(option --bucket "$@")"
+    prefix="$(option --prefix "$@")"
+    listed=0
+    for object in "${FAKE_R2}/${bucket}/${prefix}"*; do
+      [ -f "${object}" ] || continue
+      printf '%s\t%s\n' "${prefix}${object##*/}" "$(stat -c %s "${object}")"
+      listed=1
+    done
+    [ "${listed}" = 1 ] || echo None
+    ;;
+  "s3api head-object")
+    object="${FAKE_R2}/$(option --bucket "$@")/$(option --key "$@")"
+    [ -f "${object}" ] || { echo "Not Found" >&2; exit 254; }
+    stat -c %s "${object}"
+    ;;
+  *) echo "unexpected: aws $*" >&2; exit 98 ;;
+esac
+"""
+
+    def _run_r2_mirror(self, root, assets, **environment):
+        """Run the mirror step's script against stub gh/aws and a directory bucket."""
+        for tool in ("bash", "jq", "sha256sum", "truncate"):
+            if shutil.which(tool) is None:
+                self.skipTest(f"{tool} is required to run the R2 mirror script")
+        if subprocess.run(["stat", "-c", "%s", __file__], capture_output=True).returncode:
+            self.skipTest("GNU stat is required to run the R2 mirror script")
+        lines = (
+            REPOSITORY / ".github" / "workflows" / "mirror-release-to-r2.yml"
+        ).read_text(encoding="utf-8").splitlines()
+        script = []
+        for line in lines[lines.index("        run: |") + 1:]:
+            if line.strip() and not line.startswith(" " * 10):
+                break
+            script.append(line[10:])
+        stubs = root / "bin"
+        stubs.mkdir()
+        for name, body in (("gh", self.R2_MIRROR_GH_STUB), ("aws", self.R2_MIRROR_AWS_STUB)):
+            (stubs / name).write_text(body, encoding="utf-8")
+            (stubs / name).chmod(0o755)
+        fixture = root / "release"
+        (fixture / "assets").mkdir(parents=True)
+        for name, data in assets.items():
+            (fixture / "assets" / name).write_bytes(data)
+        (fixture / "release.json").write_text(json.dumps({
+            "url": "https://github.com/GetKompile/kompile/releases/tag/v1.2.3",
+            "publishedAt": "2026-09-29T00:00:00Z",
+            "isPrerelease": False,
+            "assets": [{"name": name, "size": len(data)} for name, data in assets.items()],
+        }), encoding="utf-8")
+        (root / "runner").mkdir()
+        (root / "r2").mkdir()
+        env = {
+            "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}",
+            "HOME": str(root),
+            "RUNNER_TEMP": str(root / "runner"),
+            "GITHUB_REPOSITORY": "GetKompile/kompile",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "7",
+            "GH_TOKEN": "test-github-token",
+            "RELEASE_TAG": "v1.2.3",
+            "R2_ENDPOINT": self.R2_ENDPOINT,
+            "R2_BUCKET": "dl4j-cache",
+            "R2_ACCESS_KEY_ID": " test-key-id ",
+            "R2_SECRET_ACCESS_KEY": "test-secret\n",
+            "AWS_SESSION_TOKEN": "ambient-session",
+            "AWS_PROFILE": "ambient-profile",
+            "FIXTURE": str(fixture),
+            "FAKE_R2": str(root / "r2"),
+        }
+        env.update(environment)
+        completed = subprocess.run(
+            ["bash", "-c", "\n".join(script)],
+            env=env, capture_output=True, text=True, timeout=120,
+        )
+        return completed, root / "r2" / "dl4j-cache" / "kompile" / "releases" / "1.2.3"
+
+    def test_r2_mirror_verifies_every_asset_before_uploading_manifest(self):
+        linux = b"linux archive " * 64
+        windows = b"windows archive " * 48
+        linux_zip = "kompile-dist-1.2.3-full-linux-x86_64.zip"
+        windows_zip = "kompile-dist-1.2.3-full-windows-x86_64.zip"
+        assets = {
+            "kompile-cli.jar": b"cli jar " * 32,
+            linux_zip: linux,
+            # A sidecar may record a path, a binary-mode marker, CRLF and upper case.
+            f"{linux_zip}.sha256":
+                f"{hashlib.sha256(linux).hexdigest()}  dist/{linux_zip}\n".encode(),
+            windows_zip: windows,
+            f"{windows_zip}.sha256":
+                f"{hashlib.sha256(windows).hexdigest().upper()} *{windows_zip}\r\n".encode(),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            completed, prefix = self._run_r2_mirror(root, assets)
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                sorted([*assets, "manifest.json"]),
+                sorted(path.name for path in prefix.iterdir()),
+            )
+            for name, data in assets.items():
+                self.assertEqual(data, (prefix / name).read_bytes(), name)
+            uploads = (root / "r2.uploads").read_text(encoding="utf-8").split()
+            self.assertEqual("manifest.json", uploads[-1])
+            manifest = json.loads((prefix / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual("v1.2.3", manifest["tag"])
+            self.assertEqual("1.2.3", manifest["version"])
+            self.assertEqual("0123456789abcdef0123456789abcdef01234567", manifest["commit"])
+            self.assertEqual("kompile/releases/1.2.3", manifest["prefix"])
+            self.assertEqual(
+                {
+                    name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, data in assets.items()
+                },
+                {
+                    entry["name"]: {"size": entry["size"], "sha256": entry["sha256"]}
+                    for entry in manifest["assets"]
+                },
+            )
+            self.assertEqual(
+                self.R2_ENDPOINT,
+                (root / "r2.endpoint").read_text(encoding="utf-8").strip(),
+            )
+            aws_environment = dict(
+                line.split("=", 1)
+                for line in (root / "r2.env").read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual("test-key-id", aws_environment["AWS_ACCESS_KEY_ID"])
+            self.assertEqual("test-secret", aws_environment["AWS_SECRET_ACCESS_KEY"])
+            self.assertEqual("auto", aws_environment["AWS_DEFAULT_REGION"])
+            self.assertEqual("WHEN_REQUIRED", aws_environment["AWS_REQUEST_CHECKSUM_CALCULATION"])
+            self.assertEqual("WHEN_REQUIRED", aws_environment["AWS_RESPONSE_CHECKSUM_VALIDATION"])
+            for leaked in (
+                "AWS_SESSION_TOKEN", "AWS_PROFILE", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
+            ):
+                self.assertNotIn(leaked, aws_environment)
+            self.assertEqual([], list((root / "runner" / "r2-mirror" / "assets").iterdir()))
+
+        tampered = dict(assets)
+        tampered[f"{linux_zip}.sha256"] = f"{'0' * 64}  {linux_zip}\n".encode()
+        for label, fixture, environment, message in (
+            ("sidecar mismatch", tampered, {}, f"{linux_zip} does not match {linux_zip}.sha256"),
+            ("truncated download", assets, {"TRUNCATE": "kompile-cli.jar"},
+             "kompile-cli.jar downloaded as 1 bytes"),
+            ("object lost after upload", assets, {"DROP": "kompile-cli.jar"},
+             "kompile-cli.jar is missing"),
+            ("missing credentials", assets, {"R2_SECRET_ACCESS_KEY": ""},
+             "must be configured as repository secrets"),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                completed, prefix = self._run_r2_mirror(
+                    pathlib.Path(temporary), fixture, **environment
+                )
+                self.assertNotEqual(0, completed.returncode)
+                self.assertIn(message, completed.stderr)
+                self.assertFalse((prefix / "manifest.json").exists())
+
     def test_build_workflows_have_read_only_contents_permissions(self):
         for name in (
             "build-native-linux-x86_64.yml",
@@ -2207,9 +2543,29 @@ class GithubWorkflowParityTest(unittest.TestCase):
             '"kompile-cli/kompile-component-cli:kompile-component"',
         ):
             self.assertIn(native_spec, source)
+        # kompile-agent is CLI contract, not a product extra: it is always
+        # added once CLI_NATIVE is true, with the app/component CLIs nested
+        # behind INCLUDE_PRODUCT_EXTRAS inside that same build-gate block.
         self.assertIn(
-            'if [ "${CLI_NATIVE}" = true ] && '
-            '[ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then',
+            'if [ "${CLI_NATIVE}" = true ]; then\n'
+            '        DELEGATED_CLIS=("kompile-cli/kompile-agent-cli:kompile-agent")\n'
+            '        if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then\n'
+            '            DELEGATED_CLIS+=(\n'
+            '                "kompile-cli/kompile-app-cli:kompile-app-cli"\n'
+            '                "kompile-cli/kompile-component-cli:kompile-component"\n'
+            '            )\n'
+            '        fi',
+            source,
+        )
+        # Mirrored on the require side: app/component CLI native binaries are
+        # required only inside the product-extras block (line-scoped above by
+        # "Optional artifacts"), nested behind their own CLI_NATIVE check.
+        self.assertIn(
+            'if [ "${CLI_NATIVE}" = true ]; then\n'
+            '    require_native_component "app CLI" "kompile-app-cli${EXE_SUFFIX}"\n'
+            '    require_native_component "component CLI" "kompile-component${EXE_SUFFIX}"\n'
+            'fi\n'
+            'fi',
             source,
         )
         for binary in ("kompile-agent", "kompile-app-cli", "kompile-component"):

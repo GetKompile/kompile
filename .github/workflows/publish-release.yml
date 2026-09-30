@@ -316,6 +316,22 @@ jobs:
           gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[] | "\(.name) (\(.size / 1048576 | floor)MB)"'
 
   # -------------------------------------------------------------------
+  # Refresh the Cloudflare R2 mirror with the release's current assets
+  # -------------------------------------------------------------------
+  mirror-r2:
+    name: Mirror release to R2
+    needs: [setup, collect-and-publish]
+    if: ${{ !cancelled() && needs.collect-and-publish.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mirror-release-to-r2.yml
+    with:
+      tag: ${{ needs.setup.outputs.release_tag }}
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+  # -------------------------------------------------------------------
   # Final summary (runs after builds OR collect)
   # -------------------------------------------------------------------
   release-summary:

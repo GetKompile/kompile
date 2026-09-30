@@ -70,3 +70,16 @@ jobs:
             --commit "${{ inputs.commit }}" \
             --dl4j-commit "${{ inputs.dl4jCommit }}" \
             --github-repository "${{ github.repository }}"
+
+  # Refresh the Cloudflare R2 mirror with the release's current assets.
+  mirror-r2:
+    name: Mirror release to R2
+    needs: verify-and-attach
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mirror-release-to-r2.yml
+    with:
+      tag: ${{ inputs.releaseTag }}
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

@@ -15,6 +15,11 @@ on:
         description: Comma-separated platform ids to build
         type: string
         default: linux-x86_64,linux-arm64,windows-x86_64,macosx-arm64
+    secrets:
+      DL4J_MAVEN_USERNAME:
+        required: false
+      DL4J_MAVEN_PASSWORD:
+        required: false
   workflow_dispatch:
     inputs:
       version:
@@ -145,6 +150,10 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+          # The same DL4J repository credentials as release.yml full-dist-linux.
+          server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
+          server-username: DL4J_MAVEN_USERNAME
+          server-password: DL4J_MAVEN_PASSWORD
 
       - name: Record runner capacity
         shell: bash
@@ -183,6 +192,10 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
           VARIANT: ${{ matrix.variant }}
+          # Only build-dist.sh passes -Ddl4j.repository.url, which activates the
+          # root POM repository these settings.xml credentials authenticate.
+          DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
+          DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
         run: |
           set -euo pipefail
           export GRAALVM_HOME="${JAVA_HOME}"
@@ -252,5 +265,35 @@ jobs:
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Stage standalone JARs
+        id: jars
+        if: matrix.distribution == 'full' && matrix.platform == 'linux-x86_64'
+        shell: bash
+        env:
+          BASE: ${{ steps.package.outputs.base }}
+        run: |
+          set -euo pipefail
+          # Stable-name release assets, copied from the archive the smoke step
+          # just verified. Tag pushes publish these from release.yml
+          # full-dist-linux instead, which is why tags skip linux-x86_64 here.
+          DIST_ROOT="${RUNNER_TEMP}/kompile-java-smoke/${BASE}"
+          JARS_DIR="${RUNNER_TEMP}/kompile-java-jars"
+          mkdir -p "${JARS_DIR}"
+          for asset in kompile-cli.jar kompile-server.jar kompile-chat.jar \
+                       kompile-crawl-manager.jar kompile-model-staging.jar; do
+            test -f "${DIST_ROOT}/lib/${asset}"
+            cp "${DIST_ROOT}/lib/${asset}" "${JARS_DIR}/${asset}"
+          done
+          echo "dir=${JARS_DIR}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload standalone JARs
+        if: matrix.distribution == 'full' && matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-full-linux-x86_64-jars
+          path: ${{ steps.jars.outputs.dir }}
           if-no-files-found: error
           retention-days: 7
