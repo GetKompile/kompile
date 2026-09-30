@@ -26,9 +26,10 @@
 # ⚠️  RUNNER SIZING — READ THIS FIRST
 #   Java and AOT builds intentionally use separate runner variables. The JVM build
 #   is suitable for a standard runner. Optimized CLI AOT completed without OOM on
-#   both free public runners: Linux x64 peaked at 9.82 GB on 15.61 GB physical RAM;
-#   macOS ARM64 peaked at 3.32 GB on the 7 GB M1 runner. Windows x64 retains a
-#   32 GB floor until measured independently.
+#   all three standard GitHub-hosted runners: Linux x64 peaked at 9.82 GB on
+#   15.61 GB physical RAM; Windows x64 peaked at 13.06 GB on 15.99 GB; macOS ARM64
+#   peaked at 3.32 GB on the 7 GB M1 runner. The capacity gate asks 32 GB of any
+#   platform without such a measurement.
 #   Configure these repository variables (Settings -> Secrets and variables ->
 #   Actions -> Variables):
 #       KOMPILE_JAVA_RUNNER             (default: ubuntu-22.04; JVM build + smoke)
@@ -39,8 +40,9 @@
 #       DL4J_MAVEN_REPOSITORY_URL    (optional repository containing the matching DL4J build)
 #       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
-#   Linux x64 and macOS ARM64 can use their standard hosted defaults. Configure a
-#   larger GitHub-hosted runner label for Windows AOT until its trial passes.
+#   All three AOT platforms can use their standard hosted defaults. Windows x64 has
+#   the least headroom (about 3 GB), so point KOMPILE_AOT_WINDOWS_X64_RUNNER at a
+#   larger GitHub-hosted label if its native-image step starts running out of memory.
 #   The cross-platform JVM matrix uses the fixed GitHub-hosted labels in
 #   build-java-distributions.yml.
 #
@@ -260,7 +262,7 @@ jobs:
           MIN_GIB=30
           EXPECTED_GIB=32
           case "${{ matrix.os_id }}-${{ matrix.arch }}" in
-            linux-x86_64)
+            linux-x86_64|windows-x86_64)
               MIN_GIB=15
               EXPECTED_GIB=16
               ;;

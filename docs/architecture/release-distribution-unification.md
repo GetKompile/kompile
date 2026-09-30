@@ -223,17 +223,21 @@ release version, and calls `./build-dist.sh full --jars-only`. The variant orche
 the Java build, shaded/exec JAR closure, JBang wrapper, jlink runtime, layout, manifest, and
 checksums. The independent AOT matrix runs only the `cli-only` native images and disables
 GraalVM quick-build optimization. Linux x64 is validated on its standard public runner
-(15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS), and macOS ARM64 is
-validated on its standard 7 GiB M1 runner (3.32 GB optimized CLI peak RSS). Windows x64
-retains a 32 GiB floor until measured independently. A separate optimized `kompile-app-main`
+(15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS), Windows x64 on the
+standard `windows-latest` runner (15.99 GiB physical RAM, 13.06 GB optimized CLI peak RSS,
+31 minutes of native-image, a 1.3 GB `cli-only` zip), and macOS ARM64 on its standard 7 GiB
+M1 runner (3.32 GB optimized CLI peak RSS). The `Verify AOT runner capacity` step holds each
+platform to the memory it was measured with and asks 32 GiB of any platform that has not been
+measured, unless a manual dispatch sets `allow_constrained_aot`. A separate optimized `kompile-app-main`
 probe exhausted the same Linux runner during native-image and was canceled without a Graal/Maven
 footer, so full application AOT remains a serial 64 GiB-runner workload. The canonical release
 job uploads both forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual
 dispatch with `publish=true` creates `v<version>` at the selected branch commit; tag pushes
-remain the normal final-release path. `KOMPILE_AOT_LINUX_X64_RUNNER` is optional because the
-standard Linux runner is sufficient; `KOMPILE_AOT_MACOS_ARM64_RUNNER` is likewise optional.
-Configure `KOMPILE_AOT_WINDOWS_X64_RUNNER` with a larger GitHub-hosted runner label;
-the JVM and publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
+remain the normal final-release path. `KOMPILE_AOT_LINUX_X64_RUNNER`,
+`KOMPILE_AOT_MACOS_ARM64_RUNNER` and `KOMPILE_AOT_WINDOWS_X64_RUNNER` are optional because each
+standard runner is sufficient. Windows has the least headroom, about 3 GB, so point
+`KOMPILE_AOT_WINDOWS_X64_RUNNER` at a larger GitHub-hosted runner label if its native-image step
+starts running out of memory. The JVM and publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
 `KOMPILE_RELEASE_RUNNER`. Publication is attached to the
 protected `release` environment.
 

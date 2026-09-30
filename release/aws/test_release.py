@@ -2265,13 +2265,14 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 )
         self.assertEqual(windows_jobs, checked)
 
-    def shell_steps(self, name):
+    def shell_steps(self, name, expressions=None):
         """Yields (line, shell, script) for every `run:` step in a workflow.
 
         `name` is a workflow file name, or the path of another file with steps,
         such as a composite action. `shell` is None when the step names none.
         GitHub expressions become a plain word, since the runner substitutes
-        them before the shell parses the script.
+        them before the shell parses the script; `expressions` maps the text of
+        an expression to the value to put there instead.
         """
         path = name if isinstance(name, pathlib.Path) else REPOSITORY / ".github" / "workflows" / name
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -2307,7 +2308,12 @@ class GithubWorkflowParityTest(unittest.TestCase):
             while end < len(lines) and (not lines[end].strip() or lines[end].startswith(" " * (key - 1))):
                 end += 1
             shell = re.search(r"^ {%d}shell: *(\S+)" % key, "\n".join(lines[step:end]), re.M)
-            script = re.sub(r"\$\{\{.*?\}\}", "EXPR", script, flags=re.S)
+            script = re.sub(
+                r"\$\{\{(.*?)\}\}",
+                lambda expression: (expressions or {}).get(expression.group(1).strip(), "EXPR"),
+                script,
+                flags=re.S,
+            )
             yield number + 1, shell.group(1) if shell else None, script
 
     def test_release_shell_steps_parse(self):
@@ -2424,6 +2430,49 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 bash, input=script, text=True, capture_output=True, env={**os.environ, "HOME": home},
             )
             self.assertEqual(0, missing.returncode, missing.stderr)
+
+    def test_aot_capacity_gate_admits_the_measured_runners(self):
+        # The optimized CLI build peaked at 9.82 GB on the 15.61 GB Linux x64
+        # runner, at 13.06 GB on the 15.99 GB Windows x64 runner and at 3.32 GB
+        # on the 7 GB macOS ARM64 runner. linux-arm64 stands for a platform that
+        # has not been measured: it needs 30 GiB, unless a manual dispatch asks
+        # for a constrained trial.
+        def gate(platform, gib, event="push", constrained="false"):
+            os_id, arch = platform.split("-", 1)
+            expressions = {
+                "matrix.os_id": os_id,
+                "matrix.arch": arch,
+                "github.event_name": event,
+                "inputs.allow_constrained_aot": constrained,
+            }
+            steps = [
+                (shell, script) for _, shell, script in self.shell_steps("release.yml", expressions)
+                if "AOT runner memory:" in script
+            ]
+            self.assertEqual(1, len(steps))
+            shell, script = steps[0]
+            self.assertEqual("bash", shell)
+            with tempfile.TemporaryDirectory() as directory:
+                # The step reads the runner's memory through node.
+                node = pathlib.Path(directory) / "node"
+                node.write_text(f"#!/bin/sh\necho {gib}\n", encoding="utf-8")
+                node.chmod(0o755)
+                return subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-eo", "pipefail"],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"]},
+                ).returncode
+
+        for platform, floor in (
+            ("linux-x86_64", 15), ("windows-x86_64", 15), ("macosx-arm64", 7), ("linux-arm64", 30),
+        ):
+            self.assertEqual(0, gate(platform, floor), platform)
+            self.assertEqual(1, gate(platform, floor - 1), platform)
+        self.assertEqual(1, gate("linux-arm64", 15, "workflow_dispatch"))
+        self.assertEqual(0, gate("linux-arm64", 15, "workflow_dispatch", "true"))
+        self.assertEqual(1, gate("windows-x86_64", 7, "push", "true"))
 
     def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
         workflows = REPOSITORY / ".github" / "workflows"
