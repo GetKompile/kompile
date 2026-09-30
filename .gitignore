@@ -124,6 +124,9 @@ COPILOT.md
 .gemini/
 **/.gemini/
 javac.*.args
+# Shipped resources whose names match the rules above.
+!kompile-cli/kompile-cli-main/src/main/resources/ai/kompile/cli/main/chat/providers/opencode.json
+!kompile-cli/kompile-cli-main/src/main/resources/templates/AGENTS.md
 
 # Eclipse IDE files
 .classpath
