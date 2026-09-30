@@ -122,9 +122,10 @@
                  resolved in ~/.m2 (same environment the unit/IT tests see), so dev
                  serving children never run a bundled closure that can drift from
                  the installed jars. dependency:build-classpath emits ABSOLUTE m2
-                 paths; antrun stamps them into the manifest (ant folds long
-                 Class-Path lines correctly). Launch: java -jar <this jar>.
-                 The shaded -exec jar remains the distribution artifact. -->
+                 paths; antrun stamps them into the manifest as file: URLs (ant
+                 folds long Class-Path lines correctly). Launch: java -jar <this jar>.
+                 The shaded -exec jar remains the distribution artifact and drops
+                 this Class-Path. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -160,12 +161,20 @@
                             <target>
                                 <loadfile property="runtime.classpath.raw"
                                       srcFile="${project.build.directory}/runtime-classpath.txt"/>
-                                <!-- Manifest Class-Path is SPACE-separated (URL list),
-                                     not colon-separated like -cp. -->
-                                <pathconvert property="runtime.classpath"
-                                         pathsep=" ">
+                                <!-- Manifest Class-Path is a SPACE-separated list of URLs,
+                                     not a colon-separated -cp. javac and the JVM parse each
+                                     entry as a URL, so a Windows path D:\... reads as the
+                                     unknown protocol "d": javac fails to compile anything
+                                     against this jar and the JVM drops the jar itself. -->
+                                <makeurl property="runtime.classpath" separator=" ">
                                     <path path="${runtime.classpath.raw}"/>
-                                </pathconvert>
+                                </makeurl>
+                                <fail message="Class-Path entries must be file: URLs">
+                                    <condition>
+                                        <matches string="${runtime.classpath}"
+                                                 pattern="(^| )(?!file:)[^ ]"/>
+                                    </condition>
+                                </fail>
                                 <manifest file="${project.build.directory}/thin-manifest.mf">
                                     <attribute name="Main-Class"
                                            value="ai.kompile.app.subprocess.ServingSubprocessMain"/>
@@ -213,6 +222,12 @@
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>ai.kompile.app.subprocess.ServingSubprocessMain</mainClass>
+                                    <!-- The thin manifest's Class-Path names this build machine's
+                                         ~/.m2. The shaded jar carries every class itself, and an
+                                         empty entry makes the transformer remove the attribute. -->
+                                    <manifestEntries>
+                                        <Class-Path/>
+                                    </manifestEntries>
                                 </transformer>
                             </transformers>
                         </configuration>
