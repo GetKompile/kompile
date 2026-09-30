@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -100,7 +101,7 @@ public class McpUrlResolver {
 
         for (String baseUrl : KompileServiceEndpoints.allBaseUrls()) {
             if (probeKompileApp(baseUrl)) {
-                System.err.println(DIM + "Auto-detected a kompile MCP server at " + baseUrl + RESET);
+                McpDiagnostics.log(DIM + "Auto-detected a kompile MCP server at " + baseUrl + RESET);
                 return baseUrl + "/mcp/sse";
             }
         }

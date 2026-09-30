@@ -56,6 +56,7 @@ import ai.kompile.cli.main.chat.harness.JudgeLlmEvaluator;
 import ai.kompile.cli.main.chat.harness.PerformanceHarness;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.mcp.McpDashboardController;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -139,6 +140,7 @@ public class ChatRepl implements AutoCloseable {
     private Runnable codeIndexAlertCleanup = () -> { };
     private Runnable coordinationAlertCleanup = () -> { };
     private Runnable enforcerAlertCleanup = () -> { };
+    private Runnable mcpLogCleanup = () -> { };
 
     // ── Core state ────────────────────────────────────────────────────────────
 
@@ -581,19 +583,35 @@ public class ChatRepl implements AutoCloseable {
             }).run());
         }
 
-        // Interactive Standard Chat exposes the same project-local MCP bundle
-        // surface as headless chat. Load last so no later constructor step can
-        // orphan a successfully-started stdio child.
-        this.mcpBundleTools = McpBundleToolLoader.loadInteractive(
-                workDir, toolRegistry, sessionId);
-        this.dashboardController = new McpDashboardController(
-                mcpBundleTools, tui, () -> callInSession(this::dashboardToolContext));
+        // MCP tool-bridge diagnostics go to the process browser, not the transcript.
+        // A legacy chat without a live TUI (headless runs) also keeps the stderr line.
+        this.mcpLogCleanup = McpDiagnostics.installProcessLog(
+                uiSession, processManager, () -> !uiSession.isIsolated() && !tui.isStarted());
+        try {
+            // Interactive Standard Chat exposes the same project-local MCP bundle
+            // surface as headless chat. Load last so no later constructor step can
+            // orphan a successfully-started stdio child.
+            this.mcpBundleTools = McpBundleToolLoader.loadInteractive(
+                    workDir, toolRegistry, sessionId);
+            this.dashboardController = new McpDashboardController(
+                    mcpBundleTools, tui, () -> callInSession(this::dashboardToolContext));
+        } catch (RuntimeException | Error e) {
+            mcpLogCleanup.run();
+            throw e;
+        }
     }
 
     private ToolContext dashboardToolContext() {
         AgentConfig agent = agentRegistry.get(localAgentName);
         return new ToolContext(
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
+    }
+
+    /** Running processes for the tab title; the MCP log entry is not background work. */
+    private int titleProcessCount() {
+        return (int) processManager.listRunning().stream()
+                .filter(entry -> entry.getKind() != BackgroundProcessManager.ProcessKind.MCP)
+                .count();
     }
 
     public String handleDashboardCommand(String arguments) {
@@ -1376,6 +1394,7 @@ public class ChatRepl implements AutoCloseable {
             exportTranscriptToProject();
             dashboardController.close();
             mcpBundleTools.close();
+            mcpLogCleanup.run();
             projectActivityController.close();
             sharedProcessMirror.close();
             processManager.close();
@@ -1407,6 +1426,7 @@ public class ChatRepl implements AutoCloseable {
             projectActivityController.close();
             dashboardController.close();
             mcpBundleTools.close();
+            mcpLogCleanup.run();
         }
     }
 
@@ -1459,7 +1479,7 @@ public class ChatRepl implements AutoCloseable {
         }
 
         renderer.attachTerminal(terminal, readyTerminalTitle(defaultTerminalTitle()));
-        renderer.updateProcessActivity(processManager.listRunning().size());
+        renderer.updateProcessActivity(titleProcessCount());
         // Clear tracking modes left behind by an older session so the host terminal
         // retains native transcript selection and paste behavior.
         disableTranscriptMouse(terminal);
@@ -1762,7 +1782,7 @@ public class ChatRepl implements AutoCloseable {
         Runnable activityRedraw = sessionContext.wrap(() -> {
             activityPanel.refresh();
             refreshCurrentActivityView(tui, activityPanel);
-            renderer.updateProcessActivity(processManager.listRunning().size());
+            renderer.updateProcessActivity(titleProcessCount());
         });
         AtomicBoolean auxiliaryRefreshQueued = new AtomicBoolean(false);
         auxiliaryActivityRedraw = () -> {
@@ -2050,6 +2070,7 @@ public class ChatRepl implements AutoCloseable {
             // Close project MCP children before the general process manager.
             dashboardController.close();
             mcpBundleTools.close();
+            mcpLogCleanup.run();
 
             // Stop mirroring before closing the manager it feeds.
             sharedProcessMirror.close();

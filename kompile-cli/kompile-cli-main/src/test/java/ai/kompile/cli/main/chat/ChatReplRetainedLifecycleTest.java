@@ -4,9 +4,12 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
+import ai.kompile.cli.main.chat.tui.StatusBar;
+import ai.kompile.utils.AnsiConstants;
 import org.jline.reader.LineReader;
 import org.jline.terminal.Size;
 import org.jline.terminal.impl.LineDisciplineTerminal;
@@ -18,6 +21,7 @@ import org.mockito.MockedConstruction;
 import org.mockito.MockedStatic;
 
 import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -180,6 +184,94 @@ class ChatReplRetainedLifecycleTest {
                 terminal.writer().println("shared terminal remains open");
                 terminal.writer().flush();
                 assertTrue(output.toString(StandardCharsets.UTF_8).contains("shared terminal remains open"));
+            } finally {
+                projectLoops.shutdown();
+            }
+        }
+    }
+
+    @Test
+    void mcpBridgeLinesGoToTheProcessBrowserNotTheTranscript() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousDirectory = System.getProperty("user.dir");
+        Path home = Files.createDirectories(temporaryDirectory.resolve("home"));
+        Path work = Files.createDirectories(temporaryDirectory.resolve("project"));
+        Files.createDirectories(work.resolve(".kompile"));
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", work.toString());
+        try {
+            exerciseMcpLogRouting(work);
+        } finally {
+            restoreProperty("user.home", previousHome);
+            restoreProperty("user.dir", previousDirectory);
+        }
+    }
+
+    private void exerciseMcpLogRouting(Path work) throws Exception {
+        HarnessConfig disabled = new HarnessConfig();
+        disabled.setEnabled(false);
+        disabled.setJudgeEnabled(false);
+        disabled.setJudgeGlobalEnabled(false);
+        disabled.setPersistCrossSession(false);
+        McpBundleToolLoader bundle = mock(McpBundleToolLoader.class);
+        when(bundle.dashboardConfig()).thenReturn(Optional.empty());
+        try (MockedStatic<HarnessConfig> harness = mockStatic(HarnessConfig.class);
+             MockedStatic<ToolRegistryFactory> tools = mockStatic(ToolRegistryFactory.class);
+             MockedStatic<McpBundleToolLoader> mcp = mockStatic(McpBundleToolLoader.class);
+             MockedConstruction<DirectLlmClient> clients = mockConstruction(DirectLlmClient.class);
+             var terminal = new LineDisciplineTerminal(
+                     "mcp-log-routing", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8)) {
+            harness.when(HarnessConfig::load).thenReturn(disabled);
+            harness.when(() -> HarnessConfig.load(any())).thenReturn(disabled);
+            tools.when(() -> ToolRegistryFactory.create(any(), anyString(), any(), any(),
+                            any(), any(), any(), any(), isNull(), any(), any()))
+                    .thenAnswer(invocation -> new ToolRegistry(invocation.getArgument(0)));
+            // Bundle discovery reports while the REPL is still being constructed.
+            mcp.when(() -> McpBundleToolLoader.loadInteractive(eq(work), any(), anyString()))
+                    .thenAnswer(invocation -> {
+                        McpDiagnostics.log("\u001B[33m[MCP] Skipping untrusted workspace MCP config\u001B[0m");
+                        return bundle;
+                    });
+            terminal.setSize(new Size(100, 30));
+            ScheduledLoopManager projectLoops = new ScheduledLoopManager(
+                    prompt -> fail("No scheduled provider turn is expected"),
+                    ScheduledLoopManager.stateFileForProject(work));
+            ByteArrayOutputStream err = new ByteArrayOutputStream();
+            try (OwnedRepl owned = new OwnedRepl("mcp-log-routing", work, projectLoops);
+                 PrintStream capture = new PrintStream(err, true, StandardCharsets.UTF_8)) {
+                StatusBar statusBar = owned.repl.getTui().getStatusBar();
+                try (var ignored = owned.ui.bind()) {
+                    owned.repl.initializeInteractive(terminal);
+                    PrintStream routedErr = System.err;
+                    System.setErr(capture);
+                    try {
+                        McpDiagnostics.log("[MCP] Injected kompile tools into the agent settings");
+                    } finally {
+                        System.setErr(routedErr);
+                    }
+                    String processes = AnsiConstants.stripAnsi(statusBar.renderProcessPanel());
+                    assertTrue(processes.contains("MCP tool bridge log"), processes);
+                    assertTrue(processes.contains("[MCP] Skipping untrusted workspace MCP config"), processes);
+                    assertTrue(processes.contains("[MCP] Injected kompile tools"), processes);
+                    assertFalse(content(owned).contains("[MCP]"), content(owned));
+                    assertFalse(err.toString(StandardCharsets.UTF_8).contains("[MCP]"),
+                            "an isolated chat never echoes MCP lines to stderr");
+                    owned.repl.detachInteractive();
+                }
+
+                // Closing the chat drops its sink, so a late line keeps the stderr route.
+                owned.close();
+                PrintStream closedErr = System.err;
+                System.setErr(capture);
+                try {
+                    owned.ui.capture((Runnable) () -> McpDiagnostics.log("[MCP] after close")).run();
+                } finally {
+                    System.setErr(closedErr);
+                }
+                assertTrue(err.toString(StandardCharsets.UTF_8).contains("[MCP] after close"));
+                assertFalse(statusBar.renderProcessPanel().contains("after close"));
+                verify(bundle, atLeastOnce()).close();
+                assertEquals(1, clients.constructed().size());
             } finally {
                 projectLoops.shutdown();
             }

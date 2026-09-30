@@ -84,7 +84,7 @@ public final class McpBundleToolLoader implements AutoCloseable {
                 try {
                     loader.dashboardConfig = configStore.projectDashboard().orElse(null);
                 } catch (IOException dashboardFailure) {
-                    System.err.println("[MCP] Ignoring invalid project dashboard config: "
+                    McpDiagnostics.log("[MCP] Ignoring invalid project dashboard config: "
                             + dashboardFailure.getMessage());
                 }
             }
@@ -104,7 +104,7 @@ public final class McpBundleToolLoader implements AutoCloseable {
             throw e;
         } catch (Exception e) {
             loader.close();
-            System.err.println("[MCP] Bundle tool discovery failed: " + e.getMessage());
+            McpDiagnostics.log("[MCP] Bundle tool discovery failed: " + e.getMessage());
         }
         return loader;
     }
@@ -127,7 +127,7 @@ public final class McpBundleToolLoader implements AutoCloseable {
                 && !isExplicitlyTrusted(configStore.workspace())
                 && !confirmWorkspaceTrust(configStore.workspace())) {
             includeProjectConfig = false;
-            System.err.println("[MCP] Skipping untrusted workspace MCP config: "
+            McpDiagnostics.log("[MCP] Skipping untrusted workspace MCP config: "
                     + configStore.path(McpConfigStore.Scope.PROJECT));
         }
         return load(configStore.workspace(), registry, transcriptId, includeProjectConfig);
@@ -251,11 +251,11 @@ public final class McpBundleToolLoader implements AutoCloseable {
             discoveredTools.forEach(registry::register);
             clients.add(client);
             registered = true;
-            System.err.println("[MCP] Discovered " + discoveredTools.size() + " tools from " + serverId);
+            McpDiagnostics.log("[MCP] Discovered " + discoveredTools.size() + " tools from " + serverId);
         } catch (Exception e) {
             String message = "MCP server unavailable " + serverId + ": " + e.getMessage();
             if (required) throw new RequiredMcpServerException(message, e);
-            System.err.println("[MCP] " + message);
+            McpDiagnostics.log("[MCP] " + message);
         } finally {
             if (!registered && client != null) {
                 try { client.close(); } catch (Exception ignored) { }
@@ -349,7 +349,7 @@ public final class McpBundleToolLoader implements AutoCloseable {
                     ai.kompile.cli.main.auth.CredentialStore.create())
                     .resolveAccessToken(serverId);
         } catch (Exception e) {
-            System.err.println("[MCP] Could not resolve stored OAuth token for "
+            McpDiagnostics.log("[MCP] Could not resolve stored OAuth token for "
                     + serverId + ": " + e.getMessage());
             return null;
         }
