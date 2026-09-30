@@ -1306,60 +1306,96 @@ class BuildPlatformParityTest(unittest.TestCase):
             self.assertNotEqual(0, failed.returncode)
             self.assertIn("runtime resource is missing", failed.stdout + failed.stderr)
 
-    def test_exec_jar_reuse_requires_exact_rocm_classifier(self):
+    def _exec_jar_matches_backend(self, profile, backend, classifier, entries):
         source = (REPOSITORY / "build-dist.sh").read_text(encoding="utf-8")
         marker = "exec_jar_matches_backend() {"
         function_body = source.split(marker, 1)[1].split(
             '\n}\n\nif [ "${SKIP_JAVA_BUILD}"', 1,
         )[0]
         function = marker + function_body + "\n}\n"
-        backend = "nd4j-zluda-12.9"
-        version = "1.0.0-SNAPSHOT"
-        classifier = "linux-x86_64-zluda-rocm-10.0.0"
         script = (
             f'ND4J_BACKEND="{backend}"\n'
-            f'ND4J_VERSION="{version}"\n'
+            'ND4J_VERSION="1.0.0-SNAPSHOT"\n'
             f'SDK_CLASSIFIER="{classifier}"\n'
-            'KOMPILE_BACKEND_PROFILE="zluda-rocm-10.0.0"\n'
+            f'KOMPILE_BACKEND_PROFILE="{profile}"\n'
             + function
             + 'exec_jar_matches_backend "$1"\n'
         )
         with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            exact = root / "exact.jar"
-            stale = root / "stale.jar"
-            with zipfile.ZipFile(exact, "w") as archive:
-                archive.writestr(
-                    f"BOOT-INF/lib/{backend}-{version}.jar", b"java-backend",
-                )
-                archive.writestr(
-                    f"BOOT-INF/lib/{backend}-{version}-{classifier}.jar",
-                    b"rocm10-native",
-                )
-            with zipfile.ZipFile(stale, "w") as archive:
-                archive.writestr(
-                    f"BOOT-INF/lib/{backend}-{version}.jar", b"java-backend",
-                )
-                archive.writestr(
-                    f"BOOT-INF/lib/{backend}-{version}-linux-x86_64-zluda-rocm-7.2.4.jar",
-                    b"rocm7-native",
-                )
-            exact_result = subprocess.run(
-                ["bash", "-c", script, "bash", str(exact)],
+            jar = pathlib.Path(temporary) / "exec.jar"
+            with zipfile.ZipFile(jar, "w") as archive:
+                for entry in entries:
+                    archive.writestr(entry, b"entry")
+            return subprocess.run(
+                ["bash", "-c", script, "bash", str(jar)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
-            stale_result = subprocess.run(
-                ["bash", "-c", script, "bash", str(stale)],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(
-            0, exact_result.returncode, exact_result.stdout + exact_result.stderr,
-        )
-        self.assertNotEqual(0, stale_result.returncode)
+
+    def test_exec_jar_reuse_requires_exact_rocm_classifier(self):
+        backend = "nd4j-zluda-12.9"
+        classifier = "linux-x86_64-zluda-rocm-10.0.0"
+        stale = "linux-x86_64-zluda-rocm-7.2.4"
+        boot = f"BOOT-INF/lib/{backend}-1.0.0-SNAPSHOT"
+        bindings = "org/nd4j/linalg/jcublas/bindings"
+        backend_class = "org/nd4j/linalg/jzluda/JZludaBackend.class"
+        descriptor = f"META-INF/maven/org.eclipse.deeplearning4j/{backend}/pom.properties"
+        cases = {
+            "boot exact": ([f"{boot}.jar", f"{boot}-{classifier}.jar"], True),
+            "boot stale ROCm": ([f"{boot}.jar", f"{boot}-{stale}.jar"], False),
+            "boot without Java backend": ([f"{boot}-{classifier}.jar"], False),
+            # DL4J builds the nd4j-zluda JARs without a Maven descriptor, so a
+            # shaded runtime JAR keeps only the backend class and native payload.
+            "shaded exact": (
+                [backend_class, f"{bindings}/{classifier}/shared-runtime-manifest.txt"],
+                True,
+            ),
+            "shaded stale ROCm": (
+                [backend_class, f"{bindings}/{stale}/shared-runtime-manifest.txt"],
+                False,
+            ),
+            "shaded without Java backend": (
+                [f"{bindings}/{classifier}/shared-runtime-manifest.txt"], False,
+            ),
+            "shaded without native payload": ([descriptor, backend_class], False),
+        }
+        for name, (entries, accepted) in cases.items():
+            with self.subTest(name):
+                result = self._exec_jar_matches_backend(
+                    "zluda-rocm-10.0.0", backend, classifier, entries,
+                )
+                self.assertEqual(
+                    accepted, result.returncode == 0, result.stdout + result.stderr,
+                )
+
+    def test_exec_jar_reuse_names_other_backends_by_maven_descriptor(self):
+        # Only the ZLUDA lanes identify a shaded backend by its class. Every other
+        # backend JAR carries its Maven descriptor into the shaded JAR.
+        backend = "nd4j-cuda-12.9"
+        cases = {
+            "shaded descriptor": (
+                [f"META-INF/maven/org.eclipse.deeplearning4j/{backend}/pom.properties"],
+                True,
+            ),
+            "boot backend": ([f"BOOT-INF/lib/{backend}-1.0.0-SNAPSHOT.jar"], True),
+            "shaded ZLUDA backend": (
+                [
+                    "org/nd4j/linalg/jzluda/JZludaBackend.class",
+                    "org/nd4j/linalg/jcublas/bindings/linux-x86_64-cudnn/"
+                    "shared-runtime-manifest.txt",
+                ],
+                False,
+            ),
+        }
+        for name, (entries, accepted) in cases.items():
+            with self.subTest(name):
+                result = self._exec_jar_matches_backend(
+                    "cuda-12.9-cudnn", backend, "linux-x86_64-cudnn", entries,
+                )
+                self.assertEqual(
+                    accepted, result.returncode == 0, result.stdout + result.stderr,
+                )
 
     def test_repository_only_backend_assembly_produces_self_contained_zip(self):
         maven = shutil.which("mvn")

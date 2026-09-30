@@ -521,8 +521,9 @@ fi
 
 # A target/ JAR may survive from another backend lane when --skip-java-build is
 # used, and packaging must also defend against any incomplete focused reactor.
-# Shaded JARs retain Maven metadata while Spring Boot JARs retain the dependency
-# under BOOT-INF/lib, so accept either representation of the exact selected lane.
+# Shaded JARs retain the Maven metadata their dependencies carry while Spring
+# Boot JARs retain the dependency under BOOT-INF/lib, so accept either
+# representation of the exact selected lane.
 exec_jar_matches_backend() {
     local jar="$1"
     if [ -z "${ND4J_BACKEND}" ]; then
@@ -533,16 +534,25 @@ exec_jar_matches_backend() {
     # ROCm-qualified ZLUDA releases share one artifactId. Require the exact
     # native classifier as well as the Java backend so stale 7.2.4 target/
     # output cannot be relabelled as a 10.0.0 distribution (or vice versa).
+    # DL4J builds the nd4j-zluda JARs without a Maven descriptor, so a shaded
+    # JAR cannot name the Java backend through pom.properties as the other
+    # lanes below do; the backend class it carries identifies it instead.
     case "${KOMPILE_BACKEND_PROFILE}" in
         zluda-rocm-*)
             {
                 unzip -p "${jar}" \
                     "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}-${SDK_CLASSIFIER}.jar" \
                     >/dev/null 2>&1 \
-                || unzip -p "${jar}" \
-                    "org/nd4j/linalg/jcublas/bindings/${SDK_CLASSIFIER}/shared-runtime-manifest.txt" \
+                && unzip -p "${jar}" "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}.jar" \
                     >/dev/null 2>&1
-            } || return 1
+            } || {
+                unzip -p "${jar}" \
+                    "org/nd4j/linalg/jcublas/bindings/${SDK_CLASSIFIER}/shared-runtime-manifest.txt" \
+                    >/dev/null 2>&1 \
+                && unzip -p "${jar}" "org/nd4j/linalg/jzluda/JZludaBackend.class" \
+                    >/dev/null 2>&1
+            }
+            return
             ;;
     esac
 
