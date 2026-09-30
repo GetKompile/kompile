@@ -129,7 +129,7 @@ class ProcessManagerTest {
                 firstLine.countDown();
             });
             ObjectNode params = new ObjectMapper().createObjectNode();
-            params.put("command", "echo live-first; sleep 1; echo live-second");
+            params.put("command", "echo live-first; read -t 1; echo live-second");
 
             CompletableFuture<ToolResult> execution = CompletableFuture.supplyAsync(() -> {
                 try {
