@@ -73,6 +73,9 @@ class ChatHarnessCapabilitiesTest {
         assertEquals(java.util.List.of("model", "role", "fast", "ultracode"),
                 java.util.stream.StreamSupport.stream(durableNames.spliterator(), false)
                         .map(JsonNode::asText).toList());
+        // Gate approvals: a live control during a run, an input field between runs.
+        assertTrue(parsed.path("webControls").path("actions").toString().contains("\"workflow_approve\""), json);
+        assertTrue(parsed.path("webInput").path("optionalFields").toString().contains("\"workflowApprove\""), json);
     }
 
     @Test

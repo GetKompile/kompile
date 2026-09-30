@@ -63,6 +63,18 @@ class ToolCallRenderingTest {
     }
 
     @Test
+    void completedCallRemovesTerminalControlCharacters() {
+        // ANSI off, so any escape left in the row or the body came from the tool.
+        String rendered = new TerminalRenderer(false).renderToolCallComplete("bash",
+                new ToolResult("", "\033[2Jcleared\007\n\033[31mnext\033[0m", Map.of()));
+
+        assertFalse(rendered.contains("\033"), rendered);
+        assertFalse(rendered.contains("\007"), rendered);
+        assertTrue(rendered.contains("cleared (+1 lines)"), "row preview: " + rendered);
+        assertTrue(rendered.contains("\n     next"), "detail body: " + rendered);
+    }
+
+    @Test
     void readShowsFilePathAndLineCount() {
         ToolResult result = new ToolResult("src/main/java/Foo.java", "     1\tpackage com.example;\n",
                 Map.of("totalLines", 200, "linesShown", 50, "truncated", true));

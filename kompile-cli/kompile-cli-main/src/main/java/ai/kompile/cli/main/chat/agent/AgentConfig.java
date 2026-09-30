@@ -48,6 +48,7 @@ public class AgentConfig {
     private final String thinkingOverride; // explicit provider-native thinking/effort override
     private final boolean isCustom; // loaded from .kompile/agents/ file
     private final String roleName; // optional role to apply to this agent
+    private final String workflowParticipant; // workflow participant this subagent runs as (null = none)
 
     private AgentConfig(Builder builder) {
         this.name = builder.name;
@@ -64,6 +65,7 @@ public class AgentConfig {
         this.thinkingOverride = builder.thinkingOverride;
         this.isCustom = builder.isCustom;
         this.roleName = builder.roleName;
+        this.workflowParticipant = builder.workflowParticipant;
     }
 
     public String getName() { return name; }
@@ -80,6 +82,7 @@ public class AgentConfig {
     public String getThinkingOverride() { return thinkingOverride; }
     public boolean isCustom() { return isCustom; }
     public String getRoleName() { return roleName; }
+    public String getWorkflowParticipant() { return workflowParticipant; }
 
     /**
      * Check if a specific model is allowed for this agent.
@@ -109,7 +112,8 @@ public class AgentConfig {
                 .permissionOverrides(permissionOverrides).isSubagent(isSubagent)
                 .canSpawnSubagents(canSpawnSubagents).modelHint(modelHint)
                 .allowedModels(allowedModels).modelOverride(modelOverride)
-                .thinkingOverride(thinkingOverride).isCustom(isCustom).roleName(roleName);
+                .thinkingOverride(thinkingOverride).isCustom(isCustom).roleName(roleName)
+                .workflowParticipant(workflowParticipant);
     }
 
     public static class Builder {
@@ -127,6 +131,7 @@ public class AgentConfig {
         private String thinkingOverride = null;
         private boolean isCustom = false;
         private String roleName = null;
+        private String workflowParticipant = null;
 
         public Builder(String name) {
             this.name = name;
@@ -195,6 +200,11 @@ public class AgentConfig {
 
         public Builder roleName(String roleName) {
             this.roleName = roleName;
+            return this;
+        }
+
+        public Builder workflowParticipant(String workflowParticipant) {
+            this.workflowParticipant = workflowParticipant;
             return this;
         }
 

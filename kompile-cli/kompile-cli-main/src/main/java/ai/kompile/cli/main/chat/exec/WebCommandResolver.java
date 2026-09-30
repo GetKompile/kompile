@@ -5,24 +5,35 @@ import ai.kompile.cli.main.chat.ContinueManager;
 import ai.kompile.cli.main.chat.MessageQueue;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ScheduledLoopManager;
+import ai.kompile.cli.main.chat.SharedProcessMirror;
+import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
 import ai.kompile.cli.main.chat.config.ModelCatalogFallback;
+import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsMarkdownGenerator;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
+import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 
 /** Resolve raw user intent before provider initialization, memory, or supplemental context. */
@@ -54,6 +65,22 @@ public final class WebCommandResolver {
 
     public static Resolution resolve(WebChatInput input, Path directory) {
         return resolve(input, directory, new ChatSessionStateStore(), null);
+    }
+
+    /**
+     * Who a web run acts as, from the flags it was started with: the agent it names, its
+     * role, and whether it skips permission prompts.
+     */
+    public record RunPermissions(String agentName, String roleName, boolean skipPermissions) { }
+
+    /**
+     * Resolve input for a web run started with {@code permissions}. A process command sent
+     * between runs is then answered from the session's recorded processes, permitted as
+     * the run itself would permit it.
+     */
+    public static Resolution resolve(WebChatInput input, Path directory, RunPermissions permissions) {
+        return resolveInternal(input, () -> loadSkills(directory), new ChatSessionStateStore(), directory,
+                null, null, permissions);
     }
 
     /** Headless entry: explicit store seam for tests and embedders. */
@@ -95,11 +122,19 @@ public final class WebCommandResolver {
     static Resolution resolveInternal(WebChatInput input, Supplier<SkillRegistry> skills,
                                       ChatSessionStateStore stateStore, Path directory,
                                       Supplier<ChatConfig> configOverride, Path modelCatalogStorePath) {
+        return resolveInternal(input, skills, stateStore, directory, configOverride, modelCatalogStorePath, null);
+    }
+
+    static Resolution resolveInternal(WebChatInput input, Supplier<SkillRegistry> skills,
+                                      ChatSessionStateStore stateStore, Path directory,
+                                      Supplier<ChatConfig> configOverride, Path modelCatalogStorePath,
+                                      RunPermissions permissions) {
         // Headless session-configuration read: one quiet outcome with every config
         // menu aggregated. Never reaches a model turn and never touches rawInput.
         if (input.configQuery()) {
             return configSnapshot(input, stateStore, directory, configOverride, modelCatalogStorePath);
         }
+        if (input.workflowApprove() != null) return workflowApproval(input, directory);
         String raw = input.rawInput().stripLeading();
         if (!raw.startsWith("/")) return model(input.rawInput(), input);
         int end = 1;
@@ -156,10 +191,17 @@ public final class WebCommandResolver {
                 }
                 return resolveClearCommand(command, input, stateStore, directory);
             }
+            if (ChatCommandCatalog.isLiveRunCommand(name) && permissions != null && directory != null
+                    && BackgroundProcessManager.isSafeSessionId(input.sessionId())) {
+                return betweenRuns(name, raw.substring(end).strip(), command, input.sessionId(),
+                        permissions, stateStore, directory, configOverride);
+            }
             Status status = Status.valueOf(ChatCommandCatalog.webSupport(name).name());
             String message = switch (status) {
                 case TERMINAL_REQUIRED -> command + " requires the interactive terminal; no action was performed.";
-                case LIVE_SESSION_REQUIRED -> command + " requires a durable live-session runtime, not yet supported by web input; no state was changed.";
+                case LIVE_SESSION_REQUIRED -> ChatCommandCatalog.isLiveRunCommand(name)
+                        ? command + " works during a live run: send it while the agent is working. Between runs no harness is running, so no action was performed."
+                        : command + " requires a durable live-session runtime, not yet supported by web input; no state was changed.";
                 default -> command + " is not yet supported by web input; no action was performed.";
             };
             return new Resolution(status, command, message, null);
@@ -174,6 +216,92 @@ public final class WebCommandResolver {
         String expanded = "<skill name=\"" + skill.getName() + "\">\n"
                 + skill.expandTemplate(arguments) + "\n</skill>";
         return model(expanded, input);
+    }
+
+    /**
+     * A gate approval sent between runs, as {@code /workflow approve} is in the terminal. No
+     * harness holds the team, so the approval is recorded in the session's workflow record,
+     * which its next run restores. It is refused when the session has no team, or when the
+     * team it recorded can no longer be resolved.
+     */
+    private static Resolution workflowApproval(WebChatInput input, Path directory) {
+        String command = "/workflow approve";
+        if (directory == null || !BackgroundProcessManager.isSafeSessionId(input.sessionId())) {
+            return new Resolution(Status.INVALID, command,
+                    "A gate approval needs this session's id and project; nothing was approved.", null);
+        }
+        try {
+            WorkflowSessionContext team = WorkflowSessionContext.recorded(input.sessionId(), directory);
+            if (team == null) {
+                return new Resolution(Status.INVALID, command, "This session has no workflow team.", null);
+            }
+            String gate = team.approve(input.workflowApprove());
+            // Recording is best effort; a run only sees the approval once it is recorded.
+            if (!WorkflowSessionContext.satisfiedGates(input.sessionId()).contains(gate)) {
+                return new Resolution(Status.INVALID, command,
+                        "Could not record the approval of gate '" + gate + "'; nothing was approved.", null);
+            }
+            ObjectNode data = JsonUtils.standardMapper().createObjectNode();
+            data.put("menu", "workflow").put("workflow", team.workflowName()).put("gate", gate);
+            ArrayNode approved = data.putArray("approved");
+            new TreeSet<>(team.enforcement().satisfiedGates()).forEach(approved::add);
+            return new Resolution(Status.COMPLETED, command,
+                    "Approved gate '" + gate + "' for workflow '" + team.workflowName() + "'.", null, data);
+        } catch (IOException | IllegalArgumentException refused) {
+            return new Resolution(Status.INVALID, command, refused.getMessage(), null);
+        }
+    }
+
+    /**
+     * A live-run command sent between runs. No harness is running, so it answers from the
+     * processes this session's runs recorded and those other sessions share. The agent or
+     * role and the approvals are the run's own, and ASK fails closed as it does in a run.
+     */
+    private static Resolution betweenRuns(String name, String arg, String command, String sessionId,
+                                          RunPermissions permissions, ChatSessionStateStore stateStore,
+                                          Path directory, Supplier<ChatConfig> configOverride) {
+        AgentRegistry agents = new AgentRegistry();
+        new CustomAgentLoader(directory).loadAll().values().forEach(agents::register);
+        String roleName = permissions.roleName();
+        String durableRole = roleName == null || roleName.isBlank()
+                ? stateStore.loadRole(sessionId, directory) : null;
+        String agent = HeadlessAgentRunner.localTurnAgent(agents, new RoleManager(directory), roleName,
+                durableRole, defaultAgent(permissions, directory, configOverride));
+        if (agent == null) {
+            return new Resolution(Status.INVALID, command, "Role not found: " + roleName, null);
+        }
+        PermissionService permissionService = new PermissionService();
+        permissionService.setAutoApproveAll(permissions.skipPermissions());
+        permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
+        ToolContext context = new ToolContext(sessionId, agents.get(agent), permissionService, directory, null);
+        // Coordination first, as in a run: it creates the project's .kompile directory, where
+        // the session's process logs and history are rooted.
+        CoordinationStateManager coordinator = CoordinationStateManager.forCli(directory);
+        try (BackgroundProcessManager processes = new BackgroundProcessManager(sessionId, directory);
+             SharedProcessMirror shared = new SharedProcessMirror(processes, coordinator, sessionId)) {
+            // Only a kill changes what the history records; the other commands only read it.
+            if ("process-kill".equals(name)) {
+                processes.enableSessionHistory();
+            } else {
+                processes.restoreSessionHistory();
+            }
+            shared.pollOnce();
+            WebHarnessControls.Answer answer = WebHarnessControls.betweenRuns(name, arg, processes,
+                    WebHarnessControls.processControl(new ProcessManagementTool(processes, coordinator), context));
+            return new Resolution(answer.ok() ? Status.COMPLETED : Status.INVALID, command, answer.text(), null);
+        } finally {
+            coordinator.shutdown();
+        }
+    }
+
+    /** The agent a local run defaults to: the one it names, else the configured default, else coder. */
+    private static String defaultAgent(RunPermissions permissions, Path directory,
+                                       Supplier<ChatConfig> configOverride) {
+        if (permissions.agentName() != null && !permissions.agentName().isBlank()) {
+            return permissions.agentName();
+        }
+        ChatConfig config = configOverride != null ? configOverride.get() : ChatConfig.loadOrFromEnv(directory);
+        return HeadlessAgentRunner.firstNonBlank(config == null ? null : config.getDefaultAgent(), "coder");
     }
 
     /**

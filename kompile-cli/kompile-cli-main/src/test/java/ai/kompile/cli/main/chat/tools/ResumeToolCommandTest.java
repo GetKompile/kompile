@@ -20,6 +20,7 @@ import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatUiSession;
 import ai.kompile.cli.main.chat.format.ConversationExporter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
+import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -266,6 +267,40 @@ class ResumeToolCommandTest {
                 System.setProperty("kompile.cli.binary", previousBinary);
             }
         }
+    }
+
+    @Test
+    void nativeClaudeResumeNamesAnMcpConfigOfItsOwnAndLeavesTheProjectsAlone() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("claude-work"));
+        Path projectConfig = workDir.resolve(".mcp.json");
+        String original = "{\"mcpServers\":{\"project-tools\":{\"command\":\"project-mcp\"}}}";
+        Files.writeString(projectConfig, original);
+        Path binary = Files.createFile(tempDir.resolve("kompile-cli")).toAbsolutePath();
+        assertTrue(binary.toFile().setExecutable(true));
+        Path launchConfig = null;
+
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            List<String> command = new ArrayList<>(List.of("claude", "--resume", "resume-session"));
+
+            launchConfig = ResumeTool.configureNativeResumeMcp(command, workDir, "claude", null);
+
+            assertEquals(List.of("claude", "--mcp-config=" + launchConfig, "--resume", "resume-session"),
+                    command);
+            assertTrue(new ObjectMapper().readTree(launchConfig.toFile())
+                    .path("mcpServers").has("kompile"));
+            assertEquals(original, Files.readString(projectConfig));
+        } finally {
+            McpToolInjection.removeTools(launchConfig);
+            if (previousBinary == null) {
+                System.clearProperty("kompile.cli.binary");
+            } else {
+                System.setProperty("kompile.cli.binary", previousBinary);
+            }
+        }
+        assertFalse(Files.exists(launchConfig));
+        assertEquals(original, Files.readString(projectConfig));
     }
 
     @Test
@@ -667,11 +702,12 @@ class ResumeToolCommandTest {
         Method method = ResumeTool.class.getDeclaredMethod(
                 "buildAgentResumeCommand",
                 String.class,
-                ConversationExporter.ExportResult.class);
+                ConversationExporter.ExportResult.class,
+                Path.class);
         method.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<String> args = (List<String>) method.invoke(tool, agent, exportResult);
+        List<String> args = (List<String>) method.invoke(tool, agent, exportResult, null);
         return args;
     }
 

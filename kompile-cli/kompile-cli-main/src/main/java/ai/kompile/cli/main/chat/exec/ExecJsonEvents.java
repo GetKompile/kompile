@@ -25,9 +25,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  *
  * <p>Each event is a single-line JSON object with a {@code "type"} discriminator:
  * <ul>
- *   <li>{@code session} — emitted once at start with effective non-secret configuration</li>
+ *   <li>{@code session} — emitted once at start with effective non-secret configuration;
+ *       a session started with a workflow team carries it as the {@code workflow} object</li>
  *   <li>{@code text}    — a streamed assistant text chunk: {@code text}</li>
- *   <li>{@code tool_start}/{@code tool} — tool lifecycle records</li>
+ *   <li>{@code tool_start}/{@code tool} — tool lifecycle records; {@code tool.detail} carries the
+ *       terminal's completion row and bounded, language-tagged body ({@link ToolCallJson})</li>
  *   <li>{@code usage}   — provider-reported token counts</li>
  *   <li>{@code result}  — emitted once at end: full {@code text}, {@code session_id}, {@code tools}, {@code exit}</li>
  *   <li>{@code error}   — a fatal error: {@code message}</li>
@@ -104,6 +106,8 @@ public final class ExecJsonEvents {
                     if (key != null && !key.isBlank() && value != null && !value.isBlank()) {
                         if ("rag".equals(key) || "memory".equals(key)) {
                             n.put(key, Boolean.parseBoolean(value));
+                        } else if ("workflow".equals(key)) {
+                            putJson(n, key, value, mapper);
                         } else {
                             n.put(key, value);
                         }
@@ -144,6 +148,7 @@ public final class ExecJsonEvents {
                 n.put("name", event.toolName());
                 n.put("ok", event.ok());
                 n.put("ms", event.durationMs());
+                if (event.data() != null && event.data().isObject()) n.set("detail", event.data());
             }
             case TOKEN_USAGE -> {
                 n.put("type", "usage");

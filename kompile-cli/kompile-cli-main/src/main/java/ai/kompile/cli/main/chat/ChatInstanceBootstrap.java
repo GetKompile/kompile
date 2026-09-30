@@ -70,7 +70,8 @@ final class ChatInstanceBootstrap {
                 dataDirectory, false, false);
     }
 
-    static StartupResult startWeb(Path workingDirectory, boolean globalConfig, int timeout)
+    /** {@code workflow} is the team new web sessions start with, or {@code null} for none. */
+    static StartupResult startWeb(Path workingDirectory, boolean globalConfig, String workflow, int timeout)
             throws BootstrapException, IOException {
         // A fresh port/instance avoids reusing an admin persona or another project's harness.
         int port;
@@ -78,12 +79,21 @@ final class ChatInstanceBootstrap {
             port = socket.getLocalPort();
         }
         return ensureReady("http://127.0.0.1:" + port, timeout, new ComponentRegistry(),
-                new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig);
+                new ServiceManager(), workingDirectory.toRealPath().toFile(), true, globalConfig, workflow);
     }
 
     static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
                                      ComponentRegistry registry, ServiceManager serviceManager,
                                      File dataDirectory, boolean webHandoff, boolean globalConfig)
+            throws BootstrapException {
+        return ensureReady(requestedChatUrl, startupTimeoutSeconds, registry, serviceManager,
+                dataDirectory, webHandoff, globalConfig, null);
+    }
+
+    static StartupResult ensureReady(String requestedChatUrl, int startupTimeoutSeconds,
+                                     ComponentRegistry registry, ServiceManager serviceManager,
+                                     File dataDirectory, boolean webHandoff, boolean globalConfig,
+                                     String workflow)
             throws BootstrapException {
         List<String> missing = missingDistributionComponents(registry);
         if (!missing.isEmpty()) {
@@ -140,7 +150,7 @@ final class ChatInstanceBootstrap {
                     chatArtifact,
                     chatPort,
                     workDirectory,
-                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig) : List.of(),
+                    webHandoff ? WebChatContext.jvmArguments(workDirectory.toPath(), globalConfig, workflow) : List.of(),
                     // Use the CHAT distribution's all-interface default and honor operator
                     // overrides (KOMPILE_CHAT_ADDRESS / SERVER_ADDRESS), rather than forcing loopback.
                     List.of(),

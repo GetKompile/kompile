@@ -397,6 +397,9 @@ public class ChatRepl implements AutoCloseable {
         // Mirror processes owned by other sessions (the MCP process tool runs in its
         // own JVM) into processManager so the activity panel shows the real trail.
         this.sharedProcessMirror = new SharedProcessMirror(processManager, coordinationManager, sessionId);
+        // A monitored process the MCP server launched for this chat's agent wakes the
+        // chat when it ends, as a local monitor does.
+        this.sharedProcessMirror.setMonitorListener(processExitWakeListener);
 
         this.toolRegistry = ToolRegistryFactory.create(
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,

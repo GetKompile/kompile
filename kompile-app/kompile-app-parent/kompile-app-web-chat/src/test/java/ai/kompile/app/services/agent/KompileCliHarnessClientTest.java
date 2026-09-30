@@ -1,6 +1,8 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.app.web.dto.AgentChatRequest;
+import ai.kompile.cli.common.WebChatContext;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +20,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -29,6 +33,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class KompileCliHarnessClientTest {
@@ -389,8 +395,8 @@ class KompileCliHarnessClientTest {
 
     @Test
     void handoffContextControlsCapabilitiesAndTurnScope() throws Exception {
-        String directoryKey = ai.kompile.cli.common.WebChatContext.WORKING_DIRECTORY;
-        String scopeKey = ai.kompile.cli.common.WebChatContext.CONFIG_SCOPE;
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String scopeKey = WebChatContext.CONFIG_SCOPE;
         String oldDirectory = System.getProperty(directoryKey);
         String oldScope = System.getProperty(scopeKey);
         Path nested = Files.createDirectories(tempDir.resolve("nested project"));
@@ -633,6 +639,181 @@ class KompileCliHarnessClientTest {
         frame.remove("targetId");
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> KompileCliHarnessClient.validateControl(frame));
+    }
+
+    @Test
+    void commandFramesCarryOnlySlashText() {
+        var frame = new ObjectMapper().createObjectNode().put("version", 1).put("requestId", "r")
+                .put("action", "command").put("text", "/processes");
+        KompileCliHarnessClient.validateControl(frame);
+        var noText = frame.deepCopy();
+        noText.remove("text");
+        for (var bad : List.of(frame.deepCopy().put("text", "hello"), frame.deepCopy().put("targetId", "p1"),
+                frame.deepCopy().put("action", "input"), noText)) {
+            assertThrows(IllegalArgumentException.class, () -> KompileCliHarnessClient.validateControl(bad), bad.toString());
+        }
+    }
+
+    @Test
+    void newWebSessionStartsWithTheHandoffTeamAndAResumedOneRestoresIt() {
+        String oldWorkflow = System.getProperty(WebChatContext.WORKFLOW);
+        try {
+            client = clientWith(new FakeProcess("", "", 0));
+            System.clearProperty(WebChatContext.WORKFLOW);
+            assertTrue(client.buildCommand(List.of("kompile"), request("hello"), tempDir, "session", false, 30,
+                    List.of()).stream().noneMatch(argument -> argument.startsWith("--workflow")));
+            System.setProperty(WebChatContext.WORKFLOW, " release-team ");
+            List<String> started = client.buildCommand(
+                    List.of("kompile"), request("hello"), tempDir, "session", false, 30, List.of());
+            List<String> resumed = client.buildCommand(
+                    List.of("kompile"), request("hello"), tempDir, "session", true, 30, List.of());
+            assertTrue(started.contains("--workflow=release-team"), started.toString());
+            assertTrue(resumed.stream().noneMatch(argument -> argument.startsWith("--workflow")), resumed.toString());
+            System.setProperty(WebChatContext.WORKFLOW, "release" + (char) 10 + "team");
+            assertThrows(IllegalStateException.class, () -> client.buildCommand(
+                    List.of("kompile"), request("hello"), tempDir, "session", false, 30, List.of()));
+        } finally {
+            if (oldWorkflow == null) System.clearProperty(WebChatContext.WORKFLOW);
+            else System.setProperty(WebChatContext.WORKFLOW, oldWorkflow);
+        }
+    }
+
+    @Test
+    void gateApprovalFramesNameAtMostOneBoundedGateAndNoTarget() {
+        var frame = new ObjectMapper().createObjectNode().put("version", 1).put("requestId", "r")
+                .put("action", "workflow_approve");
+        KompileCliHarnessClient.validateControl(frame);
+        KompileCliHarnessClient.validateControl(frame.deepCopy().put("text", "review"));
+        KompileCliHarnessClient.validateControl(frame.deepCopy().put("text", "g".repeat(256)));
+        for (var bad : List.of(frame.deepCopy().put("targetId", "child"), frame.deepCopy().put("text", " "),
+                frame.deepCopy().put("text", "g".repeat(257)), frame.deepCopy().put("text", "re" + (char) 10 + "view"),
+                frame.deepCopy().put("text", 5))) {
+            assertThrows(IllegalArgumentException.class, () -> KompileCliHarnessClient.validateControl(bad), bad.toString());
+        }
+    }
+
+    @Test
+    void gateApprovalBetweenRunsAsksAOneShotHarnessForTheSessionTeam() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("team project"));
+        try {
+            System.setProperty(directoryKey, project.toString());
+            FakeProcess approval = new FakeProcess("{\"seq\":1,\"type\":\"command\",\"session_id\":\"s\","
+                    + "\"command\":\"/workflow approve\",\"status\":\"COMPLETED\","
+                    + "\"text\":\"Approved gate 'review' for workflow 'ship'.\",\"ok\":true,\"exit\":0,"
+                    + "\"data\":{\"menu\":\"workflow\",\"workflow\":\"ship\",\"gate\":\"review\","
+                    + "\"approved\":[\"review\"]}}\n", "", 0);
+            client = clientWith(approval);
+            for (String invalidSession : new String[] {null, " "}) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> client.approveWorkflowGate(invalidSession, null, ""));
+            }
+            for (String invalidGate : List.of("g".repeat(257), "re" + (char) 7 + "view")) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> client.approveWorkflowGate("browser-session", null, invalidGate));
+            }
+            assertThrows(IllegalArgumentException.class,
+                    () -> client.approveWorkflowGate("browser-session", tempDir.toString(), ""));
+            assertNull(capturedCommand.get(), "a refused request never starts a harness");
+
+            Map<String, Object> approved = client.approveWorkflowGate("browser-session", null, " review ");
+
+            assertEquals(true, approved.get("ok"), approved.toString());
+            assertEquals("Approved gate 'review' for workflow 'ship'.", approved.get("message"));
+            assertEquals("ship", approved.get("workflow"));
+            assertEquals("review", approved.get("gate"));
+            assertEquals(List.of("review"), approved.get("approved"));
+            JsonNode input = new ObjectMapper().readTree(approval.stdin.toString(StandardCharsets.UTF_8));
+            assertEquals(KompileCliHarnessClient.harnessSessionId(project.toRealPath(), "browser-session"),
+                    input.path("sessionId").asText());
+            assertEquals("review", input.path("workflowApprove").asText());
+            assertEquals("", input.path("rawInput").asText());
+            List<String> command = capturedCommand.get();
+            assertEquals("web-json", command.get(command.indexOf("--input-format") + 1));
+            assertEquals(project.toRealPath().toString(), command.get(command.indexOf("--working-dir") + 1));
+            for (String flag : List.of("--web-controls", "--session-id", "--resume", "--local")) {
+                assertFalse(command.contains(flag), command.toString());
+            }
+            assertTrue(command.stream().noneMatch(argument -> argument.startsWith("--workflow")), command.toString());
+
+            // A refusal exits non-zero yet carries the harness's reason; the first approval
+            // released the session, so a request on another thread reaches the harness.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"command\",\"status\":\"INVALID\","
+                    + "\"text\":\"Every gate of workflow 'ship' is already approved.\",\"ok\":false,\"exit\":1}\n", "", 1));
+            assertEquals(Map.of("ok", false, "message", "Every gate of workflow 'ship' is already approved."),
+                    CompletableFuture.supplyAsync(() -> client.approveWorkflowGate("browser-session", null, ""))
+                            .get(5, TimeUnit.SECONDS));
+
+            // Without an outcome event, the harness's last diagnostic says why.
+            process.set(new FakeProcess("{\"seq\":1,\"type\":\"command\",\n",
+                    "Picked up JAVA_TOOL_OPTIONS\nUnknown option: '--workflow-approve'\n", 2));
+            assertEquals(Map.of("ok", false, "message", "Unknown option: '--workflow-approve'"),
+                    client.approveWorkflowGate("browser-session", null, ""));
+            process.set(new FakeProcess("", "", 0));
+            assertEquals(Map.of("ok", false, "message", "Harness returned no approval outcome"),
+                    client.approveWorkflowGate("browser-session", null, ""));
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void gateApprovalIsRefusedWhileARunHoldsTheSession() throws Exception {
+        String directoryKey = WebChatContext.WORKING_DIRECTORY;
+        String oldDirectory = System.getProperty(directoryKey);
+        Path project = Files.createDirectories(tempDir.resolve("live project"));
+        List<List<String>> started = new CopyOnWriteArrayList<>();
+        try {
+            System.setProperty(directoryKey, project.toString());
+            FakeProcess run = new FakeProcess("{\"seq\":1,\"type\":\"result\",\"text\":\"done\",\"exit\":0}\n", "", 0);
+            client = new KompileCliHarnessClient(new ObjectMapper(), () -> List.of("fake-kompile"),
+                    (command, directory) -> { started.add(List.copyOf(command)); return run; }, executor, scheduler);
+            AtomicReference<Map<String, Object>> duringRun = new AtomicReference<>();
+            client.runTurn("harness-live", request("hello"), new KompileCliHarnessClient.HarnessEventSink() {
+                public void send(String name, Object data) {
+                    if (!name.equals("start")) return;
+                    // The browser's approval arrives on a request thread, never on the run's own.
+                    try {
+                        duringRun.set(CompletableFuture.supplyAsync(
+                                () -> client.approveWorkflowGate("browser-session", null, "")).get(5, TimeUnit.SECONDS));
+                    } catch (Exception failure) {
+                        throw new AssertionError(failure);
+                    }
+                }
+                public void complete() { }
+            });
+            assertEquals(false, duringRun.get().get("ok"), String.valueOf(duringRun.get()));
+            assertTrue(String.valueOf(duringRun.get().get("message")).startsWith("A chat run is in progress"),
+                    String.valueOf(duringRun.get()));
+            assertEquals(1, started.size(), "only the run started a harness: " + started);
+        } finally {
+            if (oldDirectory == null) System.clearProperty(directoryKey); else System.setProperty(directoryKey, oldDirectory);
+        }
+    }
+
+    @Test
+    void toolResultsCarryTheTerminalRowAndHighlightedBody() throws Exception {
+        String detail = "{\"displayName\":\"Read\",\"title\":\"src/App.java\",\"sections\":[{\"label\":\"content\","
+                + "\"runs\":[{\"text\":\"class App {}\",\"file\":\"App.java\",\"family\":\"clike\"}]}]}";
+        String oversized = "{\"displayName\":\"Bash\",\"sections\":[{\"label\":\"output\",\"runs\":[{\"text\":\""
+                + "x".repeat(70_000) + "\"}]}]}";
+        client = clientWith(new FakeProcess(String.join("\n", List.of(
+                "{\"seq\":1,\"type\":\"tool\",\"call_id\":\"c1\",\"name\":\"read\",\"ok\":true,\"ms\":3,\"detail\":" + detail + "}",
+                "{\"seq\":2,\"type\":\"tool\",\"call_id\":\"c2\",\"name\":\"bash\",\"ok\":true,\"ms\":3,\"detail\":" + oversized + "}",
+                "{\"seq\":3,\"type\":\"result\",\"text\":\"done\",\"exit\":0}")) + "\n", "", 0));
+        RecordingSink sink = new RecordingSink();
+
+        client.runTurn("harness-detail", request("read it"), sink);
+
+        var mapper = new ObjectMapper();
+        List<JsonNode> results = sink.events.stream().filter(e -> e.name().equals("tool_result"))
+                .map(e -> (JsonNode) mapper.valueToTree(e.data())).toList();
+        assertEquals(2, results.size());
+        assertEquals(mapper.readTree(detail), results.get(0).path("detail"));
+        assertEquals("c1", results.get(0).path("callId").asText());
+        assertTrue(results.get(1).path("detail").isMissingNode(), "an unbounded body falls back to the plain tool card");
+        assertEquals("bash", results.get(1).path("toolName").asText());
     }
 
     private KompileCliHarnessClient clientWith(FakeProcess fake) {

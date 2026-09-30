@@ -22,6 +22,10 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.DelegationDecision;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -114,6 +118,9 @@ public class TaskTool implements CliTool {
                 .append("on the parent's provider without changing parent/global settings. ")
                 .append("Use role instead of agent_type to select a named role's prompt and tool policy. ")
                 .append("CLI agent selection and per-CLI role defaults belong to the MCP task tool, not this direct chat tool.\n")
+                .append("Inside an active workflow team, pass purpose (or a team role): the team decides which ")
+                .append("participant handles the task, with that participant's role and model, and refuses ")
+                .append("delegations its edges or gates do not allow.\n")
                 .append("In standard chat, Ctrl+B backgrounds a running subagent invocation. ")
                 .append("Select its activity row and press Delete to stop it, or open it and type ")
                 .append("to continue its retained conversation.\n")
@@ -188,22 +195,6 @@ public class TaskTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Spawn subagent");
 
-        // Workflow team enforcement: identity is harness-owned (session context,
-        // set at launch/restore); delegation must route through the team's
-        // purposes, edges, and gates exactly like the MCP task tool.
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext workflowContext =
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
-        if (workflowContext != null) {
-            ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.DelegationDecision decision =
-                    workflowContext.enforcement().evaluateDelegation(
-                            params.path("purpose").asText("").trim(),
-                            params.path("role").asText("").trim());
-            if (decision instanceof ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement
-                    .DelegationDecision.Denied denied) {
-                return ToolResult.error(denied.reason());
-            }
-        }
-
         String desc = params.path("description").asText("");
         String prompt = params.path("prompt").asText("");
         String agentType = params.path("agent_type").asText("explore-quick");
@@ -215,7 +206,7 @@ public class TaskTool implements CliTool {
         if (params.hasNonNull("agent")) {
             return ToolResult.error("Chat task inherits the parent's provider; CLI agent selection requires the MCP task tool.");
         }
-        for (String selector : List.of("model", "thinking", "role")) {
+        for (String selector : List.of("model", "thinking", "role", "purpose")) {
             if (params.hasNonNull(selector) && !params.get(selector).isTextual()) {
                 return ToolResult.error(selector + " must be a string");
             }
@@ -223,15 +214,42 @@ public class TaskTool implements CliTool {
         String model = params.path("model").asText("").trim();
         String thinking = params.path("thinking").asText("").trim();
         String roleName = params.path("role").asText("").trim();
+
+        // Workflow team: the team decides who handles the task. Its purposes,
+        // delegation edges, and gates are checked before any launch, and the
+        // resolved participant's role and model are what the child runs.
+        WorkflowTeamEnforcement workflow = WorkflowSessionContext.enforcementFor(context);
+        WorkflowTeam.Participant participant = null;
+        WorkflowTeam.ModelBinding binding = null;
+        if (workflow != null) {
+            DelegationDecision decision = workflow.evaluateDelegation(
+                    params.path("purpose").asText("").trim(), roleName);
+            if (decision instanceof DelegationDecision.Denied denied) {
+                return ToolResult.error(denied.reason());
+            }
+            participant = workflow.team().participant(decision.resolvedParticipant());
+            String conflict = bindingConflict(workflow.team(), participant, model, thinking);
+            if (conflict != null) return ToolResult.error(conflict);
+            String resolvedRole = ((DelegationDecision.Allowed) decision).resolvedRole();
+            roleName = resolvedRole != null ? resolvedRole : participant.role();
+            binding = participant.model();
+            if (binding != null) {
+                model = binding.model();
+                if (thinking.isEmpty() && binding.thinking() != null) thinking = binding.thinking();
+            }
+        }
+
         AgentConfig subagentConfig;
-        if (!roleName.isEmpty()) {
-            if (params.hasNonNull("agent_type")) {
+        if (participant != null || !roleName.isEmpty()) {
+            if (participant == null && params.hasNonNull("agent_type")) {
                 return ToolResult.error("Specify either role or agent_type, not both.");
             }
             RoleConfig role = roleManager != null ? roleManager.getRole(roleName) : agentRegistry.getRole(roleName);
             if (role == null) return ToolResult.error("Unknown role: " + roleName);
-            subagentConfig = role.toAgentConfig().toBuilder()
-                    .isSubagent(true).canSpawnSubagents(false).roleName(roleName).build();
+            AgentConfig.Builder fromRole = role.toAgentConfig().toBuilder()
+                    .isSubagent(true).canSpawnSubagents(false).roleName(roleName);
+            if (participant != null) fromRole.workflowParticipant(participant.id());
+            subagentConfig = fromRole.build();
             agentType = roleName;
         } else {
             subagentConfig = agentRegistry.get(agentType);
@@ -243,14 +261,20 @@ public class TaskTool implements CliTool {
             }
         }
         if (!model.isEmpty() && !subagentConfig.isModelAllowed(model)) {
-            return ToolResult.error("Model is not allowed for " + agentType + ": " + model);
+            return ToolResult.error("Model is not allowed for " + agentType + ": " + model
+                    + (binding != null ? ". " + rebindHint(participant) : ""));
         }
         AgentConfig.Builder child = subagentConfig.toBuilder().canSpawnSubagents(false);
         if (!model.isEmpty()) child.modelOverride(model);
         if (!thinking.isEmpty()) child.thinkingOverride(thinking);
         subagentConfig = child.build();
 
-        context.emitOutput("  [Spawning " + agentType + " subagent: " + desc + "]");
+        if (participant != null) {
+            context.emitOutput("  [Delegating to " + participant.id() + " (" + roleName
+                    + (binding != null ? " on " + binding.label() : "") + "): " + desc + "]");
+        } else {
+            context.emitOutput("  [Spawning " + agentType + " subagent: " + desc + "]");
+        }
 
         boolean requestedBackground = params.path("background").asBoolean(false);
         boolean backgrounded = false;
@@ -275,9 +299,45 @@ public class TaskTool implements CliTool {
             if (subagentConfig.getModelOverride() != null) metadata.put("model", subagentConfig.getModelOverride());
             if (subagentConfig.getThinkingOverride() != null) metadata.put("thinking", subagentConfig.getThinkingOverride());
             if (!roleName.isEmpty()) metadata.put("role", roleName);
+            if (participant != null) {
+                metadata.put("workflow", workflow.team().name());
+                metadata.put("workflowParticipant", participant.id());
+            }
             return ToolResult.success("subagent:" + agentType, result, metadata);
         } catch (Exception e) {
             return ToolResult.error("Subagent execution failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * Why a workflow participant cannot run this request here, or {@code null}.
+     * A participant bound to a CLI agent only runs when the lead delegates
+     * through managed CLI agents; an explicit model or thinking that contradicts
+     * the participant's binding is refused rather than silently replaced, so the
+     * lead learns which model the team assigned.
+     */
+    static String bindingConflict(WorkflowTeam team, WorkflowTeam.Participant participant,
+                                  String model, String thinking) {
+        WorkflowTeam.ModelBinding binding = participant.model();
+        if (binding == null) return null;
+        String subject = "Workflow '" + team.name() + "' runs participant '" + participant.id() + "'";
+        if (binding.agent() != null) {
+            return subject + " as the " + binding.agent() + " CLI agent, which this chat cannot launch; "
+                    + "CLI agents run when the lead chat is a managed CLI agent (kompile chat --setup). "
+                    + rebindHint(participant);
+        }
+        if (!model.isEmpty() && !model.equals(binding.model())) {
+            return subject + " on " + binding.label() + "; omit model (requested " + model + "). "
+                    + rebindHint(participant);
+        }
+        if (!thinking.isEmpty() && binding.thinking() != null && !thinking.equalsIgnoreCase(binding.thinking())) {
+            return subject + " with thinking " + binding.thinking() + "; omit thinking (requested "
+                    + thinking + "). " + rebindHint(participant);
+        }
+        return null;
+    }
+
+    private static String rebindHint(WorkflowTeam.Participant participant) {
+        return "The user can change its model with /workflow model " + participant.id() + ".";
     }
 }

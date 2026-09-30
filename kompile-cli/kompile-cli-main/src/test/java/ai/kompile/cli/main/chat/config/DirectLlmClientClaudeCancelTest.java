@@ -15,12 +15,9 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,11 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Cancelling a chat turn on the Claude Code route stops {@code claude} and the
- * tools it started. The turn is reported as cancelled, not failed, keeps the
- * text streamed so far and its native session, and is never launched again.
- * The fake {@code claude} logs its argv, streams some text, then runs a
- * 30-second tool.
+ * Cancelling a chat turn on the Claude Code route interrupts the turn, which
+ * stops the tool it was running. The turn is reported as cancelled, not failed,
+ * keeps the text streamed so far and its native session, and is never sent
+ * again; the session's process keeps running for the next turn. The fake
+ * {@code claude} streams some text, then runs a 30-second tool.
  */
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class DirectLlmClientClaudeCancelTest {
@@ -54,63 +51,59 @@ class DirectLlmClientClaudeCancelTest {
     }
 
     @Test
-    void aCancelledTurnStopsClaudeAndIsNeverLaunchedAgain() throws Exception {
-        Path toolPid = home.resolve("tool.pid");
+    void aCancelledTurnInterruptsClaudeAndIsNeverSentAgain() throws Exception {
+        FakeClaudeCode fake = new FakeClaudeCode(home.resolve("claude"), """
+                turn() {
+                  say_init
+                  say_text working
+                  start_tool
+                }
+                """);
+        StringBuilder streamed = new StringBuilder();
         DirectLlmClient.StreamResult result;
-        try (DirectLlmClient client = client()) {
-            installFakeClaude(client, toolPid);
+        try (DirectLlmClient client = client(streamed)) {
+            ClaudeCliClient claude = installFakeClaude(client, fake);
             // A failed resumed turn would be retried in a new session; a cancelled one must not be.
             client.resumeClaudeNativeSession("saved-session", HashUtils.sha256Hex("system rules"));
             // The user cancels while Claude is running the tool.
-            client.setCancellationCheck(() -> Files.exists(toolPid));
+            client.setCancellationCheck(() -> streamed.length() > 0 && Files.exists(fake.path("tool.pid")));
 
             long started = System.nanoTime();
             result = client.streamChat("run the long task", "system rules", null, null);
             long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 
             assertTrue(elapsedMillis < 10_000,
-                    "cancel must stop claude, not wait for it: the turn took " + elapsedMillis + " ms");
+                    "cancel must interrupt the turn, not wait for it: the turn took " + elapsedMillis + " ms");
             DirectLlmClient.ClaudeNativeSession session = client.claudeNativeSession();
             assertNotNull(session, "the next turn resumes the session");
             assertEquals("saved-session", session.sessionId());
+            assertTrue(claude.processAlive(), "the session's process keeps running for the next turn");
         }
 
         assertTrue(result.cancelled, "the turn is reported as cancelled");
         assertFalse(result.failed, "a cancel is not a failure: " + result.failureMessage);
         assertEquals("working", result.text, "text streamed before the cancel is kept");
-        List<String> argv = Files.readAllLines(home.resolve("argv.log"), StandardCharsets.UTF_8);
+        List<String> argv = fake.argv();
         assertEquals(1, argv.size(), "a cancelled turn is never launched again: " + argv);
         assertTrue(argv.get(0).contains("--resume saved-session"), argv.get(0));
-        ClaudeCliClientTest.assertToolStopped(toolPid);
+        assertEquals(1, fake.messages().size(), "a cancelled turn is never sent again: " + fake.messages());
+        assertTrue(fake.awaitControl("interrupt").path("cancel_queued").asBoolean());
+        fake.assertToolStopped();
     }
 
-    private DirectLlmClient client() {
+    private DirectLlmClient client(StringBuilder streamed) {
         ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
         config.setAuthenticationMethod("oauth");
         DirectLlmClient client = new DirectLlmClient(config, JsonUtils.standardMapper(), home);
-        client.setOutputConsumer(ignored -> { });
+        client.setOutputConsumer(streamed::append);
         return client;
     }
 
-    private void installFakeClaude(DirectLlmClient client, Path toolPid) throws Exception {
-        Path fake = home.resolve("fake-claude");
-        Files.writeString(fake, """
-                #!/usr/bin/env bash
-                cat > /dev/null 2>&1 || true
-                printf '%s\\n' "$*" >> 'HOME_DIR/argv.log'
-                echo '{"type":"system","subtype":"init","session_id":"saved-session"}'
-                printf '%s\\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working"}}}'
-                sleep 30 > /dev/null 2>&1 &
-                echo $! > 'TOOL_PID.tmp' && mv 'TOOL_PID.tmp' 'TOOL_PID'
-                wait
-                printf '%s\\n' '{"type":"result","subtype":"success","num_turns":1,"usage":{"input_tokens":1,"output_tokens":1}}'
-                exit 0
-                """.replace("HOME_DIR", home.toString()).replace("TOOL_PID", toolPid.toString()),
-                StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(fake, Set.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+    private ClaudeCliClient installFakeClaude(DirectLlmClient client, FakeClaudeCode fake) throws Exception {
+        ClaudeCliClient claude = new ClaudeCliClient(home, null, fake.binary());
         Field field = DirectLlmClient.class.getDeclaredField("claudeServeClient");
         field.setAccessible(true);
-        field.set(client, new ClaudeCliClient(home, null, fake.toString()));
+        field.set(client, claude);
+        return claude;
     }
 }

@@ -134,6 +134,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/skills", "List available skills");
         COMMANDS.put("/roles", "Manage roles");
         COMMANDS.put("/role", "Show or assign role");
+        COMMANDS.put("/workflow", "Workflow team: status, gates, participant models");
         COMMANDS.put("/judge", "Judge control, policy, direction, and global switch");
         COMMANDS.put("/judge-global", "Persistent judge master switch");
         COMMANDS.put("/rules", "Show active judge policy rules");
@@ -328,6 +329,15 @@ public class ChatCompleter implements Completer {
                 new String[]{"global", "Configure user defaults rather than this project"},
                 new String[]{"json", "Export advanced policy JSON"},
                 new String[]{"help", "Show resource configuration help"}
+        ));
+        SUB_ARGS.put("/workflow", List.of(
+                new String[]{"show", "Active team, its gates, and participant models"},
+                new String[]{"approve", "Approve the next gate, or a named one"},
+                new String[]{"models", "Review a team's participant models"},
+                new String[]{"model", "Change one participant's model"},
+                new String[]{"create", "Create a team from a template or step by step"},
+                new String[]{"list", "Saved teams with their models"},
+                new String[]{"delete", "Delete a saved team"}
         ));
         SUB_ARGS.put("/activity", activityArgs);
         SUB_ARGS.put("/processes", activityArgs);

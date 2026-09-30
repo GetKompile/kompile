@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -34,6 +35,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -806,6 +808,107 @@ class BackgroundProcessManagerTest {
     }
 
     // ===================================================================
+    // close() / shutdown
+    // ===================================================================
+
+    @Nested
+    class CloseShutdown {
+
+        @Test
+        void closePublishesExitForKilledProcessOnCallingThreadBeforeReturning() throws Exception {
+            AtomicReference<ProcessState> notifiedState = new AtomicReference<>();
+            AtomicBoolean listenerSawInterruptedThread = new AtomicBoolean();
+            CountDownLatch fired = new CountDownLatch(1);
+            manager.addExitListener(entry -> {
+                notifiedState.set(entry.getState());
+                listenerSawInterruptedThread.set(Thread.currentThread().isInterrupted());
+                fired.countDown();
+            });
+            ProcessEntry entry = manager.launch(
+                    "sleep 60", "closed by the manager", Path.of(System.getProperty("user.dir")));
+
+            // Wait for process to start
+            Thread.sleep(500);
+            assertTrue(entry.isRunning());
+
+            manager.close();
+
+            // No wait: close() must have already published the exit by the time it returns.
+            assertEquals(0, fired.getCount(), "exit listener should already have run");
+            assertEquals(ProcessState.KILLED, notifiedState.get());
+            assertFalse(listenerSawInterruptedThread.get(),
+                    "the listener must not run on a thread close() interrupted");
+        }
+
+        @Test
+        void closeDoesNotInvokeMonitorListeners() throws Exception {
+            AtomicBoolean monitorFired = new AtomicBoolean();
+            manager.addMonitorListener((entry, monitor) -> monitorFired.set(true));
+
+            ProcessEntry entry = manager.launch(
+                    "sleep 60", "monitored, then closed", Path.of(System.getProperty("user.dir")));
+
+            // Wait for process to start
+            Thread.sleep(500);
+            assertTrue(entry.isRunning());
+            assertNotNull(manager.monitor(entry.getId(), "should not wake on close"));
+
+            manager.close();
+
+            assertFalse(monitorFired.get(), "close() must not wake a monitor listener");
+        }
+
+        @Test
+        void closePublishesExitEvenWhenAKilledProcesssDescendantKeepsTheStdoutPipeOpen() throws Exception {
+            // killProcess() only signals the direct child pid. A backgrounded grandchild that
+            // inherited the same stdout pipe survives the parent's SIGTERM/SIGKILL and keeps the
+            // bg-proc-io capture thread blocked in a read() that will not see EOF on its own.
+            // close()'s bounded executor drain (~1s) cannot cover this case: only
+            // killAllRunning()'s own self-publish (fireExit) can still publish the exit on time.
+            ProcessEntry entry = manager.launch(
+                    "sleep 5 & echo GRANDCHILD_PID=$! ; wait",
+                    "grandchild keeps the pipe open past the parent's death",
+                    Path.of(System.getProperty("user.dir")));
+
+            // Wait for process to start
+            Thread.sleep(500);
+            assertTrue(entry.isRunning());
+
+            AtomicReference<ProcessState> notifiedState = new AtomicReference<>();
+            CountDownLatch fired = new CountDownLatch(1);
+            manager.addExitListener(exited -> {
+                notifiedState.set(exited.getState());
+                fired.countDown();
+            });
+
+            long grandchildPid = -1;
+            try {
+                manager.close();
+
+                // No wait: close() must have already published the exit, even with the
+                // grandchild still holding the pipe open, by the time it returns.
+                assertEquals(0, fired.getCount(), "exit listener should already have run");
+                assertEquals(ProcessState.KILLED, notifiedState.get());
+
+                String output = Files.readString(entry.getOutputFile());
+                int idx = output.indexOf("GRANDCHILD_PID=");
+                assertTrue(idx >= 0, "expected the grandchild pid marker in output: " + output);
+                String tail = output.substring(idx + "GRANDCHILD_PID=".length());
+                int end = 0;
+                while (end < tail.length() && Character.isDigit(tail.charAt(end))) {
+                    end++;
+                }
+                grandchildPid = Long.parseLong(tail.substring(0, end));
+            } finally {
+                if (grandchildPid > 0) {
+                    new ProcessBuilder("kill", "-9", String.valueOf(grandchildPid))
+                            .redirectErrorStream(true).start().waitFor(2, TimeUnit.SECONDS);
+                }
+            }
+        }
+    }
+
+    // ===================================================================
     // Cleanup
     // ===================================================================
 
@@ -908,6 +1011,165 @@ class BackgroundProcessManagerTest {
                             });
                 }
             }
+        }
+
+        @Test
+        void newManagerForSameSession_shouldNumberAfterEarlierLogsAndKeepThem(@TempDir Path workDir)
+                throws Exception {
+            // The web chat starts a manager per run: the second run's first launch must
+            // not reuse proc-001 and truncate the first run's log.
+            Files.createDirectories(workDir.resolve(".kompile"));
+            String sid = "resumed-session-" + System.nanoTime();
+            ProcessEntry first;
+            try (BackgroundProcessManager firstRun = new BackgroundProcessManager(sid, workDir)) {
+                first = firstRun.launch("echo first-run-output", "first run", workDir);
+                awaitExit(first);
+            }
+            assertEquals("proc-001", first.getId());
+
+            try (BackgroundProcessManager secondRun = new BackgroundProcessManager(sid, workDir)) {
+                ProcessEntry second = secondRun.launch("echo second-run-output", "second run", workDir);
+                awaitExit(second);
+                assertEquals("proc-002", second.getId());
+                assertEquals(List.of("second-run-output"), Files.readAllLines(second.getOutputFile()));
+            }
+            assertEquals(List.of("first-run-output"), Files.readAllLines(first.getOutputFile()));
+        }
+
+        @Test
+        void highestUsedIdNumber_shouldCountEveryKindAndIgnoreOtherFiles(@TempDir Path dir)
+                throws Exception {
+            assertEquals(0, BackgroundProcessManager.highestUsedIdNumber(dir.resolve("missing")));
+            Files.writeString(dir.resolve("proc-003.log"), "");
+            Files.writeString(dir.resolve("mcp-041.log"), "");
+            Files.writeString(dir.resolve("proc-999.txt"), "");
+            Files.writeString(dir.resolve("PROC-500.log"), "");
+            Files.writeString(dir.resolve("proc-abc.log"), "");
+            assertEquals(41, BackgroundProcessManager.highestUsedIdNumber(dir));
+        }
+
+        private void awaitExit(ProcessEntry entry) throws InterruptedException {
+            for (int attempts = 0; entry.isRunning() && attempts < 50; attempts++) {
+                Thread.sleep(100);
+            }
+            assertFalse(entry.isRunning(), entry.getId() + " should have exited");
+        }
+    }
+
+    // ===================================================================
+    // Virtual entry output (the MCP tool-bridge log)
+    // ===================================================================
+
+    @Nested
+    class VirtualOutput {
+
+        @TempDir Path workDir;
+        private BackgroundProcessManager local;
+
+        @BeforeEach
+        void setUpProjectManager() throws IOException {
+            // A project .kompile keeps the durable logs inside the temp dir.
+            Files.createDirectories(workDir.resolve(".kompile"));
+            local = new BackgroundProcessManager("virtual-output-" + System.nanoTime(), workDir);
+        }
+
+        @AfterEach
+        void closeProjectManager() {
+            local.close();
+        }
+
+        @Test
+        void appendVirtualOutput_shouldWriteLogAndNotifyListenersInOrder() throws IOException {
+            List<String> seen = new CopyOnWriteArrayList<>();
+            local.addOutputListener((entry, line) -> seen.add(entry.getId() + ": " + line));
+            ProcessEntry entry = local.registerVirtual(
+                    ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
+
+            assertTrue(entry.getId().startsWith("mcp-"), entry.getId());
+            assertEquals("mcp", ProcessKind.MCP.label());
+            assertTrue(entry.isVirtual());
+            assertTrue(local.appendVirtualOutput(entry.getId(), "[MCP] first"));
+            assertTrue(local.appendVirtualOutput(entry.getId(), "[MCP] second"));
+
+            assertEquals(List.of("[MCP] first", "[MCP] second"),
+                    Files.readAllLines(entry.getOutputFile()));
+            assertEquals(List.of(entry.getId() + ": [MCP] first", entry.getId() + ": [MCP] second"), seen);
+            assertEquals("[MCP] first\n[MCP] second", local.readOutput(entry.getId(), 10));
+            assertTrue(entry.isRunning(), "output must not end the entry");
+        }
+
+        @Test
+        void appendVirtualOutput_shouldRefuseEntriesItDoesNotOwn() throws IOException {
+            assertFalse(local.appendVirtualOutput(null, "line"));
+            assertFalse(local.appendVirtualOutput("mcp-999", "line"));
+
+            ProcessEntry stopped = local.registerVirtual(
+                    ProcessKind.MCP, "mcp", "MCP tool bridge log", Map.of());
+            assertTrue(local.kill(stopped.getId()));
+            assertFalse(local.appendVirtualOutput(stopped.getId(), "after kill"));
+            assertFalse(Files.exists(stopped.getOutputFile()));
+
+            ProcessEntry owned = local.launch("sleep 5", "owned", workDir);
+            try {
+                assertFalse(local.appendVirtualOutput(owned.getId(), "not virtual"));
+            } finally {
+                local.kill(owned.getId());
+            }
+        }
+
+        @Test
+        void killingVirtualEntry_shouldRunItsStopHandlerOnceAfterMarkingItKilled() {
+            AtomicInteger stops = new AtomicInteger();
+            AtomicReference<ProcessState> stateSeenByHandler = new AtomicReference<>();
+            AtomicReference<ProcessEntry> task = new AtomicReference<>();
+            task.set(local.registerVirtual(ProcessKind.COMMAND, "claude local_agent", "Claude: review",
+                    Map.of("task_id", "t1"), () -> {
+                        stops.incrementAndGet();
+                        stateSeenByHandler.set(task.get().getState());
+                    }));
+            List<String> exits = new CopyOnWriteArrayList<>();
+            local.addExitListener(entry -> exits.add(entry.getId() + "=" + entry.getExitCode()));
+
+            assertTrue(task.get().isVirtual());
+            assertTrue(task.get().isKillable(), "a stop handler makes a virtual entry killable");
+            assertTrue(local.kill(task.get().getId()));
+            assertFalse(local.kill(task.get().getId()), "a killed entry cannot be killed again");
+
+            assertEquals(1, stops.get());
+            assertEquals(ProcessState.KILLED, stateSeenByHandler.get());
+            assertEquals(ProcessState.KILLED, task.get().getState());
+            assertFalse(task.get().isKillable());
+            assertEquals(List.of(task.get().getId() + "=-1"), exits);
+        }
+
+        @Test
+        void virtualEntry_shouldOnlyBeKillableWithAStopHandlerAndNeverStopOnCompletion() {
+            AtomicInteger stops = new AtomicInteger();
+            ProcessEntry watcher = local.registerVirtual(ProcessKind.JUDGE, "judge", "Judge", Map.of());
+            ProcessEntry task = local.registerVirtual(
+                    ProcessKind.COMMAND, "claude local_bash", "Claude: build", Map.of(), stops::incrementAndGet);
+            ProcessEntry failed = local.registerVirtual(
+                    ProcessKind.COMMAND, "claude local_agent", "Claude: tests", Map.of(), stops::incrementAndGet);
+
+            assertFalse(watcher.isKillable(), "a watcher without a stop handler is inspect-only");
+            assertTrue(local.complete(task.getId()));
+            assertTrue(local.fail(failed.getId(), 1));
+
+            assertEquals(0, stops.get(), "only a kill runs the stop handler");
+            assertFalse(task.isKillable());
+            assertFalse(failed.isKillable());
+            assertFalse(local.kill(task.getId()));
+            assertEquals(0, stops.get());
+        }
+
+        @Test
+        void throwingStopHandler_shouldStillLeaveTheEntryKilled() {
+            ProcessEntry task = local.registerVirtual(ProcessKind.COMMAND, "claude task", "Claude: task",
+                    Map.of(), () -> { throw new IllegalStateException("stop failed"); });
+
+            assertTrue(local.kill(task.getId()));
+            assertEquals(ProcessState.KILLED, task.getState());
+            assertEquals(-1, task.getExitCode());
         }
     }
 }

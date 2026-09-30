@@ -180,7 +180,7 @@ class DirectLlmClientToolReplayTest {
     @Test
     void legacyRoutesStillUseThePortableTextForm() throws Exception {
         // kompile-local resolves to the flattened KOMPILE_LOCAL route (TEXT).
-        // OpenAI-compatible providers such as ollama are envelope-capable.
+        // OpenAI-compatible providers such as custom endpoints are envelope-capable.
         DirectLlmClient client = clientForProvider("kompile-local");
         client.addReplayedToolCall("glob", "call_2", "{\"pattern\":\"*.md\"}");
         client.addReplayedToolResult("glob", "call_2", "README.md");

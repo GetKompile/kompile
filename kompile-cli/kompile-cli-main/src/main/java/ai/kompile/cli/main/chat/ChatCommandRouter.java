@@ -41,7 +41,12 @@ import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.workflow.WorkflowController;
+import ai.kompile.cli.main.chat.workflow.WorkflowModelDefaults;
 import ai.kompile.cli.main.chat.workflow.WorkflowPolicy;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamCommand;
+import ai.kompile.cli.main.chat.workflow.WorkflowWizard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -158,6 +163,19 @@ public class ChatCommandRouter {
         this.statusBar = statusBar;
         this.pendingAttachments = pendingAttachments;
         this.reminderManager = reminderManager;
+
+        // The chat's own role_manager tool (assign_role with no explicit agent) must
+        // switch this chat's running agent exactly like /role does, instead of only
+        // updating RoleManager bookkeeping while claiming the agent changed. Other
+        // RoleManagerTool instances (MCP server sessions, headless/eval/harness runs)
+        // are never wired here, so they correctly fall back to honest "no active chat
+        // attached" text — see RoleManagerTool#setChatActivationCallback.
+        if (toolRegistry != null) {
+            CliTool registeredRoleTool = toolRegistry.get("role_manager");
+            if (registeredRoleTool instanceof RoleManagerTool roleManagerTool) {
+                roleManagerTool.setChatActivationCallback(this::applyRoleToChat);
+            }
+        }
     }
 
     /**
@@ -521,7 +539,12 @@ public class ChatCommandRouter {
                 return true;
 
             case "/workflow":
-                handleWorkflowTeamCommand(rest);
+                // Team management, shared with the managed CLI-agent REPL. Distinct from
+                // `/judge workflow`, which configures the enforcer's turn discipline.
+                try (WorkflowWizard.TerminalConsole console = new WorkflowWizard.TerminalConsole()) {
+                    WorkflowTeamCommand.run(rest, console, workingDirectoryOrDot(),
+                            repl != null ? repl.getChatConfig() : null);
+                }
                 return true;
 
             case "/model":
@@ -935,9 +958,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Workflow"))).append("\n");
-            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active workflow team, purposes, and gates\n");
-            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a new workflow team (interactive)\n");
-            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved workflow teams\n");
+            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active team, its gates, and participant models\n");
+            body.append("  ").append(renderer.cyan("/workflow approve [gate]")).append(" Approve the next gate, or a named one\n");
+            body.append("  ").append(renderer.cyan("/workflow models [name]")).append(" Review a team's participant models\n");
+            body.append("  ").append(renderer.cyan("/workflow model <p>")).append("  Change one participant's model\n");
+            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a team from a template or step by step\n");
+            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved teams with their models\n");
             body.append("  ").append(renderer.cyan("/workflow delete <name>")).append(" Remove a saved workflow\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
@@ -1015,9 +1041,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Workflow"))).append("\n");
-            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active workflow team, purposes, and gates\n");
-            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a new workflow team (interactive)\n");
-            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved workflow teams\n");
+            body.append("  ").append(renderer.cyan("/workflow")).append("            Show the active team, its gates, and participant models\n");
+            body.append("  ").append(renderer.cyan("/workflow approve [gate]")).append(" Approve the next gate, or a named one\n");
+            body.append("  ").append(renderer.cyan("/workflow models [name]")).append(" Review a team's participant models\n");
+            body.append("  ").append(renderer.cyan("/workflow model <p>")).append("  Change one participant's model\n");
+            body.append("  ").append(renderer.cyan("/workflow create")).append("     Create a team from a template or step by step\n");
+            body.append("  ").append(renderer.cyan("/workflow list")).append("      List saved teams with their models\n");
             body.append("  ").append(renderer.cyan("/workflow delete <name>")).append(" Remove a saved workflow\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
@@ -1856,8 +1885,7 @@ public class ChatCommandRouter {
     }
 
     private void listLocalTools() {
-        AgentConfig agent = agentRegistry.get(repl.getLocalAgentName());
-        if (agent == null) agent = agentRegistry.getDefault();
+        AgentConfig agent = chatAgent();
 
         List<CliTool> tools = toolRegistry.getToolsForAgent(agent);
         List<String> headers = List.of("Tool", "Permission", "Description");
@@ -1940,8 +1968,7 @@ public class ChatCommandRouter {
 
         try {
             JsonNode args = objectMapper.readTree(argsJson);
-            AgentConfig agent = agentRegistry.get(repl.getLocalAgentName());
-            if (agent == null) agent = agentRegistry.getDefault();
+            AgentConfig agent = chatAgent();
 
             Path workDir = Paths.get(System.getProperty("user.dir"));
             ToolContext ctx = new ToolContext(sessionId, agent, permissionService, workDir, toolRegistry);
@@ -1979,20 +2006,19 @@ public class ChatCommandRouter {
 
         // Workflow team: the participants this session actually enforces, with the
         // caller marked — complements the generic agent registry above.
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext workflowContext =
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        WorkflowSessionContext workflowContext = WorkflowSessionContext.current();
         if (workflowContext != null) {
-            ai.kompile.cli.main.chat.workflow.WorkflowTeam team =
-                    workflowContext.snapshot().team();
+            WorkflowTeam team = workflowContext.snapshot().team();
             String caller = workflowContext.enforcement().callerParticipant();
-            List<String> teamHeaders = List.of("Participant", "Role", "Capabilities", "Delegates To");
+            ChatConfig chatConfig = repl != null ? repl.getChatConfig() : null;
+            List<String> teamHeaders = List.of("Participant", "Role", "Model", "Capabilities", "Delegates To");
             List<List<String>> teamRows = new ArrayList<>();
-            for (ai.kompile.cli.main.chat.workflow.WorkflowTeam.Participant participant :
-                    team.participants().values()) {
+            for (WorkflowTeam.Participant participant : team.participants().values()) {
                 boolean self = participant.id().equals(caller);
                 teamRows.add(List.of(
                         self ? participant.id() + " " + renderer.green("(you)") : participant.id(),
                         participant.role(),
+                        WorkflowModelDefaults.describe(team, participant, chatConfig),
                         String.join(", ", participant.capabilities()),
                         participant.delegatesTo().isEmpty()
                                 ? renderer.dim("—") : String.join(", ", participant.delegatesTo())));
@@ -2199,8 +2225,8 @@ public class ChatCommandRouter {
         System.out.println(renderer.bold("  Pending Attachments:"));
         for (int i = 0; i < pendingAttachments.size(); i++) {
             ChatRepl.PendingAttachment att = pendingAttachments.get(i);
-            String icon = att.isImage() ? "🖼" : "📄";
-            System.out.printf("  %d. %s %s (%s)%n", i + 1, icon,
+            String kind = att.isImage() ? "image" : "file";
+            System.out.printf("  %d. %s %s (%s)%n", i + 1, renderer.bold(kind),
                     renderer.cyan(att.path().getFileName().toString()), att.mimeType());
         }
         System.out.println(renderer.dim("  These will be sent with your next message."));
@@ -2296,8 +2322,29 @@ public class ChatCommandRouter {
         }
 
         repl.setLocalAgentName(name.trim());
+        // The loop's agent config is the one the turn, compaction and model
+        // routing read, so it switches too; the chat no longer runs as a role.
+        if (agenticLoop != null) {
+            agenticLoop.setAgentConfig(agent);
+        }
+        if (roleManager != null) {
+            roleManager.clearActiveRole();
+        }
+        if (sessionMetrics != null) {
+            sessionMetrics.setAgentName(agent.getName());
+            sessionMetrics.setActiveRole(null);
+        }
         chatHistory.logSystem("Switched local agent to: " + repl.getLocalAgentName());
         System.out.println("Switched local agent to: " + repl.getLocalAgentName());
+    }
+
+    /** The chat's agent, an agent or a role: the one its turns run as. */
+    private AgentConfig chatAgent() {
+        AgentConfig agent = agenticLoop != null ? agenticLoop.getCurrentAgentConfig() : null;
+        if (agent == null) {
+            agent = agentRegistry.get(repl.getLocalAgentName());
+        }
+        return agent != null ? agent : agentRegistry.getDefault();
     }
 
     // ========================================================================
@@ -2338,128 +2385,8 @@ public class ChatCommandRouter {
     // ========================================================================
 
     private void manageRoles() {
-        RoleWizard wizard = new RoleWizard(roleManager);
+        RoleWizard wizard = new RoleWizard(roleManager, this::applyRoleToChat);
         wizard.run();
-    }
-
-    /**
-     * `/workflow [create|list|delete <name>|show]` — workflow TEAM management
-     * (participants, delegation edges, gates). Distinct from `/judge workflow`,
-     * which configures the enforcer's turn-discipline profile.
-     */
-    private void handleWorkflowTeamCommand(String args) {
-        String op = args.isBlank() ? "show" : args.trim().split("\\s+", 2)[0].toLowerCase(java.util.Locale.ROOT);
-        String rest = args.trim().substring(Math.min(op.length(), args.trim().length())).trim();
-        switch (op) {
-            case "show" -> showWorkflowStatus();
-            case "create" -> createWorkflowInteractive();
-            case "list" -> listWorkflows();
-            case "delete", "remove" -> deleteWorkflow(rest);
-            default -> {
-                System.out.println(renderer.yellow("Unknown /workflow control: " + op));
-                System.out.println(renderer.dim("Use /workflow [show|create|list|delete <name>]"));
-            }
-        }
-    }
-
-    private void createWorkflowInteractive() {
-        ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
-                ai.kompile.cli.main.chat.workflow.WorkflowWizard.create(workingDirectoryOrDot());
-        if (created != null) {
-            System.out.println("  " + renderer.dim("Start a chat with it: `kompile chat --workflow "
-                    + created.name() + "`"));
-        }
-    }
-
-    private void listWorkflows() {
-        try {
-            var workflows = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.list(workingDirectoryOrDot());
-            System.out.println();
-            System.out.println(ascii.sectionHeader("Saved Workflow Teams"));
-            System.out.println();
-            if (workflows.isEmpty()) {
-                System.out.println(renderer.dim("  None. Create one with /workflow create"));
-                return;
-            }
-            for (var team : workflows) {
-                System.out.println("  " + renderer.cyan(team.name())
-                        + renderer.dim(" — " + team.participants().size() + " participants"
-                        + (team.routing().isEmpty() ? "" : ", purposes: " + team.routing().keySet())));
-            }
-            System.out.println();
-            System.out.println(renderer.dim("  Details: /workflow show · Create: /workflow create"));
-        } catch (Exception e) {
-            System.out.println(renderer.yellow("  Could not list workflows: " + e.getMessage()));
-        }
-    }
-
-    private void deleteWorkflow(String name) {
-        if (name == null || name.isBlank()) {
-            System.out.println(renderer.dim("  Usage: /workflow delete <name>"));
-            return;
-        }
-        try {
-            boolean removed = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.delete(
-                    workingDirectoryOrDot(), name);
-            System.out.println(removed
-                    ? "  Deleted workflow '" + name + "'."
-                    : renderer.yellow("  No workflow named '" + name + "'."));
-        } catch (Exception e) {
-            System.out.println(renderer.yellow("  Could not delete workflow: " + e.getMessage()));
-        }
-    }
-
-    /**
-     * Shows the active workflow team for this session: participants, purposes,
-     * and outstanding gates. Reads the harness-owned environment, so it reflects
-     * the process identity rather than anything a model could have asserted.
-     */
-    private void showWorkflowStatus() {
-        System.out.println();
-        System.out.println(ascii.sectionHeader("Workflow Team"));
-        System.out.println();
-        // Session context first (the chat lead; env is immutable in-process),
-        // then the inherited environment (a delegated child).
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
-        String workflowName = context != null ? context.workflowName()
-                : System.getenv(
-                        ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
-        if (workflowName == null || workflowName.isBlank()) {
-            System.out.println(renderer.dim("  No workflow active for this session."));
-            System.out.println(renderer.dim("  Start one with `kompile chat --workflow <name>` or via the setup wizard."));
-            return;
-        }
-        String participant = System.getenv(
-                ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT);
-        try {
-            if (context != null) {
-                // Live enforcement object from the session: true caller identity.
-                System.out.println(context.enforcement().statusLine());
-                return;
-            }
-            var team = ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.get(
-                    workingDirectoryOrDot(), workflowName);
-            if (team == null) {
-                System.out.println(renderer.yellow("  Workflow '" + workflowName
-                        + "' is active but its definition could not be loaded."));
-                return;
-            }
-            var enforcement = ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement.forCaller(
-                    new ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot(
-                            team, team.participants().keySet().stream().collect(
-                                    java.util.stream.Collectors.toMap(
-                                            id -> id,
-                                            id -> team.participant(id).role(),
-                                            (a, b) -> a,
-                                            java.util.LinkedHashMap::new)),
-                            null),
-                    participant == null || participant.isBlank()
-                            ? team.lead() : ai.kompile.cli.main.chat.workflow.WorkflowTeam.key(participant));
-            System.out.println(enforcement.statusLine());
-        } catch (Exception e) {
-            System.out.println(renderer.yellow("  Could not load workflow '" + workflowName + "': " + e.getMessage()));
-        }
     }
 
     private Path workingDirectoryOrDot() {
@@ -2475,7 +2402,7 @@ public class ChatCommandRouter {
 
         if (activeRole == null) {
             System.out.println("  No role currently active");
-            System.out.println("  Using default agent: " + renderer.cyan(repl.getAgentName()));
+            System.out.println("  Using agent: " + renderer.cyan(chatAgent().getName()));
         } else {
             RoleConfig role = roleManager.getRole(activeRole);
             if (role != null) {
@@ -2501,25 +2428,37 @@ public class ChatCommandRouter {
             return;
         }
 
-        // Update the agent name to reflect the role
-        String oldAgentName = repl.getAgentName();
-        repl.setAgentName(role.getName());
-
-        // Update the agentic loop with the role's agent config
-        AgentConfig roleAgentConfig = role.toAgentConfig();
-        agenticLoop.setAgentConfig(roleAgentConfig);
+        String previousAgent = applyRoleToChat(role);
 
         System.out.println();
         System.out.println(renderer.green("  ✓ Role assigned: ") + renderer.cyan(role.getName()));
         System.out.println("  " + role.getDisplayName() + renderer.dim(" - " + role.getDescription()));
         System.out.println();
-        System.out.println(renderer.dim("  Agent changed from " + oldAgentName + " to " + repl.getAgentName()));
+        System.out.println(renderer.dim("  Agent changed from " + previousAgent + " to " + role.getName()));
         System.out.println(renderer.dim("  The agent will now use this role's system prompt"));
         System.out.println();
+    }
 
-        // Track in metrics
-        sessionMetrics.setAgentName(repl.getAgentName());
+    /**
+     * Make an activated role the chat's agent on every route: each turn builds
+     * its prompt, tools and compaction from it. A server-mode turn carries that
+     * prompt to the server agent, which stays the one the user chose (a bare
+     * role name is not a server agent). {@code /role}, the role wizard and this
+     * chat's own {@code role_manager} tool all apply a role here; one activated
+     * during a turn applies from the next turn.
+     *
+     * @return the chat's agent before the role
+     */
+    private String applyRoleToChat(RoleConfig role) {
+        String previousAgent = chatAgent().getName();
+        AgentConfig roleAgent = role.toAgentConfig();
+        repl.setLocalAgentName(roleAgent.getName());
+        agenticLoop.setAgentConfig(roleAgent);
+        chatHistory.logSystem("Role assigned: " + role.getName()
+                + " (agent changed from " + previousAgent + ")");
+        sessionMetrics.setAgentName(roleAgent.getName());
         sessionMetrics.setActiveRole(role.getName());
+        return previousAgent;
     }
 
     // ========================================================================
@@ -2528,10 +2467,7 @@ public class ChatCommandRouter {
 
     private void handlePermissions(String rest) {
         if (rest.isBlank() || "list".equalsIgnoreCase(rest.trim())) {
-            AgentConfig agent = agentRegistry.get(repl.getLocalAgentName());
-            if (agent == null) {
-                agent = agentRegistry.getDefault();
-            }
+            AgentConfig agent = chatAgent();
 
             Map<String, String> descriptions = new TreeMap<>();
             for (CliTool tool : toolRegistry.all()) {
@@ -2700,16 +2636,22 @@ public class ChatCommandRouter {
                 // has run, its budget also covers staged local models via the staging probe.
                 int ctx = agenticLoop.conversationEntryCount() > 0
                         ? agenticLoop.contextWindowTokens()
-                        : ModelContextWindows.getContextWindow(model);
+                        : ModelContextWindows.getContextWindow(chatConfig.getProvider(), model);
                 statusMap.put("Vision", vision ? renderer.green("supported") : renderer.dim("not supported"));
                 statusMap.put("Context window", String.format("%,d tokens", ctx));
-                long used = Math.max(agenticLoop.estimateConversationTokens(),
-                        agenticLoop.lastReportedInputTokens());
+                // Kompile's history does not describe a Claude Code session: the
+                // session holds tool output the history never sees, and Claude Code
+                // compacts it without compacting the history.
+                boolean claudeCodeCompacts = agenticLoop.claudeCodeCompactsSession();
+                long used = claudeCodeCompacts ? agenticLoop.lastReportedInputTokens()
+                        : Math.max(agenticLoop.estimateConversationTokens(),
+                                agenticLoop.lastReportedInputTokens());
                 if (used > 0 && ctx > 0) {
                     long pct = Math.min(100, used * 100 / ctx);
                     String usage = String.format("~%,d tokens (%d%%)", used, pct);
                     statusMap.put("Context used", pct >= 80 ? renderer.yellow(usage
-                            + " — /compact recommended") : usage);
+                            + (claudeCodeCompacts ? " — Claude Code compacts automatically"
+                                    : " — /compact recommended")) : usage);
                 }
             }
             statusMap.put("Session", sessionId);

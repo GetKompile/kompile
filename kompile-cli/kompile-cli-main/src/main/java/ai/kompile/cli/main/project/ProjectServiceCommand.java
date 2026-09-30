@@ -473,7 +473,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
             //    - "kompile-model-staging" entry: SSE to staging (if running)
             String backendUrl = "http://localhost:" + appPort;
             String sseUrl = backendUrl + "/mcp/sse";
-            Path mcpJsonFile = McpToolInjection.injectTools(resolved, "claude", null); // stdio entry
+            Path mcpJsonFile = McpToolInjection.injectProjectMcpJson(resolved); // stdio entry
             addStdioUrlArg(mcpJsonFile, "kompile", backendUrl);
             addSseEntryToMcpJson(mcpJsonFile, "kompile-app", sseUrl);
             if (!noStaging && serviceManager.checkHealth(stagingPort)) {

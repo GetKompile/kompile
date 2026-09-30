@@ -20,6 +20,8 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.CliProcessLauncher;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -28,7 +30,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Shared support for generating MCP configs and launching the CLI stdio MCP server.
@@ -88,11 +93,22 @@ public final class McpToolInjectionSupport {
         // Source is the harness-owned session context: a JVM cannot mutate its own
         // process environment, so a top-level chat lead carries the team there and
         // a delegated child (which did inherit real env values) forwards them.
-        for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                .inheritableEnvironment().entrySet()) {
-            server.putObject("env").put(entry.getKey(), entry.getValue());
-        }
+        putEnvironment(server, "env", launcher.workflowEnvironment());
         return writeConfig(root, "kompile-cli stdio", "stdio");
+    }
+
+    /**
+     * Adds {@code values} to a server entry's environment object, creating the object once.
+     * Calling {@code putObject} per value replaces the object each time, so only the last
+     * value would survive (a workflow identity without its workflow name enforces nothing).
+     */
+    static void putEnvironment(ObjectNode server, String field, Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        JsonNode existing = server.get(field);
+        ObjectNode environment = existing instanceof ObjectNode object ? object : server.putObject(field);
+        values.forEach(environment::put);
     }
 
     /**
@@ -177,7 +193,21 @@ public final class McpToolInjectionSupport {
         return resolved.toAbsolutePath().normalize();
     }
 
-    static record CliLauncher(String command, List<String> prefixArgs) {
+    static record CliLauncher(String command, List<String> prefixArgs, Map<String, String> environment) {
+        CliLauncher(String command, List<String> prefixArgs) {
+            this(command, prefixArgs, null);
+        }
+
+        /**
+         * This launcher with its MCP server running under {@code environment}'s workflow
+         * identity (a delegated agent's) instead of this process's own. {@code null} keeps
+         * this process's identity.
+         */
+        CliLauncher withWorkflowEnvironment(Map<String, String> environment) {
+            return environment == null ? this : new CliLauncher(command, prefixArgs,
+                    Collections.unmodifiableMap(new LinkedHashMap<>(environment)));
+        }
+
         List<String> buildArgs(Path workingDir) {
             return buildArgs(workingDir, TranscriptLogScope.currentTranscriptId());
         }
@@ -195,13 +225,12 @@ public final class McpToolInjectionSupport {
         }
 
         /**
-         * Extra env for the child MCP server carrying the active workflow team.
-         * Reads the harness-owned session context (chat lead) with inherited env
-         * as fallback (delegated child).
+         * Extra env for the child MCP server carrying the active workflow team: the
+         * identity this launcher was given for a delegated agent, else the harness-owned
+         * session context (chat lead) with inherited env as fallback (delegated child).
          */
-        java.util.Map<String, String> workflowEnvironment() {
-            return ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                    .inheritableEnvironment();
+        Map<String, String> workflowEnvironment() {
+            return environment != null ? environment : WorkflowSessionContext.inheritableEnvironment();
         }
     }
 

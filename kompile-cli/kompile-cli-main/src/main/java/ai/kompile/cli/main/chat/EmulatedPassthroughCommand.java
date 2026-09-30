@@ -37,6 +37,7 @@ import ai.kompile.cli.main.chat.enforcer.*;
 import ai.kompile.cli.common.enforcer.DiffPatternEvaluator;
 import ai.kompile.cli.main.chat.format.ConversationReader;
 import ai.kompile.cli.main.chat.harness.HarnessConfig;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
@@ -64,6 +65,8 @@ import ai.kompile.cli.main.chat.tui.KompileTui;
 import ai.kompile.cli.main.chat.tui.MirrorRenderer;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamCommand;
+import ai.kompile.cli.main.chat.workflow.WorkflowWizard;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -532,6 +535,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     public Integer call() {
         Terminal term = null;
         TranscriptLogScope managedTranscriptLog = null;
+        Runnable mcpLogCleanup = () -> { };
         try {
             term = ChatCompleter.buildSystemTerminal();
             this.terminal = term;
@@ -613,6 +617,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             registerManagedSession(sessionId);
             restoreResumedSessionTitle(history);
 
+            // MCP tool-bridge diagnostics go to the process browser, not the transcript;
+            // they keep the stderr line only while the TUI is not on screen.
+            this.bgProcMgr = new BackgroundProcessManager(sessionId, Path.of(workingDir));
+            mcpLogCleanup = McpDiagnostics.installProcessLog(
+                    ChatUiSession.current(), bgProcMgr, () -> tui == null || !tui.isStarted());
+
             // MCP tool injection
             injectMcpTools();
 
@@ -626,7 +636,6 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
             // Initialize unified TUI — KompileTui is the ONE layout manager
             BackgroundTaskManager bgTaskMgr = new BackgroundTaskManager();
-            this.bgProcMgr = new BackgroundProcessManager(sessionId, Path.of(workingDir));
             Path taskRegistryRoot = activityProjectRoot.resolve(".kompile").resolve("task-registry");
             if (Files.isDirectory(taskRegistryRoot) && conversationActivityService != null) {
                 conversationActivityService.addReader(identity -> new TaskActivityAdapter(() ->
@@ -878,6 +887,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             // Context injection happens before the REPL loop is entered. Restore it
             // here as well so partial terminal/TUI initialization cannot leak files.
             cleanupConfiguredContext();
+            mcpLogCleanup.run();
             // Close terminal in a guarded block — stty may fail if the
             // thread was interrupted during shutdown (GraalVM native image
             // or Ctrl+C race). Swallow the error for a clean exit.
@@ -5621,6 +5631,43 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     /**
+     * The /workflow command's console: lines go to the transcript and each
+     * question is asked in the input box, its answer echoed so a multi-step
+     * exchange stays readable.
+     */
+    private WorkflowWizard.Console workflowConsole() {
+        return new WorkflowWizard.Console() {
+            @Override
+            public void println(String line) {
+                safePrintln(line);
+            }
+
+            @Override
+            public String readLine(String prompt) {
+                if (lineReader == null) return null;
+                String question = prompt == null ? "" : prompt;
+                while (question.startsWith("\n")) {
+                    safePrintln("");
+                    question = question.substring(1);
+                }
+                positionAtPrompt();
+                String answer = readUserResponse(question);
+                if (answer != null) safePrintln(question + answer);
+                return answer;
+            }
+        };
+    }
+
+    /** This chat as /workflow sees it: the managed agent with the model and thinking it runs now. */
+    private ChatConfig workflowChatConfig() {
+        ChatConfig config = new ChatConfig(null, null, model, null);
+        config.setChatMode("passthrough");
+        config.setPassthroughAgent(agent);
+        config.setThinking(thinking);
+        return config;
+    }
+
+    /**
      * Write a question answer to the agent's stdin.
      * Format depends on agent type (Codex uses JSON protocol, others use plain text).
      */
@@ -6287,6 +6334,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/rollback" -> handleEnforcerRollbackSlash(rest.trim());
             case "/diff" -> handleEnforcerDiffSlash(rest.trim());
             case "/purge" -> handleEnforcerPurgeSlash();
+            case "/workflow" -> WorkflowTeamCommand.run(rest, workflowConsole(),
+                    Path.of(workingDir == null || workingDir.isBlank() ? "." : workingDir), workflowChatConfig());
             case "/judge", "/enforce", "/enforcer" -> handleEnforcerSlash(rest.trim());
             case "/judge-global" -> handleEnforcerSlash("global " + rest.trim());
             default -> {
@@ -6889,6 +6938,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /purge             Purge this session's diff archive
                   /rules             Show the active judge policy rules
                   /judge [cmd]       Judge: status · on · off · global · judgements [N]
+                  /workflow [cmd]    Team: show · approve [gate] · models · model <p> · create · list · delete
                   /help              Show this help
                   /quit              Exit
 
@@ -7166,13 +7216,13 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     Path.of(workingDir), agent, sseUrl);
             if (injectedSettingsFile != null) {
                 mcpCommandPrefixArguments = McpToolInjection.commandLineOverrides(
-                        Path.of(workingDir), agent);
+                        Path.of(workingDir), agent, injectedSettingsFile);
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
-                System.out.println(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
+                McpDiagnostics.log(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
                         + DIM + " (" + injectedSettingsFile + ")" + RESET);
             }
         } catch (IOException e) {
-            System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+            McpDiagnostics.log(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
         }
     }
 

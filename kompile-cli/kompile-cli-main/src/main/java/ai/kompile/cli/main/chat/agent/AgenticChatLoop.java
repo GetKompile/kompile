@@ -18,12 +18,15 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ChatSessionContext;
+import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.ForegroundRequestProgress;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.IdleTimeoutInputStream;
 import ai.kompile.cli.main.chat.config.ModelContextResolver;
+import ai.kompile.cli.main.chat.config.ProviderCompactionCapabilities;
 import ai.kompile.cli.main.chat.config.ProviderConnectivityPolicy;
 import ai.kompile.cli.main.chat.context.ConversationBoundaryPlanner;
 import ai.kompile.cli.main.chat.context.ConversationLedger;
@@ -50,6 +53,7 @@ import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.workflow.WorkflowController;
 import ai.kompile.cli.main.chat.workflow.WorkflowPolicy;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,6 +79,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -207,7 +212,12 @@ public class AgenticChatLoop {
     private volatile ToolCallInterceptor enforcerToolCallInterceptor;
     private volatile SupervisorFeedbackHandler supervisorFeedbackHandler;
     private volatile Consumer<String> inlineEnforcerActivityListener;
-    private volatile AgentConfig currentAgentConfig; // currently active agent config (can be updated with roles)
+    // The chat's agent: a registered agent or a role. Its turns run as it, and
+    // compaction and model routing read it between turns.
+    private volatile AgentConfig currentAgentConfig;
+    // The agent the running turn uses. It differs from currentAgentConfig only
+    // in the planning pass, which runs as the planner; null between turns.
+    private volatile AgentConfig turnAgentConfig;
     private final SidePanelManager sidePanelManager;
     private long lastRenderedSidePanelVersion = -1;
 
@@ -234,6 +244,9 @@ public class AgenticChatLoop {
 
     // Cancel signal - set by ChatRepl when user presses Escape
     private volatile AtomicBoolean cancelSignal;
+    public static final String DEFAULT_STOP_LABEL = "Interrupted by user";
+    // What a cancelled turn shows and records; a session restart is not an Escape.
+    private volatile String stopLabel = DEFAULT_STOP_LABEL;
     private final AtomicReference<AtomicBoolean> activeToolAbortSignal = new AtomicReference<>();
     private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
     private final AtomicReference<String> activeRemoteProcessId = new AtomicReference<>();
@@ -247,6 +260,8 @@ public class AgenticChatLoop {
     // Callback fired once when the first model text or tool call is printed.
     // Used by ChatRepl to stop the generating spinner.
     private volatile Runnable onFirstOutput;
+    /** Request-scoped progress tap for the live token/elapsed indicator (foreground only). */
+    private volatile ForegroundRequestProgress foregroundProgress;
     private volatile ToolActivityListener toolActivityListener;
     private volatile ServerEventListener serverEventListener;
     /** Raw server-model deltas for non-terminal transports such as JSONL. */
@@ -274,6 +289,12 @@ public class AgenticChatLoop {
     private volatile ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
     private volatile ai.kompile.cli.main.chat.enforcer.JudgeControl.TurnSnapshot activeJudgeSnapshot =
             ai.kompile.cli.main.chat.enforcer.JudgeControl.TurnSnapshot.NONE;
+
+    // The user's most recent real (non-follow-up) request, remembered across any number of
+    // provider-follow-up turns Claude Code starts on its own. judgedRequest() surfaces it so
+    // the judge can weigh a self-started turn's tool calls against the ask that led to them,
+    // instead of only seeing that background tasks ended.
+    private volatile String lastRealUserRequest;
 
     // Direction judge: goal-drift supervision for long conversations. Strictly opt-in
     // (configured + enabled), and deliberately NOT subject to the one-shot /judge
@@ -409,6 +430,11 @@ public class AgenticChatLoop {
      */
     public void setOnFirstOutput(Runnable onFirstOutput) {
         this.onFirstOutput = onFirstOutput;
+    }
+
+    /** Install the request-scoped progress tap (used by ChatMessageHandler per turn). */
+    public void setForegroundProgress(ForegroundRequestProgress progress) {
+        this.foregroundProgress = progress;
     }
 
     public void setToolActivityListener(ToolActivityListener listener) {
@@ -634,6 +660,15 @@ public class AgenticChatLoop {
         }
     }
 
+    /** Label a cancelled turn shows in the transcript and records in its reply. */
+    public void setStopLabel(String label) {
+        this.stopLabel = label == null || label.isBlank() ? DEFAULT_STOP_LABEL : label;
+    }
+
+    public String getStopLabel() {
+        return stopLabel;
+    }
+
     /** Interrupts a blocking server stream and asks the server to kill its agent process. */
     public void cancelActiveTurn() {
         AtomicBoolean signal = cancelSignal;
@@ -677,17 +712,58 @@ public class AgenticChatLoop {
     }
 
     /**
-     * Updates the current agent configuration (e.g., when a role is assigned).
+     * Make this the chat's agent, e.g. when a role is assigned. Its next turn
+     * runs as it, and compaction and model routing use it from now on.
      */
     public void setAgentConfig(AgentConfig agentConfig) {
         this.currentAgentConfig = agentConfig;
     }
 
     /**
-     * Gets the current agent configuration.
+     * The chat's agent: the one its turns run as.
      */
     public AgentConfig getCurrentAgentConfig() {
         return currentAgentConfig;
+    }
+
+    /**
+     * The agent a turn named {@code agentName} runs as, made the chat's agent.
+     * The chat's agent answers to its own name, so a role assigned with
+     * {@link #setAgentConfig} keeps its prompt and tools. Another name selects
+     * the registered agent, else the role, of that name, and an unknown one
+     * the default agent.
+     */
+    private AgentConfig selectAgent(String agentName) {
+        AgentConfig current = currentAgentConfig;
+        if (current != null && (agentName == null || agentName.isBlank()
+                || agentName.equals(current.getName()))) {
+            return current;
+        }
+        AgentConfig selected = null;
+        if (agentName != null && !agentName.isBlank()) {
+            selected = agentRegistry.get(agentName);
+            if (selected == null) {
+                selected = agentRegistry.getAgentForRole(agentName);
+            }
+        }
+        if (selected == null) {
+            selected = agentRegistry.getDefault();
+        }
+        currentAgentConfig = selected;
+        return selected;
+    }
+
+    /** The agent the running turn uses, else the chat's agent. */
+    private AgentConfig activeAgentConfig() {
+        AgentConfig turn = turnAgentConfig;
+        return turn != null ? turn : currentAgentConfig;
+    }
+
+    /** The active agent's model override, or null when it has none. */
+    private String activeModelOverride() {
+        AgentConfig agent = activeAgentConfig();
+        String model = agent == null ? null : agent.getModelOverride();
+        return model == null || model.isBlank() ? null : model;
     }
 
     /**
@@ -728,14 +804,22 @@ public class AgenticChatLoop {
         // Clearing readiness (e.g. a reload failure) is not a user request to disable policy.
         if (evaluator != null || policy != null) this.inlineEnforcerRequested = true;
         this.inlineEnforcerMaxCorrections = maxCorrections;
+        boolean wasEnabled = this.inlineEnforcerEnabled;
         this.inlineEnforcerEnabled = evaluator != null && evaluator.isAvailable();
         bindReminderConstraints(evaluator);
         this.enforcerToolCallInterceptor = evaluator == null ? null
                 : (userPrompt, assistantContext, toolName, toolInput) ->
                         evaluateInlineToolCall(evaluator, policy, userPrompt,
                                 assistantContext, toolName, toolInput);
-        emitInlineEnforcerActivity("[state] "
-                + (inlineEnforcerEnabled ? "ready" : "disabled"));
+        // setInlineEnforcer() and setInlineEnforcerEnabled() are called back-to-back
+        // for one logical transition (e.g. ChatRepl.clearInlineJudgePolicy) — announce
+        // it once, and label it as the enforcer lane, not the judge: this is inline
+        // tool-call policy readiness, unrelated to judgeControl/judgeGloballyEnabled,
+        // which is the judge's own "[state]" event handled in ChatRepl.
+        if (this.inlineEnforcerEnabled != wasEnabled) {
+            emitInlineEnforcerActivity("[enforcer state] "
+                    + (inlineEnforcerEnabled ? "ready" : "disabled"));
+        }
     }
 
     private void bindReminderConstraints(EnforcerEvaluator evaluator) {
@@ -770,9 +854,12 @@ public class AgenticChatLoop {
      */
     public void setInlineEnforcerEnabled(boolean enabled) {
         this.inlineEnforcerRequested = enabled;
+        boolean wasEnabled = this.inlineEnforcerEnabled;
         this.inlineEnforcerEnabled = enabled && inlineEnforcer != null;
-        emitInlineEnforcerActivity("[state] "
-                + (inlineEnforcerEnabled ? "ready" : "disabled"));
+        if (this.inlineEnforcerEnabled != wasEnabled) {
+            emitInlineEnforcerActivity("[enforcer state] "
+                    + (inlineEnforcerEnabled ? "ready" : "disabled"));
+        }
     }
 
     public boolean isInlineEnforcerEnabled() {
@@ -849,14 +936,14 @@ public class AgenticChatLoop {
             sb.append("\n\n").append(workflowPrompt);
         }
 
-        // Workflow TEAM context (participants, routing, gates): static for the
-        // session, so it belongs in this cache-stable prefix. This is the harness
-        // acknowledging the team to the model; task/multi_task still enforce
-        // every delegation in code.
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
-        if (context != null) {
-            sb.append("\n\n").append(context.systemPromptSection());
+        // Workflow TEAM context (participants, models, routing, gates): changes
+        // only when the user rebinds a model, so it belongs in this cache-stable
+        // prefix. This is the harness acknowledging the team to the model; the
+        // task tool still enforces every delegation in code.
+        WorkflowSessionContext workflowTeam = WorkflowSessionContext.current();
+        if (workflowTeam != null) {
+            sb.append("\n\n").append(workflowTeam.systemPromptSection(
+                    directLlmClient == null ? null : directLlmClient.getChatConfig()));
         }
 
         if (toolResultStore != null) {
@@ -980,11 +1067,9 @@ public class AgenticChatLoop {
 
         ConversationLedger.Snapshot snapshot = conversationLedger.snapshot();
         ConversationLedger.CompactionCheckpoint checkpoint = snapshot.checkpoint();
-        String effectiveModel = currentAgentConfig != null
-                && currentAgentConfig.getModelOverride() != null
-                && !currentAgentConfig.getModelOverride().isBlank()
-                ? currentAgentConfig.getModelOverride()
-                : directLlmClient.getConfiguredModel();
+        String modelOverride = activeModelOverride();
+        String effectiveModel = modelOverride != null
+                ? modelOverride : directLlmClient.getConfiguredModel();
         boolean restoredNative = checkpoint != null
                 && checkpoint.nativePayload() != null
                 && checkpoint.provider() != null
@@ -995,6 +1080,47 @@ public class AgenticChatLoop {
             directLlmClient.replaceHistoryWithNativeCheckpoint(checkpoint.nativePayload());
         }
         return rebuildDirectHistory(snapshot.activeEntries(), !restoredNative, restoredNative);
+    }
+
+    /**
+     * Apply a change of the chat's LLM settings and carry the conversation onto
+     * them. When neither the provider nor the route changes and that route's
+     * provider holds the conversation in its own session (Claude Code,
+     * OpenCode), the session stays: its process and the tasks it runs survive,
+     * and the next turn applies the new model to it. Any other change rebuilds
+     * the wire history for the new route, as a provider switch does.
+     *
+     * @param applySettings changes the direct client's chat config
+     */
+    public DirectSettingsChange changeDirectSettings(Runnable applySettings) {
+        if (directLlmClient == null) {
+            applySettings.run();
+            return new DirectSettingsChange(0, false);
+        }
+        String previousProvider = directLlmClient.getConfiguredProvider();
+        DirectLlmClient.ResolvedRoute previousRoute =
+                directLlmClient.resolveRoute(activeModelOverride());
+        applySettings.run();
+        DirectLlmClient.ResolvedRoute route = directLlmClient.resolveRoute(activeModelOverride());
+        boolean keepSession = route.equals(previousRoute)
+                && route.capabilities().historyOwnership()
+                        == ProviderCompactionCapabilities.HistoryOwnership.PROVIDER
+                && Objects.equals(previousProvider, directLlmClient.getConfiguredProvider());
+        if (keepSession) {
+            return new DirectSettingsChange(
+                    conversationLedger.snapshot().activeEntries().size(), true);
+        }
+        return new DirectSettingsChange(rebuildDirectHistoryForProviderSwitch(), false);
+    }
+
+    /**
+     * How a settings change carried the conversation.
+     *
+     * @param retainedMessages    the conversation messages the chat kept
+     * @param keptProviderSession true when the provider's own session, with its
+     *                            process, carries on unchanged
+     */
+    public record DirectSettingsChange(int retainedMessages, boolean keptProviderSession) {
     }
 
     private int rebuildDirectHistory(List<CompactionService.ConversationEntry> entries) {
@@ -1013,11 +1139,9 @@ public class AgenticChatLoop {
             boolean clearHistory,
             boolean skipPortableSummary,
             boolean closeDanglingToolCalls) {
-        String replayModel = currentAgentConfig != null
-                && currentAgentConfig.getModelOverride() != null
-                && !currentAgentConfig.getModelOverride().isBlank()
-                ? currentAgentConfig.getModelOverride()
-                : directLlmClient.getConfiguredModel();
+        String modelOverride = activeModelOverride();
+        String replayModel = modelOverride != null
+                ? modelOverride : directLlmClient.getConfiguredModel();
         return rebuildDirectHistory(
                 entries, clearHistory, skipPortableSummary,
                 closeDanglingToolCalls, replayModel);
@@ -1200,7 +1324,7 @@ public class AgenticChatLoop {
             preserveIndex = conversationHistory.size();
         }
 
-        String modelOverride = currentAgentConfig != null ? currentAgentConfig.getModelOverride() : null;
+        String modelOverride = activeModelOverride();
         progressRef.phase("Checking provider compaction support");
         DirectLlmClient.NativeCompactionResult nativeResult =
                 directLlmClient.tryNativeCompact(modelOverride);
@@ -1476,6 +1600,8 @@ public class AgenticChatLoop {
      * chat is talking to: per-agent override first, then the configured model; the
      * resolver consults the live CLI catalogs, the static table, and — for staged
      * local GGUFs unknown to both — the local serving origin's /api/llm/status.
+     * On the Claude Code route, the limits Claude Code reported enforcing come
+     * before the catalogs: its settings can set them lower.
      * Server mode keeps the default budget (the server bounds its own context).
      */
     private void refreshCompactionBudget(AgentConfig agent) {
@@ -1483,7 +1609,8 @@ public class AgenticChatLoop {
         try {
             String override = agent != null ? agent.getModelOverride() : null;
             ChatConfig chatConfig = directLlmClient.getChatConfig();
-            ModelContextResolver.ModelLimits limits = contextResolver.resolveLimits(chatConfig, override);
+            ModelContextResolver.ModelLimits limits = contextResolver.resolveLimits(
+                    chatConfig, override, directLlmClient.claudeReportedLimits(override));
             compactionService.setMaxTokens(limits.contextWindow());
             compactionService.configure(
                     chatConfig.isAutoCompactEnabled(),
@@ -1513,7 +1640,7 @@ public class AgenticChatLoop {
 
     /** Refresh policy immediately after a live /auto-compact configuration change. */
     public void refreshCompactionPolicy() {
-        refreshCompactionBudget(currentAgentConfig);
+        refreshCompactionBudget(activeAgentConfig());
     }
 
     /**
@@ -1528,7 +1655,36 @@ public class AgenticChatLoop {
             String pendingMessage, String systemPrompt, ArrayNode toolDefs,
             String modelOverride) {
         if (directLlmClient == null) return;
+        compactHistoryBeforeTurn(pendingMessage, systemPrompt, toolDefs, modelOverride);
+        // Each compaction Kompile commits replaces the Claude Code session and clears
+        // the reported failure. If it is still reported, Kompile could not compact its
+        // own history, which is often too short to summarize because the session's
+        // tool output never reaches it. Leave the session that no longer fits for a
+        // new one restored from that history.
+        if (directLlmClient.claudeCompactionFailed() && compactionService.isAutoCompactEnabled()
+                && !isCancelled() && claudeCodeRoute(modelOverride)) {
+            emitLine(renderer.dim("Claude Code could not compact its session. The conversation "
+                    + "continues in a new Claude Code session restored from Kompile's history, "
+                    + "without the old session's tool output."));
+            rebuildDirectHistory(conversationLedger.snapshot().activeEntries());
+            // Nothing was committed, so the ledger would still resume the old session.
+            conversationLedger.forgetNativeSession(CLAUDE_NATIVE_TRANSPORT);
+        }
+    }
+
+    private void compactHistoryBeforeTurn(
+            String pendingMessage, String systemPrompt, ArrayNode toolDefs,
+            String modelOverride) {
         if (!hasAutoCompactableHistory()) return;
+        ProviderCompactionCapabilities.NativeCompaction nativeCompaction =
+                directLlmClient.compactionCapabilities(modelOverride).nativeCompaction();
+        // Claude Code compacts the session it owns and reports it on its stream.
+        // Summarizing here would replace that session with a new one seeded from
+        // Kompile's summary, so Kompile steps in only after Claude Code reported
+        // that its own compaction failed.
+        boolean claudeCodeFallback =
+                nativeCompaction == ProviderCompactionCapabilities.NativeCompaction.CLAUDE_CODE_SESSION;
+        if (claudeCodeFallback && !directLlmClient.claudeCompactionFailed()) return;
         String pendingRequestMessage = reminderManager == null
                 ? pendingMessage : reminderManager.previewUserTurn(pendingMessage);
         long projectedInputTokens = projectedInputTokens(pendingRequestMessage);
@@ -1552,14 +1708,16 @@ public class AgenticChatLoop {
                     compactionService.estimateTokens(conversationLedger.snapshot().activeEntries()),
                     compactionService.estimateTextTokens(pendingMessage));
         }
-        if (!compactionService.needsCompaction(projectedInputTokens)) return;
+        // On the Claude Code route the reported failure is the trigger: Claude Code
+        // attempts compaction only past its own threshold, and Kompile's measure of
+        // that session lags behind it (the session's tool output is not in the
+        // ledger, and a request refused as too long reports no usage).
+        if (!claudeCodeFallback && !compactionService.needsCompaction(projectedInputTokens)) return;
 
         // Anthropic performs compaction inside the pending Messages request and
         // returns a portable compaction block that is committed below with the
         // response. Do not preempt it with generic summarization.
-        if (directLlmClient.compactionCapabilities(modelOverride).nativeCompaction()
-                == ai.kompile.cli.main.chat.config.ProviderCompactionCapabilities
-                .NativeCompaction.ANTHROPIC_MESSAGES
+        if (nativeCompaction == ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES
                 && compactionService.triggerTokens() >= 50_000) {
             return;
         }
@@ -1577,10 +1735,16 @@ public class AgenticChatLoop {
         }
         int tokensBefore = compactionService.estimateTokens(conversationHistory);
         long irreducibleInputTokens = Math.max(0L, projectedInputTokens - tokensBefore);
-        if (irreducibleInputTokens >= compactionService.triggerTokens()) {
+        // A new Claude Code session drops everything the old one held, so none of
+        // it is irreducible there.
+        if (!claudeCodeFallback && irreducibleInputTokens >= compactionService.triggerTokens()) {
             // The system prompt, tool schemas, and pending user input already fill
             // the budget. Summarizing conversation history cannot cross the trigger.
             return;
+        }
+        if (claudeCodeFallback) {
+            emitLine(renderer.dim("Claude Code could not compact its session. Kompile is "
+                    + "compacting the conversation; it continues in a new Claude Code session."));
         }
         // Auto-compaction runs silently otherwise (activity is not yet "Thinking"
         // at this point); show the same live "Compacting" surface as /compact.
@@ -1656,7 +1820,7 @@ public class AgenticChatLoop {
         long pendingTokens = compactionService.estimateTextTokens(pendingMessage);
         if (lastReportedInputTokens <= 0L) {
             long systemTokens = compactionService.estimateTextTokens(
-                    buildSystemPrompt(currentAgentConfig));
+                    buildSystemPrompt(activeAgentConfig()));
             return saturatingAdd(saturatingAdd(estimatedHistory, pendingTokens), systemTokens);
         }
         long historyGrowth = Math.max(0L, estimatedHistory - lastReportedHistoryTokens);
@@ -1684,6 +1848,21 @@ public class AgenticChatLoop {
         return lastReportedInputTokens;
     }
 
+    /**
+     * True on the Claude Code route: Claude Code compacts the session it owns,
+     * and that session holds tool output Kompile's history never sees, so only
+     * its reported usage measures the context.
+     */
+    public boolean claudeCodeCompactsSession() {
+        return claudeCodeRoute(activeModelOverride());
+    }
+
+    private boolean claudeCodeRoute(String modelOverride) {
+        return directLlmClient != null
+                && directLlmClient.compactionCapabilities(modelOverride).nativeCompaction()
+                        == ProviderCompactionCapabilities.NativeCompaction.CLAUDE_CODE_SESSION;
+    }
+
     public boolean autoCompactEnabled() { return compactionService.isAutoCompactEnabled(); }
     public int compactionTriggerTokens() { return compactionService.triggerTokens(); }
     public int compactionReserveTokens() { return compactionService.effectiveReserveTokens(); }
@@ -1692,12 +1871,13 @@ public class AgenticChatLoop {
 
     public String compactionStrategyDescription() {
         if (directLlmClient == null) return "server-managed";
-        String model = currentAgentConfig == null ? null : currentAgentConfig.getModelOverride();
+        String model = activeModelOverride();
         var capabilities = directLlmClient.compactionCapabilities(model);
         String compaction = switch (capabilities.nativeCompaction()) {
             case ANTHROPIC_MESSAGES -> "Anthropic server compaction";
             case OPENAI_RESPONSES -> "OpenAI Responses compaction";
             case OPENCODE_SESSION -> "OpenCode session summarize";
+            case CLAUDE_CODE_SESSION -> "Claude Code session compaction";
             case NONE -> "generic structured summary";
         };
         String counting = switch (capabilities.tokenCounting()) {
@@ -1765,22 +1945,29 @@ public class AgenticChatLoop {
     public String chat(String message, String sessionId, String agentName,
                         String serverAgent, boolean ragEnabled) {
         String originalUserPrompt = extractOriginalUserPrompt(message);
+        if (!DirectLlmClient.isProviderFollowUp(message)) {
+            lastRealUserRequest = originalUserPrompt;
+        }
+        // One agent per turn: its prompt, tools, compaction and model routing
+        // all come from the chat's agent, which this name selects.
+        AgentConfig agent = selectAgent(agentName);
         workflowController.beginTurn(originalUserPrompt, sessionId);
         try {
             if (planningMode && exitPlanModeTool != null) {
                 return chatWithPlanning(
-                        message, originalUserPrompt, sessionId, agentName, serverAgent, ragEnabled);
+                        message, originalUserPrompt, sessionId, agent, serverAgent, ragEnabled);
             }
 
             return chatInternal(
-                    message, originalUserPrompt, sessionId, agentName, serverAgent, ragEnabled);
+                    message, originalUserPrompt, sessionId, agent, serverAgent, ragEnabled);
         } finally {
+            turnAgentConfig = null;
             workflowController.completeTurn();
         }
     }
 
     private String chatWithPlanning(String message, String originalUserPrompt,
-                                    String sessionId, String agentName,
+                                    String sessionId, AgentConfig agent,
                                     String serverAgent, boolean ragEnabled) {
         exitPlanModeTool.reset();
 
@@ -1797,7 +1984,7 @@ public class AgenticChatLoop {
         emitLine("");
 
         String planResponse = chatInternal(
-                message, originalUserPrompt, sessionId, "planner", serverAgent, ragEnabled);
+                message, originalUserPrompt, sessionId, plannerAgent, serverAgent, ragEnabled);
 
         // Show the checklist after planning
         List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId, workingDirectory);
@@ -1829,7 +2016,7 @@ public class AgenticChatLoop {
             exitPlanModeTool.reset();
             String executionResponse = chatInternal(
                     executionPrompt, executionPrompt,
-                    sessionId, agentName, serverAgent, ragEnabled);
+                    sessionId, agent, serverAgent, ragEnabled);
 
             return planResponse + "\n\n--- Execution ---\n\n" + executionResponse;
         }
@@ -1838,12 +2025,12 @@ public class AgenticChatLoop {
     }
 
     private String chatInternal(String message, String originalUserPrompt,
-                                String sessionId, String agentName,
+                                String sessionId, AgentConfig agent,
                                 String serverAgent, boolean ragEnabled) {
+        // Compaction and model routing read the agent this turn runs as.
+        turnAgentConfig = agent;
         configureConversationSession(sessionId);
         long turnStartMs = System.currentTimeMillis();
-        AgentConfig agent = agentRegistry.get(agentName);
-        if (agent == null) agent = agentRegistry.getDefault();
 
         // Capture the user's judge posture (guidance + one-shot override) once per turn.
         // beginTurn() also consumes the one-shot override, so a single /judge override
@@ -1879,6 +2066,10 @@ public class AgenticChatLoop {
         toolContext.linkAbortSignal(turnToolAbort);
         toolContext.linkSelfBackgroundRequest(selfBackgroundRequest);
         toolContext.setOutputConsumer(sessionContext.wrapConsumer(this::emitLine));
+        // The lead's tools run as its workflow participant. Bound per turn because
+        // /workflow model swaps the team between turns.
+        WorkflowSessionContext workflowTeam = WorkflowSessionContext.current();
+        toolContext.bindWorkflow(workflowTeam == null ? null : workflowTeam.enforcement());
 
         boolean progressiveToolLoading = usesProgressiveToolLoading();
         if (progressiveToolLoading) {
@@ -1892,6 +2083,12 @@ public class AgenticChatLoop {
         StringBuilder fullResponse = new StringBuilder();
         int iteration = 0;
         int inlineEnforcerCorrections = inheritedEnforcerCorrectionCount(originalUserPrompt);
+        // Model requests this turn made: one per iteration, or as many as the provider
+        // reports for the agent loop it runs (Claude Code, OpenCode).
+        int turnSteps = 0;
+        // The judge sees this turn's tool calls, whether Kompile or the provider ran them.
+        ChatSessionMetrics.ToolTally toolsBeforeTurn =
+                sessionMetrics != null ? sessionMetrics.toolTally() : null;
 
         String currentMessage = message;
         // Only an accepted user input can replace the objective under review;
@@ -1920,8 +2117,9 @@ public class AgenticChatLoop {
         while (true) {
             // Check cancellation and external crawl controls before each iteration.
             if (isCancelled()) {
-                emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
-                fullResponse.append("\n[Interrupted by user]");
+                String label = stopLabel;
+                emitLine("\n" + renderer.yellow("  ⊘ " + label));
+                fullResponse.append("\n[").append(label).append("]");
                 break;
             }
             if (directHistoryHasUnsubmittedToolCalls
@@ -1971,7 +2169,10 @@ public class AgenticChatLoop {
                 pendingQueuedInput = null;
             }
             ConversationLedger.Snapshot ledgerBeforeRequest = conversationLedger.snapshot();
+            // A turn Claude Code started by itself is shown, not sent, so reminders
+            // stay for the user's next message.
             String outboundMessage = reminderManager == null
+                    || DirectLlmClient.isProviderFollowUp(currentMessage)
                     ? currentMessage : reminderManager.decorateUserTurn(currentMessage);
             String reminderContent = ReminderManager.reminderBlockContent(outboundMessage);
             if (reminderContent != null) {
@@ -2007,9 +2208,30 @@ public class AgenticChatLoop {
                         recoveryProgress.failed(AgenticChatLoop.describeThrowable(recoveryFailure));
                         throw recoveryFailure;
                     }
-                    if (recovery.isSuccess()) {
+                    boolean retry = recovery.isSuccess();
+                    if (retry) {
                         recoveryProgress.complete(recovery.getTokensBefore(),
                                 recovery.getTokensAfter(), recovery.getPreservedTurns());
+                    } else {
+                        // Failed/NOOP recovery: publish the reason. Other routes continue
+                        // the turn normally (no retry).
+                        recoveryProgress.abandonIfActive(recovery.getMessage());
+                        // A Claude Code session that held the conversation also holds tool
+                        // output Kompile's history never saw, so a new session restored from
+                        // that history is smaller even when the history cannot be compacted.
+                        // A rejected session that was itself just restored would receive
+                        // the same request again.
+                        if (!isCancelled() && claudeCodeRoute(agent.getModelOverride())
+                                && directLlmClient.claudeSessionHoldsConversation()) {
+                            emitLine(renderer.dim("Retrying in a new Claude Code session "
+                                    + "restored from Kompile's history, without the old "
+                                    + "session's tool output."));
+                            rebuildDirectHistoryForRetry(
+                                    currentMessage, pendingToolResults, agent.getModelOverride());
+                            retry = true;
+                        }
+                    }
+                    if (retry) {
                         ledgerBeforeRequest = conversationLedger.snapshot();
                         retryProjectionInstalled = true;
                         try {
@@ -2020,10 +2242,6 @@ public class AgenticChatLoop {
                             rebuildDirectHistoryForProviderSwitch();
                             throw retryFailure;
                         }
-                    } else {
-                        // Failed/NOOP recovery: publish the reason and continue the
-                        // turn normally (no retry).
-                        recoveryProgress.abandonIfActive(recovery.getMessage());
                     }
                 }
             } else {
@@ -2031,14 +2249,16 @@ public class AgenticChatLoop {
                         outboundMessage, sessionId, serverAgent, ragEnabled,
                         systemPrompt, toolDefs, pendingToolResults);
             }
+            turnSteps += Math.max(1, result.providerSteps);
 
             // Check if cancelled during streaming
             if (isCancelled()) {
                 if (!result.text.isEmpty()) {
                     fullResponse.append(result.text);
                 }
-                emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
-                fullResponse.append("\n[Interrupted by user]");
+                String label = stopLabel;
+                emitLine("\n" + renderer.yellow("  ⊘ " + label));
+                fullResponse.append("\n[").append(label).append("]");
                 break;
             }
 
@@ -2270,8 +2490,9 @@ public class AgenticChatLoop {
                 ToolCallRequest call = result.toolCalls.get(toolIndex);
                 // Check cancellation before each tool
                 if (isCancelled()) {
-                    emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user — skipping remaining tools"));
-                    fullResponse.append("\n[Interrupted by user — tools skipped]");
+                    String label = stopLabel;
+                    emitLine("\n" + renderer.yellow("  ⊘ " + label + " — skipping remaining tools"));
+                    fullResponse.append("\n[").append(label).append(" — tools skipped]");
                     for (int skippedIndex = toolIndex;
                          skippedIndex < result.toolCalls.size(); skippedIndex++) {
                         ToolCallRequest skipped = result.toolCalls.get(skippedIndex);
@@ -2590,9 +2811,13 @@ public class AgenticChatLoop {
                 truncator.cleanupOldFiles();
                 // A cancelled direct turn may have left provider-native tool-call
                 // envelopes without a submitted result. Reproject before the queued
-                // successor starts so the next provider request is valid.
+                // successor starts so the next provider request is valid. Claude Code
+                // closes the tool calls it interrupted in the session it keeps;
+                // reprojecting would stop its process, with the tasks it runs, and
+                // continue in a new session without their output.
                 if ((isCancelled() || directHistoryHasUnsubmittedToolCalls)
-                        && directLlmClient != null) {
+                        && directLlmClient != null
+                        && !claudeCodeRoute(agent.getModelOverride())) {
                     rebuildDirectHistoryForProviderSwitch();
                     directHistoryHasUnsubmittedToolCalls = false;
                 }
@@ -2609,19 +2834,63 @@ public class AgenticChatLoop {
                 && !isCancelled()) {
             try {
                 long turnLatency = System.currentTimeMillis() - turnStartMs;
-                performanceHarness.evaluateTurnAsync(
-                        agentName,
-                        agent.getModelOverride(),
-                        originalUserPrompt,
-                        output,
-                        sessionId,
-                        turnLatency);
+                ChatSessionMetrics.ToolTally turnTools = sessionMetrics != null
+                        ? sessionMetrics.toolTally().since(toolsBeforeTurn)
+                        : new ChatSessionMetrics.ToolTally(0, 0, Map.of());
+                performanceHarness.evaluateTurnAsync(performanceHarness.turnMetrics()
+                        .sessionId(sessionId)
+                        .agentName(agent.getName())
+                        .model(agent.getModelOverride() != null
+                                ? agent.getModelOverride() : directLlmClient.getConfiguredModel())
+                        .latencyMs(turnLatency)
+                        .agentOutput(output)
+                        .taskPrompt(judgedRequest(message, originalUserPrompt))
+                        .agenticSteps(Math.max(iteration, turnSteps))
+                        .toolCallsTotal(turnTools.calls())
+                        .toolCallErrors(turnTools.errors())
+                        .toolCallBreakdown(turnTools.byTool())
+                        .build());
             } catch (Exception e) {
                 // Harness evaluation is best-effort — never fail the turn
             }
         }
 
         return output;
+    }
+
+    /**
+     * The request the judge weighs a turn against. A turn Claude Code started by itself
+     * carries no user text: it answers the background tasks that ended before it, so the
+     * judge gets what each task was, how it ended and its summary.
+     */
+    private String judgedRequest(String message, String originalUserPrompt) {
+        if (!DirectLlmClient.isProviderFollowUp(message)) {
+            return originalUserPrompt;
+        }
+        DirectLlmClient client = directLlmClient;
+        List<String> triggers = client == null
+                ? List.of() : client.providerFollowUpTriggers(message);
+        // A follow-up carries no user text of its own, but the judge still needs the ask
+        // that led to it — otherwise every self-started turn looks unmoored from intent.
+        String lastRequest = lastRealUserRequest;
+        boolean haveLastRequest = lastRequest != null && !lastRequest.isBlank();
+        if (triggers.isEmpty()) {
+            return "Claude Code started this turn by itself, without a user message, and "
+                    + "reported no background task that ended before it."
+                    + (haveLastRequest
+                            ? "\n\nThe user's last request, which this turn continues:\n"
+                                    + StringUtils.truncateWithSize(lastRequest, 4_000)
+                            : "");
+        }
+        return "Claude Code started this turn by itself, without a user message, after "
+                + (triggers.size() == 1 ? "this background task" : "these background tasks")
+                + " ended. The turn should report what came of "
+                + (triggers.size() == 1 ? "it" : "them") + ":\n- "
+                + String.join("\n- ", triggers)
+                + (haveLastRequest
+                        ? "\n\nThe user's last request, which these tasks served:\n"
+                                + StringUtils.truncateWithSize(lastRequest, 4_000)
+                        : "");
     }
 
     private void addSupersededToolResults(
@@ -3203,10 +3472,21 @@ public class AgenticChatLoop {
         private boolean managed;
         private boolean updateScheduled;
         private boolean backgroundMarkerPublished;
+        private boolean startPending;
         private ToolResult result;
         private String terminalHeader;
 
         private ToolTranscriptBlock(String key, String toolName, String rawInput) {
+            this(key, toolName, rawInput, false);
+        }
+
+        /**
+         * @param awaitInput the call opened before its arguments arrived, as provider
+         *        tool calls do. Append-only output then holds the header back until
+         *        they arrive, or until output needs it, rather than printing it bare.
+         */
+        private ToolTranscriptBlock(String key, String toolName, String rawInput,
+                                    boolean awaitInput) {
             this.key = key;
             this.toolName = toolName;
             this.rawInput = rawInput;
@@ -3214,14 +3494,17 @@ public class AgenticChatLoop {
             if (backgroundOutputConsumer.get() != null) {
                 this.backgroundMarkerPublished = true;
                 this.managed = false;
-                emitLine(start);
             } else {
                 this.managed = ChatCompleter.upsertTranscriptBlock(key, start);
-                if (!managed) emitLine(start);
+            }
+            if (!managed) {
+                if (awaitInput) startPending = true;
+                else emitLine(start);
             }
         }
 
         private synchronized void appendOutput(String output) {
+            releasePendingStart();
             if (routeToBackground(output)) return;
             if (!managed) {
                 emitLine(output);
@@ -3247,15 +3530,23 @@ public class AgenticChatLoop {
         private synchronized void updateInput(String input) {
             if (input == null || input.isBlank() || input.equals(rawInput)) return;
             rawInput = input;
+            start = renderer.renderToolCallStart(toolName, input);
             // Provider tool calls start with empty input. A managed block repaints
-            // in place, so the header takes the arguments; append-only output can
-            // only show them as a follow-up line.
+            // its header in place; append-only output prints the header it held
+            // back. A header already printed is not repeated, and never followed by
+            // the raw arguments: the completion row carries them.
             if (managed && backgroundOutputConsumer.get() == null) {
-                start = renderer.renderToolCallStart(toolName, input);
                 scheduleManagedUpdate();
             } else {
-                appendOutput("arguments: " + input);
+                releasePendingStart();
             }
+        }
+
+        /** Prints a header held back for its arguments before anything that belongs under it. */
+        private void releasePendingStart() {
+            if (!startPending) return;
+            startPending = false;
+            emitLine(start);
         }
 
         private synchronized void complete(ToolResult completed) {
@@ -3321,6 +3612,27 @@ public class AgenticChatLoop {
             }
             return block.toString();
         }
+    }
+
+    /**
+     * A provider-side tool result. Claude Code hands the model a Kompile MCP tool's
+     * structured result serialized as JSON; reading it back into title, output and
+     * metadata renders it like the same tool run locally instead of as that JSON.
+     */
+    private ToolResult providerToolResult(boolean claudeCliRoute, String toolName,
+                                          String output, boolean error) {
+        String text = output == null ? "" : output;
+        if (claudeCliRoute && toolName != null && toolName.startsWith("mcp__")) {
+            ToolResult structured =
+                    McpToolResultSerializer.fromStructuredContentText(objectMapper, text, error);
+            if (structured != null) return structured;
+        }
+        return error ? ToolResult.error(text) : ToolResult.success(text);
+    }
+
+    /** A streamed provider tool call opens with no arguments; they follow as input deltas. */
+    private static boolean isEmptyToolInput(String input) {
+        return input == null || input.isBlank() || input.strip().equals("{}");
     }
 
     private void notifyToolStart(ToolCallRequest call, String rawInput) {
@@ -3433,10 +3745,14 @@ public class AgenticChatLoop {
         Map<String, ToolTranscriptBlock> providerToolBlocks = new HashMap<>();
         Map<String, String> providerToolInputs = new HashMap<>();
         Map<String, String> providerToolNames = new HashMap<>();
+        // Model requests of the agent loop the provider runs for this call.
+        AtomicInteger providerSteps = new AtomicInteger();
         directLlmClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> {
             fireFirstOutput();
             reconnecting.set(false);
             setForegroundActivity("Responding");
+            ForegroundRequestProgress progress = foregroundProgress;
+            if (progress != null && chunk != null) progress.recordTextDelta(chunk);
             thinkingRenderer.flush();
             markdownRenderer.accept(chunk);
         }));
@@ -3466,8 +3782,8 @@ public class AgenticChatLoop {
                                 setForegroundActivity("Working: "
                                         + TerminalRenderer.summarizeToolCall(name, input, 96));
                                 String key = "provider-tool:" + conversationSessionId + ":" + callId;
-                                providerToolBlocks.put(callId,
-                                        new ToolTranscriptBlock(key, name, input));
+                                providerToolBlocks.put(callId, new ToolTranscriptBlock(
+                                        key, name, input, isEmptyToolInput(input)));
                                 providerToolInputs.put(callId, input == null ? "" : input);
                                 providerToolNames.put(callId, name);
                             }
@@ -3525,9 +3841,15 @@ public class AgenticChatLoop {
                             }
                             ToolTranscriptBlock block = claudeCliRoute
                                     ? providerToolBlocks.remove(callId) : null;
-                            ToolResult providerResult = error
-                                    ? ToolResult.error(output == null ? "" : output)
-                                    : ToolResult.success(output == null ? "" : output);
+                            ToolResult providerResult =
+                                    providerToolResult(claudeCliRoute, toolName, output, error);
+                            // The provider ran this tool: it counts like a tool Kompile runs.
+                            ChatSessionMetrics toolMetrics = sessionMetrics;
+                            if (toolMetrics != null) {
+                                toolMetrics.recordToolCall(
+                                        toolName == null || toolName.isBlank() ? "unknown" : toolName,
+                                        providerResult.isError(), 0);
+                            }
                             if (claudeCliRoute) {
                                 if (block == null) {
                                     block = new ToolTranscriptBlock(
@@ -3554,6 +3876,8 @@ public class AgenticChatLoop {
                     public void onTokenUsage(long input, long output,
                                              long cacheRead, long cacheCreation) {
                         sessionContext.wrap(() -> {
+                            ForegroundRequestProgress progress = foregroundProgress;
+                            if (progress != null && output > 0) progress.recordExactOutput(output);
                             if (previousProviderActivityListener != null) {
                                 previousProviderActivityListener.onTokenUsage(
                                         input, output, cacheRead, cacheCreation);
@@ -3574,6 +3898,47 @@ public class AgenticChatLoop {
                             }
                         }).run();
                     }
+
+                    @Override
+                    public void onCompacted(String trigger, long tokensBefore) {
+                        sessionContext.wrap(() -> {
+                            thinkingRenderer.flush();
+                            fireFirstOutput();
+                            // Earlier usage measured the context the provider just
+                            // compacted.
+                            resetReportedContextUsage();
+                            if (sessionMetrics != null) sessionMetrics.recordProviderCompaction();
+                            emitLine(renderer.renderProviderCompactionNotice(
+                                    "Claude Code", trigger, tokensBefore));
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onCompacted(trigger, tokensBefore);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onCompactionFailed(String detail) {
+                        sessionContext.wrap(() -> {
+                            thinkingRenderer.flush();
+                            fireFirstOutput();
+                            emitLine(renderer.dim(detail == null || detail.isBlank()
+                                    ? "[Claude] Conversation compaction failed"
+                                    : "[Claude] Conversation compaction failed: " + detail));
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onCompactionFailed(detail);
+                            }
+                        }).run();
+                    }
+
+                    @Override
+                    public void onSteps(int steps) {
+                        sessionContext.wrap(() -> {
+                            if (steps > 0) providerSteps.addAndGet(steps);
+                            if (previousProviderActivityListener != null) {
+                                previousProviderActivityListener.onSteps(steps);
+                            }
+                        }).run();
+                    }
                 });
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
@@ -3582,12 +3947,14 @@ public class AgenticChatLoop {
             if (reconnecting.getAndSet(false)) setForegroundActivity("Thinking");
             thinkingRenderer.flush();
             markdownRenderer.flush();
+            // A cancelled turn ends before Claude Code reports the tools it interrupted.
+            String unfinished = isCancelled() ? stopLabel
+                    : "Claude stream ended before this tool reported a result.";
             for (Map.Entry<String, ToolTranscriptBlock> entry : providerToolBlocks.entrySet()) {
                 String callId = entry.getKey();
                 String name = providerToolNames.getOrDefault(callId, "unknown");
                 String input = providerToolInputs.getOrDefault(callId, "");
-                ToolResult incomplete = ToolResult.error(
-                        "Claude stream ended before this tool reported a result.");
+                ToolResult incomplete = ToolResult.error(unfinished);
                 entry.getValue().complete(incomplete);
                 ToolActivityListener listener = toolActivityListener;
                 if (listener != null) listener.onToolComplete(callId, name, input, incomplete);
@@ -3617,6 +3984,7 @@ public class AgenticChatLoop {
         }
 
         result.text = directResult.text;
+        result.providerSteps = providerSteps.get();
         result.failed = directResult.failed && !directResult.cancelled;
         result.contextOverflow = directResult.isContextOverflow();
         result.contextOverflowRetrySafe = directResult.canRetryAfterContextOverflow();
@@ -4018,6 +4386,8 @@ public class AgenticChatLoop {
         JsonNode nativeCompactionPayload;
         DirectLlmClient.ClaudeNativeSession claudeNativeSession;
         long contextInputTokens;
+        /** Model requests of the agent loop the provider ran for this call; 0 when none reported. */
+        int providerSteps;
     }
 
     private static final class ServerChatException extends RuntimeException {

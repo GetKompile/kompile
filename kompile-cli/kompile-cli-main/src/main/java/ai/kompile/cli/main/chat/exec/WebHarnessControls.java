@@ -2,14 +2,22 @@ package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
+import ai.kompile.cli.main.chat.ChatCommandCatalog;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.agent.SubagentRunner;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
+import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tui.StatusBar;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.utils.StringUtils;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.ByteArrayOutputStream;
@@ -20,8 +28,11 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
@@ -43,9 +54,20 @@ public final class WebHarnessControls implements AutoCloseable {
     private final ConcurrentLinkedQueue<Runnable> callbacks = new ConcurrentLinkedQueue<>();
     private volatile boolean closed;
     private volatile IOException inputFailure;
+    private volatile CommandResolver commandResolver;
+    private volatile String initialDisplay = "";
     private Thread reader;
 
     public WebHarnessControls(InputStream input) { this.input = input; }
+
+    /** Resolves a slash command as web input does between runs. */
+    @FunctionalInterface
+    public interface CommandResolver { WebCommandResolver.Resolution resolve(String raw) throws Exception; }
+
+    public void setCommandResolver(CommandResolver resolver) { this.commandResolver = resolver; }
+
+    /** What the user typed for the initial turn; the prompt itself carries harness decorations. */
+    public void setInitialDisplay(String text) { this.initialDisplay = text == null ? "" : text; }
 
     public record Frame(String requestId, String action, String targetId, String text, String error) {
         public Frame(String requestId, String action, String targetId, String text) {
@@ -66,16 +88,25 @@ public final class WebHarnessControls implements AutoCloseable {
                 throw new IllegalArgumentException("Unknown control field");
             String id = string(n, "requestId", 128, true);
             String action = string(n, "action", 32, true);
-            if (!Set.of("background", "process_list", "process_output", "process_kill", "input", "subagent_input", "subagent_cancel").contains(action))
+            if (!Set.of("background", "process_list", "process_output", "process_kill", "input", "command",
+                    "subagent_input", "subagent_cancel", "workflow_approve").contains(action))
                 throw new IllegalArgumentException("Unsupported control action");
             boolean targeted = action.equals("process_output") || action.equals("process_kill")
                     || action.equals("subagent_input") || action.equals("subagent_cancel");
-            boolean takesText = action.equals("input") || action.equals("subagent_input");
+            boolean command = action.equals("command");
+            boolean takesText = command || action.equals("input") || action.equals("subagent_input");
+            // A gate approval names its gate, or omits it for the gate that blocks next.
+            boolean gateApproval = action.equals("workflow_approve");
             String target = string(n, "targetId", 128, targeted);
-            String text = string(n, "text", 32_768, takesText);
-            if (takesText && text.stripLeading().startsWith("/"))
-                throw new IllegalArgumentException("Send slash commands after the live run finishes");
-            if ((!targeted && n.has("targetId")) || (!takesText && n.has("text")))
+            String text = string(n, "text", gateApproval ? 256 : 32_768, takesText);
+            if (gateApproval && text.chars().anyMatch(Character::isISOControl))
+                throw new IllegalArgumentException("Invalid text");
+            // Slash text is only ever a command: never model input, never a child's follow-up.
+            if (takesText && command != text.stripLeading().startsWith("/"))
+                throw new IllegalArgumentException(command ? "A command starts with /"
+                        : action.equals("input") ? "Send slash commands with the command action"
+                        : "Slash commands cannot be sent to a child agent");
+            if ((!targeted && n.has("targetId")) || (!takesText && !gateApproval && n.has("text")))
                 throw new IllegalArgumentException("Fields do not apply to control action");
             return new Frame(id, action, target, text);
         } catch (IOException e) {
@@ -119,6 +150,20 @@ public final class WebHarnessControls implements AutoCloseable {
     @FunctionalInterface
     public interface ProcessControl { ToolResult execute(String action, String id) throws Exception; }
 
+    /**
+     * Process actions for the browser. Each passes the "process" permission first, as the
+     * process tool's own calls do: ASK fails closed and a role's {@code process: deny}
+     * holds for the user too.
+     */
+    static ProcessControl processControl(ProcessManagementTool tool, ToolContext context) {
+        return (action, id) -> {
+            context.checkPermission("process", "Web process " + action + (id == null ? "" : ": " + id));
+            ObjectNode args = JSON.createObjectNode().put("action", action).put("tail_lines", 50);
+            if (id != null) args.put("process_id", id);
+            return tool.execute(args, context);
+        };
+    }
+
     String run(AgenticChatLoop loop, BackgroundProcessManager processes, String sessionId,
                String initialPrompt, long timeoutMs, AtomicBoolean cancel, Turn turn,
                ProcessControl processControl, Consumer<HeadlessRunEvent> events) throws Exception {
@@ -130,13 +175,15 @@ public final class WebHarnessControls implements AutoCloseable {
                ProcessControl processControl, Consumer<HeadlessRunEvent> events, SubagentRunner runner) throws Exception {
         var tasks = new BackgroundTaskManager();
         tasks.setBackgroundableCheck(loop::isBackgroundableToolPhaseActive);
-        var pendingInput = new ArrayDeque<String>();
+        var pendingInput = new ArrayDeque<Queued>();
         var wakeups = new ArrayDeque<String>();
         var completedProcesses = new HashSet<String>();
         var requestIds = new HashSet<String>();
         var dirty = new AtomicBoolean(true);
         Runnable changed = () -> dirty.set(true);
-        var children = new ChildActivity(runner, changed);
+        // The CLI's own process panel, headless: it never draws, since stdout carries JSONL.
+        var panel = new StatusBar(tasks, processes, null, null, new Object(), true);
+        var children = new ChildActivity(runner, changed, panel);
         if (runner != null) {
             runner.setLifecycleListener(children);
             runner.setAsyncCompletionListener((id, result) -> callbacks.add(() -> {
@@ -160,7 +207,7 @@ public final class WebHarnessControls implements AutoCloseable {
         String response = "";
         Frame[] backgroundRequest = {null};
         boolean[] detached = {false};
-        pendingInput.add(initialPrompt);
+        pendingInput.add(new Queued(initialPrompt, initialDisplay));
         startReader();
         try {
             while (!closed) {
@@ -252,7 +299,7 @@ public final class WebHarnessControls implements AutoCloseable {
                         case "input" -> {
                             if (pendingInput.size() >= 64) reply(events, sessionId, frame, false, "Input queue full", null);
                             else {
-                                pendingInput.add(frame.text());
+                                pendingInput.add(new Queued(frame.text(), frame.text()));
                                 reply(events, sessionId, frame, true, "Queued for next turn boundary", null);
                             }
                         }
@@ -274,34 +321,38 @@ public final class WebHarnessControls implements AutoCloseable {
                         case "process_list" -> {
                             reply(events, sessionId, frame, true, "Activity snapshot", null); dirty.set(true);
                         }
+                        case "command" -> {
+                            command(events, sessionId, frame, tasks, processes, processControl, panel, pendingInput);
+                            dirty.set(true);
+                        }
+                        case "workflow_approve" -> workflowApprove(events, sessionId, frame);
                         default -> {
-                            var entry = processes.get(frame.targetId());
-                            if (entry == null || entry.isVirtual()) reply(events, sessionId, frame, false, "Not an owned local command", null);
-                            else {
-                                try {
-                                    ToolResult result = processControl.execute(frame.action().equals("process_kill") ? "kill" : "output", frame.targetId());
-                                    reply(events, sessionId, frame, !result.isError(), bounded(result.getOutput()), frame.targetId());
-                                } catch (Exception e) {
-                                    reply(events, sessionId, frame, false, bounded(e.getMessage()), frame.targetId());
-                                }
-                                dirty.set(true);
-                            }
+                            // Watchers and other sessions' processes route like owned commands; the
+                            // process tool refuses to stop a process another session owns.
+                            Answer answer = processAction(processControl, processes,
+                                    frame.action().equals("process_kill") ? "kill" : "output", frame.targetId());
+                            reply(events, sessionId, frame, answer.ok(), answer.text(), frame.targetId());
+                            dirty.set(true);
                         }
                     }
                 }
                 if (active == null) {
                     boolean systemTurn = turnId > 0 && !wakeups.isEmpty();
-                    String next = systemTurn ? wakeups.removeFirst() : pendingInput.pollFirst();
+                    Queued queued = systemTurn ? null : pendingInput.pollFirst();
+                    String next = systemTurn ? wakeups.removeFirst() : queued == null ? null : queued.prompt();
                     if (next != null) {
+                        // A skill runs its expansion but, as in the CLI, shows what the user typed. A wakeup
+                        // reaches the model verbatim; its display drops terminal styling like other browser text.
+                        String display = AsciiRenderer.stripAnsi(queued == null || queued.display().isBlank() ? next : queued.display());
                         detached[0] = false;
                         var completed = tasks.getCompletedTasks();
                         for (int i = 0; i < completed.size() - 99; i++) tasks.removeTask(completed.get(i).getId());
-                        tasks.startTask(next.substring(0, Math.min(200, next.length())));
+                        tasks.startTask(display.substring(0, Math.min(200, display.length())));
                         turnId++;
                         emit(events, sessionId, HeadlessRunEvent.Type.TURN_STARTED, JSON.createObjectNode()
                                 .put("turnId", turnId).put("source", turnId == 1 ? "initial" : systemTurn ? "system" : "user")
                                 // The initial prompt contains harness decorations, not browser display text.
-                                .put("text", turnId == 1 ? "" : next));
+                                .put("text", turnId == 1 ? "" : display));
                         active = executor.submit(() -> turn.chat(next));
                         dirty.set(true);
                     } else if (!children.hasPendingWork() && tasks.getActiveTasks().isEmpty() && processes.listAll().stream()
@@ -384,13 +435,236 @@ public final class WebHarnessControls implements AutoCloseable {
         return value.length() <= MAX_OUTPUT ? value : value.substring(value.length() - MAX_OUTPUT);
     }
 
+    /**
+     * Text bound for the browser. Terminal styling is stripped before bounding so a cut never splits an
+     * escape sequence; model wakeups keep output verbatim, as the CLI REPL sends it.
+     */
+    private static String browserText(String value) {
+        return bounded(AsciiRenderer.stripAnsi(value));
+    }
+
+    /**
+     * The user's gate approval during a run, as {@code /workflow approve} is in the terminal: the
+     * run's team takes it at once and records it for the session's later runs. The reply lists
+     * every gate approved so far.
+     */
+    private static void workflowApprove(Consumer<HeadlessRunEvent> events, String session, Frame frame) {
+        WorkflowSessionContext team = WorkflowSessionContext.current();
+        if (team == null) {
+            reply(events, session, frame, false, "This session has no workflow team.", null);
+            return;
+        }
+        try {
+            String gate = team.approve(frame.text());
+            // Recording is best effort; say so rather than let the next run lose the approval unannounced.
+            String recordedFor = team.enforcement().sessionId();
+            boolean recorded = recordedFor == null || WorkflowSessionContext.satisfiedGates(recordedFor).contains(gate);
+            ObjectNode data = replyData(frame, true, "Approved gate '" + gate + "' for workflow '" + team.workflowName()
+                    + (recorded ? "'." : "'; it could not be recorded, so it lasts only for this run."), null);
+            data.put("gate", gate);
+            ArrayNode approved = data.putArray("approved");
+            new TreeSet<>(team.enforcement().satisfiedGates()).forEach(approved::add);
+            emit(events, session, HeadlessRunEvent.Type.CONTROL, data);
+        } catch (IllegalArgumentException refused) {
+            reply(events, session, frame, false, refused.getMessage(), null);
+        }
+    }
+
     private static void reply(Consumer<HeadlessRunEvent> events, String session, Frame frame,
                               boolean ok, String message, String target) {
+        emit(events, session, HeadlessRunEvent.Type.CONTROL, replyData(frame, ok, message, target));
+    }
+
+    private static ObjectNode replyData(Frame frame, boolean ok, String message, String target) {
+        String text = browserText(message);
         ObjectNode data = JSON.createObjectNode().put("requestId", frame.requestId()).put("action", frame.action())
-                .put("ok", ok).put("message", message);
+                .put("ok", ok).put("message", text);
         if (target != null) data.put("targetId", target);
-        if (frame.action().equals("process_output")) data.put("output", message);
-        emit(events, session, HeadlessRunEvent.Type.CONTROL, data);
+        if (frame.action().equals("process_output")) data.put("output", text);
+        return data;
+    }
+
+    private record Queued(String prompt, String display) { }
+    record Answer(boolean ok, String text) { }
+
+    private static final String LIVE_HELP = """
+            Commands during a live run:
+              /processes, /activity   Processes & subagents panel
+              /process-output <id>    View process output (last 50 lines)
+              /process-status <id>    Show process or watcher status
+              /process-kill <id>      Kill a running process
+              /jobs                   View LLM background tasks & queue
+              /jobs-remove <id>       Remove a completed task
+              /jobs-clear             Clear all completed tasks
+              /skills                 List reusable prompts; a skill queues for the next turn
+            Other commands wait until the live run finishes, then run as usual.""";
+
+    /**
+     * A slash command sent during the run. Commands on this run's processes, jobs and queue answer
+     * here as ChatCommandRouter does; state-changing builtins wait for the run to finish; anything
+     * else resolves as web input does between runs, with a skill queued for the next turn.
+     */
+    private void command(Consumer<HeadlessRunEvent> events, String session, Frame frame, BackgroundTaskManager tasks,
+                         BackgroundProcessManager processes, ProcessControl processControl, StatusBar panel,
+                         ArrayDeque<Queued> pendingInput) {
+        String raw = frame.text().strip();
+        int end = 1;
+        while (end < raw.length() && !Character.isWhitespace(raw.charAt(end))) end++;
+        String name = raw.substring(1, end).toLowerCase(Locale.ROOT);
+        String arg = raw.substring(end).strip();
+        Answer answer = answer(name, arg, tasks, processes, processControl, panel, pendingInput);
+        CommandResolver resolver = commandResolver;
+        boolean waits = !name.equals("skills") && ChatCommandCatalog.isBuiltin(name)
+                && (ChatCommandCatalog.webSupport(name) == ChatCommandCatalog.WebSupport.SUPPORTED || name.startsWith("queue"));
+        if (answer == null && (waits || resolver == null)) {
+            // State-changing builtins would race the running turn; the browser sends them after it.
+            emit(events, session, HeadlessRunEvent.Type.CONTROL,
+                    replyData(frame, false, "/" + name + " runs when the live run finishes.", null).put("deferred", true));
+            return;
+        }
+        if (answer == null) {
+            try {
+                var resolution = resolver.resolve(raw);
+                if (resolution.status() != WebCommandResolver.Status.MODEL_INPUT) {
+                    answer = new Answer(resolution.status() == WebCommandResolver.Status.COMPLETED, bounded(resolution.text()));
+                } else if (pendingInput.size() >= 64) {
+                    answer = new Answer(false, "Input queue full");
+                } else {
+                    pendingInput.add(new Queued(resolution.modelPrompt(), raw));
+                    emit(events, session, HeadlessRunEvent.Type.CONTROL,
+                            replyData(frame, true, "Queued for next turn boundary", null).put("queued", true));
+                    return;
+                }
+            } catch (Exception e) {
+                answer = new Answer(false, bounded(e.getMessage()));
+            }
+        }
+        reply(events, session, frame, answer.ok(), answer.text(), null);
+    }
+
+    /**
+     * A process or job command sent between runs, answered from the processes the session's
+     * runs recorded (see {@link BackgroundProcessManager#enableSessionHistory}) and any shared
+     * processes the caller mirrored into {@code processes}. Background tasks and queued input
+     * live only as long as a run, so none are shown.
+     */
+    static Answer betweenRuns(String name, String arg, BackgroundProcessManager processes,
+                              ProcessControl processControl) {
+        var tasks = new BackgroundTaskManager();
+        var panel = new StatusBar(tasks, processes, null, null, new Object(), true);
+        return answer(name, arg, tasks, processes, processControl, panel, new ArrayDeque<>());
+    }
+
+    /**
+     * Commands on processes, jobs and the queue, answered from the harness's own state as
+     * ChatCommandRouter answers them; null for any other command.
+     */
+    private static Answer answer(String name, String arg, BackgroundTaskManager tasks,
+                                 BackgroundProcessManager processes, ProcessControl processControl,
+                                 StatusBar panel, ArrayDeque<Queued> pendingInput) {
+        return switch (name) {
+            case "processes" -> processPanel(processControl, panel);
+            case "activity" -> Set.of("", "list", "local", "status").contains(arg.toLowerCase(Locale.ROOT))
+                    ? processPanel(processControl, panel)
+                    : new Answer(false, "/activity " + arg + " requires the interactive terminal; no action was performed.");
+            case "process-output", "process-status", "process-kill" -> arg.isEmpty()
+                    ? new Answer(false, "Usage: /" + name + " <id>")
+                    : processAction(processControl, processes, name.substring("process-".length()), arg);
+            case "jobs" -> new Answer(true, jobs(tasks, pendingInput));
+            case "jobs-remove" -> arg.isEmpty() ? new Answer(false, "Usage: /jobs-remove <id>")
+                    : tasks.removeTask(arg) ? new Answer(true, "Removed task [" + arg + "]")
+                    : new Answer(false, "Task not found or still running: " + arg);
+            case "jobs-clear" -> {
+                tasks.clearCompletedTasks();
+                yield new Answer(true, "Cleared completed tasks");
+            }
+            case "help" -> new Answer(true, LIVE_HELP);
+            default -> null;
+        };
+    }
+
+    /** Known entries only; each, owned or shared, passes the process tool and its permission policy. */
+    private static Answer processAction(ProcessControl processControl, BackgroundProcessManager processes,
+                                        String action, String id) {
+        if (processes.get(id) == null) return new Answer(false, "Process not found: " + id);
+        try {
+            ToolResult result = processControl.execute(action, id);
+            return new Answer(!result.isError(), browserText(result.getOutput()));
+        } catch (Exception e) {
+            return new Answer(false, bounded(e.getMessage()));
+        }
+    }
+
+    private static Answer processPanel(ProcessControl processControl, StatusBar panel) {
+        try {
+            // The panel shows recent output, so it passes the same policy as process output.
+            ToolResult gate = processControl.execute("list", null);
+            if (gate.isError()) return new Answer(false, bounded(gate.getOutput()));
+        } catch (Exception e) {
+            return new Answer(false, bounded(e.getMessage()));
+        }
+        return new Answer(true, bounded("Processes & Subagents\n" + AsciiRenderer.stripAnsi(panel.renderProcessPanel())
+                + "\n  /process-kill <id>     Kill a running process"
+                + "\n  /process-output <id>   View process output (last 50 lines)"
+                + "\n  /process-status <id>   Show process or watcher status"
+                + "\n  /jobs                  View LLM background tasks & queue"));
+    }
+
+    /** ChatCommandRouter's Jobs & Queue listing; the queue is this run's pending input. */
+    private static String jobs(BackgroundTaskManager tasks, ArrayDeque<Queued> pendingInput) {
+        StringBuilder body = new StringBuilder("Jobs & Queue\n");
+        var active = tasks.getActiveTasks();
+        if (!active.isEmpty()) {
+            body.append("Active\n");
+            for (var task : active) {
+                body.append("  ").append(task.getStatusIcon()).append(" [").append(task.getId()).append("] ")
+                        .append(task.getDescription()).append(" (").append(task.getElapsedTime()).append(")\n");
+            }
+        }
+        var completed = tasks.getCompletedTasks();
+        if (!completed.isEmpty()) {
+            if (!active.isEmpty()) body.append("\n");
+            body.append("Recent\n");
+            for (int i = Math.max(0, completed.size() - 8); i < completed.size(); i++) {
+                var task = completed.get(i);
+                body.append("  ").append(task.getStatusIcon()).append(" [").append(task.getId()).append("] ")
+                        .append(task.getDescription()).append(" (").append(task.getElapsedTime()).append(")");
+                if (task.getError() != null) body.append(" — ").append(task.getError().getMessage());
+                body.append("\n");
+                String output = task.getOutput();
+                if (task.getStatus() == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.COMPLETED
+                        && output != null && !output.isEmpty()) {
+                    String preview = AsciiRenderer.stripAnsi(output).replaceAll("\\s+", " ").trim();
+                    if (preview.length() > 70) preview = preview.substring(0, 67) + "...";
+                    body.append("       ").append(preview).append("\n");
+                }
+            }
+        }
+        if (active.isEmpty() && completed.isEmpty()) body.append("  No background tasks\n");
+        if (!pendingInput.isEmpty()) {
+            body.append("\nQueue (").append(pendingInput.size()).append(" pending)\n");
+            int i = 0;
+            for (Queued queued : pendingInput) {
+                if (i == 5) {
+                    body.append("  ... and ").append(pendingInput.size() - 5).append(" more\n");
+                    break;
+                }
+                body.append(i == 0 ? "  → " : "  " + (i + 1) + ". ")
+                        .append(StringUtils.truncate(queued.display().replaceAll("\\s+", " ").strip(), 60)).append("\n");
+                i++;
+            }
+            body.append("  Queued input sends at the next turn boundary\n");
+        }
+        return bounded(body.append("\n  /jobs-remove <id>   Remove a completed task")
+                .append("\n  /jobs-clear         Clear all completed tasks").toString());
+    }
+
+    private static String owner(BackgroundProcessManager.ProcessEntry process) {
+        for (String key : List.of("ownerAgent", "ownerSessionId")) {
+            String value = process.getMetadata().get(key);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return "another session";
     }
 
     private static void activity(Consumer<HeadlessRunEvent> events, String session, BackgroundTaskManager tasks,
@@ -398,19 +672,26 @@ public final class WebHarnessControls implements AutoCloseable {
         ObjectNode data = JSON.createObjectNode().put("backgroundable", active && tasks.isCurrentTaskBackgroundable())
                 .put("turnActive", active);
         var ps = data.putArray("processes");
-        for (var p : processes.listAll()) if (!p.isVirtual()) {
+        for (var p : processes.listAll()) {
+            // This run's commands plus running watchers and other sessions' processes; MCP servers
+            // and finished mirrors are listed by /processes.
+            if (p.isVirtual() && (!p.isRunning() || p.getKind() == BackgroundProcessManager.ProcessKind.MCP)) continue;
+            boolean shared = p.getKind() == BackgroundProcessManager.ProcessKind.SHARED;
             var item = ps.addObject().put("id", p.getId()).put("description", p.getDescription())
-                    .put("command", p.getCommand()).put("state", p.getState().name());
+                    .put("command", p.getCommand()).put("state", p.getState().name())
+                    .put("kind", p.getKind().label()).put("killable", !shared);
+            if (shared) item.put("owner", owner(p));
+            if (p.isVirtual()) continue;
             try {
                 ToolResult result = processControl.execute("output", p.getId());
-                if (!result.isError()) item.put("output", bounded(result.getOutput()));
+                if (!result.isError()) item.put("output", browserText(result.getOutput()));
             } catch (Exception ignored) {
                 // Output remains absent when policy denies access; snapshots are not a bypass.
             }
         }
         var ts = data.putArray("tasks");
         for (var t : tasks.getAllTasks()) ts.addObject().put("id", t.getId()).put("description", t.getDescription())
-                .put("state", t.getStatus().name()).put("output", bounded(t.getOutput()));
+                .put("state", t.getStatus().name()).put("output", browserText(t.getOutput()));
         data.set("subagents", children.snapshot());
         emit(events, session, HeadlessRunEvent.Type.ACTIVITY, data);
     }
@@ -419,19 +700,24 @@ public final class WebHarnessControls implements AutoCloseable {
     private static final class ChildActivity implements SubagentRunner.LifecycleListener, AutoCloseable {
         private final SubagentRunner runner;
         private final Runnable changed;
+        private final StatusBar panel;
         private final java.util.Map<String, ObjectNode> entries = new java.util.LinkedHashMap<>();
         private boolean closed;
-        ChildActivity(SubagentRunner runner, Runnable changed) { this.runner = runner; this.changed = changed; }
+        ChildActivity(SubagentRunner runner, Runnable changed, StatusBar panel) {
+            this.runner = runner; this.changed = changed; this.panel = panel;
+        }
         public synchronized void onSubagentStart(String id, String type, String description) {
             if (closed) return;
             entries.computeIfAbsent(id, key -> JSON.createObjectNode().put("id", key).put("output", ""))
                     .put("type", type).put("description", description).put("state", "RUNNING");
+            panel.registerSubagent(id, type, description);
             changed.run();
         }
         public synchronized void onSubagentStatus(String id, String state) {
             if (closed) return;
             var entry = entries.get(id);
             if (entry != null) entry.put("state", state);
+            panel.updateSubagentStatus(id, state);
             changed.run();
         }
         public synchronized void onSubagentActivity(String id, String summary, String detail) {
@@ -443,7 +729,7 @@ public final class WebHarnessControls implements AutoCloseable {
             if (entry != null) entry.put("output", bounded(entry.path("output").asText() + chunk));
             changed.run();
         }
-        public synchronized void onSubagentEnd(String id) { changed.run(); }
+        public synchronized void onSubagentEnd(String id) { panel.unregisterSubagent(id); changed.run(); }
         synchronized boolean contains(String id) { return entries.containsKey(id); }
         synchronized boolean hasPendingWork() {
             return runner != null && entries.keySet().stream().anyMatch(runner::hasPendingWork);
@@ -451,6 +737,7 @@ public final class WebHarnessControls implements AutoCloseable {
         synchronized com.fasterxml.jackson.databind.node.ArrayNode snapshot() {
             var result = JSON.createArrayNode();
             entries.forEach((id, entry) -> result.add(entry.deepCopy()
+                    .put("output", browserText(entry.path("output").asText()))
                     .put("running", runner != null && runner.hasPendingWork(id))
                     .put("canSend", runner != null && runner.canSendMessage(id))
                     .put("canCancel", runner != null && runner.canCancel(id))));

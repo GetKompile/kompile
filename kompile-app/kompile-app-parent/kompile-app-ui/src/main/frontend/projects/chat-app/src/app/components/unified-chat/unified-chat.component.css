@@ -2907,6 +2907,248 @@
   max-width: 100%;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   KOMPILE HARNESS TOOL CALLS — the CLI REPL's row and detail, in the colors its
+   TerminalRenderer and SyntaxHighlighter print
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+:host {
+  --cli-blue: #1d4ed8;
+  --cli-cyan: #0e7490;
+  --cli-magenta: #a21caf;
+  --cli-green: var(--status-success-text);
+  --cli-red: var(--status-error-text);
+  --cli-yellow: var(--status-warning-text);
+  --cli-dim: var(--text-tertiary);
+}
+
+:host-context(body.dark-theme) {
+  --cli-blue: #60a5fa;
+  --cli-cyan: #22d3ee;
+  --cli-magenta: #e879f9;
+}
+
+/* highlight.js tokens as the CLI styles them: keyword bold blue, type cyan, string green,
+   number and literal magenta, comment dim, annotation bold magenta, markup tag name cyan.
+   Chat code blocks and tool-call detail share it. */
+:host ::ng-deep .hljs .hljs-keyword {
+  color: var(--cli-blue);
+  font-weight: bold;
+}
+
+:host ::ng-deep .hljs .hljs-type,
+:host ::ng-deep .hljs .hljs-built_in,
+:host ::ng-deep .hljs .hljs-title.class_,
+:host ::ng-deep .hljs .hljs-name {
+  color: var(--cli-cyan);
+}
+
+:host ::ng-deep .hljs .hljs-string,
+:host ::ng-deep .hljs .hljs-regexp {
+  color: var(--cli-green);
+}
+
+:host ::ng-deep .hljs .hljs-number,
+:host ::ng-deep .hljs .hljs-literal {
+  color: var(--cli-magenta);
+}
+
+:host ::ng-deep .hljs .hljs-comment,
+:host ::ng-deep .hljs .hljs-quote {
+  color: var(--cli-dim);
+}
+
+:host ::ng-deep .hljs .hljs-meta {
+  color: var(--cli-magenta);
+  font-weight: bold;
+}
+
+.tool-call-card {
+  margin: 6px 0;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.tool-call-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.6em;
+  list-style: none;
+  cursor: pointer;
+}
+
+.tool-call-row::-webkit-details-marker {
+  display: none;
+}
+
+.tool-call-name {
+  font-weight: bold;
+}
+
+.tool-call-ok .tool-call-name,
+.tool-call-ok .tool-call-outcome {
+  color: var(--cli-green);
+}
+
+.tool-call-failed .tool-call-name,
+.tool-call-failed .tool-call-outcome,
+.tool-call-error {
+  color: var(--cli-red);
+}
+
+.tool-call-running .tool-call-name {
+  color: var(--cli-cyan);
+  font-weight: normal;
+}
+
+.tool-call-stopped .tool-call-name {
+  color: var(--cli-yellow);
+}
+
+.tool-call-dim {
+  color: var(--cli-dim);
+}
+
+.tool-call-preview {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-call-spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border: 2px solid var(--cli-yellow);
+  border-right-color: transparent;
+  border-radius: 50%;
+  align-self: center;
+  animation: tool-call-spin 0.8s linear infinite;
+}
+
+@keyframes tool-call-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tool-call-section {
+  padding-left: 1.2em;
+}
+
+.tool-call-card pre.tool-call-body {
+  margin: 2px 0 4px;
+  padding: 6px 10px;
+  max-height: 32rem;
+  overflow: auto;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.tool-call-body code {
+  background: none;
+  padding: 0;
+}
+
+:host ::ng-deep .tool-call-diff .diff-meta {
+  color: var(--cli-cyan);
+}
+
+:host ::ng-deep .tool-call-diff .diff-add {
+  color: var(--cli-green);
+}
+
+:host ::ng-deep .tool-call-diff .diff-del {
+  color: var(--cli-red);
+}
+
+:host ::ng-deep .tool-call-diff .diff-ctx {
+  color: var(--cli-dim);
+}
+
+/* The session's workflow team, laid out as the terminal team summary */
+.workflow-team {
+  margin: 0 0 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-body);
+  font-size: 0.9em;
+}
+
+.workflow-team summary {
+  cursor: pointer;
+}
+
+.workflow-gates-awaiting {
+  color: var(--status-warning-text);
+}
+
+.workflow-participant,
+.workflow-section {
+  margin-top: 6px;
+}
+
+.workflow-detail {
+  padding-left: 16px;
+  color: var(--text-secondary);
+}
+
+.workflow-gate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-gate-approved {
+  color: var(--status-success-text);
+}
+
+/* Output of a /command the live harness answered */
+.live-command-output {
+  margin: 0 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-body);
+}
+
+.live-command-output.failed {
+  border-color: var(--status-error-border);
+}
+
+.live-command-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.live-command-output.failed .live-command-header code {
+  color: var(--status-error-text);
+}
+
+.live-command-header button {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.live-command-output pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.82em;
+}
+
 /* Loading Indicator */
 .loading-indicator {
   display: flex;

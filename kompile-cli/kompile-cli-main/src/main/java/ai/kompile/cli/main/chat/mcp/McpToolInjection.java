@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.mcp;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -31,9 +32,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -50,12 +53,17 @@ import java.util.concurrent.TimeUnit;
  * </ul>
  *
  * <p>Injection is <b>dynamic</b>: the original settings file is backed up before injection
- * and restored via {@link #removeTools(Path)} after the agent exits, preventing pollution.</p>
+ * and restored via {@link #removeTools(Path)} after the agent exits, preventing pollution.
+ * Claude Code instead gets a config file of its own for each launch, so no shared file
+ * changes.</p>
  */
 public class McpToolInjection {
 
     private static final ObjectMapper OM = JsonUtils.standardMapper();
     private static final String BACKUP_SUFFIX = ".kompile-backup";
+
+    /** File name prefix of the MCP config written for a single Claude Code launch. */
+    private static final String CLAUDE_LAUNCH_CONFIG_PREFIX = "kompile-mcp-claude-";
 
     /** JVM shutdown hook for crash-safe cleanup of injected tools. */
     private static volatile Thread shutdownHook;
@@ -89,7 +97,9 @@ public class McpToolInjection {
      * otherwise falls back to stdio mode (embedded MCP server).
      *
      * <p>The original settings file is backed up before injection.
-     * Call {@link #removeTools(Path)} with the returned path to restore the original.</p>
+     * Call {@link #removeTools(Path)} with the returned path to restore the original.
+     * For Claude Code the returned file belongs to one launch: pass it to
+     * {@link #commandLineOverrides(Path, String, Path)} for the agent's command line.</p>
      *
      * @param agentWorkingDir the working directory where the agent will run
      * @param agentName       the agent name (claude, codex, qwen, gemini, opencode, pi)
@@ -97,21 +107,42 @@ public class McpToolInjection {
      * @return the path to the settings file that was written, or null if unsupported
      */
     public static Path injectTools(Path agentWorkingDir, String agentName, String sseUrl) throws IOException {
-        Path normalizedWd = agentWorkingDir.toAbsolutePath().normalize();
+        return injectTools(agentWorkingDir, agentName, sseUrl, null);
+    }
 
-        // Clean up any leaked kompile entries from prior crashed sessions
-        try {
-            cleanupLeakedEntries(normalizedWd);
-        } catch (Exception e) {
-            System.err.println("[MCP] Warning: Could not clean leaked entries from prior sessions: " + e.getMessage());
+    /**
+     * Inject kompile MCP tools for an agent whose stdio MCP server runs under
+     * {@code workflowEnvironment}'s workflow identity: a delegated participant's, not
+     * this process's own. {@code null} keeps this process's identity.
+     */
+    public static Path injectTools(Path agentWorkingDir, String agentName, String sseUrl,
+                                   Map<String, String> workflowEnvironment) throws IOException {
+        Path normalizedWd = agentWorkingDir.toAbsolutePath().normalize();
+        String agent = agentName != null ? agentName.toLowerCase(Locale.ROOT) : "qwen";
+
+        // Clean up any leaked kompile entries from prior crashed sessions. A Claude Code
+        // launch writes no shared file, so it leaves other processes' live entries alone.
+        // No agent launch writes .mcp.json, so none repairs it: project start does.
+        if (!agent.contains("claude")) {
+            try {
+                cleanupLeakedEntries(normalizedWd, false);
+            } catch (Exception e) {
+                McpDiagnostics.log("[MCP] Warning: Could not clean leaked entries from prior sessions: " + e.getMessage());
+            }
         }
 
-        String agent = agentName != null ? agentName.toLowerCase(Locale.ROOT) : "qwen";
         if (agent.contains("claude")
                 && !new McpConfigStore(normalizedWd).effectiveServers(true).isEmpty()) {
             // Claude owns portable project .mcp.json entries directly. Keep the
             // Kompile connection on stdio so user-scoped custom servers remain
             // available through the gateway without requiring the app backend.
+            sseUrl = null;
+        }
+        if ((workflowEnvironment != null && !workflowEnvironment.isEmpty())
+                || !WorkflowSessionContext.inheritableEnvironment().isEmpty()) {
+            // Workflow teams are enforced by the embedded stdio server, which runs as the
+            // agent's participant. kompile-app's SSE server knows no teams, so an agent
+            // connected there would delegate outside the team's rules.
             sseUrl = null;
         }
         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
@@ -123,9 +154,14 @@ public class McpToolInjection {
         if ("stdio".equals(mode) || agent.contains("codex")) {
             launcher = McpToolInjectionSupport.findCliLauncher();
             if (launcher == null) {
-                System.err.println("[MCP] Warning: Could not resolve kompile CLI launcher for MCP injection");
+                McpDiagnostics.log("[MCP] Warning: Could not resolve kompile CLI launcher for MCP injection");
                 return null;
             }
+            launcher = launcher.withWorkflowEnvironment(workflowEnvironment);
+        }
+
+        if (agent.contains("claude")) {
+            return injectForClaudeLaunch(normalizedWd, launcher, sseUrl);
         }
 
         // Track whether the settings file already exists before injection.
@@ -133,9 +169,7 @@ public class McpToolInjection {
         Path preCheckPath = resolveSettingsPath(normalizedWd, agent);
         fileExistedBeforeInjection = preCheckPath != null && Files.exists(preCheckPath);
 
-        if (agent.contains("claude")) {
-            return registerAndReturn(injectForClaude(normalizedWd, launcher, sseUrl));
-        } else if (agent.contains("codex")) {
+        if (agent.contains("codex")) {
             return registerAndReturn(injectForCodex(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("gemini") || agent.contains("agy") || agent.contains("antigravity")) {
             return registerAndReturn(injectForAgy(normalizedWd, launcher, sseUrl));
@@ -160,6 +194,53 @@ public class McpToolInjection {
         return List.of();
     }
 
+    /**
+     * Return the launch options for an agent given the file {@link #injectTools} returned
+     * for it: Claude Code's option naming the config written for its launch, otherwise
+     * {@link #commandLineOverrides(Path, String)}.
+     */
+    public static List<String> commandLineOverrides(Path workingDir, String agentName, Path injectedSettingsFile)
+            throws IOException {
+        List<String> launchConfig = launchConfigArguments(injectedSettingsFile);
+        return launchConfig.isEmpty() ? commandLineOverrides(workingDir, agentName) : launchConfig;
+    }
+
+    /**
+     * Claude Code's option naming the config {@link #injectTools} wrote for its launch;
+     * empty for any other file.
+     */
+    public static List<String> launchConfigArguments(Path injectedSettingsFile) {
+        // The = form: "--mcp-config <file>" would take every following argument as
+        // another config file.
+        return isClaudeLaunchConfig(injectedSettingsFile)
+                ? List.of("--mcp-config=" + injectedSettingsFile)
+                : List.of();
+    }
+
+    /**
+     * Register the Kompile stdio server in {@code projectDir}'s {@code .mcp.json}, which the
+     * Claude Code sessions a user starts in the project read. {@code project start} owns this
+     * registration; Kompile's own Claude Code launches use {@link #injectTools} instead.
+     * Call {@link #removeTools(Path)} with the returned path to restore the original file.
+     *
+     * @return the {@code .mcp.json} path, or null if the CLI launcher cannot be resolved
+     */
+    public static Path injectProjectMcpJson(Path projectDir) throws IOException {
+        Path normalizedDir = projectDir.toAbsolutePath().normalize();
+        try {
+            cleanupLeakedEntries(normalizedDir);
+        } catch (Exception e) {
+            McpDiagnostics.log("[MCP] Warning: Could not clean leaked entries from prior sessions: " + e.getMessage());
+        }
+        McpToolInjectionSupport.CliLauncher launcher = McpToolInjectionSupport.findCliLauncher();
+        if (launcher == null) {
+            McpDiagnostics.log("[MCP] Warning: Could not resolve kompile CLI launcher for MCP injection");
+            return null;
+        }
+        fileExistedBeforeInjection = Files.exists(normalizedDir.resolve(".mcp.json"));
+        return registerAndReturn(injectForClaude(normalizedDir, launcher, null));
+    }
+
     /** Helper to register shutdown hook and return the settings file path. */
     private static Path registerAndReturn(Path settingsFile) {
         if (settingsFile != null) {
@@ -175,6 +256,15 @@ public class McpToolInjection {
      * @param settingsFile the path returned by {@link #injectTools}
      */
     public static void removeTools(Path settingsFile) {
+        if (isClaudeLaunchConfig(settingsFile)) {
+            // Nothing shared to restore, and the shutdown hook belongs to another injection.
+            try {
+                Files.deleteIfExists(settingsFile);
+            } catch (IOException e) {
+                McpDiagnostics.log("[MCP] Warning: Could not delete " + settingsFile + ": " + e.getMessage());
+            }
+            return;
+        }
         // Deregister the shutdown hook to avoid double-cleanup
         deregisterShutdownHook();
 
@@ -189,14 +279,14 @@ public class McpToolInjection {
                 // but no backup was needed because injection overwrote it in place.
                 // Leave the file as-is — it still has a valid kompile entry which is
                 // the persistent config the user expects for future sessions.
-                System.err.println("[MCP] Preserved existing settings: " + settingsFile);
+                McpDiagnostics.log("[MCP] Preserved existing settings: " + settingsFile);
             } else {
                 // No backup and file didn't exist before — we created it fresh.
                 // Remove the kompile entry, and delete the file if empty.
                 removeKompileEntry(settingsFile);
             }
         } catch (IOException e) {
-            System.err.println("[MCP] Warning: Could not restore settings: " + e.getMessage());
+            McpDiagnostics.log("[MCP] Warning: Could not restore settings: " + e.getMessage());
         }
     }
 
@@ -227,7 +317,7 @@ public class McpToolInjection {
             restoreJsonKompileEntry(settingsFile, backup);
         }
         Files.deleteIfExists(backup);
-        System.err.println("[MCP] Restored original Kompile entry while preserving current settings: "
+        McpDiagnostics.log("[MCP] Restored original Kompile entry while preserving current settings: "
                 + settingsFile);
     }
 
@@ -458,10 +548,10 @@ public class McpToolInjection {
             String existingContent = Files.exists(settingsFile) ? Files.readString(settingsFile) : "";
             if (!newContent.equals(existingContent)) {
                 Files.writeString(settingsFile, newContent);
-                System.err.println("[MCP] Pre-configured Claude Code hooks in " + settingsFile);
+                McpDiagnostics.log("[MCP] Pre-configured Claude Code hooks in " + settingsFile);
             }
         } catch (Exception e) {
-            System.err.println("[MCP] Warning: Could not pre-configure hooks: " + e.getMessage());
+            McpDiagnostics.log("[MCP] Warning: Could not pre-configure hooks: " + e.getMessage());
         }
     }
 
@@ -546,6 +636,50 @@ public class McpToolInjection {
     // ── Claude Code ────────────────────────────────────────────────────────
 
     /**
+     * Write the Kompile server into a config file that belongs to one Claude Code launch,
+     * which receives it through {@code --mcp-config} (see
+     * {@link #commandLineOverrides(Path, String, Path)}).
+     *
+     * <p>Every Kompile process in a project used to add this server to the shared
+     * {@code .mcp.json} and restore the file when its run ended, which removed the server
+     * from every other live Claude Code session in the project. A {@code --mcp-config}
+     * server takes precedence over a project server of the same name, and Claude Code
+     * still loads the project's other servers.</p>
+     */
+    private static Path injectForClaudeLaunch(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
+                                              String sseUrl) throws IOException {
+        ObjectNode root = OM.createObjectNode();
+        ObjectNode kompile = root.putObject("mcpServers").putObject("kompile");
+        String mode;
+        if (sseUrl != null && !sseUrl.isBlank()) {
+            // Claude Code drops an SSE entry that lacks "type" without reporting it.
+            kompile.put("type", "sse");
+            kompile.put("url", sseUrl);
+            mode = "sse";
+        } else {
+            kompile.put("command", launcher.command());
+            ArrayNode args = kompile.putArray("args");
+            launcher.buildArgs(workingDir).forEach(args::add);
+            McpToolInjectionSupport.putEnvironment(kompile, "env", launcher.workflowEnvironment());
+            // Claude Code loads the project's .mcp.json servers itself.
+            McpToolInjectionSupport.putEnvironment(kompile, "env",
+                    Map.of(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV, "true"));
+            mode = "stdio";
+        }
+        Path config = Files.createTempFile(CLAUDE_LAUNCH_CONFIG_PREFIX, ".json");
+        config.toFile().deleteOnExit();
+        Files.writeString(config, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+        ensureHooksPreConfigured(workingDir);
+        McpDiagnostics.log("[MCP] Wrote kompile MCP tools (" + mode + ") for a Claude Code launch: " + config);
+        return config;
+    }
+
+    private static boolean isClaudeLaunchConfig(Path settingsFile) {
+        Path name = settingsFile != null ? settingsFile.getFileName() : null;
+        return name != null && name.toString().startsWith(CLAUDE_LAUNCH_CONFIG_PREFIX);
+    }
+
+    /**
      * Claude Code 2.x reads MCP servers from {@code .mcp.json} in the project root.
      * This takes priority over {@code ~/.claude/settings.json}.
      */
@@ -591,10 +725,21 @@ public class McpToolInjection {
      * {@code -c key=value} options, so these arguments keep each delegated run isolated.</p>
      */
     public static List<String> codexCommandLineOverrides(Path workingDir) throws IOException {
+        return codexCommandLineOverrides(workingDir, null);
+    }
+
+    /**
+     * {@link #codexCommandLineOverrides(Path)} for a Codex agent whose stdio MCP server runs
+     * under {@code workflowEnvironment}'s workflow identity (a delegated participant's).
+     * {@code null} keeps this process's identity.
+     */
+    public static List<String> codexCommandLineOverrides(Path workingDir, Map<String, String> workflowEnvironment)
+            throws IOException {
         McpToolInjectionSupport.CliLauncher launcher = McpToolInjectionSupport.findCliLauncher();
         if (launcher == null) {
             return List.of();
         }
+        launcher = launcher.withWorkflowEnvironment(workflowEnvironment);
 
         Path normalizedWorkingDir = workingDir.toAbsolutePath().normalize();
         List<String> launcherArgs = launcher.buildArgs(normalizedWorkingDir);
@@ -607,15 +752,14 @@ public class McpToolInjection {
         }
         argsValue.append(']');
 
-        var overrides = new java.util.ArrayList<String>();
+        var overrides = new ArrayList<String>();
         overrides.add("-c");
         overrides.add("mcp_servers.kompile.command=\"" + escapeToml(launcher.command()) + "\"");
         overrides.add("-c");
         overrides.add("mcp_servers.kompile.args=" + argsValue);
         // Workflow team identity overrides so the child stdio server enforces the
         // same team as the launching chat (mirrors injectForCodex's env table).
-        for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                .inheritableEnvironment().entrySet()) {
+        for (var entry : launcher.workflowEnvironment().entrySet()) {
             overrides.add("-c");
             overrides.add("mcp_servers.kompile.env." + entry.getKey()
                     + "=\"" + escapeToml(entry.getValue()) + "\"");
@@ -662,8 +806,7 @@ public class McpToolInjection {
         toml.append("]\n");
         // Workflow team identity for the child server (Codex TOML env table;
         // the section-stripping regex above already removes stale env rows).
-        var workflowEnv = ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                .inheritableEnvironment();
+        var workflowEnv = launcher.workflowEnvironment();
         if (!workflowEnv.isEmpty()) {
             toml.append("\n[mcp_servers.kompile.env]\n");
             for (var entry : workflowEnv.entrySet()) {
@@ -674,8 +817,7 @@ public class McpToolInjection {
 
         Files.writeString(configFile, toml.toString());
 
-        System.err.println("[MCP] Injected kompile MCP tools (stdio) into " + configFile);
-        System.err.flush();
+        McpDiagnostics.log("[MCP] Injected kompile MCP tools (stdio) into " + configFile);
 
         return configFile;
     }
@@ -713,7 +855,7 @@ public class McpToolInjection {
                 JsonNode parsed = OM.readTree(Files.readString(settingsFile));
                 root = parsed != null && parsed.isObject() ? (ObjectNode) parsed : OM.createObjectNode();
             } catch (Exception e) {
-                System.err.println("[MCP] Warning: Could not parse existing Pi MCP config, creating new: " + e.getMessage());
+                McpDiagnostics.log("[MCP] Warning: Could not parse existing Pi MCP config, creating new: " + e.getMessage());
                 root = OM.createObjectNode();
             }
         } else {
@@ -739,7 +881,7 @@ public class McpToolInjection {
             }
         }
         Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
-        System.err.println("[MCP] Injected kompile MCP tools into Pi config " + settingsFile);
+        McpDiagnostics.log("[MCP] Injected kompile MCP tools into Pi config " + settingsFile);
         return settingsFile;
     }
 
@@ -830,7 +972,7 @@ public class McpToolInjection {
             try {
                 root = (ObjectNode) OM.readTree(existing);
             } catch (Exception e) {
-                System.err.println("[MCP] Warning: Could not parse existing " + settingsFile.getFileName() + ", creating new: " + e.getMessage());
+                McpDiagnostics.log("[MCP] Warning: Could not parse existing " + settingsFile.getFileName() + ", creating new: " + e.getMessage());
                 root = OM.createObjectNode();
             }
         } else {
@@ -859,13 +1001,14 @@ public class McpToolInjection {
             for (String arg : launcher.buildArgs(workingDir)) {
                 cmdArray.add(arg);
             }
+            // OpenCode 1.x names a local server's env block "environment".
+            McpToolInjectionSupport.putEnvironment(kompile, "environment", launcher.workflowEnvironment());
             mode = "local";
         }
 
         Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
 
-        System.err.println("[MCP] Injected kompile MCP tools (" + mode + ") into " + settingsFile);
-        System.err.flush();
+        McpDiagnostics.log("[MCP] Injected kompile MCP tools (" + mode + ") into " + settingsFile);
 
         return settingsFile;
     }
@@ -888,7 +1031,7 @@ public class McpToolInjection {
             try {
                 root = (ObjectNode) OM.readTree(existing);
             } catch (Exception e) {
-                System.err.println("[MCP] Warning: Could not parse existing " + settingsFile.getFileName() + ", creating new: " + e.getMessage());
+                McpDiagnostics.log("[MCP] Warning: Could not parse existing " + settingsFile.getFileName() + ", creating new: " + e.getMessage());
                 root = OM.createObjectNode();
             }
         } else {
@@ -922,17 +1065,13 @@ public class McpToolInjection {
             // Workflow team identity rides in the env block (same contract as
             // McpToolInjectionSupport.createStdioConfig) so the child server
             // enforces the same team as the launching chat.
-            for (var entry : ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                    .inheritableEnvironment().entrySet()) {
-                kompile.putObject("env").put(entry.getKey(), entry.getValue());
-            }
+            McpToolInjectionSupport.putEnvironment(kompile, "env", launcher.workflowEnvironment());
             mode = "stdio";
         }
 
         Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
 
-        System.err.println("[MCP] Injected kompile MCP tools (" + mode + ") into " + settingsFile);
-        System.err.flush();
+        McpDiagnostics.log("[MCP] Injected kompile MCP tools (" + mode + ") into " + settingsFile);
 
         return settingsFile;
     }
@@ -1031,20 +1170,31 @@ public class McpToolInjection {
             if (root.isEmpty()) return null;
             return OM.writerWithDefaultPrettyPrinter().writeValueAsString(root);
         } catch (Exception e) {
-            System.err.println("[MCP] Warning: Could not strip kompile entry from " + file + ": " + e.getMessage());
+            McpDiagnostics.log("[MCP] Warning: Could not strip kompile entry from " + file + ": " + e.getMessage());
             return null;
         }
     }
 
     /**
      * Clean up any leaked kompile entries from known config file locations.
-     * Called at the start of {@link #injectTools} to recover from prior crashes.
+     * Called at the start of {@link #injectProjectMcpJson} to recover from prior crashes.
      *
      * @param projectDir the project/working directory used to resolve local config files
      */
     public static void cleanupLeakedEntries(Path projectDir) {
+        cleanupLeakedEntries(projectDir, true);
+    }
+
+    /**
+     * {@link #cleanupLeakedEntries(Path)} for an agent launch, which leaves
+     * {@code projectDir}'s {@code .mcp.json} alone unless {@code includeProjectMcpJson}:
+     * while {@code project start} runs, its registration there has a backup beside it just
+     * as a crashed injection would, and restoring that backup would unregister it.
+     */
+    private static void cleanupLeakedEntries(Path projectDir, boolean includeProjectMcpJson) {
+        Path projectMcpJson = projectDir.resolve(".mcp.json");
         List<Path> candidates = List.of(
-            projectDir.resolve(".mcp.json"),
+            projectMcpJson,
             projectDir.resolve(".qwen/settings.json"),
             projectDir.resolve(".opencode.json"),
             projectDir.resolve("opencode.json"),
@@ -1058,6 +1208,7 @@ public class McpToolInjection {
         );
 
         for (Path candidate : candidates) {
+            if (candidate.equals(projectMcpJson) && !includeProjectMcpJson) continue;
             try {
                 if (Files.exists(candidate) && isContaminated(candidate)) {
                     Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
@@ -1065,7 +1216,7 @@ public class McpToolInjection {
                         // Restore only Kompile's original entry so edits made after
                         // the crashed injection are not discarded.
                         restoreOriginalKompileEntry(candidate, backup);
-                        System.err.println("[MCP] Restored clean backup for: " + candidate);
+                        McpDiagnostics.log("[MCP] Restored clean backup for: " + candidate);
                     } else if (Files.exists(backup)) {
                         // Backup is also contaminated — both got the kompile entry somehow.
                         // Strip kompile from the main file and discard the bad backup.
@@ -1077,7 +1228,7 @@ public class McpToolInjection {
                     // indicates a prior injection that didn't clean up properly.
                 }
             } catch (IOException e) {
-                System.err.println("[MCP] Warning: Could not clean leaked entry from " + candidate + ": " + e.getMessage());
+                McpDiagnostics.log("[MCP] Warning: Could not clean leaked entry from " + candidate + ": " + e.getMessage());
             }
             // Clean up orphaned backups (backup exists but original doesn't)
             Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
@@ -1086,7 +1237,7 @@ public class McpToolInjection {
                     Files.deleteIfExists(backup);
                 }
             } catch (IOException e) {
-                System.err.println("[MCP] Warning: Could not delete orphaned backup " + backup + ": " + e.getMessage());
+                McpDiagnostics.log("[MCP] Warning: Could not delete orphaned backup " + backup + ": " + e.getMessage());
             }
         }
     }
@@ -1106,7 +1257,7 @@ public class McpToolInjection {
         }
         pendingCleanupFile = settingsFile;
         shutdownHook = new Thread(() -> {
-            System.err.println("[MCP] Shutdown hook: cleaning up injected tools");
+            McpDiagnostics.log("[MCP] Shutdown hook: cleaning up injected tools");
             removeTools(pendingCleanupFile);
         }, "kompile-mcp-cleanup");
         try {
@@ -1163,13 +1314,13 @@ public class McpToolInjection {
             }
             if (root.isEmpty()) {
                 Files.deleteIfExists(settingsFile);
-                System.err.println("[MCP] Removed injected settings file: " + settingsFile);
+                McpDiagnostics.log("[MCP] Removed injected settings file: " + settingsFile);
             } else {
                 Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
-                System.err.println("[MCP] Removed kompile entry from: " + settingsFile);
+                McpDiagnostics.log("[MCP] Removed kompile entry from: " + settingsFile);
             }
         } catch (Exception e) {
-            System.err.println("[MCP] Warning: Could not clean up kompile entry: " + e.getMessage());
+            McpDiagnostics.log("[MCP] Warning: Could not clean up kompile entry: " + e.getMessage());
         }
     }
 
@@ -1189,13 +1340,13 @@ public class McpToolInjection {
             cleaned = cleaned.replaceAll("\\n+$", "");
             if (cleaned.isEmpty()) {
                 Files.deleteIfExists(tomlFile);
-                System.err.println("[MCP] Removed injected TOML config file: " + tomlFile);
+                McpDiagnostics.log("[MCP] Removed injected TOML config file: " + tomlFile);
             } else {
                 Files.writeString(tomlFile, cleaned + "\n");
-                System.err.println("[MCP] Removed kompile section from: " + tomlFile);
+                McpDiagnostics.log("[MCP] Removed kompile section from: " + tomlFile);
             }
         } catch (Exception e) {
-            System.err.println("[MCP] Warning: Could not clean up kompile TOML entry: " + e.getMessage());
+            McpDiagnostics.log("[MCP] Warning: Could not clean up kompile TOML entry: " + e.getMessage());
         }
     }
 

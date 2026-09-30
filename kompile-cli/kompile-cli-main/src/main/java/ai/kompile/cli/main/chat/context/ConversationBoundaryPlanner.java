@@ -17,7 +17,8 @@ public final class ConversationBoundaryPlanner {
 
     /**
      * Returns the first active-entry index that must remain verbatim.
-     * At least the newest complete user exchange is retained when possible.
+     * At least the newest complete user exchange is retained when possible, but
+     * never behind a prefix that holds only earlier summaries.
      */
     public static int preserveFrom(
             List<CompactionService.ConversationEntry> entries,
@@ -40,13 +41,34 @@ public final class ConversationBoundaryPlanner {
         for (int i = candidate; i >= 0; i--) {
             CompactionService.ConversationEntry entry = entries.get(i);
             if (entry != null && entry.type == CompactionService.EntryType.USER) {
-                return i;
+                if (i == 0 || !onlySummaries(entries, i)) return i;
+                break;
             }
         }
 
-        // After a checkpoint, newer provider output may contain no user event.
-        // Summarizing only the old summary would preserve an arbitrarily large
-        // assistant/tool tail forever, so compact the complete active projection.
+        // Summarizing only earlier summaries cannot shrink the context, and after a
+        // checkpoint newer provider output may contain no user event. Keep the newer
+        // exchanges verbatim; with none, compact the complete active projection
+        // rather than preserve an arbitrarily large assistant/tool tail forever.
+        for (int i = candidate + 1; i < entries.size(); i++) {
+            CompactionService.ConversationEntry entry = entries.get(i);
+            if (entry != null && entry.type == CompactionService.EntryType.USER) {
+                return i;
+            }
+        }
         return entries.size();
+    }
+
+    /** True when every entry before {@code end} is a compacted summary. */
+    private static boolean onlySummaries(List<CompactionService.ConversationEntry> entries, int end) {
+        for (int i = 0; i < end; i++) {
+            CompactionService.ConversationEntry entry = entries.get(i);
+            if (entry != null && !(entry.type == CompactionService.EntryType.SYSTEM
+                    && entry.content != null
+                    && entry.content.startsWith(ConversationLedger.SUMMARY_MARKER))) {
+                return false;
+            }
+        }
+        return true;
     }
 }

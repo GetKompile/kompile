@@ -218,12 +218,16 @@ class DirectLlmClientOAuthTest {
 
                         data: {"choices":[{"delta":{"content":"partial answer"}}]}
 
+                        data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}
+
                         """);
             } else {
                 respondSse(exchange, """
                         data: {"choices":[{"delta":{"content":" continued"}}]}
 
                         data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+                        data: {"choices":[],"usage":{"prompt_tokens":130,"completion_tokens":3}}
 
                         data: [DONE]
 
@@ -238,6 +242,9 @@ class DirectLlmClientOAuthTest {
                 assertEquals("partial answer continued", result.text,
                         "the continuation is spliced after the partial answer");
                 assertFalse(result.failed);
+                assertEquals(230, result.inputTokens, "billing covers both requests");
+                assertEquals(130, result.contextInputTokens(),
+                        "the context is the resumed request, not the sum of both");
             }
             assertEquals(2, requests.size(), "exactly one resume pass");
             JsonNode resumeMessages = requests.get(1).path("messages");

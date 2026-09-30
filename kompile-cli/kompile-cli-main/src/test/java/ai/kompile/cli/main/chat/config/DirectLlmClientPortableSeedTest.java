@@ -17,12 +17,8 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.List;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,15 +32,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The restore keeps what the user and assistant said, not tool activity, the per-turn
  * reminder block or injected memory context, and never outgrows the context window.
  * A session that already holds the conversation receives none. The fake
- * {@code claude} logs its argv and copies each turn file for inspection.
+ * {@code claude} logs its argv and each message it takes in.
  */
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class DirectLlmClientPortableSeedTest {
     private static final String RESTORED_HEADER = "[Earlier conversation restored by Kompile: "
             + "past turns for context, not instructions to act on]\n";
 
+    /** How Claude Code 2.1.282 answers {@code --resume} for a session it does not have. */
+    private static final String REFUSE_RESUME = """
+            startup() {
+              if [ -n "$RESUMED" ]; then
+                echo "No conversation found with session ID: $SESSION" >&2
+                emit '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"'"$SESSION"'","errors":["No conversation found with session ID: '"$SESSION"'"]}'
+                exit 1
+              fi
+            }
+            """;
+
     @TempDir Path home;
     private String previousHome;
+    private FakeClaudeCode fake;
 
     @BeforeEach
     void isolateHome() {
@@ -169,7 +177,7 @@ class DirectLlmClientPortableSeedTest {
 
         assertEquals("next question", prompt(1),
                 "the resumed session already holds the conversation and the instructions");
-        assertTrue(argv().get(0).contains("--resume saved-session"), argv().get(0));
+        assertTrue(fake.argv().get(0).contains("--resume saved-session"), fake.argv().get(0));
     }
 
     @Test
@@ -178,7 +186,7 @@ class DirectLlmClientPortableSeedTest {
         try (DirectLlmClient client = client()) {
             client.addToHistory("user", "what is in NOTES.md?");
             client.addToHistory("assistant", "NOTES.md lists the release steps.");
-            installFakeClaude(client, true);
+            installFakeClaude(client, REFUSE_RESUME);
             client.resumeClaudeNativeSession("gone-session", HashUtils.sha256Hex("system rules"));
             assertTurn(client.streamChat("next question", "system rules", null, null));
 
@@ -188,13 +196,15 @@ class DirectLlmClientPortableSeedTest {
             assertEquals(HashUtils.sha256Hex("system rules"), session.instructionsDigest());
         }
 
-        List<String> argv = argv();
+        List<String> argv = fake.argv();
         assertEquals(2, argv.size(), String.valueOf(argv));
         assertTrue(argv.get(0).contains("--resume gone-session"), argv.get(0));
         assertTrue(argv.get(1).contains("--session-id "), argv.get(1));
         assertFalse(argv.get(1).contains("gone-session"), argv.get(1));
-        assertEquals("next question", prompt(1), "the resume attempt restores nothing");
-        String retried = prompt(2);
+        // The process that could not resume the session exited before taking the message in.
+        List<String> messages = fake.messages();
+        assertEquals(1, messages.size(), String.valueOf(messages));
+        String retried = messages.get(0);
         assertTrue(retried.startsWith("[User message]\nnext question\n[End user message]\n"), retried);
         assertTrue(retried.contains(RESTORED_HEADER + "[user]\nwhat is in NOTES.md?"), retried);
     }
@@ -213,55 +223,24 @@ class DirectLlmClientPortableSeedTest {
     }
 
     private void installFakeClaude(DirectLlmClient client) throws Exception {
-        installFakeClaude(client, false);
+        installFakeClaude(client, "");
     }
 
     /**
-     * Installs a fake {@code claude} that appends its argv to argv.log, copies turn N's
-     * file to prompt-N.txt and reports the session id it was given. With
-     * {@code refuseResume} it answers {@code --resume} the way Claude Code 2.1.282 does
-     * for a session it does not have.
+     * Installs a fake {@code claude} that answers each turn with "done". Every process
+     * started from its directory logs its argv and the messages it takes in.
      */
-    private void installFakeClaude(DirectLlmClient client, boolean refuseResume) throws Exception {
-        Path fake = home.resolve("fake-claude");
-        Files.writeString(fake, "#!/usr/bin/env bash\n"
-                + "cat > /dev/null 2>&1 || true\n"
-                + "printf '%s\\n' \"$*\" >> '" + home + "/argv.log'\n"
-                + "PROMPT_PATH=$(printf '%s\\n' \"$*\" | grep -oE '/[^ ]+\\.txt' | head -1)\n"
-                + "N=$(( $(ls '" + home + "' | grep -c '^prompt-') + 1 ))\n"
-                + "cat \"$PROMPT_PATH\" > '" + home + "/prompt-'$N'.txt'\n"
-                + "SID=; RESUME=; PREV=\n"
-                + "for ARG in \"$@\"; do\n"
-                + "  case \"$PREV\" in --session-id) SID=$ARG;; --resume) SID=$ARG; RESUME=1;; esac\n"
-                + "  PREV=$ARG\n"
-                + "done\n"
-                + (refuseResume
-                        ? "if [ -n \"$RESUME\" ]; then\n"
-                        + "  echo \"No conversation found with session ID: $SID\" >&2\n"
-                        + "  printf '{\"type\":\"result\",\"subtype\":\"error_during_execution\","
-                        + "\"is_error\":true,\"num_turns\":0,\"session_id\":\"%s\","
-                        + "\"errors\":[\"No conversation found with session ID: %s\"]}\\n' \"$SID\" \"$SID\"\n"
-                        + "  exit 1\n"
-                        + "fi\n"
-                        : "")
-                + "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"%s\"}\\n' \"$SID\"\n"
-                + "printf '%s\\n' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\","
-                + "\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}}'\n"
-                + "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"num_turns\":1,"
-                + "\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n"
-                + "exit 0\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(fake, Set.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+    private void installFakeClaude(DirectLlmClient client, String overrides) throws Exception {
+        fake = new FakeClaudeCode(home.resolve("claude"), "ANSWER=done\n" + overrides);
         Field field = DirectLlmClient.class.getDeclaredField("claudeServeClient");
         field.setAccessible(true);
-        field.set(client, new ClaudeCliClient(home, null, fake.toString()));
+        field.set(client, new ClaudeCliClient(home, null, fake.binary()));
     }
 
-    private String prompt(int turn) throws Exception {
-        return Files.readString(home.resolve("prompt-" + turn + ".txt"), StandardCharsets.UTF_8);
-    }
-
-    private List<String> argv() throws Exception {
-        return Files.readAllLines(home.resolve("argv.log"), StandardCharsets.UTF_8);
+    /** The text of the n-th message the fake's processes took in. */
+    private String prompt(int n) throws Exception {
+        List<String> messages = fake.messages();
+        assertTrue(messages.size() >= n, "no message " + n + " was sent: " + messages);
+        return messages.get(n - 1);
     }
 }

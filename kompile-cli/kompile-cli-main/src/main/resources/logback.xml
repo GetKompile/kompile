@@ -14,7 +14,9 @@
   ~ limitations under the License.
   -->
 
-<configuration scan="true" scanPeriod="30 seconds">
+<!-- No scan: this file ships inside the jar, where logback cannot watch it, and
+     the scan thread outlives the build's in-process man-page generation. -->
+<configuration>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>

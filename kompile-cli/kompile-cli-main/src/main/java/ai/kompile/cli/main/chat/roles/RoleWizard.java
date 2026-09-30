@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Interactive TUI wizard for managing chat roles.
@@ -49,9 +50,24 @@ public class RoleWizard {
     private static final String RED = "\033[31m";
 
     private final RoleManager roleManager;
+    private final Consumer<RoleConfig> activationCallback;
 
     public RoleWizard(RoleManager roleManager) {
+        this(roleManager, null);
+    }
+
+    /**
+     * @param activationCallback notified with the newly-activated role right after
+     *                           {@code roleManager.setActiveRole(...)} succeeds, so the
+     *                           caller can switch its live chat's running agent to match.
+     *                           {@code null} when there is no chat to notify (e.g. a
+     *                           standalone role-management invocation); in that case this
+     *                           wizard only updates {@link RoleManager} bookkeeping and
+     *                           says so rather than claiming the agent changed.
+     */
+    public RoleWizard(RoleManager roleManager, Consumer<RoleConfig> activationCallback) {
         this.roleManager = roleManager;
+        this.activationCallback = activationCallback;
     }
 
     /**
@@ -454,11 +470,19 @@ public class RoleWizard {
         }
 
         roleManager.setActiveRole(selectedRole.getName());
+        if (activationCallback != null) {
+            activationCallback.accept(selectedRole);
+        }
         System.out.println();
         System.out.println(GREEN + "  ✓ Role activated: " + selectedRole.getName() + RESET);
         System.out.println("  " + selectedRole.getDisplayName() + DIM + " - " + selectedRole.getDescription() + RESET);
         System.out.println();
-        System.out.println("  The agent will now use this role's system prompt.");
+        if (activationCallback != null) {
+            System.out.println("  The chat agent will use this role's system prompt starting next turn.");
+        } else {
+            System.out.println("  No active chat session is attached to this role manager, so the running "
+                    + "agent was not changed.");
+        }
     }
 
     private void viewRoleDetails(LineReader reader) {

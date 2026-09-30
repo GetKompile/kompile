@@ -49,6 +49,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * and fires the manager's change listeners only when something actually
  * changed (new row, state change, or output-file size movement). Coordination
  * files are never written and owner log files are never deleted.</p>
+ *
+ * <p>A process that another session launched on this session's behalf (its owner
+ * registered this session as its parent) and holds a completion monitor on wakes
+ * the {@linkplain #setMonitorListener monitor listener} once when it ends, as a
+ * local monitor would.</p>
  */
 public final class SharedProcessMirror implements AutoCloseable {
 
@@ -66,6 +71,12 @@ public final class SharedProcessMirror implements AutoCloseable {
     /** Poll sequencing: a slow poll must not overlap the next scheduled one. */
     private final AtomicBoolean pollInFlight = new AtomicBoolean(false);
     private volatile String pollFailure = "";
+
+    private volatile BackgroundProcessManager.MonitorCallback monitorListener;
+    /** Wake-up bookkeeping per mirror key; only a poll touches it, and polls never overlap. */
+    private final Map<String, WakeState> wakes = new HashMap<>();
+    /** False until the first poll, so a process already over when the chat starts never wakes it. */
+    private boolean seeded;
 
     /**
      * @param processes       the session-local manager that backs the activity panel
@@ -128,6 +139,15 @@ public final class SharedProcessMirror implements AutoCloseable {
         return pollFailure;
     }
 
+    /**
+     * Receives the mirror row and a monitor carrying the owner's process id and
+     * wake-up message when a monitored process launched on this session's behalf
+     * ends. It runs on the poll thread.
+     */
+    public void setMonitorListener(BackgroundProcessManager.MonitorCallback listener) {
+        this.monitorListener = listener;
+    }
+
     private void poll() {
         List<ProcessCoordEntry> entries = coordinator.snapshotProcesses();
         if (entries == null) {
@@ -137,6 +157,7 @@ public final class SharedProcessMirror implements AutoCloseable {
             return;
         }
         Map<String, String> kept = new HashMap<>();
+        List<Wake> due = new ArrayList<>();
         for (ProcessCoordEntry entry : entries) {
             if (entry == null || entry.getProcessId() == null || entry.getProcessId().isBlank()) {
                 continue;
@@ -148,7 +169,7 @@ public final class SharedProcessMirror implements AutoCloseable {
             }
             String key = mirrorKey(entry);
             kept.put(key, entry.getProcessId());
-            processes.upsertShared(
+            BackgroundProcessManager.ProcessEntry mirrored = processes.upsertShared(
                     key,
                     entry.getCommand(),
                     describe(entry),
@@ -159,8 +180,52 @@ public final class SharedProcessMirror implements AutoCloseable {
                     entry.getEndedAt(),
                     ownerOutputFile(entry),
                     metadata(entry));
+            if (mirrored != null && dueForWake(key, entry)) {
+                due.add(new Wake(mirrored, new BackgroundProcessManager.ProcessMonitor(
+                        entry.getProcessId(), entry.getMonitorMessage(), Instant.now())));
+            }
         }
         processes.pruneShared(kept.keySet());
+        wakes.keySet().retainAll(kept.keySet());
+        seeded = true;
+        BackgroundProcessManager.MonitorCallback listener = monitorListener;
+        if (listener == null) return;
+        for (Wake wake : due) {
+            try {
+                listener.onMonitoredProcessExit(wake.entry(), wake.monitor());
+            } catch (RuntimeException ignored) {
+                // As for local monitors: a failed wake-up must not stop mirroring.
+            }
+        }
+    }
+
+    /**
+     * True once per entry: when a process this session is the parent of ends while
+     * its owner monitors it. Only an entry seen running, or first seen after the
+     * first poll, can wake, and the monitor flag may land after the exit.
+     */
+    private boolean dueForWake(String key, ProcessCoordEntry entry) {
+        WakeState state = wakes.computeIfAbsent(key, ignored -> new WakeState(seeded));
+        if (entry.isRunningState()) state.eligible = true;
+        if (state.woken || !state.eligible || !entry.isTerminalState() || !entry.isMonitored()
+                || localSessionId == null || !localSessionId.equals(entry.getParentSessionId())) {
+            return false;
+        }
+        state.woken = true;
+        return true;
+    }
+
+    private static final class WakeState {
+        boolean eligible;
+        boolean woken;
+
+        WakeState(boolean eligible) {
+            this.eligible = eligible;
+        }
+    }
+
+    private record Wake(BackgroundProcessManager.ProcessEntry entry,
+                        BackgroundProcessManager.ProcessMonitor monitor) {
     }
 
     /** Stable per-owner mirror id: coordination ids can collide across sessions. */

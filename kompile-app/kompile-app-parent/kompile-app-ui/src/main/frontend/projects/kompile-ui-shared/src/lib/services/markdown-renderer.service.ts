@@ -19,13 +19,14 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked, Renderer, Tokens } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify, { Config as DOMPurifyConfig } from 'dompurify';
+import { ToolCallRun, ToolCallSection, ToolUseEvent } from '../models/api-models';
 
 /**
  * Represents a parsed segment of a message — either text content (which may contain markdown),
  * a thinking/reasoning block, or a tool use block.
  */
 export interface MessageSegment {
-  type: 'text' | 'thinking' | 'tool_use';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_call';
   content: string;
   /** For thinking blocks: whether the thinking is still in progress */
   isStreaming?: boolean;
@@ -33,12 +34,38 @@ export interface MessageSegment {
   toolName?: string;
   toolInput?: string;
   toolResult?: string;
+  /** For tool_call segments: a kompile harness tool call, drawn as the CLI draws it. */
+  toolCall?: ToolCallView;
   /**
    * Pre-rendered, sanitized HTML for text/thinking segments. Populated once by
    * the chat component so the expensive marked + highlight.js render does not
    * run on every Angular change-detection pass.
    */
   renderedContent?: SafeHtml;
+}
+
+/**
+ * A kompile harness tool call as the CLI REPL prints it: the row (name, action, outcome, title,
+ * metadata, preview) and the bounded detail sections under it, highlighted once.
+ */
+export interface ToolCallView {
+  name: string;
+  /** running: started while the answer streams; stopped: started, never completed. */
+  state: 'running' | 'ok' | 'failed' | 'stopped';
+  action?: string;
+  error?: string;
+  title?: string;
+  metadata?: string;
+  preview?: string;
+  sections: ToolCallSectionView[];
+}
+
+/** One detail section: sanitized highlighted runs, or diff lines colored by prefix. */
+export interface ToolCallSectionView {
+  label: string;
+  diff: boolean;
+  html: SafeHtml;
+  note?: string;
 }
 
 /**
@@ -116,6 +143,19 @@ export class MarkdownRendererService {
     'xml', 'html', 'yaml', 'sql', 'css', 'markdown', 'c', 'cpp', 'csharp',
     'go', 'rust', 'kotlin', 'dockerfile', 'ini', 'diff', 'plaintext'
   ];
+
+  /**
+   * highlight.js languages for the CLI highlighter's families, for a tool-detail run whose file
+   * names no language highlight.js knows.
+   */
+  private static readonly FAMILY_LANGUAGES = new Map<string, string>([
+    ['clike', 'java'], ['hash', 'bash'], ['python', 'python'], ['sql', 'sql'], ['markup', 'xml']
+  ]);
+
+  /** File names and extensions the CLI styles that highlight.js knows by another name. */
+  private static readonly FILE_LANGUAGES = new Map<string, string>([
+    ['cu', 'cpp'], ['cuh', 'cpp'], ['jsonl', 'json'], ['ndjson', 'json'], ['cmakelists.txt', 'cmake']
+  ]);
 
   constructor(private sanitizer: DomSanitizer) {
     this.markedInstance = marked;
@@ -296,6 +336,106 @@ export class MarkdownRendererService {
     }
 
     return segments;
+  }
+
+  /**
+   * The CLI's row and detail for one harness tool call. A started call is running while the
+   * answer streams and stopped once it ends without a result; a completed call carries the row
+   * the CLI printed and its bounded sections, highlighted here.
+   */
+  renderToolCall(call: ToolUseEvent, streaming: boolean): ToolCallView {
+    const completed = call.status === 'completed';
+    const detail = completed ? call.detail : undefined;
+    return {
+      name: detail?.displayName || MarkdownRendererService.prettifyToolName(call.toolName || call.tool || ''),
+      state: completed ? (call.ok === false ? 'failed' : 'ok') : (streaming ? 'running' : 'stopped'),
+      action: detail?.action,
+      error: detail?.error,
+      title: detail?.title,
+      metadata: detail?.metadata,
+      preview: detail?.preview,
+      sections: (detail?.sections || []).map(section => ({
+        label: section.label,
+        diff: section.diff === true,
+        html: this.sanitizeAndTrust(section.diff === true ? this.diffHtml(section) : this.highlightRuns(section)),
+        note: section.note
+      }))
+    };
+  }
+
+  /**
+   * The CLI's display name for a tool (TerminalRenderer.prettifyToolName): the MCP prefix
+   * dropped, camelCase kept, snake_case title-cased, anything else capitalized.
+   */
+  static prettifyToolName(rawName: string): string {
+    let name = rawName || '';
+    if (name.startsWith('mcp__')) {
+      const lastSep = name.lastIndexOf('__');
+      if (lastSep > 4) name = name.substring(lastSep + 2);
+    }
+    if (!name) return 'unknown';
+    const capitalize = (part: string) => part.charAt(0).toUpperCase() + part.substring(1);
+    const rest = name.substring(1);
+    if (rest !== rest.toLowerCase()) return capitalize(name);
+    if (name.includes('_')) return name.split('_').filter(part => part).map(capitalize).join(' ');
+    return capitalize(name);
+  }
+
+  /** Each run highlighted whole, so block comments and strings spanning lines stay intact. */
+  private highlightRuns(section: ToolCallSection): string {
+    return (section.runs || []).map(run => {
+      const text = run.text ?? '';
+      const language = this.runLanguage(run);
+      if (language) {
+        try {
+          return hljs.highlight(text, { language, ignoreIllegals: true }).value;
+        } catch {
+          // Not in this highlight.js build: show the run plain.
+        }
+      }
+      return this.escapeHtml(text);
+    }).join('\n');
+  }
+
+  /** Diff lines colored by prefix, as the CLI's colorDiffLine does; diff text is not highlighted. */
+  private diffHtml(section: ToolCallSection): string {
+    return (section.runs || []).map(run => run.text ?? '').join('\n').split('\n')
+      .map(line => `<span class="${MarkdownRendererService.diffLineClass(line)}">${this.escapeHtml(line)}</span>`)
+      .join('\n');
+  }
+
+  private static diffLineClass(line: string): string {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('***')) {
+      return 'diff-meta';
+    }
+    if (line.startsWith('+')) return 'diff-add';
+    if (line.startsWith('-')) return 'diff-del';
+    return 'diff-ctx';
+  }
+
+  /**
+   * highlight.js language for a run, resolved in the CLI's order: the hint as a fence tag, then
+   * as a file name (whole name, then extension), then the CLI's family. Undefined = plain.
+   */
+  private runLanguage(run: ToolCallRun): string | undefined {
+    const hint = (run.file || '').trim().toLowerCase();
+    if (hint) {
+      if (MarkdownRendererService.highlightable(hint)) return hint;
+      const base = hint.substring(Math.max(hint.lastIndexOf('/'), hint.lastIndexOf('\\')) + 1);
+      const dot = base.lastIndexOf('.');
+      for (const name of [base, dot >= 0 ? base.substring(dot + 1) : '']) {
+        const mapped = MarkdownRendererService.FILE_LANGUAGES.get(name);
+        if (mapped) return mapped;
+        if (MarkdownRendererService.highlightable(name)) return name;
+      }
+    }
+    return run.family ? MarkdownRendererService.FAMILY_LANGUAGES.get(run.family) : undefined;
+  }
+
+  /** A language highlight.js styles. Plain text counts as none, so the CLI's family still applies. */
+  private static highlightable(name: string): boolean {
+    const language = name ? hljs.getLanguage(name) : undefined;
+    return !!language && language !== hljs.getLanguage('plaintext');
   }
 
   /**

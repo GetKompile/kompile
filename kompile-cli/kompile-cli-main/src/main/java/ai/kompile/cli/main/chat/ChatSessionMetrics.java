@@ -297,6 +297,15 @@ public class ChatSessionMetrics {
         fireChange();
     }
 
+    /**
+     * A compaction the provider ran on a session it owns. Only the event is
+     * known, so the tokens-saved totals are left alone.
+     */
+    public void recordProviderCompaction() {
+        compactionEvents.incrementAndGet();
+        fireChange();
+    }
+
     public long getLastCompactionBeforeTokens() { return lastCompactionBeforeTokens; }
     public long getLastCompactionAfterTokens() { return lastCompactionAfterTokens; }
     public long getTotalTokensBeforeCompaction() { return totalTokensBeforeCompaction.get(); }
@@ -353,6 +362,36 @@ public class ChatSessionMetrics {
     public int getMessagesAutoDequeued() { return messagesAutoDequeued.get(); }
     public int getTasksBackgrounded() { return tasksBackgrounded.get(); }
     public Map<String, AtomicInteger> getToolCallCounts() { return toolCallCounts; }
+
+    /**
+     * The session's tool counts so far. Take one when a turn starts and call
+     * {@link ToolTally#since} when it ends to get that turn's calls, whether
+     * Kompile or the provider ran them.
+     */
+    public ToolTally toolTally() {
+        Map<String, Integer> byTool = new TreeMap<>();
+        toolCallCounts.forEach((name, count) -> byTool.put(name, count.get()));
+        return new ToolTally(totalToolCalls.get(), totalToolErrors.get(), byTool);
+    }
+
+    /** Tool calls, failed calls, and calls per tool name. */
+    public record ToolTally(int calls, int errors, Map<String, Integer> byTool) {
+        public ToolTally {
+            byTool = byTool == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(byTool));
+        }
+
+        /** The calls recorded after {@code earlier} was taken. */
+        public ToolTally since(ToolTally earlier) {
+            if (earlier == null) return this;
+            Map<String, Integer> added = new TreeMap<>();
+            byTool.forEach((name, count) -> {
+                int delta = count - earlier.byTool().getOrDefault(name, 0);
+                if (delta > 0) added.put(name, delta);
+            });
+            return new ToolTally(Math.max(0, calls - earlier.calls()),
+                    Math.max(0, errors - earlier.errors()), added);
+        }
+    }
 
     // ========================================================================
     // Performance harness tracking

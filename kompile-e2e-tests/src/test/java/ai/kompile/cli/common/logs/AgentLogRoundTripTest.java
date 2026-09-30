@@ -143,7 +143,7 @@ class AgentLogRoundTripTest {
         assertTrue(oldLog.setLastModified(oldTs));
         assertTrue(oldMeta.setLastModified(oldTs));
 
-        LogRetentionPolicy policy = new LogRetentionPolicy(Duration.ofDays(30), 1L << 40, 2);
+        LogRetentionPolicy policy = new LogRetentionPolicy(Duration.ofDays(30), 1L << 40, 2, false, Duration.ofDays(90));
         LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToAgents();
 
         assertEquals(1, result.deletedByPerAgent());
@@ -162,7 +162,7 @@ class AgentLogRoundTripTest {
         assertTrue(staleLog.setLastModified(tenDaysAgo));
         assertTrue(staleMeta.setLastModified(tenDaysAgo));
 
-        LogRetentionPolicy policy = new LogRetentionPolicy(Duration.ofDays(5), 1L << 40, 1000);
+        LogRetentionPolicy policy = new LogRetentionPolicy(Duration.ofDays(5), 1L << 40, 1000, false, Duration.ofDays(90));
         LogRetentionManager.RetentionResult result = new LogRetentionManager(policy).applyToAgents();
 
         assertEquals(1, result.deletedByAge());

@@ -164,6 +164,36 @@ class ConversationLedgerTest {
     }
 
     @Test
+    void forgottenNativeSessionIsNotResumedHereOrAfterARestart() throws Exception {
+        String sessionId = "ledger-native-forget-" + UUID.randomUUID();
+        Path stateFile = contextFile(sessionId);
+        Path sidecar = stateFile.resolveSibling(sessionId + ".native-session.json");
+        try {
+            ConversationLedger ledger = new ConversationLedger(JsonUtils.standardMapper());
+            ledger.configureSession(sessionId);
+            ledger.append(CompactionService.ConversationEntry.user("request"));
+            ledger.append(CompactionService.ConversationEntry.assistant("response"));
+            ledger.recordNativeSession("claude-cli", "native-1", "digest-1");
+
+            ledger.forgetNativeSession("opencode");
+            assertNotNull(ledger.resumableNativeSession("claude-cli"),
+                    "another transport's session is left alone");
+            assertTrue(Files.exists(sidecar));
+
+            // The conversation moved to a new session; the ledger itself is unchanged.
+            ledger.forgetNativeSession("claude-cli");
+            assertNull(ledger.resumableNativeSession("claude-cli"));
+            assertFalse(Files.exists(sidecar), "a later process must not resume it either");
+            ConversationLedger restarted = new ConversationLedger(JsonUtils.standardMapper());
+            restarted.configureSession(sessionId);
+            assertNull(restarted.resumableNativeSession("claude-cli"));
+        } finally {
+            Files.deleteIfExists(stateFile);
+            Files.deleteIfExists(sidecar);
+        }
+    }
+
+    @Test
     void boundaryPlannerPreservesWholeNewestToolExchange() {
         CompactionService service = new CompactionService(JsonUtils.standardMapper(), 8_192);
         List<CompactionService.ConversationEntry> entries = List.of(
@@ -190,6 +220,26 @@ class ConversationLedgerTest {
 
         assertEquals(entries.size(),
                 ConversationBoundaryPlanner.preserveFrom(entries, service, 1));
+    }
+
+    @Test
+    void boundaryPlannerNeverCompactsOnlyTheEarlierSummary() {
+        // The exchange after a checkpoint outgrew the preserve budget. Compacting only
+        // the checkpoint cannot shrink the context, so every turn retried it.
+        CompactionService service = new CompactionService(JsonUtils.standardMapper(), 8_192);
+        List<CompactionService.ConversationEntry> entries = List.of(
+                CompactionService.ConversationEntry.system(
+                        ConversationLedger.SUMMARY_MARKER + "prior summary"),
+                CompactionService.ConversationEntry.user("first request"),
+                CompactionService.ConversationEntry.assistant("x".repeat(8_000)),
+                CompactionService.ConversationEntry.user("second request"),
+                CompactionService.ConversationEntry.assistant("second answer"));
+
+        assertEquals(3, ConversationBoundaryPlanner.preserveFrom(entries, service, 1_000),
+                "the oversized exchange joins the summary; the newer one stays verbatim");
+        List<CompactionService.ConversationEntry> oversizedLast = entries.subList(0, 3);
+        assertEquals(oversizedLast.size(), ConversationBoundaryPlanner.preserveFrom(oversizedLast, service, 1_000),
+                "with no newer exchange, the whole projection is compacted");
     }
 
     private static Path contextFile(String sessionId) {

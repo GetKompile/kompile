@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.cli.main.chat.context.ConversationLedger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
@@ -275,7 +276,9 @@ public class CompactionService {
      * Deterministic plain-text digest of a conversation — the no-LLM fallback used
      * when a summarization call fails but the history must still shrink. Roles are
      * labeled, tool results collapse to their one-line summaries, and long turns
-     * are clipped, so the digest is safe to inject as replacement history.
+     * are clipped, so the digest is safe to inject as replacement history. An
+     * earlier compacted summary is kept whole: it already stands for the history
+     * before it, which clipping would lose.
      */
     public String renderDigest(List<ConversationEntry> entries) {
         StringBuilder digest = new StringBuilder();
@@ -284,7 +287,14 @@ public class CompactionService {
             switch (entry.type) {
                 case USER -> digest.append("User: ").append(clip(entry.content, 400)).append('\n');
                 case ASSISTANT -> digest.append("Assistant: ").append(clip(entry.content, 400)).append('\n');
-                case SYSTEM -> digest.append("Note: ").append(clip(entry.content, 400)).append('\n');
+                case SYSTEM -> {
+                    if (entry.content.startsWith(ConversationLedger.SUMMARY_MARKER)) {
+                        digest.append(entry.content.substring(
+                                ConversationLedger.SUMMARY_MARKER.length()).strip()).append('\n');
+                    } else {
+                        digest.append("Note: ").append(clip(entry.content, 400)).append('\n');
+                    }
+                }
                 case TOOL_CALL -> digest.append("Tool call: ")
                         .append(entry.toolName != null ? entry.toolName : "tool").append('\n');
                 case TOOL_RESULT -> digest.append(clip(

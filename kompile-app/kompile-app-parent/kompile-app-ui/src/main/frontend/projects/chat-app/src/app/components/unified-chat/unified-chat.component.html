@@ -1169,6 +1169,31 @@
                     </button>
                   </div>
                 </details>
+
+                <!-- Kompile harness tool calls: the CLI's row, then its bounded detail sections -->
+                <details *ngIf="segment.type === 'tool_call' && segment.toolCall as call" class="tool-call-card"
+                  [ngClass]="'tool-call-' + call.state" [attr.open]="call.sections.length ? '' : null"
+                  data-testid="tool-call-card">
+                  <summary class="tool-call-row">
+                    <span *ngIf="call.state === 'running'" class="tool-call-spinner" aria-hidden="true"></span>
+                    <span *ngIf="call.state !== 'running'" class="tool-call-marker" aria-hidden="true">▸</span>
+                    <span class="tool-call-name">{{ call.name }}</span>
+                    <span class="tool-call-dim" *ngIf="call.action">{{ call.action }}</span>
+                    <span class="tool-call-outcome" *ngIf="call.state === 'ok'">✓</span>
+                    <span class="tool-call-outcome" *ngIf="call.state === 'failed'">✗</span>
+                    <span class="tool-call-dim" *ngIf="call.state === 'running'">running...</span>
+                    <span class="tool-call-dim" *ngIf="call.state === 'stopped'">stopped</span>
+                    <span class="tool-call-error" *ngIf="call.error">{{ call.error }}</span>
+                    <span class="tool-call-dim" *ngIf="call.title">{{ call.title }}</span>
+                    <span class="tool-call-dim" *ngIf="call.metadata">{{ call.metadata }}</span>
+                    <span class="tool-call-dim tool-call-preview" *ngIf="call.preview">· {{ call.preview }}</span>
+                  </summary>
+                  <div class="tool-call-section" *ngFor="let section of call.sections">
+                    <div class="tool-call-dim">↳ {{ section.label }}:</div>
+                    <pre class="tool-call-body" [class.tool-call-diff]="section.diff"><code class="hljs" [innerHTML]="section.html"></code></pre>
+                    <div class="tool-call-dim" *ngIf="section.note">{{ section.note }}</div>
+                  </div>
+                </details>
               </ng-container>
 
               <!-- Source reference links (injected into rendered markdown) -->
@@ -1441,6 +1466,35 @@
         <button type="button" (click)="reconnectCurrentRun()" [disabled]="lifecycleBusy">Reconnect run</button>
         <button type="button" (click)="stopSavedRun()" [disabled]="lifecycleBusy">Stop saved run</button>
       </div>
+      <!-- The workflow team the session was started with, laid out as the terminal team summary -->
+      <details *ngIf="workflowTeam as team" class="workflow-team" data-testid="workflow-team">
+        <summary>Workflow: {{ team.name }}<span *ngIf="team.version !== undefined"> (v{{ team.version }})</span><span
+          *ngIf="workflowGatesAwaiting" class="workflow-gates-awaiting"> · {{ workflowGatesAwaiting }} {{ workflowGatesAwaiting === 1 ? 'gate' : 'gates' }} awaiting approval</span></summary>
+        <div *ngFor="let participant of team.participants; trackBy: trackHarnessEntry" class="workflow-participant">
+          <div>{{ participant.id }}<span *ngIf="participant.id === team.lead"> (lead)</span><span
+            *ngIf="participant.role"> — {{ participant.role }}</span></div>
+          <div *ngIf="participant.model" class="workflow-detail">model: {{ participant.model }}</div>
+          <div *ngIf="participant.capabilities?.length" class="workflow-detail">capabilities: {{ participant.capabilities?.join(', ') }}</div>
+          <div *ngIf="participant.delegatesTo as delegates" class="workflow-detail">delegates to: {{ delegates.length ? delegates.join(', ') : 'nobody' }}</div>
+        </div>
+        <div *ngIf="workflowRoutes.length" class="workflow-section">
+          <div>Routing:</div>
+          <div *ngFor="let route of workflowRoutes; trackBy: trackWorkflowRoute" class="workflow-detail">{{ route.purpose }} → {{ route.target }}</div>
+        </div>
+        <div *ngIf="workflowGates.length" class="workflow-section" data-testid="workflow-gates">
+          <div>Gates:</div>
+          <div *ngFor="let gate of workflowGates; trackBy: trackWorkflowGate" class="workflow-detail workflow-gate">
+            <span>{{ gate.label }}: {{ gate.name }}</span>
+            <span *ngIf="gate.approved" class="workflow-gate-approved">approved</span>
+            <button *ngIf="!gate.approved" type="button" (click)="approveWorkflowGate(gate.name)"
+              [disabled]="workflowApprovalPending || (isStreaming && !liveControlsReady)"
+              [title]="'Approve gate ' + gate.name + ', as /workflow approve does in the terminal'">Approve</button>
+          </div>
+        </div>
+        <div *ngIf="team.maxConcurrentWorkers !== undefined" class="workflow-section">Parallel workers: {{ team.maxConcurrentWorkers }}</div>
+        <div *ngIf="workflowApprovalMessage" class="workflow-section" role="status" aria-live="polite"
+          data-testid="workflow-approval-status">{{ workflowApprovalMessage }}</div>
+      </details>
       <details *ngIf="harnessActivity" class="harness-activity" data-testid="harness-activity">
         <summary>Harness activity — {{ harnessActivity.turnActive ? 'working' : 'waiting / finished' }}</summary>
         <button type="button" (click)="sendHarnessControl('background')"
@@ -1466,18 +1520,30 @@
             [disabled]="!liveControlsReady || !child.canCancel || harnessControlPending">Stop child</button>
         </details>
         <details *ngFor="let process of harnessActivity.processes; trackBy: trackHarnessEntry">
-          <summary>{{ process.id }}: {{ process.description }} — {{ process.state }}</summary>
+          <summary>{{ process.id }}: {{ process.description }} — {{ process.state }}<span
+            *ngIf="process.kind && process.kind !== 'command'"> [{{ process.kind }}]</span><span
+            *ngIf="process.owner"> · owner: {{ process.owner }}</span></summary>
           <code>{{ process.command }}</code>
           <button type="button" (click)="sendHarnessControl('process_output', process.id)"
             [disabled]="!liveControlsReady || harnessControlPending">Read output</button>
           <button type="button" (click)="sendHarnessControl('process_kill', process.id)"
-            [disabled]="!liveControlsReady || harnessControlPending || process.state !== 'RUNNING'">Stop process</button>
+            [disabled]="!liveControlsReady || harnessControlPending || process.state !== 'RUNNING' || process.killable === false"
+            [title]="process.killable === false ? 'Shared by ' + (process.owner || 'another session') + '; only its owner can stop it' : 'Stop this process'">Stop process</button>
           <pre style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ process.output }}</pre>
         </details>
         <div *ngFor="let input of liveInputHistory">Queued follow-up: {{ input }}</div>
         <pre *ngIf="harnessProcessOutput" style="max-height: 16rem; overflow: auto; white-space: pre-wrap">{{ harnessProcessOutput }}</pre>
       </details>
       <div *ngIf="harnessControlMessage" role="status" aria-live="polite">{{ harnessControlMessage }}</div>
+      <!-- A /command the live harness answered, printed as the CLI REPL prints it -->
+      <div *ngIf="liveCommandOutput" class="live-command-output" [class.failed]="!liveCommandOutput.ok"
+        role="status" aria-live="polite" data-testid="live-command-output">
+        <div class="live-command-header">
+          <code>{{ liveCommandOutput.command }}</code>
+          <button type="button" (click)="liveCommandOutput = null" aria-label="Dismiss command output">×</button>
+        </div>
+        <pre>{{ liveCommandOutput.text }}</pre>
+      </div>
       <!-- Streaming indicator with stop button -->
       <div class="streaming-bar" *ngIf="isStreaming" data-testid="streaming-bar">
         <div class="streaming-indicator-bar">
@@ -1534,7 +1600,7 @@
           title="Attach images, PDFs, or text files (8 files, 20 MiB total)"
           aria-label="Attach files" data-testid="attach-btn">📎</button>
         <textarea [ngModel]="userInput" (ngModelChange)="onUserInputChange($event)" [ngModelOptions]="{standalone: true}"
-          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up for the next turn boundary' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"
+          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : (isStreaming ? (liveControlsReady ? 'Queue a follow-up, or type / for live commands' : 'Queue a message — it sends when the run finishes') : 'Type your message...') }}"
           (keydown)="handleKeydown($event)" (blur)="dismissSlashMenu()"
           role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-label="Chat message"
           [attr.aria-expanded]="slashSuggestions.length > 0"
@@ -1553,7 +1619,7 @@
       </div>
       <div class="input-hints">
         <span class="hint" *ngIf="!isStreaming">Press Enter to send, Shift+Enter for new line</span>
-        <span class="hint" *ngIf="isStreaming">Ctrl+B backgrounds a blocking task. Enter queues a follow-up. Escape stops this run and its work.</span>
+        <span class="hint" *ngIf="isStreaming">Ctrl+B backgrounds a blocking task. Enter queues a follow-up; /commands run live. Escape stops this run and its work.</span>
         <span class="hint" *ngIf="currentSession && messages.length > 0">
           {{ messages.length }} messages
         </span>

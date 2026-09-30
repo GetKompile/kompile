@@ -17,6 +17,11 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.*;
 import java.nio.file.*;
@@ -26,6 +31,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Tracks and manages background processes launched by the chat agent.
@@ -84,13 +91,16 @@ public class BackgroundProcessManager implements AutoCloseable {
      * JUDGE and ENFORCER entries can be lightweight watcher registrations backed
      * by another component's lifecycle; SHARED entries mirror processes owned by
      * another session (published through coordination state, e.g. the MCP process
-     * tool) and are refreshed by {@code SharedProcessMirror}.
+     * tool) and are refreshed by {@code SharedProcessMirror}; MCP entries hold the
+     * session's MCP tool-bridge log (written with {@link #appendVirtualOutput}) so
+     * it is browsable as process output instead of printing into the transcript.
      */
     public enum ProcessKind {
         COMMAND,
         JUDGE,
         ENFORCER,
-        SHARED;
+        SHARED,
+        MCP;
 
         public String label() { return name().toLowerCase(Locale.ROOT); }
     }
@@ -115,6 +125,12 @@ public class BackgroundProcessManager implements AutoCloseable {
         private volatile long sharedOutputSize = -1L;
         private final AtomicBoolean exitNotified = new AtomicBoolean(false);
         private final AtomicBoolean killRequested = new AtomicBoolean(false);
+        /** Stops the work a virtual entry stands for; null when its owner cannot stop it. */
+        private volatile Runnable stopHandler;
+        /** Restored from the session's process history: an earlier run of the session launched it. */
+        private volatile boolean fromHistory;
+        /** OS start time of {@link #pid}; tells the recorded process from a later one reusing the PID. */
+        private volatile Instant osStart;
 
         ProcessEntry(String id, String command, long pid, Instant startTime,
                      Path outputFile, String description, Process process,
@@ -160,10 +176,38 @@ public class BackgroundProcessManager implements AutoCloseable {
         public boolean isRunning() {
             return state == ProcessState.RUNNING;
         }
+
+        /**
+         * Whether killing this entry stops what it stands for: an owned process, a
+         * virtual entry registered with a stop handler, or a process an earlier run of
+         * the session launched. Shared mirrors are never killable.
+         */
+        public boolean isKillable() {
+            return isRunning() && kind != ProcessKind.SHARED
+                    && (process != null || stopHandler != null || (fromHistory && pid > 0));
+        }
     }
 
     private static final boolean IS_UNIX =
             !System.getProperty("os.name", "").toLowerCase().startsWith("win");
+
+    /** A log file named by {@link #nextId}, e.g. {@code proc-007.log}; group 1 is the number. */
+    private static final Pattern ID_LOG_FILE = Pattern.compile("^[a-z]+-([0-9]{1,9})\\.log$");
+
+    /**
+     * The session's process history, kept beside its logs once a run calls
+     * {@link #enableSessionHistory}: the commands the session launched, so a later run
+     * of it (the web chat starts one per message) lists them and reads their logs.
+     */
+    static final String HISTORY_FILE = "processes.json";
+    private static final int HISTORY_LIMIT = 200;
+    /** An id {@link #nextId} produced; group 1 is the number. */
+    private static final Pattern HISTORY_ID = Pattern.compile("^[a-z]+-([0-9]{1,9})$");
+    private static final Pattern SAFE_SESSION_ID = Pattern.compile("[A-Za-z0-9._-]{1,160}");
+    /** How far apart two readings of one process's OS start time may be. */
+    private static final Duration START_TOLERANCE = Duration.ofSeconds(1);
+    static final String OUTLIVED_NOTE = "exit status unknown: it outlived the run that launched it";
+    private static final ObjectMapper HISTORY_JSON = JsonUtils.standardMapper();
 
     private final String sessionId;
     private final Path outputDir;
@@ -173,6 +217,10 @@ public class BackgroundProcessManager implements AutoCloseable {
     private final ExecutorService ioExecutor;
     private volatile ExitCallback exitCallback;
     private final Thread shutdownHook;
+    private volatile boolean historyEnabled;
+    private final Object historyLock = new Object();
+    /** The history last read or written, so an unchanged list is not rewritten. */
+    private String lastHistory;
 
     // General state-change listeners (fired on launch, output, exit, kill)
     private final List<Runnable> changeListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -189,6 +237,13 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     private static final Duration DEFAULT_RETENTION = Duration.ofHours(1);
 
+    /**
+     * Upper bound on how long {@link #close()} waits for an in-flight natural-exit
+     * publication (a capture thread already past its read loop, finishing up in
+     * {@code captureOutputAndWait}) to drain before forcing the I/O executor down.
+     */
+    private static final long CLOSE_DRAIN_MILLIS = 1000L;
+
     public BackgroundProcessManager(String sessionId) {
         this(sessionId, null);
     }
@@ -201,6 +256,10 @@ public class BackgroundProcessManager implements AutoCloseable {
         this.outputDir = locateOutputRoot(workingDirectory)
                 .resolve("process-output")
                 .resolve(sessionId);
+        // A session can outlive its manager: the web chat starts one per run and a
+        // resumed session starts a fresh one. Numbering continues after the ids the
+        // session's logs already use, so a launch never truncates an earlier log.
+        this.counter.set(highestUsedIdNumber(outputDir));
         this.ioExecutor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "bg-proc-io");
             t.setDaemon(true);
@@ -209,11 +268,7 @@ public class BackgroundProcessManager implements AutoCloseable {
 
         // Register shutdown hook to kill all running processes
         this.shutdownHook = new Thread(() -> {
-            for (ProcessEntry entry : processes.values()) {
-                if (entry.isRunning() && entry.process != null && entry.process.isAlive()) {
-                    killProcess(entry);
-                }
-            }
+            killAllRunning();
             ioExecutor.shutdownNow();
         }, "bg-proc-manager-shutdown-" + sessionId);
         Runtime.getRuntime().addShutdownHook(this.shutdownHook);
@@ -237,6 +292,253 @@ public class BackgroundProcessManager implements AutoCloseable {
             current = current.getParent();
         }
         return KompileHome.homeDirectory().toPath();
+    }
+
+    /**
+     * Highest id number among the process logs in {@code dir}; 0 when there are none
+     * or the directory cannot be listed.
+     */
+    static int highestUsedIdNumber(Path dir) {
+        if (dir == null || !Files.isDirectory(dir)) {
+            return 0;
+        }
+        int highest = 0;
+        try (DirectoryStream<Path> logs = Files.newDirectoryStream(dir, "*.log")) {
+            for (Path log : logs) {
+                Matcher matcher = ID_LOG_FILE.matcher(log.getFileName().toString());
+                if (matcher.matches()) {
+                    highest = Math.max(highest, Integer.parseInt(matcher.group(1)));
+                }
+            }
+        } catch (IOException | DirectoryIteratorException e) {
+            // Unlistable: number from 1, as a fresh session does.
+        }
+        return highest;
+    }
+
+    /**
+     * Whether {@code sessionId} can name a session's log directory. The constructor
+     * resolves it as a path segment, so an id that arrives from outside this process
+     * must pass this check first.
+     */
+    public static boolean isSafeSessionId(String sessionId) {
+        return sessionId != null && SAFE_SESSION_ID.matcher(sessionId).matches()
+                && !sessionId.equals(".") && !sessionId.equals("..");
+    }
+
+    /**
+     * Restore the session's process history (see {@link #restoreSessionHistory}) and keep
+     * it current from now on: every change rewrites it and {@link #close} records the
+     * final states.
+     *
+     * @return number of entries restored
+     */
+    public int enableSessionHistory() {
+        int restored = restoreSessionHistory();
+        historyEnabled = true;
+        return restored;
+    }
+
+    /**
+     * Load the processes earlier runs of this session recorded, writing nothing. They
+     * list and tail like this run's own. A recorded RUNNING process stays RUNNING, and
+     * killable, only while the same OS process (PID and start time) is alive; otherwise
+     * it reads as KILLED with an unknown exit status.
+     *
+     * @return number of entries restored
+     */
+    public int restoreSessionHistory() {
+        String text;
+        JsonNode records;
+        try {
+            Path file = outputDir.resolve(HISTORY_FILE);
+            if (!Files.isRegularFile(file)) {
+                return 0;
+            }
+            text = Files.readString(file);
+            records = HISTORY_JSON.readTree(text).path("processes");
+        } catch (IOException | RuntimeException e) {
+            // An unreadable history leaves this run with its own processes only.
+            return 0;
+        }
+        synchronized (historyLock) {
+            lastHistory = text;
+        }
+        int restored = 0;
+        int highest = 0;
+        for (JsonNode record : records) {
+            ProcessEntry entry = fromHistoryRecord(record);
+            if (entry != null && processes.putIfAbsent(entry.id, entry) == null) {
+                Matcher matcher = HISTORY_ID.matcher(entry.id);
+                if (matcher.matches()) {
+                    highest = Math.max(highest, Integer.parseInt(matcher.group(1)));
+                }
+                restored++;
+            }
+        }
+        counter.accumulateAndGet(highest, Math::max);
+        return restored;
+    }
+
+    /** One recorded process as a restored entry; null when the record is unusable. */
+    private ProcessEntry fromHistoryRecord(JsonNode record) {
+        String id = record.path("id").asText("");
+        Instant start = historyInstant(record.path("startTime"));
+        ProcessState state = historyState(record.path("state").asText(""));
+        if (!HISTORY_ID.matcher(id).matches() || start == null || state == null) {
+            return null;
+        }
+        Map<String, String> metadata = new LinkedHashMap<>();
+        record.path("metadata").fields().forEachRemaining(field -> {
+            if (field.getValue().isTextual()) {
+                metadata.put(field.getKey(), field.getValue().asText());
+            }
+        });
+        long pid = record.path("pid").asLong(-1L);
+        Path log = outputDir.resolve(id + ".log");
+        JsonNode description = record.path("description");
+        ProcessEntry entry = new ProcessEntry(id, record.path("command").asText(""), pid, start, log,
+                description.isTextual() ? description.asText() : null, null, ProcessKind.COMMAND, metadata);
+        entry.fromHistory = true;
+        entry.osStart = historyInstant(record.path("osStart"));
+        if (state != ProcessState.RUNNING) {
+            Instant end = historyInstant(record.path("endTime"));
+            entry.state = state;
+            entry.exitCode = record.path("exitCode").isInt() ? record.path("exitCode").intValue() : null;
+            entry.endTime = end != null ? end : start;
+        } else if (recordedProcess(pid, entry.osStart) == null) {
+            markOutlived(entry);
+        }
+        return entry;
+    }
+
+    private static Instant historyInstant(JsonNode node) {
+        if (!node.isTextual()) {
+            return null;
+        }
+        try {
+            return Instant.parse(node.asText());
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static ProcessState historyState(String name) {
+        try {
+            return ProcessState.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * The live OS process a record names. The start time must match too, so a PID the
+     * system has since handed to another process never does.
+     */
+    private static ProcessHandle recordedProcess(long pid, Instant osStart) {
+        if (pid <= 0 || osStart == null) {
+            return null;
+        }
+        return ProcessHandle.of(pid)
+                .filter(ProcessHandle::isAlive)
+                .filter(handle -> handle.info().startInstant()
+                        .map(start -> Duration.between(start, osStart).abs().compareTo(START_TOLERANCE) <= 0)
+                        .orElse(false))
+                .orElse(null);
+    }
+
+    /**
+     * Close out a recorded RUNNING process that is gone. The run that launched it ended
+     * first, so nothing recorded how it ended; its last output bounds when.
+     */
+    private static void markOutlived(ProcessEntry entry) {
+        Instant end = entry.startTime;
+        try {
+            Instant modified = Files.getLastModifiedTime(entry.outputFile).toInstant();
+            if (modified.isAfter(end)) {
+                end = modified;
+            }
+        } catch (IOException | RuntimeException e) {
+            // No log: the start time is the only bound.
+        }
+        Map<String, String> metadata = new LinkedHashMap<>(entry.metadata);
+        metadata.put("note", OUTLIVED_NOTE);
+        entry.metadata = Map.copyOf(metadata);
+        entry.state = ProcessState.KILLED;
+        entry.exitCode = null;
+        entry.endTime = end;
+    }
+
+    /**
+     * Rewrite the session's process history if it changed: this run's commands and the
+     * entries restored from earlier runs, the newest {@value #HISTORY_LIMIT}. It is written
+     * beside the file and moved over it, so a reader never sees a partial list.
+     */
+    private void persistHistory() {
+        if (!historyEnabled) {
+            return;
+        }
+        synchronized (historyLock) {
+            List<ProcessEntry> recorded = new ArrayList<>();
+            for (ProcessEntry entry : processes.values()) {
+                if (entry.fromHistory || (entry.process != null && entry.kind == ProcessKind.COMMAND)) {
+                    recorded.add(entry);
+                }
+            }
+            recorded.sort(Comparator.comparing(ProcessEntry::getStartTime).thenComparing(ProcessEntry::getId));
+            if (recorded.size() > HISTORY_LIMIT) {
+                recorded = recorded.subList(recorded.size() - HISTORY_LIMIT, recorded.size());
+            }
+            Path file = outputDir.resolve(HISTORY_FILE);
+            if (recorded.isEmpty() && lastHistory == null && !Files.exists(file)) {
+                return;
+            }
+            ObjectNode root = HISTORY_JSON.createObjectNode();
+            root.put("version", 1);
+            ArrayNode list = root.putArray("processes");
+            for (ProcessEntry entry : recorded) {
+                ObjectNode record = list.addObject();
+                record.put("id", entry.id);
+                record.put("command", entry.command);
+                String description = entry.description;
+                if (description != null) record.put("description", description);
+                record.put("pid", entry.pid);
+                record.put("state", entry.state.name());
+                record.put("startTime", entry.startTime.toString());
+                Instant end = entry.endTime;
+                if (end != null) record.put("endTime", end.toString());
+                Integer exit = entry.exitCode;
+                if (exit != null) record.put("exitCode", exit.intValue());
+                Instant osStart = entry.osStart;
+                if (osStart != null) record.put("osStart", osStart.toString());
+                if (!entry.metadata.isEmpty()) {
+                    ObjectNode metadata = record.putObject("metadata");
+                    new TreeMap<>(entry.metadata).forEach(metadata::put);
+                }
+            }
+            try {
+                String json = HISTORY_JSON.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+                if (json.equals(lastHistory)) {
+                    return;
+                }
+                Files.createDirectories(outputDir);
+                Path temp = Files.createTempFile(outputDir, "." + HISTORY_FILE + ".", ".tmp");
+                try {
+                    Files.writeString(temp, json);
+                    try {
+                        Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE,
+                                StandardCopyOption.REPLACE_EXISTING);
+                    } catch (AtomicMoveNotSupportedException e) {
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temp);
+                }
+                lastHistory = json;
+            } catch (IOException e) {
+                // The history serves later runs; this run's processes are unaffected.
+            }
+        }
     }
 
     /**
@@ -336,6 +638,39 @@ public class BackgroundProcessManager implements AutoCloseable {
             entry.metadata = Map.copyOf(metadata);
         }
         fireChange();
+        return true;
+    }
+
+    /**
+     * Append one line to a running virtual entry's durable log and notify output
+     * listeners, exactly as captured subprocess output is recorded. Virtual entries
+     * have no OS stream of their own; this is how their owner gives them output.
+     *
+     * @return false when the entry is not a running virtual entry or the log
+     *         cannot be written
+     */
+    public boolean appendVirtualOutput(String processId, String line) {
+        ProcessEntry entry = processId != null ? processes.get(processId) : null;
+        if (entry == null || !entry.isVirtual() || !entry.isRunning() || line == null) {
+            return false;
+        }
+        Path file = entry.outputFile;
+        if (file == null) {
+            return false;
+        }
+        synchronized (entry) {
+            try {
+                Path parent = file.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                Files.writeString(file, line + System.lineSeparator(),
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                return false;
+            }
+        }
+        fireOutput(entry, line);
         return true;
     }
 
@@ -454,6 +789,7 @@ public class BackgroundProcessManager implements AutoCloseable {
                 // Swallow — a buggy listener must not break the REPL.
             }
         }
+        persistHistory();
     }
 
     /**
@@ -516,6 +852,7 @@ public class BackgroundProcessManager implements AutoCloseable {
         ProcessEntry entry = new ProcessEntry(
                 id, command, process.pid(), Instant.now(), outputFile, description, process,
                 ProcessKind.COMMAND, Map.of());
+        entry.osStart = process.info().startInstant().orElse(null);
         processes.put(id, entry);
         if (monitored) {
             monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
@@ -543,6 +880,20 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
                                         long pid, Map<String, String> metadata) {
+        return registerVirtual(kind, command, description, pid, metadata, null);
+    }
+
+    /**
+     * Register a virtual entry whose owner can stop the work it stands for. Killing the
+     * entry marks it killed and then runs {@code stop} once; completing or failing it does not.
+     */
+    public ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
+                                        Map<String, String> metadata, Runnable stop) {
+        return registerVirtual(kind, command, description, -1L, metadata, stop);
+    }
+
+    private ProcessEntry registerVirtual(ProcessKind kind, String command, String description,
+                                         long pid, Map<String, String> metadata, Runnable stop) {
         ProcessKind resolvedKind = kind != null ? kind : ProcessKind.COMMAND;
         String id = nextId(resolvedKind);
         Path outputFile = outputDir.resolve(id + ".log");
@@ -556,6 +907,7 @@ public class BackgroundProcessManager implements AutoCloseable {
                 null,
                 resolvedKind,
                 metadata);
+        entry.stopHandler = stop;
         processes.put(id, entry);
         fireChange();
         return entry;
@@ -678,6 +1030,9 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     private boolean killProcess(ProcessEntry entry) {
+        if (entry.fromHistory) {
+            return killRecorded(entry);
+        }
         synchronized (entry) {
             if (!entry.isRunning()) {
                 return false;
@@ -715,6 +1070,14 @@ public class BackgroundProcessManager implements AutoCloseable {
                         handle.destroyForcibly();
                     }
                 });
+            }
+            Runnable stop = entry.stopHandler;
+            if (stop != null) {
+                try {
+                    stop.run();
+                } catch (RuntimeException ignored) {
+                    // The entry is already killed; its owner reports its own stop failures.
+                }
             }
             fireExit(entry);
             fireChange();
@@ -764,6 +1127,45 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     /**
+     * Stop a process an earlier run of the session launched. Only the recorded OS
+     * process is signalled, through a handle that carries its start time, so a reused
+     * PID is never touched. One that is already gone is closed out and false returned.
+     */
+    private boolean killRecorded(ProcessEntry entry) {
+        ProcessHandle handle;
+        synchronized (entry) {
+            if (!entry.isRunning()) {
+                return false;
+            }
+            handle = recordedProcess(entry.pid, entry.osStart);
+            if (handle == null) {
+                markOutlived(entry);
+            } else {
+                entry.killRequested.set(true);
+                entry.endTime = Instant.now();
+                entry.state = ProcessState.KILLED;
+                entry.exitCode = -1;
+            }
+        }
+        if (handle != null) {
+            handle.destroy();
+            try {
+                if (handle.isAlive()) {
+                    Thread.sleep(500);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (handle.isAlive()) {
+                handle.destroyForcibly();
+            }
+        }
+        fireExit(entry);
+        fireChange();
+        return handle != null;
+    }
+
+    /**
      * Mark a tracked virtual/owned process completed.
      */
     public boolean complete(String processId) {
@@ -807,6 +1209,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             case JUDGE -> "judge";
             case ENFORCER -> "enforcer";
             case SHARED -> "shared";
+            case MCP -> "mcp";
             case COMMAND -> "proc";
         };
         return prefix + "-" + String.format("%03d", counter.incrementAndGet());
@@ -942,6 +1345,9 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
         }
 
+        if (removed > 0) {
+            persistHistory();
+        }
         return removed;
     }
 
@@ -960,21 +1366,59 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     /**
-     * Shuts down this manager: kills all running processes, shuts down the I/O executor,
-     * and removes the JVM shutdown hook to prevent accumulation across multiple sessions.
-     * Should be called when the chat session ends.
+     * Kill every process still running under this manager and publish its exit before
+     * returning. {@code killProcess}'s real-process branch marks the entry KILLED but,
+     * unlike the virtual-process branch, does not call {@link #fireExit}: normally the
+     * {@code bg-proc-io} capture thread publishes it once the process's stdout pipe
+     * reaches EOF. Callers of this method are about to interrupt that thread, so it
+     * publishes here instead, on the calling thread, which is never interrupted.
+     * {@code fireExit} is a once-only CAS, so this is a harmless no-op for the
+     * virtual-process branch, which already published.
+     *
+     * <p>Monitors are cleared first so a kill from here never wakes an agent: {@code
+     * close()} and the JVM shutdown hook are both terminal, unattended shutdowns, not a
+     * user-directed kill.
+     */
+    private void killAllRunning() {
+        monitors.clear();
+        monitorListeners.clear();
+        for (ProcessEntry entry : processes.values()) {
+            if (entry.isRunning() && entry.process != null && entry.process.isAlive()) {
+                if (killProcess(entry)) {
+                    fireExit(entry);
+                }
+            }
+        }
+    }
+
+    /**
+     * Shuts down this manager: kills all running processes, publishes each of their
+     * exits, shuts down the I/O executor, and removes the JVM shutdown hook to prevent
+     * accumulation across multiple sessions. Should be called when the chat session ends.
      */
     @Override
     public void close() {
-        // Kill all running processes
-        for (ProcessEntry entry : processes.values()) {
-            if (entry.isRunning() && entry.process != null && entry.process.isAlive()) {
-                killProcess(entry);
+        // Kill all running processes and publish their exits. Ones restored from an
+        // earlier run are not this run's to stop: they stay recorded as running for a
+        // later run to kill.
+        killAllRunning();
+        persistHistory();
+        historyEnabled = false;
+
+        // Bound-wait for any natural-exit publication already in flight (a capture
+        // thread past its read loop, e.g. one whose process just exited on its own)
+        // before forcing the executor down. shutdownNow() only interrupts; it does not
+        // wait, and a killed process's descendant can keep the stdout pipe open past
+        // its own exit, so the wait stays bounded rather than joining the thread.
+        ioExecutor.shutdown();
+        try {
+            if (!ioExecutor.awaitTermination(CLOSE_DRAIN_MILLIS, TimeUnit.MILLISECONDS)) {
+                ioExecutor.shutdownNow();
             }
+        } catch (InterruptedException e) {
+            ioExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
         }
-        ioExecutor.shutdownNow();
-        monitors.clear();
-        monitorListeners.clear();
 
         // Remove shutdown hook to prevent leak
         try {

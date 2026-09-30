@@ -16,6 +16,7 @@
 package ai.kompile.cli.main.chat.exec;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.ChatCommandCatalog;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.CustomAgentLoader;
@@ -190,7 +191,11 @@ public final class ChatHarnessCapabilities {
         controls.put("maxRequests", 4096);
         controls.put("eofBehavior", "drain accepted input and background completions, then result");
         controls.putArray("actions").add("background").add("process_list").add("process_output")
-                .add("process_kill").add("input").add("subagent_input").add("subagent_cancel");
+                .add("process_kill").add("input").add("command").add("subagent_input").add("subagent_cancel")
+                .add("workflow_approve");
+        // Slash commands the running harness answers itself; other builtins wait for the run to end.
+        ArrayNode liveCommands = controls.putArray("liveCommands");
+        ChatCommandCatalog.liveRunCommands().stream().sorted().forEach(liveCommands::add);
         controls.putArray("events").add("control").add("activity").add("turn_started").add("turn_complete");
         controls.put("backgroundEligibility", "blocking subagent invocation only; acknowledged after detach");
         ObjectNode webInput = root.putObject("webInput");
@@ -198,7 +203,8 @@ public final class ChatHarnessCapabilities {
         webInput.put("version", WebChatInput.VERSION);
         webInput.put("option", "--input-format");
         webInput.putArray("requiredFields").add("version").add("rawInput");
-        webInput.putArray("optionalFields").add("supplementalContext");
+        webInput.putArray("optionalFields").add("supplementalContext").add("sessionId").add("configQuery")
+                .add("modelVendor").add("workflowApprove");
         webInput.put("commandEvent", "command");
         webInput.putArray("commandLifecycle").add("session").add("command").add("result");
         webInput.putArray("commandStatuses").add("COMPLETED").add("UNKNOWN_COMMAND")
@@ -213,7 +219,7 @@ public final class ChatHarnessCapabilities {
                         + "directory; a stored model or role applies to later MODEL_INPUT turns "
                         + "and /fast and /ultracode write the chat configuration toggle.");
         ArrayNode commands = root.putArray("commands");
-        for (var entry : ai.kompile.cli.main.chat.ChatCommandCatalog.entries()) {
+        for (var entry : ChatCommandCatalog.entries()) {
             ObjectNode command = commands.addObject();
             command.put("name", entry.name());
             command.put("kind", "builtin");

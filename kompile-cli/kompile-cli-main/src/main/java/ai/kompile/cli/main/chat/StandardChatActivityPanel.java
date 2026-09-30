@@ -518,7 +518,7 @@ final class StandardChatActivityPanel {
                     truncate(sharedLabel + entry.getDescription(), 64),
                     state + " · " + FormatUtils.formatDuration(entry.getDuration()),
                     active,
-                    active && !entry.isVirtual() && !shared,
+                    entry.isKillable(),
                     entry.getStartTime(),
                     processParentKey(entry, processKeys, processKeysByPid),
                     0));
@@ -986,7 +986,7 @@ final class StandardChatActivityPanel {
                         process.getState().name().toLowerCase(Locale.ROOT)
                                 + " · " + FormatUtils.formatDuration(process.getDuration()),
                         process.isRunning(),
-                        process.isRunning() && !process.isVirtual(),
+                        process.isKillable(),
                         process.getStartTime(),
                         MAIN_KEY,
                         1));

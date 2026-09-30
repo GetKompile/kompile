@@ -3,20 +3,29 @@ package ai.kompile.cli.main.chat.exec;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
+import com.fasterxml.jackson.databind.JsonNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.*;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -28,6 +37,15 @@ class WebHarnessControlsTest {
     @TempDir Path directory;
     private static ByteArrayInputStream bytes(String s) { return new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8)); }
     private static String frame(String action) { return "{\"version\":1,\"requestId\":\"r1\",\"action\":\"" + action + "\"}"; }
+    private static String command(String requestId, String text) {
+        return "{\"version\":1,\"requestId\":\"" + requestId + "\",\"action\":\"command\",\"text\":\"" + text + "\"}";
+    }
+    private static String approve(String requestId, String gate) {
+        return "{\"version\":1,\"requestId\":\"" + requestId + "\",\"action\":\"workflow_approve\""
+                + (gate == null ? "" : ",\"text\":\"" + gate + "\"") + "}";
+    }
+
+    @AfterEach void noTeamOutlivesATest() { WorkflowSessionContext.activate(null); }
 
     @Test void strictProtocolRejectsUnknownTypesFieldsAndTrailingData() {
         assertEquals("background", WebHarnessControls.parse(frame("background")).action());
@@ -184,6 +202,7 @@ class WebHarnessControlsTest {
         var loop = mock(AgenticChatLoop.class);
         when(loop.isBackgroundableToolPhaseActive()).thenReturn(true);
         var calls = new ArrayList<String>();
+        var events = new ArrayList<HeadlessRunEvent>();
         var acknowledged = new CountDownLatch(1);
         var completion = new AtomicReference<Consumer<ToolResult>>();
         var pipe = new PipedInputStream();
@@ -205,12 +224,19 @@ class WebHarnessControlsTest {
                 assertTrue(prompt.contains("completed-output"));
                 return "final-after-wakeup";
             }, (action, id) -> ToolResult.error("unused"), event -> {
+                events.add(event);
                 if (event.type() == HeadlessRunEvent.Type.CONTROL && event.data().path("ok").asBoolean()) acknowledged.countDown();
                 if (event.type() == HeadlessRunEvent.Type.TURN_COMPLETE && event.data().path("text").asText().equals("parent-released"))
-                    completion.get().accept(ToolResult.success("completed-output"));
+                    completion.get().accept(ToolResult.success("\033[33mcompleted-output\033[0m"));
             });
             assertEquals("final-after-wakeup", result);
             assertEquals(2, calls.size());
+            // The model reads the detached result verbatim, as in the CLI; the browser gets it unstyled.
+            assertTrue(calls.get(1).contains("\033[33mcompleted-output"), calls.get(1));
+            var tasks = events.get(events.size() - 1).data().path("tasks");
+            assertTrue(StreamSupport.stream(tasks.spliterator(), false)
+                    .anyMatch(task -> task.path("output").asText().contains("completed-output")), tasks.toString());
+            events.forEach(e -> assertNoEscape(e.data(), e.type().name()));
         } finally { writer.close(); }
     }
 
@@ -290,6 +316,201 @@ class WebHarnessControlsTest {
         assertThrows(IllegalArgumentException.class, () -> WebHarnessControls.parse(base.replace("subagent_input", "subagent_cancel")));
     }
 
+    @Test void commandFramesCarryOnlySlashText() {
+        String base = command("r", "/processes");
+        assertEquals("/processes", WebHarnessControls.parse(base).text());
+        for (String s : List.of(command("r", "hello"), base.replace(",\"text\":\"/processes\"", ""),
+                base.replace("}", ",\"targetId\":\"p1\"}"), frame("input").replace("}", ",\"text\":\"/processes\"}"))) {
+            assertThrows(IllegalArgumentException.class, () -> WebHarnessControls.parse(s), s);
+        }
+    }
+
+    @Test void gateApprovalsNameAGateOrNone() {
+        String base = approve("r", null);
+        assertEquals("", WebHarnessControls.parse(base).text());
+        assertEquals("approved-design", WebHarnessControls.parse(approve("r", "approved-design")).text());
+        for (String s : List.of(base.replace("}", ",\"targetId\":\"p1\"}"), approve("r", " "),
+                base.replace("}", ",\"text\":7}"), approve("r", "approved\\tdesign"), approve("r", "g".repeat(257)))) {
+            assertThrows(IllegalArgumentException.class, () -> WebHarnessControls.parse(s), s.substring(0, Math.min(100, s.length())));
+        }
+    }
+
+    @Test void liveGateApprovalsReachTheRunsTeamAndTheSessionsLaterRuns() throws Exception {
+        // The class shares one temporary home, so the team records its gates under its own session id.
+        WorkflowSessionContext.start("s-team", new WorkflowTeamSnapshot(gatedTeam(), Map.of(), null));
+        var pipe = new PipedInputStream();
+        var writer = new PipedOutputStream(pipe);
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var answered = new CountDownLatch(4);
+        try (var processes = new BackgroundProcessManager("web-controls-workflow", directory);
+             var controls = new WebHarnessControls(pipe)) {
+            assertEquals("done", controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000,
+                    new AtomicBoolean(), prompt -> {
+                        writer.write((String.join("\n", approve("a1", null), approve("a2", "shipped"),
+                                approve("a3", null), approve("a4", null)) + "\n").getBytes(StandardCharsets.UTF_8));
+                        writer.flush();
+                        assertTrue(answered.await(3, TimeUnit.SECONDS));
+                        return "done";
+                    }, (action, id) -> { throw new AssertionError("No process execution expected"); }, event -> {
+                        if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                            replies.put(event.data().path("requestId").asText(), event.data());
+                            answered.countDown();
+                        }
+                    }));
+        } finally { writer.close(); }
+
+        JsonNode design = replies.get("a1");
+        assertTrue(design.path("ok").asBoolean(), design.toString());
+        assertEquals("Approved gate 'approved-design' for workflow 'gated-team'.", design.path("message").asText());
+        assertEquals("approved-design", design.path("gate").asText());
+        assertEquals("[\"approved-design\"]", design.path("approved").toString());
+        assertFalse(replies.get("a2").path("ok").asBoolean());
+        assertEquals("Workflow 'gated-team' has no gate 'shipped'. Its gates: implementation 'approved-design', "
+                + "completion 'reviewed'.", replies.get("a2").path("message").asText());
+        // With no gate named, the approval goes to the gate that blocks next.
+        assertEquals("reviewed", replies.get("a3").path("gate").asText(), replies.get("a3").toString());
+        assertEquals("[\"approved-design\",\"reviewed\"]", replies.get("a3").path("approved").toString());
+        assertFalse(replies.get("a4").path("ok").asBoolean());
+        assertEquals("Every gate of workflow 'gated-team' is already approved.", replies.get("a4").path("message").asText());
+        // The run's team enforces the approvals at once, and the session records them for its next run.
+        assertTrue(WorkflowSessionContext.current().enforcement().completionGateSatisfied());
+        assertEquals(Set.of("approved-design", "reviewed"), WorkflowSessionContext.satisfiedGates("s-team"));
+    }
+
+    @Test void aRunWithoutATeamHasNoGateToApprove() throws Exception {
+        var replies = new CopyOnWriteArrayList<JsonNode>();
+        var answered = new CountDownLatch(1);
+        try (var processes = new BackgroundProcessManager("web-controls-no-team", directory);
+             var controls = new WebHarnessControls(bytes(approve("a1", "approved-design") + "\n"))) {
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000, new AtomicBoolean(), prompt -> {
+                assertTrue(answered.await(2, TimeUnit.SECONDS));
+                return "done";
+            }, (action, id) -> { throw new AssertionError("No process execution expected"); }, event -> {
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) { replies.add(event.data()); answered.countDown(); }
+            });
+        }
+        assertEquals(1, replies.size());
+        assertFalse(replies.get(0).path("ok").asBoolean());
+        assertEquals("This session has no workflow team.", replies.get(0).path("message").asText());
+        assertFalse(Files.exists(WorkflowSessionContext.sessionPath("s")));
+    }
+
+    /** A designer leads a worker; implementation waits for the design, completion for its review. */
+    private static WorkflowTeam gatedTeam() {
+        Map<String, WorkflowTeam.Participant> participants = new LinkedHashMap<>();
+        participants.put("designer", new WorkflowTeam.Participant("designer", "architect", "cli",
+                List.of("read", "plan", "delegate"), List.of("worker")));
+        participants.put("worker", new WorkflowTeam.Participant("worker", "implementer", "cli",
+                List.of("read", "edit-assigned-files", "validate"), List.of()));
+        return new WorkflowTeam("gated-team", 1, "designer", participants, Map.of("implement", "worker"),
+                new WorkflowTeam.Limits(2), new WorkflowTeam.Gates("approved-design", "reviewed"));
+    }
+
+    @Test void liveCommandsAnswerFromTheRunningHarness() throws Exception {
+        var mapper = JsonUtils.standardMapper();
+        var permission = new PermissionService();
+        permission.setAutoApproveAll(true);
+        var context = new ToolContext("s", new AgentRegistry().getDefault(), permission, directory, new ToolRegistry(mapper));
+        var pipe = new PipedInputStream();
+        var writer = new PipedOutputStream(pipe);
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var answered = new CountDownLatch(5);
+        var calls = new ArrayList<String>();
+        var events = new ArrayList<HeadlessRunEvent>();
+        try (var processes = new BackgroundProcessManager("web-controls-live", directory);
+             var controls = new WebHarnessControls(pipe)) {
+            var shared = processes.upsertShared("shared-1", "make build", "peer build", -1L, Instant.now(),
+                    BackgroundProcessManager.ProcessState.RUNNING, null, null, null, Map.of("ownerAgent", "codex"));
+            var tool = new ProcessManagementTool(processes);
+            controls.setCommandResolver(raw -> { throw new AssertionError("answered by the harness, not resolved: " + raw); });
+            controls.setInitialDisplay("what I typed");
+            assertEquals("done", controls.run(mock(AgenticChatLoop.class), processes, "s", "DECORATED what I typed", 4000,
+                    new AtomicBoolean(), prompt -> {
+                        writer.write((String.join("\n", command("c1", "/processes"), command("c2", "/jobs"),
+                                command("c3", "/process-kill shared-1"), command("c4", "/process-output missing"),
+                                command("c5", "/model other")) + "\n").getBytes(StandardCharsets.UTF_8));
+                        writer.flush();
+                        assertTrue(answered.await(3, TimeUnit.SECONDS));
+                        return "done";
+                    }, (action, id) -> {
+                        calls.add(action + ":" + id);
+                        var args = mapper.createObjectNode().put("action", action);
+                        if (id != null) args.put("process_id", id);
+                        return tool.execute(args, context);
+                    }, event -> {
+                        events.add(event);
+                        if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                            replies.put(event.data().path("requestId").asText(), event.data());
+                            answered.countDown();
+                        }
+                    }));
+
+            String panel = replies.get("c1").path("message").asText();
+            assertTrue(replies.get("c1").path("ok").asBoolean(), panel);
+            assertTrue(panel.startsWith("Processes & Subagents") && panel.contains("[shared-1] peer build"), panel);
+            assertFalse(panel.contains("\u001B"), "browser text carries no ANSI");
+            String jobs = replies.get("c2").path("message").asText();
+            assertTrue(jobs.contains("Active") && jobs.contains("what I typed") && !jobs.contains("DECORATED"), jobs);
+            assertFalse(replies.get("c3").path("ok").asBoolean());
+            assertTrue(replies.get("c3").path("message").asText().contains("only its owning session can stop it"));
+            assertEquals(BackgroundProcessManager.ProcessState.RUNNING, shared.getState());
+            assertEquals("Process not found: missing", replies.get("c4").path("message").asText());
+            assertTrue(replies.get("c5").path("deferred").asBoolean());
+            assertFalse(replies.get("c5").path("ok").asBoolean());
+            // The panel passes the process policy; unknown ids never reach it.
+            assertEquals(List.of("list:null", "kill:shared-1"), calls);
+
+            JsonNode row = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.ACTIVITY)
+                    .flatMap(e -> StreamSupport.stream(e.data().path("processes").spliterator(), false))
+                    .filter(p -> p.path("id").asText().equals("shared-1")).findFirst().orElseThrow();
+            assertEquals("shared", row.path("kind").asText());
+            assertFalse(row.path("killable").asBoolean());
+            assertEquals("codex", row.path("owner").asText());
+            assertFalse(row.has("output"), "another session's output is read on request, not streamed");
+        } finally { writer.close(); }
+    }
+
+    @Test void liveSkillQueuesItsExpansionButShowsWhatWasTyped() throws Exception {
+        String expansion = "<skill name=\"review\">\nreview now\n</skill>";
+        var pipe = new PipedInputStream();
+        var writer = new PipedOutputStream(pipe);
+        var prompts = new CopyOnWriteArrayList<String>();
+        var resolved = new ArrayList<String>();
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var answered = new CountDownLatch(2);
+        var events = new ArrayList<HeadlessRunEvent>();
+        try (var processes = new BackgroundProcessManager("web-controls-skill", directory);
+             var controls = new WebHarnessControls(pipe)) {
+            controls.setCommandResolver(raw -> {
+                resolved.add(raw);
+                return new WebCommandResolver.Resolution(WebCommandResolver.Status.MODEL_INPUT, "", "", expansion);
+            });
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000, new AtomicBoolean(), prompt -> {
+                prompts.add(prompt);
+                if (prompt.equals("first")) {
+                    writer.write((command("c1", "/review now") + "\n" + command("c2", "/jobs") + "\n").getBytes(StandardCharsets.UTF_8));
+                    writer.flush();
+                    assertTrue(answered.await(3, TimeUnit.SECONDS));
+                }
+                return "reply";
+            }, (action, id) -> ToolResult.success("listed"), event -> {
+                events.add(event);
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                    replies.put(event.data().path("requestId").asText(), event.data());
+                    answered.countDown();
+                }
+            });
+            assertEquals(List.of("first", expansion), prompts);
+            assertEquals(List.of("/review now"), resolved);
+            assertTrue(replies.get("c1").path("ok").asBoolean());
+            assertTrue(replies.get("c1").path("queued").asBoolean());
+            String jobs = replies.get("c2").path("message").asText();
+            assertTrue(jobs.contains("Queue (1 pending)") && jobs.contains("/review now") && !jobs.contains("<skill"), jobs);
+            var starts = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TURN_STARTED).toList();
+            assertEquals("/review now", starts.get(1).data().path("text").asText());
+        } finally { writer.close(); }
+    }
+
     @Test void retainedFollowupKeepsRunAliveUntilCompletionIsDelivered() throws Exception {
         var runner = mock(ai.kompile.cli.main.chat.agent.SubagentRunner.class);
         var lifecycle = new AtomicReference<ai.kompile.cli.main.chat.agent.SubagentRunner.LifecycleListener>();
@@ -340,6 +561,63 @@ class WebHarnessControlsTest {
             verify(runner).setLifecycleListener(null);
             verify(runner).setAsyncCompletionListener(null);
         } finally { writer.close(); }
+    }
+
+    @Test void browserEventsDropTerminalStylingWhileTheModelReadsOutputVerbatim() throws Exception {
+        var runner = mock(SubagentRunner.class);
+        var lifecycle = new AtomicReference<SubagentRunner.LifecycleListener>();
+        doAnswer(c -> { lifecycle.set(c.getArgument(0)); return null; }).when(runner).setLifecycleListener(any());
+        var pipe = new PipedInputStream();
+        var writer = new PipedOutputStream(pipe);
+        var prompts = new CopyOnWriteArrayList<String>();
+        var replies = new ConcurrentHashMap<String, JsonNode>();
+        var answered = new CountDownLatch(2);
+        var events = new ArrayList<HeadlessRunEvent>();
+        try (var processes = new BackgroundProcessManager("web-controls-ansi", directory);
+             var controls = new WebHarnessControls(pipe)) {
+            var styled = processes.launchMonitored("printf '\\033[32mprocess-evidence\\033[0m\\n'", "styled", directory, "");
+            String requests = frame("process_output").replace("}", ",\"targetId\":\"" + styled.getId() + "\"}")
+                    + "\n" + command("c2", "/process-output " + styled.getId()) + "\n";
+            controls.run(mock(AgenticChatLoop.class), processes, "s", "first", 4000, new AtomicBoolean(), prompt -> {
+                prompts.add(prompt);
+                if (prompt.equals("first")) {
+                    lifecycle.get().onSubagentStart("child", "coder", "styled child");
+                    lifecycle.get().onSubagentOutput("child", "\033[1mchild-evidence\033[0m\n");
+                } else {
+                    // The wakeup turn starts once the process is terminal, so its output is complete.
+                    writer.write(requests.getBytes(StandardCharsets.UTF_8));
+                    writer.flush();
+                    assertTrue(answered.await(3, TimeUnit.SECONDS));
+                }
+                return "reply";
+            }, (action, id) -> ToolResult.success(processes.readOutput(id, 50)), event -> {
+                events.add(event);
+                if (event.type() == HeadlessRunEvent.Type.CONTROL) {
+                    replies.put(event.data().path("requestId").asText(), event.data());
+                    answered.countDown();
+                }
+            }, runner);
+
+            assertEquals(2, prompts.size());
+            assertTrue(prompts.get(1).contains("\033[32mprocess-evidence"), "the model reads output verbatim, as in the CLI");
+            for (String id : List.of("r1", "c2")) {
+                JsonNode reply = replies.get(id);
+                assertTrue(reply.path("ok").asBoolean() && reply.path("message").asText().contains("process-evidence"), reply.toString());
+            }
+            assertEquals(replies.get("r1").path("message").asText(), replies.get("r1").path("output").asText());
+            var system = events.stream().filter(e -> e.type() == HeadlessRunEvent.Type.TURN_STARTED
+                    && e.data().path("source").asText().equals("system")).findFirst().orElseThrow();
+            assertTrue(system.data().path("text").asText().contains("process-evidence"));
+            var last = events.get(events.size() - 1).data();
+            assertTrue(last.path("processes").get(0).path("output").asText().contains("process-evidence"), last.toString());
+            assertTrue(last.path("subagents").get(0).path("output").asText().contains("child-evidence"), last.toString());
+            events.forEach(e -> assertNoEscape(e.data(), e.type().name()));
+        } finally { writer.close(); }
+    }
+
+    private static void assertNoEscape(JsonNode node, String where) {
+        if (node.isTextual()) assertFalse(node.asText().contains("\033"), where + " carries terminal styling: " + node.asText());
+        node.forEach(child -> assertNoEscape(child, where));
     }
 
     @Test void nonterminalWireEventsCarryDataWithoutResultVocabulary() throws Exception {

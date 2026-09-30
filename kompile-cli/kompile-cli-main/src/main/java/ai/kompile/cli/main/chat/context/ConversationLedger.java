@@ -214,6 +214,23 @@ public final class ConversationLedger {
         return saved;
     }
 
+    /**
+     * Forget the recorded session for {@code transport}: the conversation moved to
+     * a new one, so neither this process nor a later one may resume the old.
+     */
+    public synchronized void forgetNativeSession(String transport) {
+        NativeSession saved = nativeSession;
+        if (saved == null || !Objects.equals(saved.transport(), transport)) return;
+        nativeSession = null;
+        if (nativeSessionFile == null) return;
+        try {
+            Files.deleteIfExists(nativeSessionFile);
+        } catch (IOException e) {
+            System.err.println("Warning: Could not remove the native session "
+                    + nativeSessionFile + ": " + e.getMessage());
+        }
+    }
+
     /** Replace imported legacy context only when no durable ledger exists. */
     public synchronized void importLegacyTurns(
             List<ai.kompile.cli.main.chat.ChatHistory.Turn> turns) {

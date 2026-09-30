@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.function.Consumer;
 
 /**
  * MCP tool for managing chat roles.
@@ -52,10 +53,24 @@ public class RoleManagerTool implements CliTool {
 
     private final RoleManager roleManager;
     private final ObjectMapper objectMapper;
+    private volatile Consumer<RoleConfig> chatActivationCallback;
 
     public RoleManagerTool(RoleManager roleManager, ObjectMapper objectMapper) {
         this.roleManager = roleManager;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Wires this tool to the live interactive chat that owns its {@link RoleManager},
+     * so {@code assign_role} without an explicit {@code agent} actually switches the
+     * running agent instead of only updating {@code RoleManager} bookkeeping while
+     * claiming it did. Left unset (null) for every {@code RoleManagerTool} instance
+     * that has no such chat to notify — MCP server sessions (stdio/socket, each backed
+     * by their own or a shared-pool {@link RoleManager}), headless/exec, eval and
+     * harness runs — where {@code assign_role} must say so honestly instead.
+     */
+    public void setChatActivationCallback(Consumer<RoleConfig> chatActivationCallback) {
+        this.chatActivationCallback = chatActivationCallback;
     }
 
     @Override
@@ -365,10 +380,20 @@ public class RoleManagerTool implements CliTool {
 
         // Assign to current session
         roleManager.setActiveRole(name);
+        Consumer<RoleConfig> callback = this.chatActivationCallback;
+        if (callback != null) {
+            callback.accept(role);
+            return ToolResult.success("Role activated: " + role.getName() + "\n" +
+                    "  Display Name: " + role.getDisplayName() + "\n" +
+                    "  Description: " + role.getDescription() + "\n\n" +
+                    "The chat agent will use this role's system prompt starting next turn.");
+        }
         return ToolResult.success("Role activated: " + role.getName() + "\n" +
                 "  Display Name: " + role.getDisplayName() + "\n" +
                 "  Description: " + role.getDescription() + "\n\n" +
-                "The agent will now use this role's system prompt for future interactions.");
+                "No active chat session is attached to this role manager, so the running agent " +
+                "was not changed. Use /role in the interactive chat, or assign_role with an " +
+                "explicit agent to persist a default for future launches.");
     }
 
     private ToolResult getAgentRole(JsonNode params) {

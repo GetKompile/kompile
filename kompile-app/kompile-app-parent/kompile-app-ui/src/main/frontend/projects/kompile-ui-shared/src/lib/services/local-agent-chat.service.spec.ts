@@ -3,7 +3,7 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 
 import { LocalAgentChatService } from './local-agent-chat.service';
 import { ChatStorageService } from './chat-storage.service';
-import { AgentProvider, LocalAgentSession, MessageAttachment } from '../models/api-models';
+import { AgentProvider, LocalAgentSession, MessageAttachment, ToolUseEvent } from '../models/api-models';
 
 describe('LocalAgentChatService harness transport', () => {
   let service: LocalAgentChatService;
@@ -348,5 +348,213 @@ describe('LocalAgentChatService harness transport', () => {
     expect(completions).toEqual([]);
     expect(session.messages[1].error).toBeTrue();
     expect(session.messages[1].content).toBe('partial');
+  });
+
+  /** A harness run whose SSE events the test emits one at a time. */
+  const openRun = (session: LocalAgentSession, text: string) => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } });
+    const fetchSpy = spyOn(window, 'fetch').and.resolveTo(new Response(body, { status: 200 }));
+    const run = service.sendMessage(session, text, { name: 'coder', displayName: 'Coder' } as AgentProvider);
+    const emit = (name: string, data: unknown) =>
+      stream.enqueue(new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
+    const finish = async (content: string) => { emit('complete', { content }); stream.close(); await run; };
+    return { fetchSpy, emit, finish };
+  };
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  it('sends live slash commands as command frames and queues only the ones bound for the model', async () => {
+    const { fetchSpy, emit, finish } = openRun(service.createSession('live-commands'), 'first');
+    emit('start', { processId: 'harness-commands' });
+    emit('activity', { backgroundable: true, turnActive: true, processes: [], tasks: [] });
+    await settle();
+    await expectAsync(service.sendHarnessControl('command', undefined, 'processes')).toBeRejectedWithError('A command starts with /');
+    await expectAsync(service.sendHarnessControl('command', undefined, '  ')).toBeRejectedWithError('Nothing to send');
+    const command = (text: string, reply: object) => {
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ accepted: true }), { status: 202 }));
+      const answer = service.sendHarnessControl('command', undefined, text);
+      const [url, init] = fetchSpy.calls.mostRecent().args;
+      const frame = JSON.parse(String((init as RequestInit).body));
+      expect(String(url)).toContain('/agents/chat/control/harness-commands');
+      expect(frame).toEqual(jasmine.objectContaining({ version: 1, action: 'command', text }));
+      emit('control', { requestId: frame.requestId, action: 'command', ...reply });
+      return answer;
+    };
+    expect((await command('/processes', { ok: true, message: 'build  RUNNING' })).message).toBe('build  RUNNING');
+    expect((await command('/compact', { ok: false, deferred: true, message: 'Runs after this turn' })).deferred).toBeTrue();
+    expect((await command('/review src', { ok: true, queued: true, message: 'Queued' })).queued).toBeTrue();
+    // Answered and deferred commands never reach the model; a queued one waits with typed input.
+    expect(service.liveInputHistory).toEqual(['/review src']);
+    await finish('done');
+  });
+
+  it('records harness tool calls where they ran and merges each completion into its call', async () => {
+    const session = service.createSession('tools');
+    let calls: ToolUseEvent[] = [];
+    service.getToolCalls().subscribe(value => calls = value);
+    const { emit, finish } = openRun(session, 'read it');
+    emit('start', { processId: 'harness-tools' });
+    emit('chunk', 'Reading.');
+    emit('tool_use', { callId: 'c1', toolName: 'mcp__kompile__read', input: { file_path: 'Foo.java' }, status: 'started' });
+    emit('tool_use', { toolName: 'bash', input: 'ls', status: 'started' });
+    emit('tool_use', { tool: 'Read', input: 'echoed into the text by a managed lane' });
+    emit('chunk', ' Done.');
+    emit('tool_result', { toolName: 'bash', ok: false, durationMs: 5, status: 'completed' });
+    emit('tool_result', { callId: 'c1', toolName: 'mcp__kompile__read', ok: true, durationMs: 12, status: 'completed',
+      detail: { displayName: 'Read', sections: [{ label: 'content', runs: [{ text: 'class Foo {}', file: 'Foo.java' }] }] } });
+    emit('tool_result', { toolName: 'grep', ok: true, durationMs: 1 });
+    await settle();
+
+    expect(calls.map(call => [call.tool, call.status, call.ok, call.durationMs, call.textOffset])).toEqual([
+      ['mcp__kompile__read', 'completed', true, 12, 'Reading.'.length],
+      ['bash', 'completed', false, 5, 'Reading.'.length]
+    ]);
+    expect(calls[0].input).toBe('{"file_path":"Foo.java"}');
+    expect(calls[0].detail?.sections?.[0].runs[0].text).toBe('class Foo {}');
+    expect(session.messages[1].toolUses).toBe(calls);
+    await finish('Reading. Done.');
+    expect(session.messages[1].toolUses?.length).toBe(2);
+  });
+
+  it('shows streamed reasoning above the answer while the stored answer stays text only', async () => {
+    const session = service.createSession('thinking');
+    const displayed: string[] = [];
+    (service as any).streamingContentRaw$.subscribe(({ content }: { content: string }) => displayed.push(content));
+    const { emit, finish } = openRun(session, 'why');
+    emit('start', { processId: 'harness-thinking' });
+    emit('thinking', 'Checking the ');
+    emit('thinking', 'build.');
+    await settle();
+    expect(displayed[displayed.length - 1]).toBe('<thinking>Checking the build.');
+    expect(session.messages[1].content).toBe('');
+
+    emit('chunk', 'It passes.');
+    await settle();
+    expect(displayed[displayed.length - 1]).toBe('<thinking>Checking the build.</thinking>\n\nIt passes.');
+    expect(session.messages[1].content).toBe('It passes.');
+
+    await finish('It passes.');
+    expect(session.messages[1].content).toBe('<thinking>Checking the build.</thinking>\n\nIt passes.');
+  });
+
+  describe('workflow teams', () => {
+    const team = { name: 'review', version: 2, lead: 'lead',
+      participants: [
+        { id: 'lead', role: 'planner', model: 'custom/lead-model', capabilities: ['plan'], delegatesTo: ['worker'] },
+        { id: 'worker', role: 'implementer', model: 'custom/worker-model', capabilities: [] }],
+      routing: { implement: 'worker' }, gates: { implementationRequires: 'design', approved: [] as string[] },
+      maxConcurrentWorkers: 1 };
+    const sse = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+
+    afterEach(() => {
+      for (let index = sessionStorage.length - 1; index >= 0; index--) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith('kompile-workflow-team:')) sessionStorage.removeItem(key);
+      }
+    });
+
+    it('keeps the team a session event reports for the tab and forgets it when a later run has none', async () => {
+      const session = service.createSession('team');
+      const { fetchSpy, emit, finish } = openRun(session, 'first');
+      emit('harness_session', { session_id: 'web-team', provider: 'custom', model: 'lead-model', workflow: team });
+      await finish('planned');
+      expect(service.getWorkflowTeam(session.id)).toEqual(team);
+      (service as any).workflowTeams.clear(); // a reload: only the tab's storage remains
+      expect(service.getWorkflowTeam(session.id)).toEqual(team);
+      expect(service.getWorkflowTeam('another-session')).toBeNull();
+
+      fetchSpy.and.resolveTo(new Response(new TextEncoder().encode(
+        sse('harness_session', { session_id: 'web-team', provider: 'custom', model: 'lead-model' })
+        + sse('complete', { content: 'plain' })), { status: 200 }));
+      await service.sendMessage(session, 'second', { name: 'coder', displayName: 'Coder' } as AgentProvider);
+      expect(service.getWorkflowTeam(session.id)).toBeNull();
+      (service as any).workflowTeams.clear();
+      expect(service.getWorkflowTeam(session.id)).toBeNull();
+    });
+
+    it('approves a gate through the live run and keeps the approvals it reports', async () => {
+      const session = service.createSession('live-gate');
+      const { fetchSpy, emit, finish } = openRun(session, 'first');
+      emit('start', { processId: 'harness-gate' });
+      emit('harness_session', { session_id: 'web-gate', workflow: team });
+      emit('activity', { backgroundable: false, turnActive: true, processes: [], tasks: [] });
+      await settle();
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ accepted: true }), { status: 202 }));
+      const approval = service.approveWorkflowGate(session.id, ' design ');
+      const [url, init] = fetchSpy.calls.mostRecent().args;
+      expect(String(url)).toContain('/agents/chat/control/harness-gate');
+      const frame = JSON.parse(String((init as RequestInit).body));
+      expect(frame).toEqual(jasmine.objectContaining({ action: 'workflow_approve', text: 'design' }));
+      const approved = "Approved gate 'design' for workflow 'review'.";
+      emit('control', { requestId: frame.requestId, action: 'workflow_approve', ok: true, message: approved,
+        gate: 'design', approved: ['design'] });
+      expect(await approval).toEqual({ ok: true, message: approved });
+      expect(service.getWorkflowTeam(session.id)?.gates.approved).toEqual(['design']);
+      expect(service.liveInputHistory).toEqual([]);
+
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ accepted: true }), { status: 202 }));
+      const next = service.approveWorkflowGate(session.id);
+      const nextFrame = JSON.parse(String((fetchSpy.calls.mostRecent().args[1] as RequestInit).body));
+      expect('text' in nextFrame).toBeFalse(); // no gate: the one that blocks next
+      const done = "Every gate of workflow 'review' is already approved.";
+      emit('control', { requestId: nextFrame.requestId, action: 'workflow_approve', ok: false, message: done });
+      expect(await next).toEqual({ ok: false, message: done });
+      expect(service.getWorkflowTeam(session.id)?.gates.approved).toEqual(['design']);
+      await finish('done');
+    });
+
+    it('approves a gate between runs through the chat API and shows why one is refused', async () => {
+      const session = service.createSession('rest-gate');
+      const { fetchSpy, emit, finish } = openRun(session, 'first');
+      emit('harness_session', { session_id: 'web-rest', workflow: team });
+      await finish('planned');
+      const approved = "Approved gate 'design' for workflow 'review'.";
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ ok: true, message: approved, workflow: 'review',
+        gate: 'design', approved: ['design'] }), { status: 200 }));
+      expect(await service.approveWorkflowGate(session.id, 'design', '/work/project')).toEqual({ ok: true, message: approved });
+      const [url, init] = fetchSpy.calls.mostRecent().args;
+      expect(String(url)).toContain('/agents/chat/workflow/approve');
+      expect(JSON.parse(String((init as RequestInit).body)))
+        .toEqual({ sessionId: session.id, workingDirectory: '/work/project', gate: 'design' });
+      expect(service.getWorkflowTeam(session.id)?.gates.approved).toEqual(['design']);
+
+      const busy = 'A chat run is in progress; approve the gate from its live controls, or again when it ends.';
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ ok: false, message: busy }), { status: 409 }));
+      expect(await service.approveWorkflowGate(session.id)).toEqual({ ok: false, message: busy });
+      expect(JSON.parse(String((fetchSpy.calls.mostRecent().args[1] as RequestInit).body))).toEqual({ sessionId: session.id });
+      fetchSpy.and.resolveTo(new Response('<html>unavailable</html>', { status: 503 }));
+      expect(await service.approveWorkflowGate(session.id)).toEqual({ ok: false, message: 'Gate approval failed (HTTP 503)' });
+      expect(service.getWorkflowTeam(session.id)?.gates.approved).toEqual(['design']);
+    });
+
+    it('approves a gate of another session through the chat API, never through the live run', async () => {
+      const shown = service.createSession('shown');
+      const live = service.createSession('live');
+      const { fetchSpy, emit, finish } = openRun(live, 'first');
+      emit('start', { processId: 'harness-live' });
+      emit('harness_session', { session_id: 'web-live', workflow: team });
+      emit('activity', { backgroundable: false, turnActive: true, processes: [], tasks: [] });
+      await settle();
+      fetchSpy.and.resolveTo(new Response(JSON.stringify({ ok: true, message: 'Approved', gate: 'design', approved: ['design'] }),
+        { status: 200 }));
+      expect(await service.approveWorkflowGate(shown.id, 'design')).toEqual({ ok: true, message: 'Approved' });
+      const [url, init] = fetchSpy.calls.mostRecent().args;
+      expect(String(url)).toContain('/agents/chat/workflow/approve');
+      expect(JSON.parse(String((init as RequestInit).body))).toEqual({ sessionId: shown.id, gate: 'design' });
+      expect(service.getWorkflowTeam(live.id)?.gates.approved).toEqual([]);
+      await finish('done');
+    });
+
+    it('restores only a well-formed team from the tab storage', () => {
+      const store = (sessionId: string, value: string) => sessionStorage.setItem('kompile-workflow-team:' + sessionId, value);
+      store('kept', JSON.stringify(team));
+      store('no-approvals', JSON.stringify({ ...team, gates: { implementationRequires: 'design' } }));
+      store('unnamed-participant', JSON.stringify({ ...team, participants: [{ role: 'planner' }] }));
+      store('not-json', '{');
+      expect(service.getWorkflowTeam('kept')).toEqual(team);
+      expect(service.getWorkflowTeam('no-approvals')).toBeNull();
+      expect(service.getWorkflowTeam('unnamed-participant')).toBeNull();
+      expect(service.getWorkflowTeam('not-json')).toBeNull();
+    });
   });
 });

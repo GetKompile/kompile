@@ -88,6 +88,8 @@ public class CoordinationStateManager {
     private final Set<String> ownedLockIds = ConcurrentHashMap.newKeySet();
     private final AtomicReference<Consumer<String>> warningSink = new AtomicReference<>();
     private volatile boolean shutdown = false;
+    /** Parent session of the registered agent, stamped on every process it publishes. */
+    private volatile String registeredParentSessionId;
 
     /**
      * Create a new coordination state manager.
@@ -501,6 +503,8 @@ public class CoordinationStateManager {
     /** Register presence together with the tool-call stream and optional role it owns. */
     public void registerAgent(String task, String parentSessionId, String agentName,
                               int depth, long pid, String toolSessionId, String roleName) {
+        registeredParentSessionId = parentSessionId == null || parentSessionId.isBlank()
+                ? null : parentSessionId.trim();
         try {
             synchronized (agentEntryLock) {
                 String resolvedToolSessionId = toolSessionId == null || toolSessionId.isBlank()
@@ -757,6 +761,7 @@ public class CoordinationStateManager {
                 entry.setResourceClass(resourceClass);
                 entry.setEndedAt(endedAt);
                 entry.setExitCode(exitCode);
+                entry.setParentSessionId(registeredParentSessionId);
                 if (entry.isTerminalState()) {
                     entry.setEndedAt(endedAt != null ? endedAt : now);
                     entry.setLastHeartbeat(entry.getEndedAt());
@@ -787,6 +792,12 @@ public class CoordinationStateManager {
             if (Files.exists(procFile)) {
                 withCoordinatorLock(isRunningProcessState(state)
                         ? 0L : PROCESS_LIFECYCLE_LOCK_WAIT_MS, () -> {
+                    // Re-check inside the lock: shutdown() deletes proc files under this
+                    // same lock, and a publication that started before shutdown() can
+                    // otherwise reach here after the file is gone and resurrect it.
+                    if (shutdown || !Files.exists(procFile)) {
+                        return null;
+                    }
                     ProcessCoordEntry entry = mapper.readValue(procFile.toFile(), ProcessCoordEntry.class);
                     entry.setState(state);
                     Instant now = Instant.now();
@@ -805,6 +816,35 @@ public class CoordinationStateManager {
         }
         if (!isRunningProcessState(state)) {
             systemActivityCoordinator.releaseByProcess(safeProcessId);
+        }
+    }
+
+    /**
+     * Record whether this session holds a completion monitor on a published process,
+     * so the parent session can be woken when the process ends.
+     */
+    public void updateProcessMonitor(String processId, boolean monitored, String message) {
+        String safeProcessId = requireSafeComponent(processId, "processId");
+        String resolvedMessage = !monitored || message == null || message.isBlank()
+                ? null : message.strip();
+        try {
+            Path procFile = processFile(sessionId, safeProcessId);
+            if (Files.exists(procFile)) {
+                withCoordinatorLock(PROCESS_LIFECYCLE_LOCK_WAIT_MS, () -> {
+                    // Same in-lock re-check as updateProcessState: shutdown() may delete
+                    // this proc file under the lock between the check above and here.
+                    if (shutdown || !Files.exists(procFile)) {
+                        return null;
+                    }
+                    ProcessCoordEntry entry = mapper.readValue(procFile.toFile(), ProcessCoordEntry.class);
+                    entry.setMonitored(monitored);
+                    entry.setMonitorMessage(resolvedMessage);
+                    writeJsonAtomically(procFile, entry);
+                    return null;
+                });
+            }
+        } catch (Exception e) {
+            notifyWarning("[Coordination] Warning: Could not update process monitor: " + e.getMessage());
         }
     }
 
@@ -969,17 +1009,22 @@ public class CoordinationStateManager {
         }
         ownedLockIds.clear();
 
-        // Remove this session's process entries
+        // Remove this session's process entries. Locked so a concurrent
+        // updateProcessState/updateProcessMonitor call sees either the file or its
+        // absence atomically, and never writes one back after this deletes it.
         try {
-            if (Files.exists(processesDir)) {
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(processesDir,
-                        sessionId + "-*.proc.json")) {
-                    for (Path file : stream) {
-                        Files.deleteIfExists(file);
+            withCoordinatorLock(PROCESS_LIFECYCLE_LOCK_WAIT_MS, () -> {
+                if (Files.exists(processesDir)) {
+                    try (DirectoryStream<Path> stream = Files.newDirectoryStream(processesDir,
+                            sessionId + "-*.proc.json")) {
+                        for (Path file : stream) {
+                            Files.deleteIfExists(file);
+                        }
                     }
                 }
-            }
-        } catch (IOException e) {
+                return null;
+            });
+        } catch (Exception e) {
             notifyWarning("[Coordination] Warning: Could not clean up process entries: " + e.getMessage());
         }
     }

@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { DomSanitizer } from '@angular/platform-browser';
-import { MarkdownRendererService } from '@shared/services/markdown-renderer.service';
+import { ToolUseEvent } from '@shared/models/api-models';
+import { MarkdownRendererService, MessageSegment } from '@shared/services/markdown-renderer.service';
 import { UnifiedChatComponent } from './unified-chat.component';
 
 describe('UnifiedChat streaming render cache', () => {
@@ -92,5 +93,56 @@ describe('UnifiedChat streaming render cache', () => {
     expect((component as any).renderedMarkdownCache.size).toBe(500);
     expect((component as any).segmentCache.has('0')).toBeFalse();
     expect((component as any).segmentCache.get('509').content).toBe('Latest 19');
+  });
+
+  describe('harness tool calls', () => {
+    const call = (fields: Partial<ToolUseEvent> = {}): ToolUseEvent => ({
+      tool: 'bash', input: '{"command":"make"}', callId: 'c1', status: 'completed', ok: true,
+      detail: { displayName: 'Bash', title: 'make', sections: [{ label: 'output', runs: [{ text: 'echo ok', family: 'hash' }] }] },
+      ...fields
+    });
+    const types = (segments: MessageSegment[]) => segments.map(segment => segment.type);
+
+    it('places each card where its call ran, below the reasoning, ties in run order', () => {
+      const segments = component.getMessageSegments({
+        ...message('<thinking>Plan</thinking>\n\nBefore after', false),
+        toolUses: [call({ textOffset: 7 }), call({ callId: 'c2', textOffset: 7, detail: { displayName: 'Read' } })]
+      });
+      expect(types(segments)).toEqual(['thinking', 'text', 'tool_call', 'tool_call', 'text']);
+      expect(segments.map(segment => segment.toolCall?.name ?? segment.content)).toEqual(['Plan', 'Before', 'Bash', 'Read', 'after']);
+      const section = segments[2].toolCall!.sections[0];
+      expect(section.label).toBe('output');
+      expect((section.html as any).changingThisBreaksApplicationSecurity).toContain('<span class="hljs-built_in">echo</span> ok');
+    });
+
+    it('clamps offsets to the answer and puts a call without one at the end', () => {
+      const segments = component.getMessageSegments({ ...message('Answer', false), toolUses: [
+        call({ callId: 'late', textOffset: 999, detail: { displayName: 'Late' } }),
+        call({ callId: 'none', detail: { displayName: 'None' } }),
+        call({ callId: 'early', textOffset: -3, detail: { displayName: 'Early' } })
+      ] });
+      expect(segments.map(segment => segment.toolCall?.name ?? segment.content)).toEqual(['Early', 'Answer', 'Late', 'None']);
+    });
+
+    it('keeps the plain path for tool events without a status', () => {
+      const echoed = { ...message('Answer', false), toolUses: [{ tool: 'bash', input: '{}' }] };
+      expect(types(component.getMessageSegments(echoed))).toEqual(['text']);
+    });
+
+    it('shows an open call running while the run streams and stopped once it ends', () => {
+      const live = { ...message('Working'), toolUses: [call({ status: 'started', ok: undefined, detail: undefined, textOffset: 0 })] };
+      expect(component.getMessageSegments(live)[0].toolCall).toEqual(jasmine.objectContaining({ name: 'Bash', state: 'running' }));
+      expect(component.getMessageSegments({ ...live, isStreaming: false })[0].toolCall!.state).toBe('stopped');
+    });
+
+    it('renders a finished call once while the answer keeps streaming', () => {
+      const render = spyOn(renderer, 'renderToolCall').and.callThrough();
+      const done = call({ textOffset: 0 });
+      const first = component.getMessageSegments({ ...message('A'), toolUses: [done] });
+      const next = component.getMessageSegments({ ...message('AB'), toolUses: [done] });
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(next[0].toolCall).toBe(first[0].toolCall);
+      expect(next[1].content).toBe('AB');
+    });
   });
 });

@@ -82,6 +82,17 @@ public class ProcessCoordEntry {
     @JsonProperty("ttlSeconds")
     private int ttlSeconds;
 
+    /** The session that launched the owner; it is woken when a monitored process ends. */
+    @JsonProperty("parentSessionId")
+    private String parentSessionId;
+
+    /** True while the owner holds a completion monitor on the process. */
+    @JsonProperty("monitored")
+    private boolean monitored;
+
+    @JsonProperty("monitorMessage")
+    private String monitorMessage;
+
     public ProcessCoordEntry(String processId, String sessionId, String agentName,
                              String command, String description, long pid, String state,
                              Instant startedAt, String outputFile, int ttlSeconds) {

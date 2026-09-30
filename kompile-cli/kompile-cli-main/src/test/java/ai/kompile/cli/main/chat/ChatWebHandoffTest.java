@@ -2,6 +2,13 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
+import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamStore;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -9,10 +16,18 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
+@TemporaryUserHome
 class ChatWebHandoffTest {
     @TempDir Path directory;
+
+    @AfterEach void noTeamOutlivesATest() {
+        WorkflowSessionContext.activate(null);
+    }
 
     @Test void setupWebHandsOffOnlyAfterValidSelection() throws Exception {
         Stub command = new Stub();
@@ -29,17 +44,63 @@ class ChatWebHandoffTest {
 
     @Test void webDefaultsToPrintedUrlWithoutBrowser() {
         Stub command = new Stub();
-        command.config = new ChatConfig("ollama", null, "model", null);
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         String output = successfulOutput(command, "--web", "--working-dir", directory.toString());
         assertTrue(output.contains("Web chat: http://127.0.0.1:1234"));
         assertNull(command.opened);
         assertFalse(command.wizard);
+        assertNull(command.startedWorkflow);
+        assertFalse(output.contains("Workflow team:"), output);
+    }
+
+    @Test void aNamedTeamStartsEveryNewWebSession() throws Exception {
+        saveTeams("session-team");
+        Stub command = new Stub();
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        String output = successfulOutput(command, "--web", "--workflow", "session-team",
+                "--working-dir", directory.toString());
+        assertEquals("session-team", command.startedWorkflow);
+        assertTrue(output.contains("Workflow team: session-team."), output);
+        assertNull(WorkflowSessionContext.current(), "the browser's harness runs the team, not this process");
+    }
+
+    @Test void aTeamThatCannotBeLoadedStopsTheHandoffBeforeTheServerStarts() {
+        Stub command = new Stub();
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        assertEquals(2, new CommandLine(command).execute("--web", "--workflow", "missing-team",
+                "--working-dir", directory.toString()));
+        assertNull(command.started);
+    }
+
+    @Test void theWizardsTeamCarriesIntoTheBrowserUnlessTheFlagNamesAnother() throws Exception {
+        saveTeams("session-team", "other-team");
+        for (String flag : new String[] {null, "other-team"}) {
+            Stub command = new Stub();
+            command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+            command.destination = SetupWizard.Destination.BROWSER;
+            command.wizardWorkflow = new WorkflowTeamSnapshot(team("session-team"), Map.of(), null);
+            String[] args = flag == null
+                    ? new String[] {"--setup", "--working-dir", directory.toString()}
+                    : new String[] {"--setup", "--workflow", flag, "--working-dir", directory.toString()};
+            successfulOutput(command, args);
+            assertTrue(command.wizard);
+            assertEquals(flag == null ? "session-team" : flag, command.startedWorkflow);
+        }
+    }
+
+    @Test void aTeamTheHarnessWouldReadAsTheCreationWizardIsRefused() {
+        Stub command = new Stub();
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
+        command.destination = SetupWizard.Destination.BROWSER;
+        command.wizardWorkflow = new WorkflowTeamSnapshot(team("Create"), Map.of(), null);
+        assertEquals(2, new CommandLine(command).execute("--setup", "--working-dir", directory.toString()));
+        assertNull(command.started);
     }
 
     @Test void explicitBrowserOptInPrintsUrlAndDoesNotRunDestinationWizard() {
         for (boolean setup : new boolean[] {false, true}) {
             Stub command = new Stub();
-            command.config = new ChatConfig("ollama", null, "model", null);
+            command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
             String[] args = setup
                     ? new String[] {"--web", "--open-browser", "--setup", "--working-dir", directory.toString()}
                     : new String[] {"--web", "--open-browser", "--working-dir", directory.toString()};
@@ -97,7 +158,7 @@ class ChatWebHandoffTest {
 
     @Test void wizardBrowserUsesExistingHandoffWithoutSelectingOrAuthenticatingAgain() {
         Stub command = new Stub();
-        command.config = new ChatConfig("ollama", null, "model", null);
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         command.destination = SetupWizard.Destination.BROWSER;
         String output = successfulOutput(command, "--setup", "--working-dir", directory.toString());
         assertTrue(output.contains("Web chat: http://127.0.0.1:1234"));
@@ -109,7 +170,7 @@ class ChatWebHandoffTest {
 
     @Test void terminalSetupExitsAndCancelledSetupDoesNotLaunch() {
         Stub command = new Stub();
-        command.config = new ChatConfig("ollama", null, "model", null);
+        command.config = new ChatConfig("custom", null, "model", "http://127.0.0.1:9000/v1");
         assertEquals(0, new CommandLine(command).execute("--setup"));
         assertNull(command.started);
         command.config = null;
@@ -129,20 +190,46 @@ class ChatWebHandoffTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 
+    /** Saves each named team in the project, with the roles its participants play. */
+    private void saveTeams(String... names) throws Exception {
+        for (String name : names) assertTrue(WorkflowTeamStore.save(directory, team(name), true));
+        RoleManager roles = new RoleManager(directory);
+        if (roles.getRole("architect") == null) roles.createRole("architect", "Architect", "d", "workflow", "design");
+        if (roles.getRole("implementer") == null) {
+            roles.createRole("implementer", "Implementer", "d", "workflow", "implement");
+        }
+    }
+
+    private static WorkflowTeam team(String name) {
+        Map<String, WorkflowTeam.Participant> participants = new LinkedHashMap<>();
+        participants.put("designer", new WorkflowTeam.Participant("designer", "architect", "cli",
+                List.of("read", "plan", "delegate"), List.of("worker")));
+        participants.put("worker", new WorkflowTeam.Participant("worker", "implementer", "cli",
+                List.of("read", "edit-assigned-files", "validate"), List.of()));
+        return new WorkflowTeam(name, 1, "designer", participants, Map.of("implement", "worker"),
+                new WorkflowTeam.Limits(2), new WorkflowTeam.Gates("approved-design", null));
+    }
+
     private static class Stub extends ChatCommand {
         SetupWizard.Destination destination = SetupWizard.Destination.TERMINAL;
+        WorkflowTeamSnapshot wizardWorkflow;
         boolean wizard;
         @Override SetupWizard.SetupResult runSetupWizard() {
             wizard = true;
-            return config == null ? null : new SetupWizard.SetupResult(config, destination);
+            return config == null ? null : new SetupWizard.SetupResult(config, destination, wizardWorkflow);
         }
         ChatConfig config;
         boolean selected;
         Path started;
+        String startedWorkflow;
         String opened;
-        @Override ChatConfig selectWebConfig(Path path) { selected = true; return config; }
-        @Override ChatInstanceBootstrap.StartupResult startWeb(Path path) {
+        @Override SetupWizard.SetupResult selectWebConfig(Path path) {
+            selected = true;
+            return config == null ? null : new SetupWizard.SetupResult(config, SetupWizard.Destination.BROWSER);
+        }
+        @Override ChatInstanceBootstrap.StartupResult startWeb(Path path, String workflowName) {
             started = path;
+            startedWorkflow = workflowName;
             return new ChatInstanceBootstrap.StartupResult("http://127.0.0.1:1234", true);
         }
         @Override void openWebBrowser(String address) { opened = address; }

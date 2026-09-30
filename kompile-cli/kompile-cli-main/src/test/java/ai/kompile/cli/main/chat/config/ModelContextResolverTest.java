@@ -211,6 +211,27 @@ class ModelContextResolverTest {
     }
 
     @Test
+    void reportedLimitsWinOverTheCatalogsButNotOverExplicitOverrides() throws Exception {
+        useCatalog(adversarialCatalog(false));
+        ModelContextResolver resolver = noProbeResolver();
+        ChatConfig config = codexConfig();
+        ModelContextResolver.ModelLimits reported = new ModelContextResolver.ModelLimits(200_000, 32_000);
+        assertEquals(reported, resolver.resolveLimits(config, null, reported),
+                "the provider's own settings can set lower limits than the catalogs list");
+        assertEquals(new ModelContextResolver.ModelLimits(1_050_000, 128_000),
+                resolver.resolveLimits(config, null, null));
+        assertEquals(new ModelContextResolver.ModelLimits(200_000, 128_000),
+                resolver.resolveLimits(config, null, new ModelContextResolver.ModelLimits(200_000, 0)),
+                "a limit the provider did not report comes from the catalogs");
+        config.setContextWindowTokens(32_000);
+        assertEquals(new ModelContextResolver.ModelLimits(32_000, 32_000),
+                resolver.resolveLimits(config, null, reported));
+        config.setMaxOutputTokens(4_000);
+        assertEquals(new ModelContextResolver.ModelLimits(32_000, 4_000),
+                resolver.resolveLimits(config, null, reported));
+    }
+
+    @Test
     void partialOverridesRetainLocalProbeForTheOtherLimit() throws Exception {
         useCatalog(adversarialCatalog(false));
         ModelContextResolver resolver = new ModelContextResolver(fixedStatus(true, 16_384, 2_048));

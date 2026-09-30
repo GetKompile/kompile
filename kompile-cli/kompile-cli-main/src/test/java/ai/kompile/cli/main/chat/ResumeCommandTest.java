@@ -93,7 +93,7 @@ class ResumeCommandTest {
                     "pi --session resume-session",
                     tempDir);
 
-            List<String> args = buildAgentCommand("pi", exportResult, true);
+            List<String> args = buildAgentCommand("pi", exportResult, tempDir.resolve(".pi").resolve("mcp.json"));
 
             assertEquals("pi", args.get(0));
             assertEquals("-e", args.get(1));
@@ -107,6 +107,27 @@ class ResumeCommandTest {
                 System.setProperty("kompile.pi.adapter.path", previousAdapter);
             }
         }
+    }
+
+    @Test
+    void claudeResumeNamesTheMcpConfigWrittenForItRightAfterTheExecutable() throws Exception {
+        ConversationExporter.ExportResult exportResult = new ConversationExporter.ExportResult(
+                "resume-session",
+                "claude",
+                tempDir.resolve("session.jsonl"),
+                "claude --resume resume-session",
+                tempDir);
+        Path launchConfig = Files.createTempFile(tempDir, "kompile-mcp-claude-", ".json");
+
+        List<String> args = buildAgentCommand("claude", exportResult, launchConfig);
+
+        assertEquals("claude", args.get(0));
+        assertEquals("--mcp-config=" + launchConfig, args.get(1));
+        assertEquals("resume-session", args.get(args.indexOf("--resume") + 1));
+        assertTrue(args.contains("--append-system-prompt"));
+        // The project's shared .mcp.json is never named: Claude Code reads it itself.
+        assertFalse(buildAgentCommand("claude", exportResult, tempDir.resolve(".mcp.json"))
+                .stream().anyMatch(arg -> arg.startsWith("--mcp-config")));
     }
 
     @Test
@@ -365,21 +386,21 @@ class ResumeCommandTest {
     }
 
     private List<String> buildAgentCommand(String agent, ConversationExporter.ExportResult exportResult) throws Exception {
-        return buildAgentCommand(agent, exportResult, false);
+        return buildAgentCommand(agent, exportResult, null);
     }
 
     private List<String> buildAgentCommand(String agent, ConversationExporter.ExportResult exportResult,
-                                           boolean toolsInjected) throws Exception {
+                                           Path injectedSettingsFile) throws Exception {
         ResumeCommand command = new ResumeCommand();
         Method buildAgentCommand = ResumeCommand.class.getDeclaredMethod(
                 "buildAgentCommand",
                 String.class,
                 ConversationExporter.ExportResult.class,
-                boolean.class);
+                Path.class);
         buildAgentCommand.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<String> args = (List<String>) buildAgentCommand.invoke(command, agent, exportResult, toolsInjected);
+        List<String> args = (List<String>) buildAgentCommand.invoke(command, agent, exportResult, injectedSettingsFile);
         return args;
     }
 }

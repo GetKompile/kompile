@@ -15,7 +15,8 @@ public record ProviderCompactionCapabilities(
         NONE,
         ANTHROPIC_MESSAGES,
         OPENAI_RESPONSES,
-        OPENCODE_SESSION
+        OPENCODE_SESSION,
+        CLAUDE_CODE_SESSION
     }
 
     public enum TokenCounting {
@@ -33,6 +34,15 @@ public record ProviderCompactionCapabilities(
     public static ProviderCompactionCapabilities generic() {
         return new ProviderCompactionCapabilities(
                 NativeCompaction.NONE, TokenCounting.NONE, HistoryOwnership.CLIENT);
+    }
+
+    /**
+     * Claude Code CLI sessions: Claude Code compacts the session it owns and
+     * reports it on its stream. Kompile can neither count nor compact that context.
+     */
+    public static ProviderCompactionCapabilities claudeCodeSession() {
+        return new ProviderCompactionCapabilities(
+                NativeCompaction.CLAUDE_CODE_SESSION, TokenCounting.NONE, HistoryOwnership.PROVIDER);
     }
 
     public static ProviderCompactionCapabilities forProvider(String providerId) {

@@ -73,10 +73,13 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
     private static final long MAX_BASE64_CHARS = ((MAX_ATTACHMENT_BYTES + 2L) / 3L) * 4L + 4L;
     private static final int MAX_ATTACHMENTS = 8;
     private static final int MAX_IDENTIFIER_CHARS = 256;
+    /** The harness's bound on a workflow gate name (web-json {@code workflowApprove}). */
+    private static final int MAX_GATE_CHARS = 256;
     private static final int MAX_WORKING_DIRECTORY_CHARS = 4_096;
     private static final int MAX_HISTORY_ENTRIES = 200;
     private static final int MAX_FOLDER_FILES = 100;
     private static final int MAX_FOLDER_CONTEXT_CHARS = 64 * 1024;
+    private static final int MAX_TOOL_DETAIL_BYTES = 64 * 1024;
     private static final int SESSION_LOCK_STRIPES = 64;
     private static final Set<String> ATTACHMENT_UNSUPPORTED_PROVIDERS = Set.of(
             "kompile-local", "opencode", "pi");
@@ -213,15 +216,24 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
             throw new IllegalArgumentException("Unknown control field");
         controlString(frame, "requestId", 128);
         String action = controlString(frame, "action", 32);
-        if (!java.util.Set.of("background", "process_list", "process_output", "process_kill", "input", "subagent_input", "subagent_cancel").contains(action))
+        if (!java.util.Set.of("background", "process_list", "process_output", "process_kill", "input", "command",
+                "subagent_input", "subagent_cancel", "workflow_approve").contains(action))
             throw new IllegalArgumentException("Unsupported control action");
         boolean targeted = action.equals("process_output") || action.equals("process_kill")
                 || action.equals("subagent_input") || action.equals("subagent_cancel");
         if (targeted) controlString(frame, "targetId", 128);
         else if (frame.has("targetId")) throw new IllegalArgumentException("Unexpected targetId");
-        if (action.equals("input") || action.equals("subagent_input")) {
-            if (controlString(frame, "text", 32_768).stripLeading().startsWith("/"))
-                throw new IllegalArgumentException("Send slash commands after the live run finishes");
+        boolean command = action.equals("command");
+        if (command || action.equals("input") || action.equals("subagent_input")) {
+            // Slash text is only ever a command: never model input, never a child's follow-up.
+            if (command != controlString(frame, "text", 32_768).stripLeading().startsWith("/"))
+                throw new IllegalArgumentException(command ? "A command starts with /"
+                        : action.equals("input") ? "Send slash commands with the command action"
+                        : "Slash commands cannot be sent to a child agent");
+        } else if (action.equals("workflow_approve")) {
+            // A gate approval names its gate, or omits it for the gate that blocks next.
+            if (frame.has("text") && controlString(frame, "text", MAX_GATE_CHARS).chars().anyMatch(Character::isISOControl))
+                throw new IllegalArgumentException("Invalid text");
         } else if (frame.has("text")) throw new IllegalArgumentException("Unexpected text");
     }
 
@@ -350,18 +362,7 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         Thread outReader = null;
         Thread errReader = null;
         try {
-            List<String> command = new ArrayList<>(launcherResolver.resolve());
-            command.add("chat");
-            if (WebChatContext.globalConfig()) command.add("--global-config");
-            command.add("--output-format");
-            command.add("stream-json");
-            command.add("--input-format");
-            command.add("web-json");
-            command.add("--working-dir");
-            command.add(workDir.toString());
-            command.add("--timeout");
-            command.add("30");
-            process = processStarter.start(command, workDir);
+            process = processStarter.start(oneShotCommand(workDir), workDir);
             ObjectNode input = mapper.createObjectNode();
             input.put("version", 1);
             input.put("rawInput", "");
@@ -413,6 +414,117 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         result.put("status", status == null || status.isBlank()
                 ? "Session configuration is unavailable" : bounded(status, 1_000));
         return result;
+    }
+
+    /**
+     * The user's gate approval between runs, as {@code /workflow approve} is in the terminal:
+     * one short-lived harness approves the gate of the team this session recorded, and the
+     * session's next run restores it. A run holding the session takes approvals through its
+     * live controls, so this refuses rather than record the team under it.
+     */
+    @Override
+    public Map<String, Object> approveWorkflowGate(String browserSessionId, String workingDirectory,
+                                                   String gate) {
+        if (browserSessionId == null || browserSessionId.isBlank()) {
+            throw new IllegalArgumentException("A gate approval needs the chat session id");
+        }
+        String requested = gate == null ? "" : gate.strip();
+        if (requested.length() > MAX_GATE_CHARS || requested.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("Invalid gate name");
+        }
+        Path workDir;
+        try {
+            workDir = resolveWorkingDirectory(workingDirectory);
+        } catch (IOException invalid) {
+            throw new IllegalArgumentException(invalid.getMessage(), invalid);
+        }
+        String harnessSessionId = harnessSessionId(workDir, browserSessionId);
+        ReentrantLock sessionLock = sessionLock(harnessSessionId);
+        if (!sessionLock.tryLock()) {
+            return gateOutcome(false, "A chat run is in progress; approve the gate from its live controls,"
+                    + " or again when it ends.");
+        }
+        Process process = null;
+        StringBuffer stdout = new StringBuffer();
+        StringBuffer stderr = new StringBuffer();
+        Thread outReader = null;
+        Thread errReader = null;
+        try {
+            process = processStarter.start(oneShotCommand(workDir), workDir);
+            ObjectNode input = mapper.createObjectNode();
+            input.put("version", 1);
+            input.put("rawInput", "");
+            input.put("sessionId", harnessSessionId);
+            input.put("workflowApprove", requested);
+            try (var stdin = process.getOutputStream()) {
+                stdin.write(mapper.writeValueAsBytes(input));
+                stdin.write('\n');
+            }
+            outReader = drain(process.getInputStream(), stdout, "web-chat-gate-approval-stdout");
+            errReader = drain(process.getErrorStream(), stderr, "web-chat-gate-approval-stderr");
+            if (!process.waitFor(25, TimeUnit.SECONDS)) {
+                terminate(process);
+                return gateOutcome(false, "Gate approval timed out");
+            }
+            join(outReader, 2_000L);
+            join(errReader, 2_000L);
+            // A refused approval exits non-zero, so the outcome is read whatever the exit.
+            for (String line : stdout.toString().split("\n")) {
+                if (!line.contains("\"type\":\"command\"")) continue;
+                JsonNode event;
+                try {
+                    event = mapper.readTree(line.trim());
+                } catch (IOException malformed) {
+                    continue;
+                }
+                boolean ok = event.path("ok").asBoolean(false)
+                        && "COMPLETED".equals(event.path("status").asText());
+                Map<String, Object> outcome = gateOutcome(ok, event.path("text").asText(""));
+                JsonNode data = event.path("data");
+                if (ok && data.isObject()) {
+                    outcome.put("workflow", data.path("workflow").asText(""));
+                    outcome.put("gate", data.path("gate").asText(""));
+                    List<String> approved = new ArrayList<>();
+                    data.path("approved").forEach(name -> approved.add(name.asText()));
+                    outcome.put("approved", List.copyOf(approved));
+                }
+                return outcome;
+            }
+            String diagnostic = lastDiagnostic(stderr);
+            return gateOutcome(false, diagnostic.isBlank() ? "Harness returned no approval outcome" : diagnostic);
+        } catch (Exception failure) {
+            if (process != null) terminate(process);
+            return gateOutcome(false, failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+        } finally {
+            join(outReader, 500L);
+            join(errReader, 500L);
+            sessionLock.unlock();
+        }
+    }
+
+    private static Map<String, Object> gateOutcome(boolean ok, String message) {
+        Map<String, Object> outcome = new LinkedHashMap<>();
+        outcome.put("ok", ok);
+        outcome.put("message", message == null || message.isBlank()
+                ? (ok ? "Gate approved" : "Gate approval failed") : bounded(message, 1_000));
+        return outcome;
+    }
+
+    /** A harness that answers one web-json line and exits: no live controls, no model turn. */
+    private List<String> oneShotCommand(Path workDir) throws IOException {
+        List<String> command = new ArrayList<>(launcherResolver.resolve());
+        command.add("chat");
+        if (WebChatContext.globalConfig()) command.add("--global-config");
+        command.add("--output-format");
+        command.add("stream-json");
+        command.add("--input-format");
+        command.add("web-json");
+        command.add("--working-dir");
+        command.add(workDir.toString());
+        command.add("--timeout");
+        command.add("30");
+        return command;
     }
 
     /** Package-private synchronous seam for protocol tests; production uses {@link #executeChat}. */
@@ -596,6 +708,10 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
                 tool.put("ok", event.path("ok").asBoolean(false));
                 tool.put("durationMs", event.path("ms").asLong(0));
                 tool.put("status", "completed");
+                // The terminal's completion row and language-tagged body; the CLI bounds its sections.
+                JsonNode detail = event.get("detail");
+                if (detail != null && detail.isObject() && mapper.writeValueAsBytes(detail).length <= MAX_TOOL_DETAIL_BYTES)
+                    tool.put("detail", detail);
                 run.sink.send("tool_result", tool);
                 yield false;
             }
@@ -691,6 +807,10 @@ public class KompileCliHarnessClient implements ChatHarnessClient, AutoCloseable
         command.add(workDir.toString());
         command.add(resume ? "--resume" : "--session-id");
         command.add(harnessSessionId);
+        // A new session starts with the team its web handoff named; a resumed one
+        // restores the team it recorded, so the flag is never repeated.
+        String workflow = WebChatContext.workflow();
+        if (!resume && workflow != null) command.add("--workflow=" + workflow);
         String selector = effectiveSelector(request);
         if (selector.startsWith("role:")) {
             command.add("--role");

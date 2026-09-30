@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.workflow;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -43,29 +45,48 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class WorkflowTeamEnforcement {
 
-    /** Tool id prefixes that require the edit capability. */
-    private static final List<String> EDIT_TOOL_PREFIXES = List.of(
+    /**
+     * Permission keys that require the edit capability: file mutation tools
+     * ({@code edit_batch} reports {@code edit}, {@code edit_patch} reports
+     * {@code patch}) and state-changing shell commands.
+     */
+    private static final Set<String> EDIT_PERMISSION_KEYS = Set.of(
             "edit", "write", "patch", "bash.write", "bash.destructive");
 
     /** Tool ids that require the delegate capability. */
     private static final Set<String> DELEGATION_TOOLS = Set.of("task", "multi_task", "quorum_task");
 
+    /** Permission keys that read the project and so require the read capability. */
+    private static final Set<String> READ_PERMISSION_KEYS = Set.of(
+            "read", "grep", "glob", "list", "search", "code_search", "code_graph", "lsp", "explore");
+
     private final WorkflowTeamSnapshot snapshot;
     private final String callerParticipant;
+    private final String sessionId;
     private final Set<String> satisfiedGates = ConcurrentHashMap.newKeySet();
 
     public WorkflowTeamEnforcement(WorkflowTeamSnapshot snapshot, String callerParticipant) {
+        this(snapshot, callerParticipant, null);
+    }
+
+    /**
+     * @param sessionId the chat transcript the workflow runs in, or {@code null};
+     *                  children inherit it so they read the gates that session satisfied
+     */
+    public WorkflowTeamEnforcement(WorkflowTeamSnapshot snapshot, String callerParticipant, String sessionId) {
         this.snapshot = Objects.requireNonNull(snapshot, "snapshot");
         this.callerParticipant = WorkflowTeam.key(callerParticipant);
         if (snapshot.team().participant(this.callerParticipant) == null) {
             throw new IllegalArgumentException("Harness identity '" + callerParticipant
                     + "' is not a participant of workflow '" + snapshot.workflowName() + "'");
         }
+        this.sessionId = sessionId == null || sessionId.isBlank() ? null : sessionId.trim();
     }
 
     public WorkflowTeamSnapshot snapshot() { return snapshot; }
     public WorkflowTeam team() { return snapshot.team(); }
     public String callerParticipant() { return callerParticipant; }
+    public String sessionId() { return sessionId; }
 
     // ── Delegation enforcement ──────────────────────────────────────────────
 
@@ -127,7 +148,8 @@ public final class WorkflowTeamEnforcement {
             return new DelegationDecision.Denied(
                     "Delegation inside workflow '" + team.name() + "' needs a routing 'purpose' from: "
                             + team.routing().keySet()
-                            + ". Select roles/agents directly instead of work purposes.",
+                            + ". Pass one of those purposes; the team, not the caller, picks the participant"
+                            + " and its agent and model.",
                     callerParticipant);
         }
 
@@ -141,14 +163,13 @@ public final class WorkflowTeamEnforcement {
         }
 
         // Implementation gate: delegating to an edit-capable participant requires it.
+        // Only the user satisfies gates (/workflow approve); the lead cannot self-approve.
         if (target.canEdit() && !implementationGateSatisfied()) {
-            WorkflowTeam.Gates gates = team.gates();
+            String gate = team.gates().implementationRequires();
             return new DelegationDecision.Denied(
-                    "Workflow '" + team.name() + "' gates implementation: "
-                            + (gates.hasImplementationGate()
-                            ? "'" + gates.implementationRequires() + "' must be satisfied first"
-                            : "the implementation gate is unsatisfied")
-                            + ". Complete it (e.g. obtain the user's design approval) before delegating edits.",
+                    "Workflow '" + team.name() + "' gates implementation: '" + gate
+                            + "' is not satisfied yet. Present the design to the user and ask them to run "
+                            + "`/workflow approve` once they accept it; do not delegate edits before then.",
                     target.id());
         }
 
@@ -182,9 +203,10 @@ public final class WorkflowTeamEnforcement {
     }
 
     /**
-     * Whether the caller may use this tool. Called by tools themselves before
-     * execution; denial is absolute for the session (a workflow narrows, never
-     * widens, existing permissions).
+     * Whether the caller may use a tool, given the tool's permission key
+     * ({@code read}, {@code edit}, {@code bash.write}, ...) or a delegation tool
+     * id. Checked before execution; denial is absolute for the session (a
+     * workflow narrows, never widens, existing permissions).
      */
     public ToolDecision evaluateToolUse(String toolId) {
         WorkflowTeam team = snapshot.team();
@@ -195,20 +217,15 @@ public final class WorkflowTeamEnforcement {
             return ToolDecision.deny("Participant '" + callerParticipant
                     + "' is chat-only in workflow '" + team.name() + "'.");
         }
-        if (!caller.canRead()) {
-            boolean readish = tool.equals("read") || tool.equals("grep") || tool.equals("glob")
-                    || tool.equals("list") || tool.equals("search");
-            if (readish) {
-                return ToolDecision.deny("Participant '" + callerParticipant
-                        + "' lacks 'read' in workflow '" + team.name() + "'.");
-            }
+        if (!caller.canRead() && READ_PERMISSION_KEYS.contains(tool)) {
+            return ToolDecision.deny("Participant '" + callerParticipant
+                    + "' lacks 'read' in workflow '" + team.name() + "'.");
         }
         if (DELEGATION_TOOLS.contains(tool) && !caller.canDelegate()) {
             return ToolDecision.deny("Participant '" + callerParticipant
                     + "' lacks the 'delegate' capability in workflow '" + team.name() + "'.");
         }
-        boolean mutating = EDIT_TOOL_PREFIXES.stream().anyMatch(tool::startsWith);
-        if (mutating && !caller.canEdit()) {
+        if (EDIT_PERMISSION_KEYS.contains(tool) && !caller.canEdit()) {
             return ToolDecision.deny("Participant '" + callerParticipant
                     + "' lacks 'edit-assigned-files' in workflow '" + team.name() + "'. "
                     + describeAssignment(caller)
@@ -244,7 +261,7 @@ public final class WorkflowTeamEnforcement {
     /** Outstanding workflow obligations for /workflow status display. */
     public String outstandingObligations() {
         WorkflowTeam.Gates gates = team().gates();
-        List<String> outstanding = new java.util.ArrayList<>();
+        List<String> outstanding = new ArrayList<>();
         if (gates.hasImplementationGate() && !implementationGateSatisfied()) {
             outstanding.add("implementation gate: " + gates.implementationRequires());
         }
@@ -268,12 +285,40 @@ public final class WorkflowTeamEnforcement {
         return sb.toString();
     }
 
+    /**
+     * System-prompt brief for a delegated participant: who it is in the team
+     * and which tools the harness refuses it, so it does not spend turns on
+     * calls its capabilities deny.
+     */
+    public String participantBrief() {
+        WorkflowTeam.Participant caller = team().participant(callerParticipant);
+        StringBuilder sb = new StringBuilder("You are participant '").append(caller.id())
+                .append("' (role: ").append(caller.role()).append(") of workflow team '")
+                .append(team().name()).append("'.");
+        if (caller.isChatOnly()) {
+            return sb.append(" You are chat-only: answer from the task text; every tool is refused.").toString();
+        }
+        sb.append(" Capabilities: ")
+                .append(caller.capabilities().isEmpty() ? "none" : String.join(", ", caller.capabilities()))
+                .append('.');
+        if (!caller.canRead()) {
+            sb.append(" Reading or searching the project is refused.");
+        }
+        if (!caller.canEdit()) {
+            sb.append(" Editing files and state-changing shell commands are refused; report the changes you "
+                    + "propose instead.");
+        }
+        return sb.toString();
+    }
+
     // ── Environment contract ────────────────────────────────────────────────
 
     /** Environment variable carrying the active workflow name into child processes. */
     public static final String ENV_WORKFLOW_NAME = "KOMPILE_WORKFLOW_NAME";
     /** Environment variable carrying the harness-owned participant id into child processes. */
     public static final String ENV_WORKFLOW_PARTICIPANT = "KOMPILE_WORKFLOW_PARTICIPANT";
+    /** Environment variable carrying the chat session whose sidecar records satisfied gates. */
+    public static final String ENV_WORKFLOW_SESSION = "KOMPILE_WORKFLOW_SESSION";
 
     /**
      * Environment values children inherit so a delegated child becomes that
@@ -285,9 +330,12 @@ public final class WorkflowTeamEnforcement {
         if (child == null) {
             throw new IllegalArgumentException("Unknown workflow participant: " + childParticipant);
         }
-        Map<String, String> env = new java.util.LinkedHashMap<>();
+        Map<String, String> env = new LinkedHashMap<>();
         env.put(ENV_WORKFLOW_NAME, team().name());
         env.put(ENV_WORKFLOW_PARTICIPANT, child.id());
+        if (sessionId != null) {
+            env.put(ENV_WORKFLOW_SESSION, sessionId);
+        }
         return env;
     }
 
@@ -325,6 +373,12 @@ public final class WorkflowTeamEnforcement {
     /** Factory with an explicit name for readability at call sites. */
     public static WorkflowTeamEnforcement forCaller(WorkflowTeamSnapshot snapshot, String participant) {
         return new WorkflowTeamEnforcement(snapshot, participant);
+    }
+
+    /** Enforcement for a participant inside a chat session; children inherit the session. */
+    public static WorkflowTeamEnforcement forCaller(WorkflowTeamSnapshot snapshot, String participant,
+                                                   String sessionId) {
+        return new WorkflowTeamEnforcement(snapshot, participant, sessionId);
     }
 
     /** Participants reachable through delegation edges from the caller (diagnostics). */

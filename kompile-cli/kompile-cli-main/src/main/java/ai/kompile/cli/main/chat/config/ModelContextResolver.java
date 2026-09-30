@@ -39,7 +39,7 @@ import java.util.function.Function;
  * <ol>
  *   <li>{@link ModelContextWindows} — dynamic per-model metadata from the CLI agents'
  *       on-disk catalogs first, then the static fallback table. Covers every hosted
- *       provider model (Claude, GPT, Gemini, DeepSeek, Ollama library models…).</li>
+ *       provider model (Claude, GPT, Gemini, DeepSeek…).</li>
  *   <li>For models the catalogs don't know — typically a kompile-staged local GGUF
  *       served on a loopback OpenAI endpoint — probe the serving origin's
  *       {@code /api/llm/status} (the kompile staging/serving convention) and use its
@@ -94,6 +94,21 @@ public class ModelContextResolver {
                 config != null ? config.resolveBaseUrl() : null,
                 config != null ? config.getContextWindowTokens() : 0,
                 config != null ? config.getMaxOutputTokens() : 0);
+    }
+
+    /**
+     * {@link #resolveLimits(ChatConfig, String)} with the limits the provider reported
+     * enforcing for this model. Only explicit overrides outrank a report; without a
+     * report, or for a limit it left at 0, the catalogs decide.
+     */
+    public ModelLimits resolveLimits(ChatConfig config, String modelOverride, ModelLimits reported) {
+        ModelLimits resolved = resolveLimits(config, modelOverride);
+        if (reported == null) return resolved;
+        boolean contextSet = config != null && config.getContextWindowTokens() > 0;
+        boolean outputSet = config != null && config.getMaxOutputTokens() > 0;
+        return new ModelLimits(
+                contextSet || reported.contextWindow() <= 0 ? resolved.contextWindow() : reported.contextWindow(),
+                outputSet || reported.maxOutputTokens() <= 0 ? resolved.maxOutputTokens() : reported.maxOutputTokens());
     }
 
     /** Backward-compatible context-only lookup. */

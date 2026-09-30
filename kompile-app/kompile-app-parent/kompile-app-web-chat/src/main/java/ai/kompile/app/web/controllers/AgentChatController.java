@@ -308,6 +308,41 @@ public class AgentChatController {
     }
 
     /**
+     * Approves a gate of the session's workflow team between runs, as {@code /workflow approve}
+     * does in the terminal; a run in progress takes approvals through its live controls
+     * ({@code workflow_approve}). Body: {@code sessionId}, optional {@code workingDirectory} and
+     * {@code gate} (none approves the gate that blocks next). 200 with the gates approved so far;
+     * 409 with the harness's reason when nothing was approved.
+     */
+    @PostMapping("/workflow/approve")
+    public ResponseEntity<Map<String, Object>> approveWorkflowGate(@RequestBody JsonNode body) {
+        if (harnessClient == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Kompile CLI harness is unavailable");
+        }
+        try {
+            Map<String, Object> result = harnessClient.approveWorkflowGate(
+                    optionalText(body, "sessionId"), optionalText(body, "workingDirectory"),
+                    optionalText(body, "gate"));
+            return ResponseEntity.status(Boolean.TRUE.equals(result.get("ok"))
+                    ? HttpStatus.OK : HttpStatus.CONFLICT).body(result);
+        } catch (IllegalArgumentException invalid) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "message",
+                    invalid.getMessage() == null ? "Invalid gate approval" : invalid.getMessage()));
+        } catch (IllegalStateException unavailable) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, unavailable.getMessage());
+        }
+    }
+
+    private static String optionalText(JsonNode body, String field) {
+        if (body == null || !body.isObject()) throw new IllegalArgumentException("Expected a JSON object");
+        JsonNode value = body.get(field);
+        if (value == null || value.isNull()) return null;
+        if (!value.isTextual()) throw new IllegalArgumentException("Invalid " + field);
+        return value.textValue();
+    }
+
+    /**
      * The context budget for an agent's lane: the model's real context window
      * (staging metadata for local models, model catalogs otherwise), its output
      * reservation, and the resulting input budget. The chat window uses this to

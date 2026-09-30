@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -128,6 +129,52 @@ class AgentChatControllerHarnessTest {
         assertEquals("kompile-cli-main", budget.get("source"));
         assertEquals("kompile-cli-main", compact.get("managedBy"));
         verify(legacyChat, never()).compactHistory(any(), any(), any());
+    }
+
+    @Test
+    void workflowGateApprovalAnswersWithTheHarnessOutcome() throws Exception {
+        var mapper = new ObjectMapper();
+        when(harness.approveWorkflowGate("browser-1", "/project", "review")).thenReturn(Map.of(
+                "ok", true, "message", "Approved gate 'review' for workflow 'ship'.", "approved", List.of("review")));
+        when(harness.approveWorkflowGate("browser-2", null, null)).thenReturn(Map.of(
+                "ok", false, "message", "This session has no workflow team."));
+
+        var approved = controller.approveWorkflowGate(mapper.readTree(
+                "{\"sessionId\":\"browser-1\",\"workingDirectory\":\"/project\",\"gate\":\"review\"}"));
+        var refused = controller.approveWorkflowGate(mapper.readTree("{\"sessionId\":\"browser-2\",\"gate\":null}"));
+
+        assertEquals(HttpStatus.OK, approved.getStatusCode());
+        assertEquals(List.of("review"), approved.getBody().get("approved"));
+        assertEquals(HttpStatus.CONFLICT, refused.getStatusCode());
+        assertEquals("This session has no workflow team.", refused.getBody().get("message"));
+    }
+
+    @Test
+    void workflowGateApprovalRejectsMalformedRequestsAndNeedsTheHarness() throws Exception {
+        var mapper = new ObjectMapper();
+        for (String body : List.of("[]", "{\"sessionId\":7}", "{\"sessionId\":\"browser-1\",\"gate\":{}}")) {
+            var rejected = controller.approveWorkflowGate(mapper.readTree(body));
+            assertEquals(HttpStatus.BAD_REQUEST, rejected.getStatusCode(), body);
+            assertEquals(false, rejected.getBody().get("ok"), body);
+        }
+        verify(harness, never()).approveWorkflowGate(any(), any(), any());
+
+        when(harness.approveWorkflowGate("browser-1", null, "bad"))
+                .thenThrow(new IllegalArgumentException("Invalid gate name"));
+        var invalidGate = controller.approveWorkflowGate(
+                mapper.readTree("{\"sessionId\":\"browser-1\",\"gate\":\"bad\"}"));
+        assertEquals(HttpStatus.BAD_REQUEST, invalidGate.getStatusCode());
+        assertEquals("Invalid gate name", invalidGate.getBody().get("message"));
+
+        when(harness.approveWorkflowGate("browser-1", null, null))
+                .thenThrow(new IllegalStateException("Workflow gate approval unavailable"));
+        var unavailable = assertThrows(ResponseStatusException.class,
+                () -> controller.approveWorkflowGate(mapper.readTree("{\"sessionId\":\"browser-1\"}")));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, unavailable.getStatusCode());
+        var withoutHarness = new AgentChatController(legacyChat, mock(AgentRegistryService.class));
+        var missing = assertThrows(ResponseStatusException.class,
+                () -> withoutHarness.approveWorkflowGate(mapper.readTree("{\"sessionId\":\"browser-1\"}")));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, missing.getStatusCode());
     }
 
     @Test

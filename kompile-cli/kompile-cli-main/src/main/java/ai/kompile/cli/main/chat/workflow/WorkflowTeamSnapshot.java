@@ -16,10 +16,13 @@
 
 package ai.kompile.cli.main.chat.workflow;
 
+import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 
+import java.io.IOException;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -42,7 +45,8 @@ public final class WorkflowTeamSnapshot {
     public WorkflowTeamSnapshot(WorkflowTeam team, Map<String, String> resolvedRoles, String launchedAt) {
         Objects.requireNonNull(team, "team");
         this.team = team;
-        this.resolvedRoles = resolvedRoles == null ? Map.of() : Map.copyOf(resolvedRoles);
+        this.resolvedRoles = resolvedRoles == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(resolvedRoles));
         this.launchedAt = launchedAt == null || launchedAt.isBlank()
                 ? Instant.now().toString() : launchedAt;
     }
@@ -85,19 +89,18 @@ public final class WorkflowTeamSnapshot {
      * still exist with the same version; a changed team aborts the restore so a
      * resume never silently adopts different enforcement than the session started with.
      */
-    public static WorkflowTeamSnapshot deserialize(String encoded,
-                                                   ai.kompile.cli.main.chat.roles.RoleManager roleManager)
-            throws java.io.IOException {
+    public static WorkflowTeamSnapshot deserialize(String encoded, RoleManager roleManager)
+            throws IOException {
         if (encoded == null || encoded.isBlank()) return null;
         String[] segments = encoded.split("\\|");
         if (segments.length < 3) return null;
         WorkflowTeam team = WorkflowTeamStore.get(roleManager.workingDirectory(), segments[0]);
         if (team == null) {
-            throw new java.io.IOException("Workflow '" + segments[0] + "' no longer exists; the session "
+            throw new IOException("Workflow '" + segments[0] + "' no longer exists; the session "
                     + "snapshot cannot be restored. Re-run `kompile chat` to pick a workflow.");
         }
         if (team.version() != Integer.parseInt(segments[1])) {
-            throw new java.io.IOException("Workflow '" + segments[0] + "' changed since this session "
+            throw new IOException("Workflow '" + segments[0] + "' changed since this session "
                     + "started (v" + segments[1] + " → v" + team.version() + "). Re-run `kompile chat`.");
         }
         Map<String, String> roles = new LinkedHashMap<>();
@@ -109,7 +112,7 @@ public final class WorkflowTeamSnapshot {
         WorkflowTeamSnapshot snapshot = new WorkflowTeamSnapshot(team, roles, segments[2]);
         for (Map.Entry<String, String> entry : roles.entrySet()) {
             if (roleManager.getRole(entry.getValue()) == null) {
-                throw new java.io.IOException("Workflow '" + team.name() + "' role '" + entry.getValue()
+                throw new IOException("Workflow '" + team.name() + "' role '" + entry.getValue()
                         + "' no longer exists; cannot restore the session workflow snapshot.");
             }
         }
@@ -118,15 +121,20 @@ public final class WorkflowTeamSnapshot {
 
     /** Team summary for the wizard, launch banner, and /workflow view. */
     public String summarize() {
+        return summarize(null);
+    }
+
+    /**
+     * Team summary for the chat {@code current} configures (null when unknown):
+     * each participant's role, the model it runs on, its capabilities, and whom
+     * it may delegate to, lead first.
+     */
+    public String summarize(ChatConfig current) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Workflow: ").append(team.name()).append(" (v").append(team.version()).append(")\n");
-        WorkflowTeam.Participant lead = team.participant(team.lead());
-        sb.append("\nLead       ").append(lead.id()).append(" — ").append(lead.role()).append('\n');
+        sb.append("Workflow: ").append(team.name()).append(" (v").append(team.version()).append(")\n\n");
+        appendParticipant(sb, team.participant(team.lead()), current);
         for (WorkflowTeam.Participant participant : team.participants().values()) {
-            if (participant.id().equals(team.lead())) continue;
-            sb.append(String.format("%-10s %s — %s, capabilities: %s%n",
-                    participant.id(), participant.role(), participant.executor(),
-                    String.join(", ", participant.capabilities())));
+            if (!participant.id().equals(team.lead())) appendParticipant(sb, participant, current);
         }
         if (!team.routing().isEmpty()) {
             sb.append("\nRouting:\n");
@@ -145,6 +153,17 @@ public final class WorkflowTeamSnapshot {
         }
         sb.append("\nParallel workers: ").append(team.maxConcurrentWorkers()).append('\n');
         return sb.toString();
+    }
+
+    private void appendParticipant(StringBuilder sb, WorkflowTeam.Participant participant, ChatConfig current) {
+        sb.append(participant.id()).append(participant.id().equals(team.lead()) ? " (lead)" : "")
+                .append(" — ").append(participant.role()).append('\n');
+        sb.append("  model: ").append(WorkflowModelDefaults.describe(team, participant, current)).append('\n');
+        sb.append("  capabilities: ").append(String.join(", ", participant.capabilities())).append('\n');
+        if (participant.canDelegate()) {
+            sb.append("  delegates to: ").append(participant.delegatesTo().isEmpty() ? "nobody"
+                    : String.join(", ", participant.delegatesTo())).append('\n');
+        }
     }
 
     @Override

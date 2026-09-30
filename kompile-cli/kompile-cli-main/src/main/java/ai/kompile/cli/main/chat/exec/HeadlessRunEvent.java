@@ -6,6 +6,8 @@
  */
 package ai.kompile.cli.main.chat.exec;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -29,7 +31,7 @@ public record HeadlessRunEvent(
         int exitCode,
         String message,
         Map<String, String> metadata,
-        com.fasterxml.jackson.databind.JsonNode data) {
+        JsonNode data) {
 
     public enum Type {
         RUN_STARTED,
@@ -85,7 +87,7 @@ public record HeadlessRunEvent(
     }
 
     /** Structured payload accessor for command outcomes (e.g. /model menu or state). */
-    public com.fasterxml.jackson.databind.JsonNode data() {
+    public JsonNode data() {
         return data;
     }
 
@@ -135,8 +137,16 @@ public record HeadlessRunEvent(
     public static HeadlessRunEvent toolCompleted(String sessionId, String callId,
                                                  String toolName, String rawInput,
                                                  boolean ok, long durationMs) {
+        return toolCompleted(sessionId, callId, toolName, rawInput, ok, durationMs, null);
+    }
+
+    /** A completed tool with its presentation ({@link ToolCallJson}); {@code detail} may be null. */
+    public static HeadlessRunEvent toolCompleted(String sessionId, String callId,
+                                                 String toolName, String rawInput,
+                                                 boolean ok, long durationMs,
+                                                 JsonNode detail) {
         return new HeadlessRunEvent(0, Type.TOOL_COMPLETED, sessionId, callId, toolName,
-                rawInput, "", ok, durationMs, 0, "", Map.of());
+                rawInput, "", ok, durationMs, 0, "", Map.of(), detail);
     }
 
     public static HeadlessRunEvent tokenUsage(String sessionId, long input, long output,

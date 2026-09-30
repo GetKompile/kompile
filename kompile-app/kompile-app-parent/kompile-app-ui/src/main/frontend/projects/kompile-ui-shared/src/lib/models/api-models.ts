@@ -3157,11 +3157,49 @@ export interface LocalAgentMessage extends CommandMessageMetadata {
 }
 
 /**
- * Tool use event from agent.
+ * Tool use event from agent. Managed/passthrough lanes send {toolName, input} and echo the call
+ * into the text stream; the kompile harness sends a started and a completed event per callId
+ * (no text echo), and its completion carries the CLI's rendered row and detail.
  */
 export interface ToolUseEvent {
   tool: string;
   input: string;
+  callId?: string;
+  toolName?: string;
+  /** Set only by the harness lane; its calls render as tool cards. */
+  status?: 'started' | 'completed';
+  ok?: boolean;
+  durationMs?: number;
+  /** Answer-text length when the call started, so the card sits where it ran. */
+  textOffset?: number;
+  detail?: ToolCallDetail;
+}
+
+/** The CLI's completion row for one tool call (kompile-cli ToolCallJson). */
+export interface ToolCallDetail {
+  displayName: string;
+  action?: string;
+  title?: string;
+  metadata?: string;
+  preview?: string;
+  error?: string;
+  sections?: ToolCallSection[];
+}
+
+/** One bounded detail body under a tool row: diff, content, output or result. */
+export interface ToolCallSection {
+  label: string;
+  diff?: boolean;
+  /** Set when the CLI cut the body at its display bounds. */
+  note?: string;
+  runs: ToolCallRun[];
+}
+
+/** Lines sharing one highlight hint: a fence tag or file name, else a language family. */
+export interface ToolCallRun {
+  text: string;
+  file?: string;
+  family?: 'clike' | 'hash' | 'python' | 'sql' | 'markup';
 }
 
 /**

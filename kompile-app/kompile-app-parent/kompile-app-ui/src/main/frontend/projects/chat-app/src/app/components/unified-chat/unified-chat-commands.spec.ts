@@ -533,7 +533,8 @@ describe('UnifiedChat session configuration modal', () => {
     fixture.detectChanges();
     const input = typeInput('/');
     expect(slashMenu(fixture)).not.toBeNull();
-    expect(slashMenu(fixture)!.querySelectorAll('[role="option"]').length).toBe(component.slashCommands.length);
+    expect(slashMenu(fixture)!.querySelectorAll('[role="option"]').length)
+      .toBe(component.liveSlashCommands.length + component.slashCommands.length);
     expect(input.getAttribute('aria-expanded')).toBe('true');
     expect(component.slashCommands.map(item => item.command))
       .toEqual(['/help', '/model', '/role', '/fast', '/ultracode', '/skills']);
@@ -549,7 +550,7 @@ describe('UnifiedChat session configuration modal', () => {
     const send = spyOn(component, 'sendMessage');
     const input = typeInput('/');
     expect(key(input, 'ArrowUp').defaultPrevented).toBeTrue();
-    expect(component.slashSelectedIndex).toBe(component.slashCommands.length - 1);
+    expect(component.slashSelectedIndex).toBe(component.liveSlashCommands.length + component.slashCommands.length - 1);
     key(input, 'ArrowDown');
     expect(component.slashSelectedIndex).toBe(0);
     key(input, 'ArrowDown');
@@ -598,6 +599,29 @@ describe('UnifiedChat session configuration modal', () => {
     input.dispatchEvent(new FocusEvent('blur'));
     fixture.detectChanges();
     expect(slashMenu(fixture)).toBeNull();
+  });
+
+  it('offers the process commands while a run with live controls streams and between runs', () => {
+    fixture.detectChanges();
+    component.isStreaming = true;
+    TestBed.inject(LocalAgentChatService).liveControlsReady = true;
+    const offered = () =>
+      Array.from(slashMenu(fixture)!.querySelectorAll('[role="option"] strong'), option => option.textContent);
+    const all = [...component.liveSlashCommands, ...component.slashCommands].map(item => item.command);
+    expect(new Set(all).size).toBe(all.length);
+    typeInput('/');
+    expect(offered()).toEqual(all);
+    typeInput('/pro');
+    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill']);
+    // Between runs the CLI answers them from the session's recorded and shared processes.
+    component.isStreaming = false;
+    TestBed.inject(LocalAgentChatService).liveControlsReady = false;
+    typeInput('/');
+    expect(offered()).toEqual(all);
+    typeInput('/pro');
+    expect(offered()).toEqual(['/processes', '/process-output', '/process-status', '/process-kill']);
+    typeInput('/jobs-');
+    expect(offered()).toEqual(['/jobs-remove', '/jobs-clear']);
   });
 
   it('leaves arguments, paths, multiline text, and unknown skills alone', () => {

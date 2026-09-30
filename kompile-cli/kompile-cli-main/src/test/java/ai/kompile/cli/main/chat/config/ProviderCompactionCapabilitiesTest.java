@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 @TemporaryUserHome
 class ProviderCompactionCapabilitiesTest {
@@ -49,6 +50,24 @@ class ProviderCompactionCapabilitiesTest {
                 gemini.resolveRoute(null).protocol());
         assertEquals(ProviderCompactionCapabilities.TokenCounting.GEMINI,
                 gemini.compactionCapabilities(null).tokenCounting());
+    }
+
+    @Test
+    void claudeCodeRouteLeavesTheSessionToClaudeCode() {
+        ChatConfig config = new ChatConfig("anthropic", null, "claude-test", null);
+        config.setAuthenticationMethod("oauth");
+        DirectLlmClient claude = new DirectLlmClient(config, new ObjectMapper());
+        assertEquals(DirectLlmClient.WireProtocol.CLAUDE_CLI, claude.resolveRoute(null).protocol());
+
+        ProviderCompactionCapabilities capabilities = claude.compactionCapabilities(null);
+        assertEquals(ProviderCompactionCapabilities.claudeCodeSession(), capabilities);
+        assertEquals(ProviderCompactionCapabilities.NativeCompaction.CLAUDE_CODE_SESSION,
+                capabilities.nativeCompaction());
+        assertEquals(ProviderCompactionCapabilities.TokenCounting.NONE, capabilities.tokenCounting());
+        assertEquals(ProviderCompactionCapabilities.HistoryOwnership.PROVIDER,
+                capabilities.historyOwnership());
+        assertFalse(claude.tryNativeCompact(null).supported(),
+                "Kompile cannot ask a headless Claude Code session to compact");
     }
 
     private static DirectLlmClient client(String provider, String model) {

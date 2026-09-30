@@ -16,9 +16,13 @@
 
 package ai.kompile.cli.main.chat.roles;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,10 +36,32 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests for RoleConfig, RoleLoader, RoleManager, and BuiltInRoles.
  */
 @DisplayName("Role System")
+@ResourceLock(Resources.SYSTEM_PROPERTIES)
 class RoleSystemTest {
+
+    /**
+     * RoleManager keeps custom roles in {@code <user.home>/.kompile/roles} whatever
+     * project directory it is given, so the class runs against a temporary home
+     * instead of writing test roles into the developer's real one.
+     */
+    @TempDir
+    static Path temporaryHome;
+
+    private static String originalUserHome;
 
     @TempDir
     Path tempDir;
+
+    @BeforeAll
+    static void useTemporaryHome() {
+        originalUserHome = System.getProperty("user.home");
+        System.setProperty("user.home", temporaryHome.toString());
+    }
+
+    @AfterAll
+    static void restoreUserHome() {
+        System.setProperty("user.home", originalUserHome);
+    }
 
     @Test
     @DisplayName("BuiltInRoles should have default roles")

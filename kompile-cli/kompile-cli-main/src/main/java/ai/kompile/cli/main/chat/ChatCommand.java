@@ -43,6 +43,13 @@ import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.main.chat.workflow.WorkflowLaunch;
+import ai.kompile.cli.main.chat.workflow.WorkflowModelDefaults;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamStore;
+import ai.kompile.cli.main.chat.workflow.WorkflowWizard;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -58,6 +65,7 @@ import picocli.CommandLine;
 import java.io.IOError;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -272,6 +280,9 @@ public class ChatCommand implements Callable<Integer> {
             "role assignments are enforced for the session."})
     private String workflow;
 
+    /** The CLI-agent chat's configuration, for the workflow section of its system prompt. */
+    private ChatConfig passthroughConfig;
+
     @CommandLine.Option(names = {"--roles"}, description = "Show role selection menu before starting chat", defaultValue = "false")
     private boolean showRoleMenu;
 
@@ -396,12 +407,16 @@ public class ChatCommand implements Callable<Integer> {
                                 effectiveWorkingDirectory(), 0, outputLastMessage)
                                 .withWebInput(webInput)).exitCode();
                     }
-                    var resolution = WebCommandResolver.resolve(webInput, effectiveWorkingDirectory());
+                    // A process command between runs is permitted as this run would permit it.
+                    var resolution = WebCommandResolver.resolve(webInput, effectiveWorkingDirectory(),
+                            new WebCommandResolver.RunPermissions(blankToNull(agentName), blankToNull(role),
+                                    dangerouslySkipPermissions));
                     if (resolution.isCommandOutcome()) {
                         if (sessionId == null || sessionId.isBlank()) sessionId = newTranscriptUuid();
                         // Commands do not require model config, attachments, transcripts,
                         // or a mutable runtime; the runner owns the ordered event lifecycle.
-                        return new HeadlessAgentRunner(liveControls).run(new HeadlessAgentRunner.Options(
+                        // It reports this resolution: resolving again would apply a command twice.
+                        return new HeadlessAgentRunner(liveControls, resolution).run(new HeadlessAgentRunner.Options(
                                 "", sessionId, false, null, null, headlessMode,
                                 effectiveWorkingDirectory(), 0, outputLastMessage)
                                 .withWebInput(webInput)).exitCode();
@@ -427,7 +442,7 @@ public class ChatCommand implements Callable<Integer> {
             SetupWizard.SetupResult result = runSetupWizard();
             if (result == null) return 1;
             return result.destination() == SetupWizard.Destination.BROWSER
-                    ? runWebHandoff(result.config()) : 0;
+                    ? runWebHandoff(result.config(), result.workflow()) : 0;
         }
 
         // Handle --list: just print conversations and exit
@@ -514,14 +529,13 @@ public class ChatCommand implements Callable<Integer> {
         if (multiSession && config == null) {
             return printError("--multi-session requires a configured direct provider. Run `kompile chat --setup` separately first.", 2);
         }
-        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot wizardWorkflow = null;
+        WorkflowTeamSnapshot wizardWorkflow = null;
         boolean wizardRan = false;
         if (!multiSession && !headless && shouldRunSetupWizard(config, hasExplicitAction)) {
             SetupWizard.SetupResult result = runSetupWizard();
             config = result == null ? null : result.config();
             if (result != null && result.destination() == SetupWizard.Destination.BROWSER) {
-                if (result.workflow() != null) exportWorkflowEnvironment(result.workflow());
-                return runWebHandoff(config);
+                return runWebHandoff(config, result.workflow());
             }
             configSelectedInThisRun = true;
             if (config == null) {
@@ -558,18 +572,17 @@ public class ChatCommand implements Callable<Integer> {
 
         // ── Workflow team resolution: a resume restores the recorded team; otherwise ──
         // ── the wizard's choice wins, then the explicit flag, then one prompt.       ──
-        ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot workflowSnapshot = null;
+        WorkflowTeamSnapshot workflowSnapshot = null;
         boolean resumedWorkflow = false;
         if (isResume) {
             try {
-                workflowSnapshot = ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                        .restore(sessionId, effectiveWorkingDirectory());
+                workflowSnapshot = WorkflowSessionContext.restore(sessionId, effectiveWorkingDirectory());
                 resumedWorkflow = workflowSnapshot != null;
                 if (resumedWorkflow) {
-                    System.out.println("Workflow team restored for this session: "
-                            + workflowSnapshot.workflowName());
+                    printWorkflowNotice(headless, headlessMode,
+                            "Workflow team restored for this session: " + workflowSnapshot.workflowName());
                 }
-            } catch (IOException | java.io.UncheckedIOException e) {
+            } catch (IOException | UncheckedIOException e) {
                 return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
             }
         }
@@ -584,22 +597,11 @@ public class ChatCommand implements Callable<Integer> {
                 workflowSnapshot = wizardWorkflow;
             } else {
                 try {
-                    workflowSnapshot = resolveWorkflow(headless);
+                    workflowSnapshot = resolveWorkflow(headless, config);
                 } catch (IllegalArgumentException e) {
                     return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
                 }
             }
-        }
-        if (workflowSnapshot != null) {
-            exportWorkflowEnvironment(workflowSnapshot);
-            if (!isResume) {
-                System.out.println(workflowSnapshot.summarize());
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.persist(
-                        sessionId, workflowSnapshot);
-            }
-        } else if (isResume) {
-            // Resuming a session that never had a workflow: nothing to restore or prompt.
-            ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.clear(sessionId);
         }
 
         try {
@@ -614,6 +616,30 @@ public class ChatCommand implements Callable<Integer> {
             String message = "Incomplete Standard Chat configuration for provider '"
                     + config.getProvider() + "'. Run `kompile chat --setup` or provide a compatible model and credential.";
             return headless ? headlessError(message, 2) : printError(message, 2);
+        }
+
+        // The team starts only once this chat is known to lead it, on the lead's model.
+        if (workflowSnapshot != null && multiSession) {
+            // One team context per process: parallel sessions would share its gates.
+            return printError("Workflow '" + workflowSnapshot.workflowName() + "' has one lead; "
+                    + "--multi-session cannot run it. Start the chat without --multi-session.", 2);
+        }
+        if (workflowSnapshot != null) {
+            try {
+                config = workflowLeadConfig(config, workflowSnapshot.team());
+            } catch (IllegalArgumentException e) {
+                return headless ? headlessError(e.getMessage(), 2) : printError(e.getMessage(), 2);
+            }
+            if (resumedWorkflow) {
+                // The gates the session already approved still apply.
+                WorkflowSessionContext.resume(sessionId, workflowSnapshot);
+            } else {
+                printWorkflowNotice(headless, headlessMode, workflowSnapshot.summarize(config));
+                WorkflowSessionContext.start(sessionId, workflowSnapshot);
+            }
+        } else if (isResume) {
+            // Resuming a session that never had a workflow: nothing to restore or prompt.
+            WorkflowSessionContext.clear(sessionId);
         }
 
         if (multiSession) {
@@ -654,7 +680,7 @@ public class ChatCommand implements Callable<Integer> {
     String webOptionError() {
         if (!promptParts.isEmpty()) return "--web does not accept a prompt; send it in the browser.";
         if (commandSpec != null && commandSpec.commandLine().getParseResult() != null) {
-            var allowed = java.util.Set.of("--web", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout");
+            var allowed = java.util.Set.of("--web", "--open-browser", "--setup", "--global-config", "--working-dir", "--startup-timeout", "--workflow");
             for (var option : commandSpec.commandLine().getParseResult().matchedOptions()) {
                 if (!allowed.contains(option.longestName())) {
                     return "--web cannot be combined with " + option.longestName()
@@ -673,14 +699,17 @@ public class ChatCommand implements Callable<Integer> {
         return config.isValid() ? null : "Incomplete chat configuration; run kompile chat --setup --web.";
     }
 
-    ChatConfig selectWebConfig(Path directory) {
+    /** The saved config, or the web wizard's result with the team picked there; null when setup was cancelled. */
+    SetupWizard.SetupResult selectWebConfig(Path directory) {
         ChatConfig.Scope scope = globalConfig ? ChatConfig.Scope.GLOBAL : ChatConfig.Scope.PROJECT;
         ChatConfig saved = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv(directory);
-        return runSetup || saved == null ? SetupWizard.runForWeb(scope, directory) : saved;
+        return runSetup || saved == null ? SetupWizard.runForWeb(scope, directory)
+                : new SetupWizard.SetupResult(saved, SetupWizard.Destination.BROWSER);
     }
 
-    ChatInstanceBootstrap.StartupResult startWeb(Path directory) throws Exception {
-        return ChatInstanceBootstrap.startWeb(directory, globalConfig, startupTimeoutSeconds);
+    /** {@code workflowName} is the team new web sessions start with, or {@code null}. */
+    ChatInstanceBootstrap.StartupResult startWeb(Path directory, String workflowName) throws Exception {
+        return ChatInstanceBootstrap.startWeb(directory, globalConfig, workflowName, startupTimeoutSeconds);
     }
 
     void openWebBrowser(String address) {
@@ -699,23 +728,49 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     private int runWebHandoff() {
-        return runWebHandoff(null);
+        return runWebHandoff(null, null);
     }
 
-    private int runWebHandoff(ChatConfig wizardConfig) {
+    /**
+     * Starts the web chat. {@code wizardConfig} and {@code wizardWorkflow} come from a setup
+     * wizard that already ran; as in the terminal, an explicit {@code --workflow} wins over its team.
+     */
+    private int runWebHandoff(ChatConfig wizardConfig, WorkflowTeamSnapshot wizardWorkflow) {
         String error = webOptionError();
         if (error != null) return printError(error, 2);
         try {
             Path directory = effectiveWorkingDirectory().toRealPath();
             if (!Files.isDirectory(directory)) return printError("Not a working directory: " + directory, 2);
-            ChatConfig config = wizardConfig != null ? wizardConfig : selectWebConfig(directory);
+            SetupWizard.SetupResult selected = wizardConfig != null
+                    ? new SetupWizard.SetupResult(wizardConfig, SetupWizard.Destination.BROWSER, wizardWorkflow)
+                    : selectWebConfig(directory);
+            ChatConfig config = selected == null ? null : selected.config();
             error = webConfigError(config);
             if (error != null) return printError(error, 1);
-            ChatInstanceBootstrap.StartupResult result = startWeb(directory);
+            // Each new web session's harness starts the team by name on its first turn and
+            // records it; later turns resume and restore it. Check now that this config can
+            // lead it, so a bad team fails here rather than on every browser turn.
+            WorkflowTeamSnapshot team;
+            try {
+                team = workflow == null ? selected.workflow() : resolveWorkflow(false, config);
+                if (team != null) workflowLeadConfig(config, team.team());
+            } catch (IllegalArgumentException e) {
+                return printError(e.getMessage(), 2);
+            }
+            String teamName = team == null ? null : team.workflowName();
+            if (teamName != null && WorkflowTeam.key(teamName).equals("create")) {
+                return printError("The browser starts a team through --workflow, where 'create' opens the"
+                        + " creation wizard; rename the team or continue in the terminal.", 2);
+            }
+            ChatInstanceBootstrap.StartupResult result = startWeb(directory, teamName);
             System.out.println("Web chat: " + result.chatUrl());
             System.out.println("Working directory: " + directory + "; config scope: "
                     + (globalConfig ? "global" : "project")
                     + ". New sessions bind current CLI config on their first turn; resumed sessions retain their pins.");
+            if (teamName != null) {
+                System.out.println("Workflow team: " + teamName
+                        + ". New web sessions start with it; resumed sessions keep the team they recorded.");
+            }
             if (openBrowser) openWebBrowser(result.chatUrl());
             return 0;
         } catch (Exception e) {
@@ -731,6 +786,9 @@ public class ChatCommand implements Callable<Integer> {
         if (blankToNull(url) != null || port != null || internalManagedResume
                 || (blankToNull(mode) != null && !"standard".equalsIgnoreCase(mode))) {
             return "--multi-session supports only direct standard chat; server and passthrough options are unsupported.";
+        }
+        if (blankToNull(workflow) != null) {
+            return "--multi-session runs several chats at once, but a workflow team has one lead. Drop --workflow or --multi-session.";
         }
         if (workingDirectory != null && !effectiveWorkingDirectory().equals(
                 Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize())) {
@@ -1022,6 +1080,17 @@ public class ChatCommand implements Callable<Integer> {
         return exitCode;
     }
 
+    /**
+     * Prints workflow-team chrome. The terminal shows it inline; a headless run keeps
+     * stdout for the answer (or its JSONL stream), so the team goes to stderr there, and
+     * nowhere under --quiet; the session event names the team for stream consumers.
+     * Package-private for tests.
+     */
+    static void printWorkflowNotice(boolean headless, HeadlessAgentRunner.OutputMode mode, String text) {
+        if (!headless) System.out.println(text);
+        else if (mode != HeadlessAgentRunner.OutputMode.QUIET) System.err.println(text);
+    }
+
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
     }
@@ -1169,7 +1238,7 @@ public class ChatCommand implements Callable<Integer> {
                     return 1;
                 }
                 System.out.println("Starting standard chat as the workflow lead (multi-model "
-                        + "delegation enforced via task/multi_task).");
+                        + "delegation enforced via the task tool).");
                 return runLocalLlmMode(config, isResume, resolvedRole);
             }
             return 0;
@@ -1182,6 +1251,7 @@ public class ChatCommand implements Callable<Integer> {
                 return 1;
             }
             applyPassthroughProfileSettings(config, agent);
+            passthroughConfig = config;
             System.out.println("Starting passthrough mode with agent: " + agent);
 
             // A managed passthrough uses its configured project judge policy without a
@@ -1398,7 +1468,7 @@ public class ChatCommand implements Callable<Integer> {
             System.err.println("Could not start Kompile local serving: "
                     + e.getMessage());
             System.err.println("Reconfigure with 'kompile chat --setup' to use "
-                    + "an external Ollama/OpenAI-compatible endpoint, a cloud provider, "
+                    + "an external OpenAI-compatible endpoint, a cloud provider, "
                     + "or a Kompile instance.");
             return 1;
         }
@@ -1414,6 +1484,8 @@ public class ChatCommand implements Callable<Integer> {
             sessionId = runStandardSessionLoop(sessionId, isResume,
                     (currentTranscriptUuid, resumeCurrentTranscript) -> {
                         sessionId = currentTranscriptUuid;
+                        // /clear starts a transcript; the team follows it, its approvals do not.
+                        WorkflowSessionContext.switchTranscript(sessionId);
                         activateTranscriptLog(sessionId, resumeCurrentTranscript);
                         if (resumeCurrentTranscript) {
                             System.out.println("Resuming conversation: " + sessionId);
@@ -1467,6 +1539,7 @@ public class ChatCommand implements Callable<Integer> {
             resumeCurrentTranscript = false;
             resumeSessionId = null;
             sessionId = newTranscriptUuid();
+            WorkflowSessionContext.switchTranscript(sessionId);
             try {
                 activateTranscriptLog(sessionId, false);
             } catch (IOException e) {
@@ -1504,7 +1577,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.mcpPort = 0;
             passthrough.model = model;
             passthrough.thinking = thinking;
-            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+            passthrough.systemPromptManager = passthroughSystemPrompt();
             int result = passthrough.call();
             return passthrough.isNewConversationRequested()
                     ? RESTART_MANAGED_CHAT : result;
@@ -1554,7 +1627,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.model = model;
             passthrough.thinking = thinking;
             // Inject system prompt so Codex/OpenCode get AGENTS.md
-            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+            passthrough.systemPromptManager = passthroughSystemPrompt();
             return passthrough.call();
         } catch (Exception e) {
             System.err.println("Error running passthrough mode: " + e.getMessage());
@@ -1671,7 +1744,7 @@ public class ChatCommand implements Callable<Integer> {
         String enfSessionId = runtimePolicy.toEnvironment()
                 .getOrDefault("KOMPILE_ENFORCER_SESSION_ID", "?");
         System.out.println();
-        System.out.println("\033[1m\033[36m  🛡 Enforced session active\033[0m");
+        System.out.println("\033[1m\033[36m  ▸ Enforced session active\033[0m");
         System.out.println("     mode:       " + (useKeywordMode ? "keyword" : "LLM judge"));
         System.out.println("     backend:    " + evaluator.describe());
         System.out.println("     rules:      " + ruleCount);
@@ -1697,7 +1770,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.mcpPort = 0;
             passthrough.model = model;
             passthrough.thinking = thinking;
-            passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
+            passthrough.systemPromptManager = passthroughSystemPrompt();
             passthrough.setReminderManager(reminderManager);
             passthrough.enforcerEvaluator = evaluator;
             passthrough.enforcerPolicy = policy;
@@ -1807,15 +1880,21 @@ public class ChatCommand implements Callable<Integer> {
 
     // ── Workflow team support ───────────────────────────────────────────────
 
+    /** {@link #resolveWorkflow(boolean, ChatConfig)} for a chat whose configuration is unknown. */
+    WorkflowTeamSnapshot resolveWorkflow(boolean headless) {
+        return resolveWorkflow(headless, null);
+    }
+
     /**
      * Resolves the workflow snapshot for this launch from the {@code --workflow}
      * flag only. The interactive opt-in question lives in the setup wizard and
      * the workflow-mode picker — never as a silent fallback here, which is what
      * made the question appear on resumes and explicit-action launches.
      * An explicit {@code --workflow} that cannot be resolved aborts the launch
-     * rather than starting unenforced.
+     * rather than starting unenforced. {@code config} is the chat that leads the
+     * team; {@code --workflow create} defaults participant models from it.
      */
-    ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot resolveWorkflow(boolean headless) {
+    WorkflowTeamSnapshot resolveWorkflow(boolean headless, ChatConfig config) {
         String requested = workflow == null ? null : workflow.trim();
 
         // `--workflow create` runs the creation wizard, then (if saved) activates it.
@@ -1823,28 +1902,22 @@ public class ChatCommand implements Callable<Integer> {
             if (headless) {
                 throw new IllegalArgumentException("--workflow create is interactive; run `kompile chat` without --headless.");
             }
-            ai.kompile.cli.main.chat.workflow.WorkflowTeam created =
-                    ai.kompile.cli.main.chat.workflow.WorkflowWizard.create(effectiveWorkingDirectory());
+            WorkflowTeam created = WorkflowWizard.create(effectiveWorkingDirectory(), config);
             if (created == null) {
                 throw new IllegalArgumentException("Workflow creation cancelled.");
             }
-            return ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot.resolve(created,
-                    new RoleManager(effectiveWorkingDirectory()));
+            return WorkflowTeamSnapshot.resolve(created, new RoleManager(effectiveWorkingDirectory()));
         }
 
         if (requested != null && !requested.isBlank()) {
             try {
-                ai.kompile.cli.main.chat.workflow.WorkflowTeam team =
-                        ai.kompile.cli.main.chat.workflow.WorkflowTeamStore.get(
-                                effectiveWorkingDirectory(), requested);
+                WorkflowTeam team = WorkflowTeamStore.get(effectiveWorkingDirectory(), requested);
                 if (team == null) {
                     throw new IllegalArgumentException("No workflow named '" + requested
-                            + "' in " + ai.kompile.cli.main.chat.workflow.WorkflowTeamStore
-                            .path(effectiveWorkingDirectory())
+                            + "' in " + WorkflowTeamStore.path(effectiveWorkingDirectory())
                             + ". Create one with `kompile chat --workflow create`.");
                 }
-                return ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot.resolve(team,
-                        new RoleManager(effectiveWorkingDirectory()));
+                return WorkflowTeamSnapshot.resolve(team, new RoleManager(effectiveWorkingDirectory()));
             } catch (IllegalArgumentException e) {
                 throw e;
             } catch (Exception e) {
@@ -1857,10 +1930,49 @@ public class ChatCommand implements Callable<Integer> {
         return null;
     }
 
-    /** Installs the workflow identity in this process's harness state (see WorkflowSessionContext). */
-    static void exportWorkflowEnvironment(ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot snapshot) {
-        if (snapshot == null) return;
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.activate(snapshot);
+    /**
+     * The configuration this chat runs as {@code team}'s lead: the lead
+     * participant's bound model applied to a copy, which is never saved. A
+     * CLI-agent chat leads as its own agent, unchanged.
+     *
+     * @throws IllegalArgumentException when this chat cannot lead the team, or
+     *         the lead's model cannot run here
+     */
+    ChatConfig workflowLeadConfig(ChatConfig config, WorkflowTeam team) {
+        if (resolveExplicitUrl() != null || config.isKompileServer()) {
+            throw new IllegalArgumentException("Workflow '" + team.name() + "' needs its lead in this terminal;"
+                    + " a Kompile instance runs its own tools, so the team would not be enforced."
+                    + " Choose a model or a managed CLI agent with `kompile chat --setup`.");
+        }
+        boolean passthrough = "passthrough".equals(config.getChatMode());
+        if (!SetupWizard.canLeadWorkflow(config) && !(passthrough && internalManagedResume)) {
+            throw new IllegalArgumentException(passthrough
+                    ? "Workflow '" + team.name() + "' needs a Kompile-managed lead; a direct CLI agent has no"
+                            + " Kompile REPL to approve the team's gates in. Choose the managed style with"
+                            + " `kompile chat --setup`."
+                    : "Workflow '" + team.name() + "' cannot be led by this chat configuration."
+                            + " Run `kompile chat --setup`.");
+        }
+        WorkflowTeam.ModelBinding lead = WorkflowModelDefaults.leadModel(team, config);
+        if (lead == null) return config;
+        ChatConfig applied = WorkflowLaunch.configFor(config, lead);
+        if (!applied.isValid()) {
+            throw new IllegalArgumentException("Workflow '" + team.name() + "' runs its lead '" + team.lead()
+                    + "' on " + lead.label() + ", which has no usable credential here. Configure that provider"
+                    + " with `kompile chat --setup`, or change the lead's model when you pick the workflow.");
+        }
+        return applied;
+    }
+
+    /**
+     * The system prompt a CLI-agent chat launches with: the configured prompt
+     * plus, under a workflow team, the team section. The agent has no other
+     * channel to learn its team, the purposes it delegates by, or its gates.
+     */
+    private SystemPromptManager passthroughSystemPrompt() {
+        WorkflowSessionContext workflowTeam = WorkflowSessionContext.current();
+        return SystemPromptManager.withSection(SystemPromptManager.resolve(null, null, null),
+                workflowTeam == null ? null : workflowTeam.systemPromptSection(passthroughConfig));
     }
 
 

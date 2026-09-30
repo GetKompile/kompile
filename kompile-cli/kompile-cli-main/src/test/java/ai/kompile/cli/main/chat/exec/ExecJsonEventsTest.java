@@ -6,6 +6,7 @@ import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -172,6 +173,23 @@ class ExecJsonEventsTest {
         assertEquals("result", result.get("type").asText());
         assertEquals("done", result.get("text").asText());
         assertEquals(1, result.get("tools").asInt());
+    }
+
+    @Test
+    void toolCompletionCarriesItsDetailOnlyWhenThereIsOne() throws Exception {
+        ObjectNode detail = mapper.createObjectNode().put("displayName", "Bash");
+        detail.putArray("sections").addObject().put("label", "content")
+                .putArray("runs").addObject().put("text", "ok");
+
+        JsonNode withDetail = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.toolCompleted("s", "call-2", "bash", "{\"command\":\"true\"}",
+                        true, 3, detail).withSequence(1)));
+        JsonNode without = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.toolCompleted("s", "call-3", "bash", "", true, 3).withSequence(2)));
+
+        assertEquals("call-2", withDetail.path("call_id").asText());
+        assertEquals(detail, withDetail.path("detail"));
+        assertFalse(without.has("detail"), without.toString());
     }
 
     @Test

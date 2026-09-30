@@ -132,6 +132,21 @@ public class SystemPromptManager {
     }
 
     /**
+     * {@code base} with {@code section} appended to its central prompt: how
+     * harness-owned context (an active workflow team) reaches the CLI agent
+     * alongside the user's configured prompt. Returns {@code base} unchanged
+     * when the section is blank.
+     */
+    public static SystemPromptManager withSection(SystemPromptManager base, String section) {
+        if (section == null || section.isBlank()) return base;
+        if (base == null) return new SystemPromptManager(section.strip(), Map.of());
+        String central = base.centralPrompt == null || base.centralPrompt.isEmpty()
+                ? section.strip()
+                : base.centralPrompt + "\n\n" + section.strip();
+        return new SystemPromptManager(central, base.perAgentPrompts);
+    }
+
+    /**
      * Get the effective system prompt for a given agent.
      * Combines the central prompt with any per-agent override.
      */

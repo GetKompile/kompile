@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.config;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.main.chat.ReminderManager;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.core.llm.ModelContextWindows;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,10 +45,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Direct LLM client that calls provider APIs without requiring a kompile-app server.
@@ -79,6 +82,20 @@ public class DirectLlmClient implements AutoCloseable {
         default void onTokenUsage(long input, long output,
                                   long cacheRead, long cacheCreation) { }
         default void onNotice(String text) { }
+        /**
+         * The provider compacted a session it owns. {@code trigger} is its reason
+         * ({@code auto}, {@code manual}), empty when not reported;
+         * {@code tokensBefore} is 0 when not reported.
+         */
+        default void onCompacted(String trigger, long tokensBefore) { }
+        /** The provider failed to compact a session it owns; {@code detail} may be empty. */
+        default void onCompactionFailed(String detail) { }
+        /**
+         * The provider made {@code steps} more model requests in the agent loop it runs
+         * for the turn (Claude Code, OpenCode); calls add up. Routes whose tool loop
+         * Kompile runs make one request per call and report none.
+         */
+        default void onSteps(int steps) { }
     }
 
     /** Provider-neutral terminal failure categories used by the chat coordinator. */
@@ -116,10 +133,21 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
     private volatile ClaudeCliClient claudeServeClient;
+    // How the Claude Code route runs this client's sessions: a chat's with its tools, a
+    // utility lane's (a judge's) without.
+    private volatile ClaudeCliClient.Mode claudeMode = ClaudeCliClient.Mode.CHAT;
+    // The Claude Code binary this client and its one-shot requests start; null = the registry's.
+    private volatile String claudeBinaryOverride;
+    // Where the Claude Code route shows its tasks, and who hears of the turns it starts itself.
+    private volatile BackgroundProcessManager claudeTaskProcesses;
+    private volatile Consumer<String> claudeFollowUpListener;
     private volatile boolean claudeNeedsSeed = true;
+    private volatile boolean claudeCompactionFailed;
     private volatile int nativeCompactionTriggerTokens;
     private volatile int wireMaxOutputTokens;
     private volatile int contextWindowTokens;
+    // The limits Claude Code last reported enforcing, with the model its turn ran.
+    private volatile ClaudeModelLimits claudeModelLimits;
     private volatile String promptCacheSessionId;
     private volatile JsonOutputSpec requestedJsonOutput;
     private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
@@ -128,6 +156,7 @@ public class DirectLlmClient implements AutoCloseable {
     private volatile boolean openCodeNeedsSeed = true;
 
     private record JsonOutputSpec(String name, JsonNode schema, boolean strict) { }
+    private record ClaudeModelLimits(String model, ModelContextResolver.ModelLimits limits) { }
 
     // The native Codex structured-output contract rejects these validation-only keywords.
     // Keep the full schema (including defaults and object-valued enum/const payloads) for local
@@ -242,6 +271,95 @@ public class DirectLlmClient implements AutoCloseable {
         return providerActivityListener;
     }
 
+    /**
+     * Show the Claude Code route's tasks as rows of this process manager, where
+     * killing a row stops its task. Null stops showing them.
+     */
+    public void setClaudeTaskProcesses(BackgroundProcessManager processes) {
+        ClaudeCliClient client;
+        synchronized (this) {
+            claudeTaskProcesses = processes;
+            client = claudeServeClient;
+        }
+        if (client != null) client.setTaskProcesses(processes);
+    }
+
+    /**
+     * Told the chat message to send for each turn the Claude Code route starts by
+     * itself, such as its reply once a background task finished. Sending that
+     * message shows the turn.
+     */
+    public void setClaudeFollowUpListener(Consumer<String> listener) {
+        ClaudeCliClient client;
+        synchronized (this) {
+            claudeFollowUpListener = listener;
+            client = claudeServeClient;
+        }
+        if (client != null) client.setFollowUpListener(followUpMarkers(listener));
+    }
+
+    /**
+     * Push the chat's current model, effort and fast mode onto the live Claude
+     * Code route's process, if one is already running, so a turn it starts by
+     * itself (such as its reply once a background task finished) already runs
+     * at the newly chosen settings instead of whatever was active when its
+     * session began. Safe to call from a UI thread: {@link ClaudeCliClient}
+     * itself runs the wait for a turn already in progress, and the apply that
+     * follows it, on its own worker thread -- this call only records the
+     * request and returns.
+     */
+    public void syncClaudeIdleSettings(String model, String effort, boolean fastMode) {
+        ClaudeCliClient client;
+        synchronized (this) {
+            client = claudeServeClient;
+        }
+        if (client != null) {
+            client.applyIdleSettings(model, effort, fastMode);
+        }
+    }
+
+    private static Consumer<String> followUpMarkers(Consumer<String> listener) {
+        return listener == null ? null : id -> listener.accept(ClaudeCliClient.followUpMarker(id));
+    }
+
+    /**
+     * Run this client's Claude Code sessions as a utility lane such as a judge does:
+     * without tools, MCP servers or skills. {@code oneShot}: each session serves one
+     * request and is not saved. {@code preferredEffort}: the effort a turn that names none
+     * asks for, where Claude Code lists it for the turn's model; blank keeps Claude Code's
+     * default. Set before the first turn. One-shot requests ({@link #streamOneShot}) always
+     * run without tools, at this client's preferred effort.
+     */
+    public void runToolFree(boolean oneShot, String preferredEffort) {
+        claudeMode = new ClaudeCliClient.Mode(true, oneShot, preferredEffort);
+    }
+
+    /**
+     * The effort a request that names none asks for on this client's route: the preferred
+     * effort of {@link #runToolFree} on the Claude Code route; empty for the route's default.
+     */
+    public String preferredToolFreeEffort() {
+        return resolveRoute(null).protocol() == WireProtocol.CLAUDE_CLI ? claudeMode.preferredEffort() : "";
+    }
+
+    /** Testing seam: the Claude Code binary this client and its one-shot requests start. */
+    void setClaudeBinaryOverride(String binary) {
+        claudeBinaryOverride = binary;
+    }
+
+    /**
+     * Whether a request starts a provider CLI process before the provider sees it (Claude
+     * Code, OpenCode): every one-shot request does, and so does a session's first turn.
+     */
+    public boolean startsProviderProcess() {
+        return resolveRoute(null).protocol().startsProviderProcess();
+    }
+
+    /** The Claude Code session of a one-shot request: no tools, not saved, this client's effort. */
+    private ClaudeCliClient.Mode oneShotClaudeMode() {
+        return new ClaudeCliClient.Mode(true, true, claudeMode.preferredEffort());
+    }
+
     /** Project scope inherited by isolated clients such as judges. */
     public Path getWorkingDirectory() {
         return workingDirectory;
@@ -336,6 +454,12 @@ public class DirectLlmClient implements AutoCloseable {
 
             String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
                     ? modelOverride : config.getModel();
+            String followUp = claudeFollowUpId(userMessage);
+            if (followUp != null) {
+                // Claude Code already ran this turn by itself, so it is shown and
+                // never sent, even after the chat switched to another provider.
+                return showClaudeFollowUp(followUp, userMessage, effectiveModel);
+            }
             ResolvedRoute route = resolveRoute(effectiveModel);
             if (!requestAttachments.isEmpty() && !supportsAttachments(route.protocol())) {
                 return attachmentFailure("Provider protocol " + route.protocol()
@@ -393,7 +517,11 @@ public class DirectLlmClient implements AutoCloseable {
                 if (route.protocol() == WireProtocol.OPENCODE) {
                     resetOpenCodeClient();
                 }
-                if (route.protocol() == WireProtocol.CLAUDE_CLI) {
+                // A running Claude Code process keeps its session and the tasks it
+                // started, so only a process that has exited is replaced.
+                ClaudeCliClient claude = claudeServeClient;
+                if (route.protocol() == WireProtocol.CLAUDE_CLI
+                        && (claude == null || !claude.processAlive())) {
                     resetClaudeClient();
                 }
                 connectivityAttempt++;
@@ -458,9 +586,10 @@ public class DirectLlmClient implements AutoCloseable {
         if (config.isClaudeCliNative()) {
             // Anthropic vendor on the native/subscription route: turns run through
             // the claude CLI's headless stream-json transport; the CLI owns the
-            // subscription (OAuth) credentials Kompile never sees.
+            // subscription (OAuth) credentials Kompile never sees. Claude Code
+            // also owns that session's context and compacts it itself.
             return new ResolvedRoute(WireProtocol.CLAUDE_CLI, false,
-                    ProviderCompactionCapabilities.generic());
+                    ProviderCompactionCapabilities.claudeCodeSession());
         }
         if (config.isAnthropicFormat()) {
             return new ResolvedRoute(WireProtocol.ANTHROPIC_MESSAGES, false,
@@ -551,7 +680,10 @@ public class DirectLlmClient implements AutoCloseable {
                                 null, result.diagnostic());
                     }
                     case OPENAI_RESPONSES -> compactResponses(effectiveModel, route.codexBackend());
-                    case ANTHROPIC_MESSAGES, NONE -> NativeCompactionResult.unsupported();
+                    // Claude Code has no compaction request Kompile can make on a
+                    // headless session; it compacts on its own and reports it.
+                    case ANTHROPIC_MESSAGES, CLAUDE_CODE_SESSION, NONE ->
+                            NativeCompactionResult.unsupported();
                 };
             } catch (Exception e) {
                 return new NativeCompactionResult(
@@ -791,13 +923,24 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     public enum WireProtocol {
-        KOMPILE_LOCAL,
-        OPENCODE,
-        CLAUDE_CLI,
-        OPENAI_RESPONSES,
-        PI_MESSAGES,
-        ANTHROPIC_MESSAGES,
-        OPENAI_CHAT
+        KOMPILE_LOCAL(false),
+        OPENCODE(true),
+        CLAUDE_CLI(true),
+        OPENAI_RESPONSES(false),
+        PI_MESSAGES(false),
+        ANTHROPIC_MESSAGES(false),
+        OPENAI_CHAT(false);
+
+        private final boolean providerProcess;
+
+        WireProtocol(boolean providerProcess) {
+            this.providerProcess = providerProcess;
+        }
+
+        /** Turns run in a provider CLI process Kompile starts, which runs its own agent loop. */
+        public boolean startsProviderProcess() {
+            return providerProcess;
+        }
     }
 
     public record ResolvedRoute(
@@ -901,6 +1044,12 @@ public class DirectLlmClient implements AutoCloseable {
                                         input, output, cacheRead, cacheCreation);
                             }
                         }
+
+                        @Override
+                        public void onSteps(int steps) {
+                            ProviderActivityListener listener = providerActivityListener;
+                            if (listener != null) listener.onSteps(steps);
+                        }
                     });
             result.text = text;
             if (streamed.length() == 0) {
@@ -944,16 +1093,21 @@ public class DirectLlmClient implements AutoCloseable {
      * this were a stateless HTTP request. Failures before the turn begins
      * (binary missing, spawn failure, credential rejection) surface as
      * {@link ClaudeCliClient.TurnNotStartedException} instead: the provider never
-     * answered, so the connectivity retry loop may replay it against the fresh
-     * transport installed by {@link #resetClaudeClient()}.
+     * answered, so the connectivity retry loop may replay it: to the same Claude
+     * Code process while it runs, otherwise to the fresh transport installed by
+     * {@link #resetClaudeClient()}.
      */
     private StreamResult streamClaudeCli(String userMessage, String systemPrompt,
                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                          String effectiveModel) {
         StreamResult result = new StreamResult();
+        // A turn's usage adds up all of its requests; only the last one's input
+        // describes the session, and it stays 0 when Claude Code reports none.
+        result.lastRequestInputTokens = 0;
         StringBuilder streamed = new StringBuilder();
+        ClaudeCliClient client = null;
         try {
-            ClaudeCliClient client = claudeClient();
+            client = claudeClient();
             boolean resumed = client.nativeSession() != null;
             String text;
             try {
@@ -963,12 +1117,16 @@ public class DirectLlmClient implements AutoCloseable {
                 // A session Claude Code no longer has (or never finished creating)
                 // fails before the turn begins. Nothing reached the provider, so
                 // continue in a new session that carries the earlier conversation.
+                // Claude Code exits when it cannot resume a session; a process
+                // still running holds the session, and its tasks, so it is kept.
                 if (!resumed || e instanceof ClaudeCliClient.ClaudeCliAuthenticationException
-                        || isCancelled() || Thread.currentThread().isInterrupted()) {
+                        || isCancelled() || Thread.currentThread().isInterrupted()
+                        || client.processAlive()) {
                     throw e;
                 }
                 client.startNewSession();
                 claudeNeedsSeed = true;
+                claudeCompactionFailed = false;
                 ProviderActivityListener listener = providerActivityListener;
                 if (listener != null) {
                     listener.onNotice("The Claude Code session could not be resumed ("
@@ -991,9 +1149,55 @@ public class DirectLlmClient implements AutoCloseable {
             // rejection warns the user with the actionable fix.
             recordStreamFailure(result, e, "[Error: ");
         } catch (Exception e) {
-            // The turn ran, so the native session may hold partial provider-side
-            // state; keep the result non-replayable.
-            result.providerSideEffectsObserved = true;
+            // A cancelled turn Claude Code took in left its message, with any earlier
+            // conversation restored in it, in the session the next turn continues.
+            if (isCancelled() && client != null && client.nativeSession() != null) {
+                claudeNeedsSeed = false;
+            }
+            boolean overflow = isContextOverflowFailure(0, e.getMessage());
+            // Claude Code could not fit its session in the context window.
+            if (overflow) claudeCompactionFailed = true;
+            // Rejected before any tool ran or any answer streamed, the turn changed
+            // nothing Kompile relies on: a retry runs in a new session restored from
+            // Kompile's history, so the result stays replayable.
+            boolean overflowBeforeOutput = overflow
+                    && e instanceof ClaudeCliClient.TurnFailedException
+                    && !result.providerSideEffectsObserved && streamed.length() == 0;
+            if (!overflowBeforeOutput) {
+                // The turn ran, so the native session may hold partial provider-side
+                // state; keep the result non-replayable.
+                result.providerSideEffectsObserved = true;
+                if (streamed.length() > 0) result.text = streamed.toString();
+            }
+            recordStreamFailure(result, e, "[Error: ");
+        }
+        return result;
+    }
+
+    /**
+     * Show a turn Claude Code started by itself, which the chat asked for with its
+     * follow-up marker. The turn already ran, so a failure is never replayed. A turn
+     * that a message's reply already showed, or one that is unknown, shows nothing.
+     */
+    private StreamResult showClaudeFollowUp(String followUpId, String userMessage,
+                                            String effectiveModel) {
+        StreamResult result = new StreamResult();
+        result.lastRequestInputTokens = 0;
+        result.providerSideEffectsObserved = true;
+        // Only the Claude Code process that started the turn holds it.
+        ClaudeCliClient client = claudeServeClient;
+        if (client == null) return result;
+        StringBuilder streamed = new StringBuilder();
+        try {
+            // Cancelling the chat turn interrupts the turn being shown.
+            client.setCancellationCheck(this::isCancelled);
+            String text = client.adoptFollowUp(followUpId, claudeOutput(streamed),
+                    claudeActivity(result, effectiveModel));
+            result.text = text;
+            if (!text.isEmpty()) appendOpenCodeHistory(userMessage, text);
+            result.claudeNativeSession = client.nativeSession();
+        } catch (Exception e) {
+            if (isContextOverflowFailure(0, e.getMessage())) claudeCompactionFailed = true;
             if (streamed.length() > 0) result.text = streamed.toString();
             recordStreamFailure(result, e, "[Error: ");
         }
@@ -1013,73 +1217,125 @@ public class DirectLlmClient implements AutoCloseable {
         // Ultracode replaces the effort level on this route; fast mode is
         // rechecked against the effective request model like the HTTP routes.
         return client.send(effectiveModel, config.effectiveEffort(),
-                    config.useFastMode(effectiveModel),
-                    systemPrompt, userMessage, restored,
-                    chunk -> {
-                        streamed.append(chunk);
-                        printStreamingChunk(chunk);
-                    }, new ClaudeCliClient.ActivityListener() {
-                        @Override
-                        public void onToolStart(String callId, String name, String input) {
-                            result.providerSideEffectsObserved = true;
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) {
-                                listener.onToolStart(callId, name, input);
-                            }
-                        }
+                config.useFastMode(effectiveModel),
+                systemPrompt, userMessage, restored,
+                claudeOutput(streamed), claudeActivity(result, effectiveModel));
+    }
 
-                        @Override
-                        public void onToolInput(String callId, String name, String input) {
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) listener.onToolInput(callId, name, input);
-                        }
+    /** Streams a Claude Code turn's text to the chat, keeping a copy. */
+    private Consumer<String> claudeOutput(StringBuilder streamed) {
+        return chunk -> {
+            streamed.append(chunk);
+            printStreamingChunk(chunk);
+        };
+    }
 
-                        @Override
-                        public void onToolOutput(String callId, String name, String output) {
-                            result.providerSideEffectsObserved = true;
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) listener.onToolOutput(callId, name, output);
-                        }
+    /** Forwards a Claude Code turn's activity to the installed listeners and records it in the result. */
+    private ClaudeCliClient.ActivityListener claudeActivity(StreamResult result, String effectiveModel) {
+        return new ClaudeCliClient.ActivityListener() {
+            @Override
+            public void onToolStart(String callId, String name, String input) {
+                result.providerSideEffectsObserved = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    listener.onToolStart(callId, name, input);
+                }
+            }
 
-                        @Override
-                        public void onNotice(String notice) {
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) listener.onNotice(notice);
-                        }
+            @Override
+            public void onToolInput(String callId, String name, String input) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onToolInput(callId, name, input);
+            }
 
-                        @Override
-                        public void onToolComplete(String callId, String name, String output,
-                                                   int exitCode, boolean error) {
-                            result.providerSideEffectsObserved = true;
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) {
-                                listener.onToolComplete(
-                                        callId, name, output, exitCode, error);
-                            }
-                        }
+            @Override
+            public void onToolOutput(String callId, String name, String output) {
+                result.providerSideEffectsObserved = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onToolOutput(callId, name, output);
+            }
 
-                        @Override
-                        public void onTokenUsage(long input, long output,
-                                                 long cacheRead, long cacheCreation) {
-                            result.inputTokens += Math.max(0, input);
-                            result.outputTokens += Math.max(0, output);
-                            result.cacheReadTokens += Math.max(0, cacheRead);
-                            result.cacheCreationTokens += Math.max(0, cacheCreation);
-                            ProviderActivityListener listener = providerActivityListener;
-                            if (listener != null) {
-                                listener.onTokenUsage(
-                                        input, output, cacheRead, cacheCreation);
-                            }
-                        }
+            @Override
+            public void onNotice(String notice) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onNotice(notice);
+            }
 
-                        @Override
-                        public void onThinking(String reasoningDelta) {
-                            // Same pipeline every other lane feeds: renders in the
-                            // live thinking renderer when installed, dropped
-                            // otherwise (capture lanes must not receive reasoning).
-                            printThinkingChunk(reasoningDelta);
-                        }
-                    });
+            @Override
+            public void onCompacted(String trigger, long tokensBefore) {
+                claudeCompactionFailed = false;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onCompacted(trigger, tokensBefore);
+            }
+
+            @Override
+            public void onCompactionFailed(String detail) {
+                // Cancelling the turn also stops a compaction in progress.
+                if (!isCancelled()) claudeCompactionFailed = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onCompactionFailed(detail);
+            }
+
+            @Override
+            public void onRetry(int attempt, int maxAttempts, long delayMs,
+                                String reason) {
+                // Claude Code retries on its own; surface it where every
+                // other route shows its retries.
+                emitConnectivityEvent(new ConnectivityEvent(
+                        config.getProvider(), attempt, maxAttempts,
+                        Duration.ofMillis(delayMs), reason));
+            }
+
+            @Override
+            public void onToolComplete(String callId, String name, String output,
+                                       int exitCode, boolean error) {
+                result.providerSideEffectsObserved = true;
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    listener.onToolComplete(
+                            callId, name, output, exitCode, error);
+                }
+            }
+
+            @Override
+            public void onTokenUsage(long input, long output,
+                                     long cacheRead, long cacheCreation) {
+                result.inputTokens += Math.max(0, input);
+                result.outputTokens += Math.max(0, output);
+                result.cacheReadTokens += Math.max(0, cacheRead);
+                result.cacheCreationTokens += Math.max(0, cacheCreation);
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) {
+                    listener.onTokenUsage(
+                            input, output, cacheRead, cacheCreation);
+                }
+            }
+
+            @Override
+            public void onContextUsage(long contextTokens) {
+                result.lastRequestInputTokens = Math.max(0L, contextTokens);
+            }
+
+            @Override
+            public void onModelLimits(int contextWindow, int maxOutputTokens) {
+                claudeModelLimits = new ClaudeModelLimits(effectiveModel,
+                        new ModelContextResolver.ModelLimits(contextWindow, maxOutputTokens));
+            }
+
+            @Override
+            public void onSteps(int steps) {
+                ProviderActivityListener listener = providerActivityListener;
+                if (listener != null) listener.onSteps(steps);
+            }
+
+            @Override
+            public void onThinking(String reasoningDelta) {
+                // Same pipeline every other lane feeds: renders in the
+                // live thinking renderer when installed, dropped
+                // otherwise (capture lanes must not receive reasoning).
+                printThinkingChunk(reasoningDelta);
+            }
+        };
     }
 
     /**
@@ -1090,7 +1346,41 @@ public class DirectLlmClient implements AutoCloseable {
         synchronized (historyLock) {
             claudeClient().resumeSession(sessionId, instructionsDigest);
             claudeNeedsSeed = false;
+            claudeCompactionFailed = false;
         }
+    }
+
+    /**
+     * True after Claude Code reported that it could not compact its session or
+     * that a request no longer fit the context window, until that session
+     * compacts or is replaced.
+     */
+    public boolean claudeCompactionFailed() {
+        return claudeCompactionFailed;
+    }
+
+    /**
+     * The limits Claude Code reported enforcing on its last turn with this model,
+     * or null before it reported any or off its route. Claude Code applies its own
+     * settings, such as a disabled 1M window or a context cap, which the model
+     * catalogs cannot see.
+     */
+    public ModelContextResolver.ModelLimits claudeReportedLimits(String modelOverride) {
+        ClaudeModelLimits reported = claudeModelLimits;
+        if (reported == null || resolveRoute(modelOverride).protocol() != WireProtocol.CLAUDE_CLI) {
+            return null;
+        }
+        String model = modelOverride != null && !modelOverride.isBlank() ? modelOverride : config.getModel();
+        return Objects.equals(reported.model(), model) ? reported.limits() : null;
+    }
+
+    /**
+     * True when the Claude Code session already holds the conversation: it completed
+     * a turn or was resumed. A new session, or one whose first turn failed, receives
+     * the conversation restored from Kompile's history on its next turn.
+     */
+    public boolean claudeSessionHoldsConversation() {
+        return !claudeNeedsSeed;
     }
 
     /** The live Claude Code native session, or null when none has started. */
@@ -1105,7 +1395,9 @@ public class DirectLlmClient implements AutoCloseable {
             synchronized (this) {
                 client = claudeServeClient;
                 if (client == null) {
-                    client = new ClaudeCliClient(workingDirectory);
+                    client = new ClaudeCliClient(workingDirectory, null, claudeBinaryOverride, claudeMode);
+                    client.setTaskProcesses(claudeTaskProcesses);
+                    client.setFollowUpListener(followUpMarkers(claudeFollowUpListener));
                     claudeServeClient = client;
                 }
             }
@@ -1335,6 +1627,9 @@ public class DirectLlmClient implements AutoCloseable {
             try (DirectLlmClient isolated = new DirectLlmClient(
                     config, objectMapper, connectivityPolicy, workingDirectory)) {
                 isolated.setCancelSignal(cancelSignal);
+                // A one-shot request answers from its prompt: no tools on any route.
+                isolated.claudeMode = oneShotClaudeMode();
+                isolated.claudeBinaryOverride = claudeBinaryOverride;
                 String cacheSessionId = activePromptCacheSessionId();
                 if (cacheSessionId != null) {
                     // Keep utility calls on a distinct affinity shard even when the
@@ -1395,6 +1690,8 @@ public class DirectLlmClient implements AutoCloseable {
         try (DirectLlmClient isolated = new DirectLlmClient(
                 config, objectMapper, connectivityPolicy, workingDirectory)) {
             isolated.setCancelSignal(cancelSignal);
+            isolated.claudeMode = oneShotClaudeMode();
+            isolated.claudeBinaryOverride = claudeBinaryOverride;
             String cacheSessionId = activePromptCacheSessionId();
             if (cacheSessionId != null) {
                 isolated.setPromptCacheSessionId("utility:" + cacheSessionId);
@@ -1542,6 +1839,30 @@ public class DirectLlmClient implements AutoCloseable {
         int end = text.indexOf(MEMORY_CONTEXT_CLOSE);
         return end < 0 ? text
                 : text.substring(end + MEMORY_CONTEXT_CLOSE.length()).stripLeading();
+    }
+
+    /**
+     * True for the chat message that shows a turn Claude Code started by itself.
+     * It carries no user text, so no memory, reminders or attachments go with it.
+     */
+    public static boolean isProviderFollowUp(String message) {
+        return claudeFollowUpId(message) != null;
+    }
+
+    /**
+     * What set off the turn a follow-up message ({@link #isProviderFollowUp}) shows: one
+     * line for each task that ended before the provider started it, with what the task
+     * was, how it ended and the provider's summary. Empty for any other message, or when
+     * the provider reported no task end.
+     */
+    public List<String> providerFollowUpTriggers(String message) {
+        String followUpId = claudeFollowUpId(message);
+        ClaudeCliClient client = claudeServeClient;
+        return followUpId == null || client == null ? List.of() : client.followUpTriggers(followUpId);
+    }
+
+    private static String claudeFollowUpId(String message) {
+        return message == null ? null : ClaudeCliClient.followUpId(withoutTurnEnvelopes(message));
     }
 
     public int getHistorySize() {
@@ -3393,6 +3714,10 @@ public class DirectLlmClient implements AutoCloseable {
                     result.toolCalls.addAll(passResult.toolCalls);
                     result.refusalDetected |= passResult.refusalDetected;
                     result.truncatedDetected |= passResult.truncatedDetected;
+                    // The context holds the resumed request alone; it already
+                    // carries the dropped pass's text, so the sum overstates it.
+                    long resumedContext = passResult.contextInputTokens();
+                    if (resumedContext > 0L) result.lastRequestInputTokens = resumedContext;
                 }
                 if (!isSilentStreamDrop(passResult, toolDefs) || pass >= 1) {
                     if (pass > 0) {
@@ -4897,6 +5222,7 @@ public class DirectLlmClient implements AutoCloseable {
         if (client != null) client.close();
         claudeServeClient = null;
         claudeNeedsSeed = true;
+        claudeCompactionFailed = false;
     }
 
     private boolean markCancelled(StreamResult result, Exception error) {
@@ -4969,12 +5295,18 @@ public class DirectLlmClient implements AutoCloseable {
         public long outputTokens = 0;
         public long cacheReadTokens = 0;
         public long cacheCreationTokens = 0;
+        /**
+         * Input size of the last request, for routes whose token totals add up
+         * several requests; negative when the totals describe a single request.
+         */
+        public long lastRequestInputTokens = -1;
 
         /**
          * Tokens occupying the provider context. Cached tokens are cheaper, not absent;
          * every provider adapter reports them separately but they still consume context.
          */
         public long contextInputTokens() {
+            if (lastRequestInputTokens >= 0L) return lastRequestInputTokens;
             long total = Math.max(0L, inputTokens);
             total = saturatingAdd(total, Math.max(0L, cacheReadTokens));
             return saturatingAdd(total, Math.max(0L, cacheCreationTokens));

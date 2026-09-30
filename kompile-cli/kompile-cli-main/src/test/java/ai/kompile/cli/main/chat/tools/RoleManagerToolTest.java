@@ -16,13 +16,17 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.roles.RoleAgentDefaults;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@TemporaryUserHome
 class RoleManagerToolTest {
 
     @TempDir
@@ -90,5 +95,60 @@ class RoleManagerToolTest {
                 .put("model", "gpt-5.6\n---");
         assertThrows(IllegalArgumentException.class,
                 () -> RoleManagerTool.parseAgentDefaults(multiline));
+    }
+
+    /**
+     * {@code assign_role} with no {@code agent} is a same-session activation (the model's
+     * own path to what {@code /role} does interactively). When a chat has wired
+     * {@link RoleManagerTool#setChatActivationCallback}, the callback must fire and the
+     * tool must tell the model the agent switches next turn — not just report that
+     * {@link RoleManager} bookkeeping changed.
+     */
+    @Test
+    void assignRoleWithNoAgentNotifiesTheWiredChatCallbackAndSaysNextTurn() throws Exception {
+        RoleManager roleManager = new RoleManager(tempDir);
+        roleManager.createRole("marker-role", "Marker", "Carries a marker prompt", "testing", "PROMPT");
+        RoleManagerTool tool = new RoleManagerTool(roleManager, objectMapper);
+
+        List<RoleConfig> activated = new ArrayList<>();
+        tool.setChatActivationCallback(activated::add);
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "assign_role");
+        params.put("name", "marker-role");
+
+        ToolResult result = tool.execute(params, null);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals(1, activated.size());
+        assertEquals("marker-role", activated.get(0).getName());
+        assertEquals("marker-role", roleManager.getActiveRoleName());
+        assertTrue(result.getOutput().contains("starting next turn"), result.getOutput());
+    }
+
+    /**
+     * The same {@code assign_role} call, but for every {@code RoleManagerTool} instance
+     * that has no chat attached (MCP stdio/socket sessions, headless/eval/harness runs —
+     * none of these wire a callback). It must say so honestly instead of claiming an
+     * agent switch that can never reach any chat.
+     */
+    @Test
+    void assignRoleWithNoAgentAndNoCallbackSaysNoChatIsAttached() throws Exception {
+        RoleManager roleManager = new RoleManager(tempDir);
+        roleManager.createRole("marker-role", "Marker", "Carries a marker prompt", "testing", "PROMPT");
+        RoleManagerTool tool = new RoleManagerTool(roleManager, objectMapper);
+        // No setChatActivationCallback(...) call.
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "assign_role");
+        params.put("name", "marker-role");
+
+        ToolResult result = tool.execute(params, null);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("marker-role", roleManager.getActiveRoleName(),
+                "the tool still activates the role in RoleManager even without a chat attached");
+        assertTrue(result.getOutput().contains("No active chat session is attached"), result.getOutput());
+        assertFalse(result.getOutput().contains("starting next turn"), result.getOutput());
     }
 }

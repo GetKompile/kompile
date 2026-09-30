@@ -57,6 +57,11 @@ final class OpenCodeServeClient implements AutoCloseable {
         void onToolComplete(String callId, String name, String output,
                             int exitCode, boolean error);
         void onTokenUsage(long input, long output, long cacheRead, long cacheCreation);
+        /**
+         * OpenCode started {@code steps} more model requests in the turn's agent
+         * loop (its {@code step-start} parts); calls add up.
+         */
+        default void onSteps(int steps) { }
     }
 
     /**
@@ -308,6 +313,7 @@ final class OpenCodeServeClient implements AutoCloseable {
         private final AtomicLong lastActivity = new AtomicLong(System.nanoTime());
         private final Set<String> startedCalls = new HashSet<>();
         private final Set<String> completedCalls = new HashSet<>();
+        private final Set<String> startedSteps = new HashSet<>();
         private final AtomicBoolean degraded = new AtomicBoolean(false);
         private volatile InputStream eventStream;
 
@@ -398,7 +404,15 @@ final class OpenCodeServeClient implements AutoCloseable {
         }
 
         private void handlePartUpdated(JsonNode part) {
-            if (activity == null || !"tool".equals(part.path("type").asText(""))) return;
+            if (activity == null) return;
+            String type = part.path("type").asText("");
+            if ("step-start".equals(type)) {
+                // One part per model request of the turn; a part may be updated again.
+                String stepId = part.path("id").asText("");
+                if (!stepId.isEmpty() && startedSteps.add(stepId)) activity.onSteps(1);
+                return;
+            }
+            if (!"tool".equals(type)) return;
             String callId = part.path("callID").asText("");
             String tool = part.path("tool").asText("");
             if (callId.isEmpty() || tool.isEmpty()) return;

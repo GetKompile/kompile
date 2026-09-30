@@ -205,6 +205,11 @@ public final class LocalServingRuntimePool {
         return acquire(chatRequest(config, timeoutSeconds));
     }
 
+    /** A binding that starts nothing now; the runtime launches on the first request. */
+    public static Binding bindingFor(ChatConfig config, int timeoutSeconds) {
+        return new Binding(chatRequest(config, timeoutSeconds));
+    }
+
     private static RuntimeRequest chatRequest(ChatConfig config, int timeoutSeconds) {
         Objects.requireNonNull(config, "config");
         String requestedModel = normalizeModelId(config.getModel());

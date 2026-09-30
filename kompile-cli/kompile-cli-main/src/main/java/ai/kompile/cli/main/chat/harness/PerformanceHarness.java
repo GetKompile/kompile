@@ -375,9 +375,10 @@ public class PerformanceHarness {
                 recomputeComposite(record, metrics, finalEscapeResult,
                         judgeDims, thinkingAnalysis, finalTaskType);
             } catch (Exception e) {
-                if (config.isVerboseLogging()) {
-                    System.err.println("Harness evaluation error: " + e.getMessage());
-                }
+                // Always reach the log, even outside verbose mode: this layer runs after
+                // the judge/thinking analysis and guards the model-router flush below it,
+                // so a swallowed failure here silently stops every future auto-swap.
+                System.err.println("Harness evaluation error: " + e.getMessage());
             }
         }));
     }
@@ -393,15 +394,25 @@ public class PerformanceHarness {
     /** Backward-compatible convenience overload that retains the original user request. */
     public void evaluateTurnAsync(String agentName, String model, String taskPrompt,
                                   String agentOutput, String sessionId, long latencyMs) {
-        evaluateTurnAsync(TurnMetrics.builder()
+        evaluateTurnAsync(turnMetrics()
                 .sessionId(sessionId)
                 .agentName(agentName)
                 .model(model)
-                .provider(chatConfig != null ? chatConfig.getProvider() : null)
                 .latencyMs(latencyMs)
                 .agentOutput(agentOutput)
                 .taskPrompt(taskPrompt)
                 .build());
+    }
+
+    /**
+     * The metrics of a turn this harness evaluates, with the chat's provider filled in. The
+     * caller adds the turn's own measures (steps, tool calls, output) and passes the result
+     * to {@link #evaluateTurnAsync(TurnMetrics)}.
+     */
+    public TurnMetrics.Builder turnMetrics() {
+        return TurnMetrics.builder()
+                .provider(chatConfig != null ? chatConfig.getProvider() : null)
+                .model(chatConfig != null ? chatConfig.getModel() : null);
     }
 
     private void logEvaluation(TurnMetrics metrics, float compositeScore,

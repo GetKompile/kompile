@@ -18,25 +18,28 @@ package ai.kompile.cli.main.chat.workflow;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
  * A named, enforceable team configuration for a chat session: who leads, which
- * roles perform which work, who may delegate to whom, and which gates must be
- * satisfied before work proceeds or completes.
+ * roles perform which work on which configured model, who may delegate to whom,
+ * and which gates must be satisfied before work proceeds or completes.
  *
  * <p>This is the team-configuration workflow concept (distinct from the
  * enforcer's turn-discipline {@link WorkflowPolicy}). It reuses roles for
- * responsibility and profiles for launch selection; workflow-local participant
- * names own their restrictions. Definitions stay deliberately small:
- * participants, permitted delegation edges, and optional gates — no general
- * purpose workflow language.</p>
+ * responsibility and configured chat models for execution; workflow-local
+ * participant names own their restrictions. Definitions stay deliberately
+ * small: participants, their model bindings, permitted delegation edges, and
+ * optional gates — no general purpose workflow language.</p>
  *
  * <p>Example {@code chat-workflows.json} entry:</p>
  * <pre>{@code
@@ -46,11 +49,13 @@ import java.util.Set;
  *       "version": 1,
  *       "lead": "designer",
  *       "participants": {
- *         "designer": { "role": "architect",
+ *         "designer": { "id": "designer", "role": "architect",
  *                       "capabilities": ["read", "plan", "delegate"],
- *                       "delegatesTo": ["worker"] },
- *         "worker":   { "role": "implementer",
- *                       "capabilities": ["read", "edit-assigned-files", "validate"] }
+ *                       "delegatesTo": ["worker"],
+ *                       "model": { "provider": "anthropic", "model": "claude-opus-4-5" } },
+ *         "worker":   { "id": "worker", "role": "implementer",
+ *                       "capabilities": ["read", "edit-assigned-files", "validate"],
+ *                       "model": { "provider": "openai", "model": "gpt-5", "thinking": "medium" } }
  *       },
  *       "routing": { "implement": "worker" },
  *       "limits": { "maxConcurrentWorkers": 3 },
@@ -59,6 +64,8 @@ import java.util.Set;
  *   }
  * }
  * }</pre>
+ *
+ * <p>A participant without a {@code model} runs on the lead chat's own model.</p>
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public final class WorkflowTeam {
@@ -83,7 +90,8 @@ public final class WorkflowTeam {
             @JsonProperty("participants") Map<String, Participant> participants,
             @JsonProperty("routing") Map<String, String> routing,
             @JsonProperty("limits") Limits limits,
-            @JsonProperty("gates") Gates gates) {        if (name == null || name.isBlank()) {
+            @JsonProperty("gates") Gates gates) {
+        if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Workflow name is required");
         }
         this.name = name.trim();
@@ -95,6 +103,7 @@ public final class WorkflowTeam {
         if (participants == null || participants.isEmpty()) {
             throw new IllegalArgumentException("Workflow '" + this.name + "' needs at least one participant");
         }
+        // Declaration order is presentation order (wizard tables, summaries, prompts).
         Map<String, Participant> normalized = new LinkedHashMap<>();
         participants.forEach((id, participant) -> {
             if (participant == null) {
@@ -104,9 +113,12 @@ public final class WorkflowTeam {
                 throw new IllegalArgumentException("Workflow '" + this.name + "' participant key '" + id
                         + "' does not match participant id '" + participant.id() + "'");
             }
-            normalized.put(WorkflowTeam.key(id), participant);
+            if (normalized.put(participant.id(), participant) != null) {
+                throw new IllegalArgumentException("Workflow '" + this.name + "' declares participant '"
+                        + participant.id() + "' twice");
+            }
         });
-        this.participants = Map.copyOf(normalized);
+        this.participants = Collections.unmodifiableMap(normalized);
         if (lead == null || lead.isBlank()) {
             throw new IllegalArgumentException("Workflow '" + this.name + "' needs a lead participant");
         }
@@ -116,7 +128,22 @@ public final class WorkflowTeam {
                     + "' is not a participant");
         }
         this.lead = leadKey;
-        this.routing = routing == null ? Map.of() : Map.copyOf(routing);
+        // Purposes and targets are case-insensitive; store them normalized so
+        // route() lookups match what validate() checked.
+        Map<String, String> routes = new LinkedHashMap<>();
+        if (routing != null) {
+            routing.forEach((purpose, target) -> {
+                String purposeKey = key(purpose);
+                if (purposeKey.isEmpty()) {
+                    throw new IllegalArgumentException("Workflow '" + this.name + "' has a blank routing purpose");
+                }
+                if (routes.put(purposeKey, key(target)) != null) {
+                    throw new IllegalArgumentException("Workflow '" + this.name + "' routes purpose '"
+                            + purposeKey + "' twice");
+                }
+            });
+        }
+        this.routing = Collections.unmodifiableMap(routes);
         this.maxConcurrentWorkers = limits == null ? 1 : Math.max(1, limits.maxConcurrentWorkers());
         this.gates = gates == null ? Gates.NONE : gates;
         validate();
@@ -127,13 +154,17 @@ public final class WorkflowTeam {
         return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
     }
 
+    private static String clean(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
     private void validate() {
         // Routing purposes must name known participants.
         for (Map.Entry<String, String> entry : routing.entrySet()) {
-            String target = key(entry.getValue());
+            String target = entry.getValue();
             if (target.isEmpty() || !participants.containsKey(target)) {
                 throw new IllegalArgumentException("Workflow '" + name + "' routes purpose '"
-                        + entry.getKey() + "' to unknown participant '" + entry.getValue() + "'");
+                        + entry.getKey() + "' to unknown participant '" + target + "'");
             }
         }
         // Delegation edges must connect known participants and stay acyclic.
@@ -172,6 +203,25 @@ public final class WorkflowTeam {
 
     @JsonProperty("limits") public Limits limits() { return new Limits(maxConcurrentWorkers); }
 
+    /**
+     * A copy with one participant replaced by id. The version is unchanged:
+     * {@link WorkflowTeamStore#save} bumps it when the stored definition changes.
+     */
+    public WorkflowTeam withParticipant(Participant replacement) {
+        Objects.requireNonNull(replacement, "participant");
+        if (!participants.containsKey(replacement.id())) {
+            throw new IllegalArgumentException("Workflow '" + name + "' has no participant '"
+                    + replacement.id() + "'");
+        }
+        Map<String, Participant> updated = new LinkedHashMap<>(participants);
+        updated.put(replacement.id(), replacement);
+        return new WorkflowTeam(name, version, lead, updated, routing, limits(), gates);
+    }
+
+    public WorkflowTeam withVersion(int newVersion) {
+        return new WorkflowTeam(name, newVersion, lead, participants, routing, limits(), gates);
+    }
+
     @Override
     public boolean equals(Object o) {
         return o instanceof WorkflowTeam other
@@ -186,8 +236,7 @@ public final class WorkflowTeam {
 
     @Override
     public int hashCode() {
-        return java.util.Objects.hash(name, version, lead, participants, routing,
-                maxConcurrentWorkers, gates);
+        return Objects.hash(name, version, lead, participants, routing, maxConcurrentWorkers, gates);
     }
 
     public Participant participant(String id) {
@@ -206,14 +255,21 @@ public final class WorkflowTeam {
         return from != null && toId != null && from.delegatesTo().contains(key(toId));
     }
 
+    /**
+     * One team member. {@code model} binds the member to a configured model;
+     * a null binding keeps the lead chat's own model.
+     */
     @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Participant(
             @JsonProperty("id") String id,
             @JsonProperty("role") String role,
             @JsonProperty("executor") String executor,
             @JsonProperty("capabilities") List<String> capabilities,
-            @JsonProperty("delegatesTo") List<String> delegatesTo) {
+            @JsonProperty("delegatesTo") List<String> delegatesTo,
+            @JsonProperty("model") ModelBinding model) {
 
+        @JsonCreator
         public Participant {
             if (id == null || id.isBlank()) {
                 throw new IllegalArgumentException("Participant id is required");
@@ -247,6 +303,19 @@ public final class WorkflowTeam {
             }
         }
 
+        public Participant(String id, String role, String executor,
+                           List<String> capabilities, List<String> delegatesTo) {
+            this(id, role, executor, capabilities, delegatesTo, null);
+        }
+
+        public Participant withModel(ModelBinding binding) {
+            return new Participant(id, role, executor, capabilities, delegatesTo, binding);
+        }
+
+        public Participant withDelegatesTo(List<String> targets) {
+            return new Participant(id, role, executor, capabilities, targets, model);
+        }
+
         public boolean canRead() { return capabilities.contains("read"); }
         public boolean canPlan() { return capabilities.contains("plan"); }
         public boolean canDelegate() { return capabilities.contains("delegate"); }
@@ -254,6 +323,62 @@ public final class WorkflowTeam {
         public boolean canValidate() { return capabilities.contains("validate"); }
         public boolean isChatOnly() { return capabilities.contains("chat-only"); }
         public boolean isCliExecutor() { return executor.equals("cli"); }
+    }
+
+    /**
+     * The configured model a participant runs on: a chat provider route plus a
+     * model id and optional thinking value. {@code agent} optionally names the
+     * CLI agent used when delegation goes through managed CLI agents; when
+     * absent it is derived from the provider's vendor. Credentials are never
+     * stored here — they resolve from the credential store at request time.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ModelBinding(
+            @JsonProperty("provider") String provider,
+            @JsonProperty("model") String model,
+            @JsonProperty("thinking") String thinking,
+            @JsonProperty("authenticationMethod") String authenticationMethod,
+            @JsonProperty("baseUrl") String baseUrl,
+            @JsonProperty("agent") String agent) {
+
+        @JsonCreator
+        public ModelBinding {
+            provider = clean(provider);
+            model = clean(model);
+            if (provider == null) {
+                throw new IllegalArgumentException("A model binding needs a provider");
+            }
+            if (model == null) {
+                throw new IllegalArgumentException("A model binding for '" + provider + "' needs a model");
+            }
+            provider = provider.toLowerCase(Locale.ROOT);
+            thinking = clean(thinking);
+            authenticationMethod = clean(authenticationMethod);
+            baseUrl = clean(baseUrl);
+            agent = clean(agent) == null ? null : key(agent);
+            // Values reach CLI arguments and system prompts; keep them single-line.
+            for (String value : new String[] {provider, model, thinking, authenticationMethod, baseUrl, agent}) {
+                if (value != null && value.chars().anyMatch(Character::isISOControl)) {
+                    throw new IllegalArgumentException("Model binding values cannot contain control characters");
+                }
+            }
+        }
+
+        public ModelBinding(String provider, String model, String thinking) {
+            this(provider, model, thinking, null, null, null);
+        }
+
+        public ModelBinding withThinking(String value) {
+            return new ModelBinding(provider, model, value, authenticationMethod, baseUrl, agent);
+        }
+
+        /** Display label: {@code provider/model (thinking: x) via agent}. */
+        public String label() {
+            return provider + "/" + model
+                    + (thinking == null ? "" : " (thinking: " + thinking + ")")
+                    + (agent == null ? "" : " via " + agent);
+        }
     }
 
     /** @param maxConcurrentWorkers minimum 1; enforced across the whole workflow run. */

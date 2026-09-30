@@ -5,6 +5,7 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
@@ -24,13 +25,10 @@ import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
-import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,7 +52,7 @@ class ClaudeCliProviderToolTtyTest {
     private static final String PROMPT = "kompile > ";
     private static final String FIXTURE = "/ai/kompile/cli/main/chat/agent/claude-stream-mcp-tool.jsonl";
     /** Fixture lines emitted before the provider reports the tool result. */
-    private static final int LINES_BEFORE_TOOL_RESULT = 18;
+    private static final int LINES_BEFORE_TOOL_RESULT = 21;
     @TempDir Path home;
 
     @Test
@@ -147,6 +145,11 @@ class ClaudeCliProviderToolTtyTest {
                     "streamed text must be painted once\n" + diagnostics);
             assertFalse(transcript.contains("arguments:"),
                     "the header already shows the tool input\n" + diagnostics);
+            String painted = screen.screenDump();
+            for (String raw : List.of("requesting", "thinking_tokens", "hook_started", "{\"title\"")) {
+                assertFalse(painted.contains(raw), "painted stream JSON or bookkeeping: " + raw
+                        + "\n" + diagnostics);
+            }
         } finally {
             if (!Files.exists(release)) Files.createFile(release);
             ChatCompleter.clearTerminalRef(reader);
@@ -164,28 +167,18 @@ class ClaudeCliProviderToolTtyTest {
     }
 
     private void installFakeClaude(DirectLlmClient client, Path release) throws Exception {
-        Path stream = home.resolve("claude-stream.jsonl");
+        FakeClaudeCode fake = new FakeClaudeCode(home.resolve("claude"), """
+                turn() {
+                  head -n %d "$DIR/claude-stream.jsonl"
+                  for i in $(seq 1 200); do [ -e '%s' ] && break; sleep 0.05; done
+                  tail -n +%d "$DIR/claude-stream.jsonl"
+                }
+                """.formatted(LINES_BEFORE_TOOL_RESULT, release, LINES_BEFORE_TOOL_RESULT + 1));
         try (InputStream fixture = getClass().getResourceAsStream(FIXTURE)) {
             assertNotNull(fixture, "fixture");
-            Files.write(stream, fixture.readAllBytes());
+            Files.write(fake.path("claude-stream.jsonl"), fixture.readAllBytes());
         }
-        Path fake = home.resolve("fake-claude");
-        Files.writeString(fake, "#!/bin/bash\n"
-                + "cat > /dev/null 2>&1 || true\n"
-                + "head -n " + LINES_BEFORE_TOOL_RESULT + " '" + stream + "'\n"
-                + "for i in $(seq 1 200); do [ -e '" + release + "' ] && break; sleep 0.05; done\n"
-                + "tail -n +" + (LINES_BEFORE_TOOL_RESULT + 1) + " '" + stream + "'\n"
-                + "exit 0\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(fake, Set.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
-        Class<?> transport = Class.forName("ai.kompile.cli.main.chat.config.ClaudeCliClient");
-        Constructor<?> constructor = transport.getDeclaredConstructor(
-                Path.class, String.class, String.class);
-        constructor.setAccessible(true);
-        Object claude = constructor.newInstance(home, "claude-native-session", fake.toString());
-        Field field = DirectLlmClient.class.getDeclaredField("claudeServeClient");
-        field.setAccessible(true);
-        field.set(client, claude);
+        fake.install(client, home, "claude-native-session");
     }
 
     private static String transcriptRows(KompileTui tui, VirtualTerminal screen) {

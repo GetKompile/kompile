@@ -27,6 +27,8 @@ import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -71,15 +73,22 @@ public class ServerSubagentRunner implements SubagentRunner {
     private static final class ServerSession {
         private final String id;
         private final ToolContext parentContext;
+        /** The workflow participant this child runs as; {@code null} outside a workflow team. */
+        private final WorkflowTeamEnforcement workflow;
+        /** How rows name this child (see {@link DirectSubagentRunner#displayName}). */
+        private final String label;
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean terminalClaimed = new AtomicBoolean(false);
         private final AtomicReference<java.io.InputStream> responseBody = new AtomicReference<>();
         private volatile String remoteProcessId;
         private volatile Thread ownerThread;
 
-        private ServerSession(String id, ToolContext parentContext) {
+        private ServerSession(String id, ToolContext parentContext, WorkflowTeamEnforcement workflow,
+                              String label) {
             this.id = id;
             this.parentContext = parentContext;
+            this.workflow = workflow;
+            this.label = label;
         }
     }
 
@@ -113,17 +122,22 @@ public class ServerSubagentRunner implements SubagentRunner {
             throw new IllegalArgumentException("Server-backed chat task does not support model/thinking overrides. "
                     + "Use direct-model chat or the MCP task tool; no agent was launched.");
         }
+        WorkflowTeamEnforcement workflow =
+                WorkflowSessionContext.participantEnforcement(agent.getWorkflowParticipant(), parentContext);
+        // No model in the label: a participant bound to one was refused above.
+        String label = DirectSubagentRunner.displayName(agent,
+                workflow == null ? null : workflow.callerParticipant(), null);
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-"
                 + UUID.randomUUID().toString().substring(0, 8);
-        ServerSession session = new ServerSession(subagentId, parentContext);
+        ServerSession session = new ServerSession(subagentId, parentContext, workflow, label);
         session.ownerThread = Thread.currentThread();
         sessions.put(subagentId, session);
         if (lifecycleListener != null) {
-            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
+            lifecycleListener.onSubagentStart(subagentId, label, StringUtils.truncate(prompt, 60));
         }
         emitActivity(subagentId, "connecting",
-                renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
+                renderer.renderSubagentStart(label, StringUtils.truncate(prompt, 80)),
                 parentContext);
         String reminderContent = ReminderManager.reminderBlockContent(prompt);
         if (reminderContent != null) {
@@ -141,6 +155,9 @@ public class ServerSubagentRunner implements SubagentRunner {
                 .renderSystemPrompt();
         if (!projectPrompt.isBlank()) {
             systemPrompt += "\n\n" + projectPrompt;
+        }
+        if (workflow != null) {
+            systemPrompt += "\n\n" + workflow.participantBrief();
         }
 
         // Send to server agent endpoint
@@ -191,7 +208,7 @@ public class ServerSubagentRunner implements SubagentRunner {
         if (response.statusCode() != 200) {
             response.body().close();
             emitActivity(subagentId, "failed · HTTP " + response.statusCode(),
-                    renderer.renderSubagentError(agent.getName(),
+                    renderer.renderSubagentError(label,
                             "HTTP " + response.statusCode()), parentContext);
             throw new Exception("Subagent HTTP " + response.statusCode());
         }
@@ -212,7 +229,7 @@ public class ServerSubagentRunner implements SubagentRunner {
             while ((line = reader.readLine()) != null) {
                 if (session.cancelled.get() || parentContext.isAborted()) {
                     emitActivity(subagentId, "aborted",
-                            renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
+                            renderer.renderSubagentError(label, "Aborted"), parentContext);
                     notifyStatus(subagentId, "aborted");
                     return fullResponse + "\n[Subagent aborted]";
                 }
@@ -260,7 +277,7 @@ public class ServerSubagentRunner implements SubagentRunner {
                                 fullResponse.append("\n[Error: ").append(errMsg).append("]");
                                 emitActivity(subagentId, "failed · "
                                                 + TerminalRenderer.truncatePreview(errMsg, 72),
-                                        renderer.renderSubagentError(agent.getName(), errMsg), parentContext);
+                                        renderer.renderSubagentError(label, errMsg), parentContext);
                                 notifyStatus(subagentId, "failed · " + errMsg);
                             } catch (Exception e) {
                                 fullResponse.append("\n[Error: ").append(data).append("]");
@@ -291,7 +308,7 @@ public class ServerSubagentRunner implements SubagentRunner {
         if (!result.isBlank()) emitActivity(subagentId, "responded", "", parentContext);
         notifyStatus(subagentId, "completed");
         emitActivity(subagentId, "completed",
-                renderer.renderSubagentComplete(agent.getName(), durationMs), parentContext);
+                renderer.renderSubagentComplete(label, durationMs), parentContext);
 
         return result.isEmpty() ? "(subagent returned empty response)" : result;
         } catch (Exception e) {
@@ -299,12 +316,12 @@ public class ServerSubagentRunner implements SubagentRunner {
                     || e instanceof InterruptedException) {
                 notifyStatus(subagentId, "aborted");
                 emitActivity(subagentId, "aborted",
-                        renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
+                        renderer.renderSubagentError(label, "Aborted"), parentContext);
                 return "[Subagent aborted]";
             }
             notifyStatus(subagentId, "failed · " + e.getClass().getSimpleName());
             emitActivity(subagentId, "failed · " + e.getClass().getSimpleName(),
-                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
+                    renderer.renderSubagentError(label, e.getMessage()), parentContext);
             throw e;
         } finally {
             java.io.InputStream bodyStream = session.responseBody.getAndSet(null);
@@ -412,6 +429,7 @@ public class ServerSubagentRunner implements SubagentRunner {
                     parentContext.getWorkingDirectory(),
                     toolRegistry
             );
+            subContext.bindWorkflow(session.workflow);
             subContext.linkAbortCheck(
                     () -> session.cancelled.get() || parentContext.isAborted());
             subContext.setOutputConsumer(parentContext.getOutputConsumer());
@@ -426,11 +444,11 @@ public class ServerSubagentRunner implements SubagentRunner {
         } catch (ToolExecutionException e) {
             emitActivity(subagentId, "tool failed · "
                             + TerminalRenderer.truncatePreview(e.getMessage(), 72),
-                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
+                    renderer.renderSubagentError(session.label, e.getMessage()), parentContext);
             return "Tool execution failed: " + e.getMessage();
         } catch (Exception e) {
             emitActivity(subagentId, "tool event malformed",
-                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
+                    renderer.renderSubagentError(session.label, e.getMessage()), parentContext);
             return "Error parsing tool call: " + e.getMessage();
         }
     }

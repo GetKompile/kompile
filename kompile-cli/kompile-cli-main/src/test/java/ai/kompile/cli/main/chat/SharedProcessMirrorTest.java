@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -169,6 +170,56 @@ class SharedProcessMirrorTest {
         assertTrue(true, "reached");
     }
 
+    @Test
+    void aMonitoredProcessLaunchedForThisChatWakesItOnceWhenItEnds() {
+        List<String> woken = new CopyOnWriteArrayList<>();
+        mirror.setMonitorListener((entry, monitor) ->
+                woken.add(monitor.processId() + "|" + monitor.message() + "|" + entry.getState()));
+        CoordinationStateManager owner = childOwner("mcp-stdio-9", "local-chat");
+        publish("mcp-stdio-9", "proc-001", "mvn -o test", "Maven test run", "RUNNING", 0);
+        owner.updateProcessMonitor("proc-001", true, "check the report");
+
+        mirror.pollOnce();
+        assertTrue(woken.isEmpty(), "a running process wakes nobody: " + woken);
+
+        owner.updateProcessState("proc-001", "COMPLETED", Instant.now(), 0);
+        mirror.pollOnce();
+        mirror.pollOnce();
+
+        // The owner's id is the one the agent's process tool knows.
+        assertEquals(List.of("proc-001|check the report|COMPLETED"), woken);
+    }
+
+    @Test
+    void onlyTheParentChatWakesAndOnlyForAMonitoredProcessThatEndsWhileItWatches() {
+        List<String> woken = new CopyOnWriteArrayList<>();
+        mirror.setMonitorListener((entry, monitor) -> woken.add(monitor.processId()));
+        CoordinationStateManager mine = childOwner("mcp-mine", "local-chat");
+        CoordinationStateManager other = childOwner("mcp-other", "other-chat");
+        publish("mcp-mine", "proc-old", "old", "Ended before the chat started", "COMPLETED", 0);
+        mine.updateProcessMonitor("proc-old", true, null);
+        publish("mcp-other", "proc-other", "other", "Another chat's build", "RUNNING", 0);
+        other.updateProcessMonitor("proc-other", true, null);
+        publish("mcp-mine", "proc-quiet", "quiet", "Never monitored", "RUNNING", 0);
+        publish("mcp-mine", "proc-cancelled", "cancelled", "Monitor cancelled", "RUNNING", 0);
+        mine.updateProcessMonitor("proc-cancelled", true, null);
+
+        mirror.pollOnce();
+        mine.updateProcessMonitor("proc-cancelled", false, null);
+        other.updateProcessState("proc-other", "COMPLETED", Instant.now(), 0);
+        mine.updateProcessState("proc-quiet", "FAILED", Instant.now(), 1);
+        mine.updateProcessState("proc-cancelled", "COMPLETED", Instant.now(), 0);
+        mirror.pollOnce();
+        assertTrue(woken.isEmpty(), "woken: " + woken);
+
+        // First seen after the chat started, already over, monitor flag landing last.
+        publish("mcp-mine", "proc-fast", "true", "Fast exit", "COMPLETED", 0);
+        mirror.pollOnce();
+        mine.updateProcessMonitor("proc-fast", true, null);
+        mirror.pollOnce();
+        assertEquals(List.of("proc-fast"), woken);
+    }
+
     private BackgroundProcessManager.ProcessEntry sharedMirror(String sharedProcessId) {
         return processes.listAll().stream()
                 .filter(entry -> entry.getKind() == BackgroundProcessManager.ProcessKind.SHARED)
@@ -195,6 +246,14 @@ class SharedProcessMirrorTest {
         if (!"RUNNING".equals(state)) {
             owner.updateProcessState(processId, state, Instant.now(), exitCode);
         }
+    }
+
+    /** An owner registered as a child of {@code parentSession}, as a chat's MCP server is. */
+    private CoordinationStateManager childOwner(String ownerSession, String parentSession) {
+        CoordinationStateManager owner = owners.computeIfAbsent(ownerSession,
+                session -> new CoordinationStateManager(workDir, session, MAPPER));
+        owner.registerAgent("MCP stdio tool session", parentSession, "claude", 1, 0L, null, null);
+        return owner;
     }
 
     private Path outputFileFor(String processId) {

@@ -2,8 +2,10 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.FakeClaudeCode;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -13,18 +15,13 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.parallel.Resources;
 
 import java.io.InputStream;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,23 +43,21 @@ class AgenticChatLoopClaudeCliTranscriptTest {
         List<String> lines = Collections.synchronizedList(new ArrayList<>());
         Map<String, String> blocks = Collections.synchronizedMap(new LinkedHashMap<>());
         List<String> panelStarts = Collections.synchronizedList(new ArrayList<>());
+        List<ToolResult> panelResults = Collections.synchronizedList(new ArrayList<>());
         ChatCompleter.setContentOutput(lines::add);
         ChatCompleter.setTranscriptBlockOutput((key, content) -> {
             blocks.put(key, content);
             return true;
         });
         var mapper = JsonUtils.standardMapper();
-        ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
-        config.setAuthenticationMethod("oauth");
-        config.setDefaultMemory(false);
-        config.setContextWindowTokens(200_000);
-        config.setMaxOutputTokens(4_096);
-        try (DirectLlmClient client = new DirectLlmClient(config, mapper, directory)) {
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
             installFakeClaude(client);
             AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
                     new PermissionService(), new AgentRegistry(), directory, client, null);
             String session = "claude-transcript-test";
             loop.configureConversationSession(session);
+            ChatSessionMetrics metrics = new ChatSessionMetrics(session);
+            loop.setSessionMetrics(metrics);
             loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
                 @Override
                 public void onToolStart(String callId, String toolName, String rawInput) {
@@ -71,7 +66,9 @@ class AgenticChatLoopClaudeCliTranscriptTest {
 
                 @Override
                 public void onToolComplete(String callId, String toolName, String rawInput,
-                                           ToolResult result) { }
+                                           ToolResult result) {
+                    panelResults.add(result);
+                }
             });
 
             String response = loop.chat("read the notes", session, "coder", "default", false);
@@ -92,9 +89,28 @@ class AgenticChatLoopClaudeCliTranscriptTest {
                     response.strip().lines().toList(),
                     "prose on either side of a provider tool call stays on separate lines\n"
                             + diagnostics);
-            assertTrue(transcript.contains("[Claude] compact_boundary"),
-                    "a mid-stream system notice carrying a session_id must render (subtype "
-                            + "fallback), not be eaten as a session start\n" + diagnostics);
+            String plain = plain(transcript);
+            assertTrue(plain.contains("context compacted by Claude Code (manual) · 100 tokens before"),
+                    "a mid-stream compact_boundary carrying a session_id must render as a "
+                            + "compaction, not be eaten as a session start\n" + diagnostics);
+            assertEquals(1, metrics.getCompactionEvents(), diagnostics);
+            assertEquals(12, loop.lastReportedInputTokens(),
+                    "the request after the compaction measures the compacted context, not the "
+                            + "turn's usage summed over every request\n" + diagnostics);
+            for (String bookkeeping : List.of("requesting", "thinking_tokens", "hook_started",
+                    "PreToolUse", "compact_boundary")) {
+                assertFalse(plain.contains(bookkeeping),
+                        "stream bookkeeping is not transcript text: " + bookkeeping + "\n" + diagnostics);
+            }
+            // Claude Code hands back the Kompile tool's structured result as JSON; it
+            // must render as the tool's output, in the transcript and the panel alike.
+            assertTrue(plain.contains("NOTES_FILE_BODY"), diagnostics);
+            assertFalse(plain.contains("{\"title\"") || plain.contains("\"metadata\""),
+                    "the structured result must not render as JSON\n" + diagnostics);
+            assertEquals(1, panelResults.size(), diagnostics);
+            assertEquals("NOTES.md", panelResults.get(0).getTitle());
+            assertEquals("     1\tNOTES_FILE_BODY", panelResults.get(0).getOutput());
+            assertFalse(panelResults.get(0).isError());
         } finally {
             ChatCompleter.setContentOutput(null);
             ChatCompleter.setTranscriptBlockOutput(null);
@@ -104,25 +120,71 @@ class AgenticChatLoopClaudeCliTranscriptTest {
         }
     }
 
+    @Test
+    void appendOnlyOutputPrintsTheProviderToolHeaderOnceItsArgumentsArrive() throws Exception {
+        String home = System.getProperty("user.home");
+        System.setProperty("user.home", directory.toString());
+        List<String> lines = Collections.synchronizedList(new ArrayList<>());
+        ChatCompleter.setContentOutput(lines::add);
+        ChatCompleter.setTranscriptBlockOutput(null);
+        var mapper = JsonUtils.standardMapper();
+        try (DirectLlmClient client = new DirectLlmClient(claudeConfig(), mapper, directory)) {
+            installFakeClaude(client);
+            AgenticChatLoop loop = new AgenticChatLoop(null, mapper, new ToolRegistry(mapper),
+                    new PermissionService(), new AgentRegistry(), directory, client, null);
+            String session = "claude-append-only-test";
+            loop.configureConversationSession(session);
+
+            loop.chat("read the notes", session, "coder", "default", false);
+
+            String transcript = plain(String.join("\n", lines));
+            System.out.println("[claude-append-only-transcript]\n" + transcript);
+            // The call opens with no arguments. Printing its header then would leave a
+            // bare "Read" row and the arguments as a raw JSON line after it.
+            List<String> headers = transcript.lines()
+                    .filter(line -> line.matches("\\s*\\S+ Read( .*)?")).toList();
+            assertEquals(2, headers.size(), "running header and completion row\n" + transcript);
+            assertTrue(headers.stream().allMatch(header -> header.contains("NOTES.md")),
+                    "no header without its arguments\n" + transcript);
+            assertFalse(headers.get(0).contains("✓"), transcript);
+            assertTrue(headers.get(1).contains("✓"), transcript);
+            assertFalse(transcript.contains("arguments:"), transcript);
+            assertFalse(transcript.contains("\"file_path\""), transcript);
+            assertTrue(transcript.contains("NOTES_FILE_BODY"), transcript);
+            assertFalse(transcript.contains("{\"title\""), transcript);
+        } finally {
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setActivity(null);
+            if (home == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", home);
+        }
+    }
+
+    private static ChatConfig claudeConfig() {
+        ChatConfig config = new ChatConfig("anthropic", null, "claude-opus-5-5", null);
+        config.setAuthenticationMethod("oauth");
+        config.setDefaultMemory(false);
+        config.setContextWindowTokens(200_000);
+        config.setMaxOutputTokens(4_096);
+        return config;
+    }
+
+    /** Visible text: SGR styling and OSC 8 hyperlinks removed. */
+    private static String plain(String text) {
+        return text.replaceAll("\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)", "")
+                .replaceAll("\u001B\\[[0-9;?]*[A-Za-z]", "");
+    }
+
+    /** Answers the message with the fixture: the stream of one recorded turn. */
     private void installFakeClaude(DirectLlmClient client) throws Exception {
-        Path stream = directory.resolve("claude-stream.jsonl");
+        FakeClaudeCode fake = new FakeClaudeCode(directory.resolve("claude"), """
+                turn() { cat "$DIR/claude-stream.jsonl"; }
+                """);
         try (InputStream fixture = getClass().getResourceAsStream("claude-stream-mcp-tool.jsonl")) {
             assertNotNull(fixture, "fixture");
-            Files.write(stream, fixture.readAllBytes());
+            Files.write(fake.path("claude-stream.jsonl"), fixture.readAllBytes());
         }
-        Path fake = directory.resolve("fake-claude");
-        Files.writeString(fake, "#!/bin/bash\ncat > /dev/null 2>&1 || true\ncat '"
-                + stream + "'\nexit 0\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(fake, Set.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
-        Class<?> transport = Class.forName("ai.kompile.cli.main.chat.config.ClaudeCliClient");
-        Constructor<?> constructor = transport.getDeclaredConstructor(
-                Path.class, String.class, String.class);
-        constructor.setAccessible(true);
-        Object claude = constructor.newInstance(directory, "claude-native-session", fake.toString());
-        Field field = DirectLlmClient.class.getDeclaredField("claudeServeClient");
-        field.setAccessible(true);
-        field.set(client, claude);
+        fake.install(client, directory, "claude-native-session");
     }
 
     private static int occurrences(String text, String needle) {

@@ -99,7 +99,7 @@ class DirectLlmClientToolSchemaTest {
 
     @Test
     void compatibleProvidersKeepTheirLegacyTokenParameter() throws Exception {
-        for (String provider : List.of("zai", "deepseek", "ollama", "custom")) {
+        for (String provider : List.of("zai", "deepseek", "custom")) {
             JsonNode request = captureRequest(provider, "test-model", null, false, 8192, 0, "hello");
             assertEquals(8192, request.path("max_tokens").asInt(), provider);
             assertFalse(request.has("max_completion_tokens"), provider);

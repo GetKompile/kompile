@@ -257,6 +257,35 @@ class ChatSessionMetricsTest {
             assertEquals(2, counts.get("Bash").get());
             assertEquals(1, counts.get("Read").get());
         }
+
+        @Test
+        void toolTallySince_countsOnlyTheCallsOfOneTurn() {
+            metrics.recordToolCall("Bash", false, 100);
+            metrics.recordToolCall("Read", true, 50);
+            ChatSessionMetrics.ToolTally turnStart = metrics.toolTally();
+
+            metrics.recordToolCall("Bash", false, 100);
+            metrics.recordToolCall("Bash", true, 100);
+            metrics.recordToolCall("Grep", false, 10);
+            ChatSessionMetrics.ToolTally turn = metrics.toolTally().since(turnStart);
+
+            assertEquals(3, turn.calls());
+            assertEquals(1, turn.errors());
+            assertEquals(Map.of("Bash", 2, "Grep", 1), turn.byTool());
+            assertEquals(5, metrics.toolTally().calls());
+        }
+
+        @Test
+        void toolTallySince_emptyWhenTheTurnRanNoTools() {
+            metrics.recordToolCall("Bash", false, 100);
+            ChatSessionMetrics.ToolTally turnStart = metrics.toolTally();
+
+            ChatSessionMetrics.ToolTally turn = metrics.toolTally().since(turnStart);
+
+            assertEquals(0, turn.calls());
+            assertEquals(0, turn.errors());
+            assertTrue(turn.byTool().isEmpty());
+        }
     }
 
     // ===================================================================
@@ -294,6 +323,18 @@ class ChatSessionMetricsTest {
         }
 
         @Test
+        void recordProviderCompaction_countsWithoutTokenTotals() {
+            metrics.recordCompaction(50000, 25000);
+            metrics.recordProviderCompaction();
+
+            assertEquals(2, metrics.getCompactionEvents());
+            assertEquals(50000, metrics.getTotalTokensBeforeCompaction());
+            assertEquals(25000, metrics.getTotalTokensSavedByCompaction());
+            assertEquals(50000, metrics.getLastCompactionBeforeTokens());
+            assertEquals(25000, metrics.getLastCompactionAfterTokens());
+        }
+
+        @Test
         void noCompactions_zeroAggregates() {
             assertEquals(0, metrics.getTotalTokensBeforeCompaction());
             assertEquals(0, metrics.getTotalTokensSavedByCompaction());
@@ -325,6 +366,16 @@ class ChatSessionMetricsTest {
             metrics.addChangeListener(() -> fires[0]++);
 
             metrics.recordCompaction(1000, 500);
+
+            assertEquals(1, fires[0]);
+        }
+
+        @Test
+        void recordProviderCompaction_firesListener() {
+            int[] fires = {0};
+            metrics.addChangeListener(() -> fires[0]++);
+
+            metrics.recordProviderCompaction();
 
             assertEquals(1, fires[0]);
         }

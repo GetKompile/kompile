@@ -22,6 +22,7 @@ import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatMemory;
 import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
+import ai.kompile.cli.main.chat.SharedProcessMirror;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
@@ -38,19 +39,30 @@ import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ProcessManagementTool;
+import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
+import ai.kompile.cli.main.chat.workflow.WorkflowModelDefaults;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -228,10 +240,17 @@ public final class HeadlessAgentRunner {
     public record Result(int exitCode, String text, String sessionId) {}
 
     private final WebHarnessControls webControls;
+    /** The web command the caller already resolved; resolving it again would apply its effects twice. */
+    private final WebCommandResolver.Resolution resolvedCommand;
 
     public HeadlessAgentRunner() { this(null); }
 
-    public HeadlessAgentRunner(WebHarnessControls webControls) { this.webControls = webControls; }
+    public HeadlessAgentRunner(WebHarnessControls webControls) { this(webControls, null); }
+
+    public HeadlessAgentRunner(WebHarnessControls webControls, WebCommandResolver.Resolution resolvedCommand) {
+        this.webControls = webControls;
+        this.resolvedCommand = resolvedCommand;
+    }
 
     public Result run(Options opts) {
         synchronized (STDOUT_REDIRECT_LOCK) {
@@ -286,6 +305,7 @@ public final class HeadlessAgentRunner {
         // Explicit web input only: commands cannot fall through into an LLM, even
         // without provider configuration. Do not load memory/project instructions first.
         WebCommandResolver.Resolution webResolution = opts.webInput() == null ? null
+                : resolvedCommand != null ? resolvedCommand
                 : WebCommandResolver.resolve(opts.webInput(), opts.workingDirectory(),
                         opts.sessionStateStoreOrDefault(), opts.chatConfig());
         if (webResolution != null && webResolution.isCommandOutcome()) {
@@ -370,33 +390,22 @@ public final class HeadlessAgentRunner {
             agentRegistry.register(custom);
         }
         RoleManager roleManager = new RoleManager(opts.workingDirectory());
-        String localAgent = firstNonBlank(
+        String defaultAgent = firstNonBlank(
                 serverMode ? null : opts.agentName(), config.getDefaultAgent(), "coder");
         String serverAgent = serverMode
-                ? firstNonBlank(opts.agentName(), "claude-cli") : localAgent;
-        if (opts.roleName() != null && !opts.roleName().isBlank()) {
-            RoleConfig role = roleManager.getRole(opts.roleName());
-            if (role == null) {
-                String msg = "Role not found: " + opts.roleName();
-                events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 2));
-                if (opts.outputMode() != OutputMode.JSON) realErr.println(msg);
-                return new Result(2, "", opts.sessionId());
-            }
-            agentRegistry.register(role.toAgentConfig());
-            localAgent = role.getName();
+                ? firstNonBlank(opts.agentName(), "claude-cli") : defaultAgent;
+        String localAgent = localTurnAgent(
+                agentRegistry, roleManager, opts.roleName(), durableRole, defaultAgent);
+        if (localAgent == null) {
+            String msg = "Role not found: " + opts.roleName();
+            events.publishTerminal(HeadlessRunEvent.failed(opts.sessionId(), msg, 2));
+            if (opts.outputMode() != OutputMode.JSON) realErr.println(msg);
+            return new Result(2, "", opts.sessionId());
         }
-        String effectiveAgentBase = serverMode ? serverAgent : localAgent;
         boolean effectiveRag = serverMode && opts.ragEnabled();
-        if (durableRole != null && !durableRole.isBlank()) {
-            RoleConfig durableRoleConfig = roleManager.getRole(durableRole);
-            if (durableRoleConfig != null) {
-                agentRegistry.register(durableRoleConfig.toAgentConfig());
-                effectiveAgentBase = durableRoleConfig.getName();
-            }
-        }
-        // Effectively-final capture for the turn lambda below; the durable role
-        // name wins over the plain server/local agent.
-        final String effectiveAgent = effectiveAgentBase;
+        // Effectively-final capture for the turn lambda below; a role (explicit or
+        // durable) names a local run.
+        final String effectiveAgent = serverMode ? serverAgent : localAgent;
 
         Map<String, String> effectiveConfiguration = new LinkedHashMap<>();
         effectiveConfiguration.put("mode", serverMode ? "server" : "standard");
@@ -410,6 +419,8 @@ public final class HeadlessAgentRunner {
                 ? durableRole : nullToEmpty(opts.roleName()));
         effectiveConfiguration.put("rag", Boolean.toString(effectiveRag));
         effectiveConfiguration.put("memory", Boolean.toString(opts.memoryEnabled()));
+        String workflowTeam = workflowJson(config, mapper);
+        if (workflowTeam != null) effectiveConfiguration.put("workflow", workflowTeam);
         events.publish(HeadlessRunEvent.started(opts.sessionId(),
                 serverMode ? null : config.getModel(),
                 opts.workingDirectory().toString(), effectiveConfiguration));
@@ -453,10 +464,17 @@ public final class HeadlessAgentRunner {
             // The JSONL reader owns stdin. ASK must fail closed, never consume a control frame.
             permissionService.setPromptListener(ignored -> permissionService.submitPromptResponse("deny"));
         }
-        BackgroundProcessManager processManager = new BackgroundProcessManager(
-                opts.sessionId(), opts.workingDirectory());
+        // Coordination first: it creates the project's .kompile directory, where process
+        // logs are then rooted, so the first run's logs land where later runs look.
         CoordinationStateManager coordinationManager = new CoordinationStateManager(
                 opts.workingDirectory(), opts.sessionId(), mapper);
+        BackgroundProcessManager processManager = new BackgroundProcessManager(
+                opts.sessionId(), opts.workingDirectory());
+        if (webControls != null && BackgroundProcessManager.isSafeSessionId(opts.sessionId())) {
+            // The web starts one harness per message: the session's process history lets
+            // later runs, and commands sent between runs, reach what this run launches.
+            processManager.enableSessionHistory();
+        }
         TerminalRenderer renderer = new TerminalRenderer();
         ToolRegistry toolRegistry = ToolRegistryFactory.create(
                 mapper, serverMode ? opts.serverBaseUrl() : "", agentRegistry,
@@ -520,11 +538,12 @@ public final class HeadlessAgentRunner {
             @Override
             public void onToolComplete(String callId, String toolName, String rawInput, ToolResult result) {
                 String key = callId == null ? "" : callId;
-                long started = toolStarts.getOrDefault(key, System.currentTimeMillis());
-                long duration = Math.max(0, System.currentTimeMillis() - started);
+                Long started = toolStarts.remove(key);
+                long duration = started == null ? 0 : Math.max(0, System.currentTimeMillis() - started);
                 toolCounter.inc();
                 events.publish(HeadlessRunEvent.toolCompleted(opts.sessionId(), callId, toolName,
-                        rawInput, result != null && !result.isError(), duration));
+                        rawInput, result != null && !result.isError(), duration,
+                        toolDetail(mapper, toolName, rawInput, result)));
             }
         });
         ChatSessionMetrics metrics = new EventEmittingMetrics(opts.sessionId(), events);
@@ -579,18 +598,32 @@ public final class HeadlessAgentRunner {
         String failureMessage = null;
         long start = System.currentTimeMillis();
         McpBundleToolLoader mcpBundleTools = null;
+        SharedProcessMirror sharedMirror = null;
         try {
             // Process-backed MCP bundles are intentionally acquired inside the cleanup
             // scope so even a required-server startup failure closes headless resources.
             mcpBundleTools = McpBundleToolLoader.load(
                     opts.workingDirectory(), toolRegistry, opts.sessionId());
             final String turnAgent = localAgent;
-            var processTool = webControls == null ? null
-                    : new ai.kompile.cli.main.chat.tools.ProcessManagementTool(processManager, coordinationManager);
-            var controlContext = webControls == null ? null
-                    : new ai.kompile.cli.main.chat.tools.ToolContext(opts.sessionId(),
+            if (webControls != null) {
+                // As in the CLI, processes owned by other sessions join the live activity panel.
+                sharedMirror = new SharedProcessMirror(processManager, coordinationManager, opts.sessionId());
+                sharedMirror.start();
+            }
+            ProcessManagementTool processTool = webControls == null ? null
+                    : new ProcessManagementTool(processManager, coordinationManager);
+            ToolContext controlContext = webControls == null ? null
+                    : new ToolContext(opts.sessionId(),
                     agentRegistry.get(turnAgent), permissionService, opts.workingDirectory(), toolRegistry);
             AtomicBoolean firstLiveTurn = new AtomicBoolean(true);
+            if (webControls != null) {
+                WebChatInput initial = opts.webInput();
+                webControls.setInitialDisplay(initial.rawInput());
+                // A live /command resolves as it would between runs, in the same session state.
+                webControls.setCommandResolver(raw -> WebCommandResolver.resolve(
+                        new WebChatInput(WebChatInput.VERSION, raw, "", initial.sessionId()),
+                        opts.workingDirectory(), opts.sessionStateStoreOrDefault(), opts.chatConfig()));
+            }
             response = webControls != null
                     ? webControls.run(loop, processManager, opts.sessionId(), outboundPrompt, opts.timeoutMs(), cancel,
                     prompt -> {
@@ -603,11 +636,8 @@ public final class HeadlessAgentRunner {
                         metrics.recordAssistantTurn(text, turnDuration);
                         return text;
                     },
-                    (action, id) -> {
-                        controlContext.checkPermission("process", "Web process " + action + ": " + id);
-                        return processTool.execute(mapper.createObjectNode().put("action", action)
-                                .put("process_id", id).put("tail_lines", 50), controlContext);
-                    }, events::publish, toolRegistry.getSubagentRunner())
+                    WebHarnessControls.processControl(processTool, controlContext),
+                    events::publish, toolRegistry.getSubagentRunner())
                     : opts.timeoutMs() > 0
                     ? runWithTimeout(loop, opts, outboundPrompt,
                     localAgent, serverAgent, effectiveRag, cancel)
@@ -626,6 +656,10 @@ public final class HeadlessAgentRunner {
                 realErr.println("Error: " + failureMessage);
             }
         } finally {
+            // Stop mirroring before the manager it feeds closes.
+            if (sharedMirror != null) {
+                sharedMirror.close();
+            }
             if (mcpBundleTools != null) {
                 mcpBundleTools.close();
             }
@@ -724,7 +758,36 @@ public final class HeadlessAgentRunner {
         }
     }
 
-    private static String firstNonBlank(String... values) {
+    /**
+     * The agent a local turn runs as: the explicit role, else the session's durable
+     * role, else {@code agent}; a role it returns is registered in {@code agents}. Null
+     * when the explicit role does not exist; a durable role that no longer exists is
+     * ignored. Web commands sent between runs resolve their agent here too, so they
+     * are permitted exactly as the live run would permit them.
+     */
+    static String localTurnAgent(AgentRegistry agents, RoleManager roles, String roleName,
+                                 String durableRole, String agent) {
+        if (roleName != null && !roleName.isBlank()) {
+            RoleConfig role = roles.getRole(roleName);
+            if (role == null) {
+                return null;
+            }
+            agents.register(role.toAgentConfig());
+            return role.getName();
+        }
+        if (durableRole != null && !durableRole.isBlank()) {
+            RoleConfig role = roles.getRole(durableRole);
+            if (role != null) {
+                // The loop runs this agent: without registering the role it only renamed
+                // the run while its prompt, tools and permissions never applied.
+                agents.register(role.toAgentConfig());
+                return role.getName();
+            }
+        }
+        return agent;
+    }
+
+    static String firstNonBlank(String... values) {
         if (values != null) {
             for (String value : values) {
                 if (value != null && !value.isBlank()) return value;
@@ -737,6 +800,20 @@ public final class HeadlessAgentRunner {
         return value == null ? "" : value;
     }
 
+    /**
+     * The terminal's completion row and body for stream-json clients. Presentation only: a
+     * rendering failure publishes the completion without it rather than not at all.
+     */
+    private static JsonNode toolDetail(ObjectMapper mapper, String toolName, String rawInput,
+                                       ToolResult result) {
+        if (result == null) return null;
+        try {
+            return ToolCallJson.detail(mapper, toolName, rawInput, result);
+        } catch (RuntimeException renderFailure) {
+            return null;
+        }
+    }
+
     /** The run's auth as reported in its events; package-private for tests. */
     static String effectiveAuth(ChatConfig config) {
         if (config == null) return "none";
@@ -745,6 +822,54 @@ public final class HeadlessAgentRunner {
         var auth = config.resolveRequestAuth();
         if (auth == null || auth.token() == null || auth.token().isBlank()) return "none";
         return auth.oauth() ? "oauth" : "api-key";
+    }
+
+    /**
+     * The session's workflow team for its session event, or null without one: the lead
+     * first, each participant's role, the model {@code config} runs it on, capabilities
+     * and delegation edges, the routing, and the gates with those already approved.
+     * Models appear by label, so credentials and endpoints stay out. Package-private for tests.
+     */
+    static String workflowJson(ChatConfig config, ObjectMapper mapper) {
+        WorkflowSessionContext session = WorkflowSessionContext.current();
+        if (session == null) return null;
+        WorkflowTeam team = session.snapshot().team();
+        ObjectNode root = mapper.createObjectNode();
+        root.put("name", team.name());
+        root.put("version", team.version());
+        root.put("lead", team.lead());
+        List<WorkflowTeam.Participant> ordered = new ArrayList<>();
+        ordered.add(team.participant(team.lead()));
+        team.participants().values().stream()
+                .filter(participant -> !participant.id().equals(team.lead()))
+                .forEach(ordered::add);
+        ArrayNode participants = root.putArray("participants");
+        for (WorkflowTeam.Participant participant : ordered) {
+            ObjectNode entry = participants.addObject();
+            entry.put("id", participant.id());
+            entry.put("role", participant.role());
+            entry.put("model", WorkflowModelDefaults.describe(team, participant, config));
+            ArrayNode capabilities = entry.putArray("capabilities");
+            participant.capabilities().forEach(capabilities::add);
+            if (participant.canDelegate()) {
+                ArrayNode delegatesTo = entry.putArray("delegatesTo");
+                participant.delegatesTo().forEach(delegatesTo::add);
+            }
+        }
+        ObjectNode routing = root.putObject("routing");
+        team.routing().forEach(routing::put);
+        WorkflowTeam.Gates gates = team.gates();
+        ObjectNode gateNode = root.putObject("gates");
+        if (gates.hasImplementationGate()) gateNode.put("implementationRequires", gates.implementationRequires());
+        if (gates.hasCompletionGate()) gateNode.put("completionRequires", gates.completionRequires());
+        ArrayNode approved = gateNode.putArray("approved");
+        new TreeSet<>(session.enforcement().satisfiedGates()).forEach(approved::add);
+        root.put("maxConcurrentWorkers", team.maxConcurrentWorkers());
+        try {
+            return mapper.writeValueAsString(root);
+        } catch (JsonProcessingException e) {
+            return null;
+        }
     }
 
     // ========================================================================

@@ -602,7 +602,7 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println("  Saved to: " + exportResult.getSessionPath());
             System.out.println();
 
-            // Inject MCP tools FIRST so .mcp.json exists before building the agent command
+            // Inject MCP tools FIRST so the config exists before building the agent command
             Path injectedSettingsFile = null;
             if (injectTools) {
                 Path agentWorkingDir = exportResult.getWorkingDirectory() != null
@@ -627,7 +627,7 @@ public class ResumeCommand implements Callable<Integer> {
             }
 
             // Build the agent command AFTER injection so --mcp-config can reference the written file
-            List<String> agentCommand = buildAgentCommand(agent, exportResult, injectedSettingsFile != null);
+            List<String> agentCommand = buildAgentCommand(agent, exportResult, injectedSettingsFile);
 
             System.out.println();
             System.out.println("Launching agent with native session resume...");
@@ -712,7 +712,7 @@ public class ResumeCommand implements Callable<Integer> {
             ConversationExporter.ExportResult nativeResult = new ConversationExporter.ExportResult(
                     nativeSessionId, normalizedAgent, null, resumeCommand, workingDir);
             List<String> command = buildAgentCommand(
-                    normalizedAgent, nativeResult, injectedSettingsFile != null);
+                    normalizedAgent, nativeResult, injectedSettingsFile);
             System.out.println("Resuming " + normalizedAgent + " native session directly: " + nativeSessionId);
             System.out.println(DIM + "  Command: " + String.join(" ", command) + RESET);
             System.out.println(DIM + "  Working dir: " + workingDir + RESET);
@@ -928,14 +928,17 @@ public class ResumeCommand implements Callable<Integer> {
     /**
      * Build the agent command for resume.
      * <p>
-     * Tool injection is handled the same way as PassthroughCommand: we write
-     * .mcp.json (or equivalent) to the working directory and let the agent
-     * auto-discover it. We do NOT pass --mcp-config or --system-prompt flags
-     * because those can conflict with --resume on some agents.
+     * Tool injection is handled the same way as PassthroughCommand: most agents
+     * auto-discover the config written to their working directory. Claude Code
+     * is handed the config written for this launch with {@code --mcp-config=},
+     * and Pi the extension that loads its MCP support, right after the executable.
+     *
+     * @param injectedSettingsFile the file {@code McpToolInjection.injectTools}
+     *                             returned, or null when no tools were injected
      */
     private List<String> buildAgentCommand(String agent,
                                            ai.kompile.cli.main.chat.format.ConversationExporter.ExportResult exportResult,
-                                           boolean toolsInjected) {
+                                           Path injectedSettingsFile) {
         List<String> cmd = new ArrayList<>();
         String name = agent.toLowerCase();
 
@@ -946,13 +949,14 @@ public class ResumeCommand implements Callable<Integer> {
         }
 
         cmd.add(resumeParts[0]);
-        if (toolsInjected && ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
+        if (injectedSettingsFile != null) {
             try {
                 cmd.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
                         exportResult.getWorkingDirectory() != null
-                                ? exportResult.getWorkingDirectory() : Path.of(System.getProperty("user.dir")), agent));
+                                ? exportResult.getWorkingDirectory() : Path.of(System.getProperty("user.dir")),
+                        agent, injectedSettingsFile));
             } catch (IOException e) {
-                System.err.println("Warning: Could not provision Pi MCP adapter: " + e.getMessage());
+                System.err.println("Warning: Could not add MCP launch options: " + e.getMessage());
             }
         }
         if (name.contains("codex") && exportResult.getWorkingDirectory() != null) {
@@ -985,7 +989,7 @@ public class ResumeCommand implements Callable<Integer> {
         // (see https://github.com/anthropics/claude-code/issues/36060).
         // The --append-system-prompt tells the model to check tool availability,
         // which also gives the MCP server time to complete initialization.
-        if (toolsInjected && name.contains("claude")) {
+        if (injectedSettingsFile != null && name.contains("claude")) {
             cmd.add("--append-system-prompt");
             cmd.add("This is a resumed session with kompile MCP tools. "
                     + "If you need to use kompile tools (mcp__kompile__*) and they appear "
@@ -993,9 +997,6 @@ public class ResumeCommand implements Callable<Integer> {
                     + "The kompile MCP server should be connected — if it shows as disconnected, "
                     + "wait a moment and retry /mcp.");
         }
-
-        // MCP tools are auto-discovered from the provider config. Pi additionally
-        // receives the bundled extension path immediately after its executable.
 
         return cmd;
     }

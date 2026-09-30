@@ -43,6 +43,17 @@ public interface ChatHarnessClient {
         throw new IllegalStateException("Session configuration snapshot unavailable");
     }
 
+    /**
+     * Approves a gate of the workflow team a browser session recorded, between runs, as
+     * {@code /workflow approve} does in the terminal; an empty {@code gate} approves the one
+     * that blocks next. Returns {@code ok} and a {@code message}, and on success the
+     * {@code workflow}, the {@code gate} approved and every gate {@code approved} so far.
+     */
+    default Map<String, Object> approveWorkflowGate(String browserSessionId, String workingDirectory,
+                                                    String gate) {
+        throw new IllegalStateException("Workflow gate approval unavailable");
+    }
+
     /** Model context budget projected from {@link #capabilities}. */
     Map<String, Object> contextBudget(String agentName, String workingDirectory);
 }

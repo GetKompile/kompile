@@ -9,6 +9,7 @@
  */
 package ai.kompile.cli.main.chat.render;
 
+import ai.kompile.cli.main.chat.context.ConversationLedger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -241,6 +242,21 @@ class CompactionServiceModelAwareTest {
         assertTrue(digest.contains("User: How do I build the dist?"));
         assertTrue(digest.contains("Assistant: Run build-dist.sh"));
         assertTrue(digest.contains("[bash result:"), "tool result must collapse to its summary");
+    }
+
+    @Test
+    void renderDigestKeepsAnEarlierSummaryWhole() {
+        CompactionService service = new CompactionService(mapper, 8_192);
+        String summary = "The dist builds from the repo root with build-dist.sh. ".repeat(20).strip();
+        String note = "n".repeat(600);
+        String digest = service.renderDigest(List.of(
+                CompactionService.ConversationEntry.system(ConversationLedger.SUMMARY_MARKER + summary),
+                CompactionService.ConversationEntry.system(note),
+                CompactionService.ConversationEntry.user("Which variant ships CUDA?")));
+        assertTrue(digest.startsWith(summary), "the summary stands for the history before it");
+        assertFalse(digest.contains(ConversationLedger.SUMMARY_MARKER.strip()));
+        assertTrue(digest.contains("Note: " + "n".repeat(400) + "…"), "other notes are still clipped");
+        assertTrue(digest.contains("User: Which variant ships CUDA?"));
     }
 
     @Test

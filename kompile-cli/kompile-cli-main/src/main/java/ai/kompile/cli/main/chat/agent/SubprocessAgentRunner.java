@@ -25,6 +25,7 @@ import ai.kompile.cli.main.chat.McpUrlResolver;
 import ai.kompile.cli.main.chat.PassthroughStreamParser;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.mcp.McpDiagnostics;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.ChatActivityPhase;
@@ -36,8 +37,11 @@ import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.terminal.InterruptEscalation;
 import ai.kompile.cli.main.chat.terminal.ScriptPtyProvider;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -324,12 +328,15 @@ public class SubprocessAgentRunner {
     public void injectMcpTools() {
         managedCommandPrefixArguments = List.of();
         if (!injectTools) return;
+        // The agent's kompile MCP server runs as the workflow participant this agent was
+        // launched as (a delegate's own identity), not as the process that launches it.
+        Map<String, String> workflowEnvironment = WorkflowSessionContext.workflowEnvironmentOf(extraEnvironment);
         try {
             if (agent != null && agent.toLowerCase(Locale.ROOT).contains("codex")) {
-                managedCommandPrefixArguments =
-                        McpToolInjection.codexCommandLineOverrides(Path.of(workingDir));
+                managedCommandPrefixArguments = McpToolInjection.codexCommandLineOverrides(
+                        Path.of(workingDir), workflowEnvironment);
                 if (managedCommandPrefixArguments.isEmpty()) {
-                    System.err.println(YELLOW
+                    McpDiagnostics.log(YELLOW
                             + "Warning: Could not resolve kompile CLI launcher for MCP injection"
                             + RESET);
                 } else {
@@ -340,16 +347,16 @@ public class SubprocessAgentRunner {
 
             String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
             injectedSettingsFile = McpToolInjection.injectTools(
-                    Path.of(workingDir), agent, sseUrl);
+                    Path.of(workingDir), agent, sseUrl, workflowEnvironment);
             if (injectedSettingsFile != null) {
                 managedCommandPrefixArguments = McpToolInjection.commandLineOverrides(
-                        Path.of(workingDir), agent);
+                        Path.of(workingDir), agent, injectedSettingsFile);
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
                 emitLine(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
                         + DIM + " (" + injectedSettingsFile + ")" + RESET);
             }
         } catch (IOException e) {
-            System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+            McpDiagnostics.log(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
         }
     }
 
@@ -1804,14 +1811,35 @@ public class SubprocessAgentRunner {
     }
 
     private void inspectBlockingNotice(String line, Process process) {
-        if (line == null || line.isBlank() || blockingNotice != null) return;
-        String lower = line.toLowerCase(Locale.ROOT)
-                .replaceAll("\\u001b\\[[;\\d]*m", "");
+        if (blockingNotice != null) return;
+        String notice = blockingNoticeFor(agent, line);
+        if (notice != null) {
+            blockingNotice = notice;
+            cancelSignal.set(true);
+            killProcess(process);
+        }
+    }
+
+    /**
+     * Classifies one line of agent output as a quota, authentication or availability failure
+     * and returns the notice to stop the agent with, or {@code null}. A structured agent streams
+     * JSON events whose payloads carry tool output, file contents and session metadata (Claude
+     * Code's init event has {@code analytics_disabled}), so only an event that reports an error
+     * is classified, by its error text. Plain-text lines are the CLI's own diagnostics.
+     */
+    static String blockingNoticeFor(String agent, String line) {
+        if (line == null || line.isBlank()) return null;
+        String evidence = stripAnsi(line).strip();
+        if (evidence.startsWith("{") && isStructuredAgent(agent.toLowerCase(Locale.ROOT))) {
+            evidence = structuredErrorText(evidence);
+            if (evidence == null) return null;
+        }
+        String lower = evidence.toLowerCase(Locale.ROOT);
         String notice = null;
         if (lower.contains("usage limit") || lower.contains("weekly limit")
                 || lower.contains("monthly limit") || lower.contains("quota exceeded")
                 || lower.contains("rate limit") || lower.contains("out of credits")
-                || lower.contains("too many requests")) {
+                || lower.contains("too many requests") || lower.contains("hit your limit")) {
             notice = "usage limit or quota reached";
         } else if (lower.contains("not authenticated") || lower.contains("not logged in")
                 || lower.contains("authentication required") || lower.contains("login required")) {
@@ -1820,11 +1848,47 @@ public class SubprocessAgentRunner {
                 || lower.contains("command not found") || lower.contains("permission denied")) {
             notice = "agent is disabled or unavailable";
         }
-        if (notice != null) {
-            blockingNotice = notice + " (" + line.trim() + ")";
-            cancelSignal.set(true);
-            killProcess(process);
+        return notice == null ? null : notice + " (" + evidence + ")";
+    }
+
+    /**
+     * Returns the error text of a structured event that reports a failure (Claude's
+     * {@code is_error} result, a {@code type:"error"} event other than a Gemini warning, Codex's
+     * {@code turn.failed}, a {@code status:"error"} result, a Pi message that stopped on an error,
+     * a Pi retry that gave up), or {@code null} for any other line.
+     */
+    private static String structuredErrorText(String json) {
+        JsonNode node;
+        try {
+            node = JsonUtils.standardMapper().readTree(json);
+        } catch (IOException e) {
+            return null;
         }
+        if (node == null || !node.isObject()) return null;
+        String type = node.path("type").asText("");
+        JsonNode piMessage = node.path("message");
+        if ("error".equals(piMessage.path("stopReason").asText(""))) {
+            return piMessage.path("errorMessage").asText("");
+        }
+        if ("auto_retry_end".equals(type)) {
+            return node.path("success").asBoolean(true) ? null : node.path("finalError").asText("");
+        }
+        boolean error = node.path("is_error").asBoolean(false)
+                || ("error".equals(type) && !"warning".equals(node.path("severity").asText("")))
+                || type.endsWith(".failed") || "error".equals(node.path("status").asText(""));
+        if (!error) return null;
+        StringJoiner text = new StringJoiner(" ");
+        for (String field : List.of("result", "message", "error")) {
+            JsonNode value = node.path(field);
+            if (value.isTextual()) {
+                text.add(value.asText());
+            } else if (value.isObject()) {
+                JsonNode message = value.path("message").isTextual()
+                        ? value.path("message") : value.path("data").path("message");
+                text.add(message.isTextual() ? message.asText() : value.toString());
+            }
+        }
+        return text.toString();
     }
 
     private void killProcess(Process process) {

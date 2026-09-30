@@ -18,6 +18,12 @@ package ai.kompile.cli.main.chat.mcp;
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.TranscriptLogScope;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
+import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -27,7 +33,10 @@ import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -35,6 +44,12 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * MCP config injection for delegated CLI agents. {@link McpToolInjection#injectTools}
+ * first cleans leaked Kompile entries out of agent configs under the user's home
+ * (Codex, Gemini, OpenCode), so the class runs in a temporary one.
+ */
+@TemporaryUserHome
 class McpToolInjectionTest {
 
     @TempDir
@@ -82,8 +97,7 @@ class McpToolInjectionTest {
     }
 
     @Test
-    void claudeUsesProjectServersDirectlyAndCleanupPreservesConcurrentMcpEdits()
-            throws Exception {
+    void aClaudeLaunchGetsAConfigOfItsOwnAndLeavesTheProjectMcpJsonAlone() throws Exception {
         String previousBinary = System.getProperty("kompile.cli.binary");
         Path workDir = Files.createDirectories(tempDir.resolve("claude-custom-work"));
         Path binary = createExecutable("claude-custom-kompile");
@@ -92,34 +106,113 @@ class McpToolInjectionTest {
         ObjectNode original = mapper.createObjectNode();
         original.putObject("mcpServers").putObject("project-tools")
                 .put("command", "project-mcp");
-        Files.writeString(configPath,
-                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(original));
+        String originalText = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(original);
+        Files.writeString(configPath, originalText);
+        Path launchConfig = null;
 
         try {
             System.setProperty("kompile.cli.binary", binary.toString());
-            McpToolInjection.injectTools(
+            launchConfig = McpToolInjection.injectTools(
                     workDir, "claude", "http://localhost:8080/mcp/sse");
 
-            JsonNode injected = mapper.readTree(configPath.toFile());
-            assertTrue(injected.path("mcpServers").has("project-tools"));
-            JsonNode kompile = injected.path("mcpServers").path("kompile");
+            assertNotEquals(configPath, launchConfig);
+            assertEquals(originalText, Files.readString(configPath));
+            assertFalse(Files.exists(workDir.resolve(".mcp.json.kompile-backup")));
+            assertEquals(List.of("--mcp-config=" + launchConfig),
+                    McpToolInjection.commandLineOverrides(workDir, "claude", launchConfig));
+            assertEquals(List.of(), McpToolInjection.launchConfigArguments(configPath));
+
+            // Claude Code loads the project's servers itself.
+            JsonNode servers = mapper.readTree(launchConfig.toFile()).path("mcpServers");
+            assertEquals(1, servers.size(), servers.toString());
+            JsonNode kompile = servers.path("kompile");
             assertEquals(binary.toString(), kompile.path("command").asText());
+            List<String> args = new ArrayList<>();
+            kompile.path("args").forEach(arg -> args.add(arg.asText()));
+            assertEquals(List.of("mcp-stdio", "--work-dir", workDir.toString()), args);
             assertFalse(kompile.has("url"), "custom servers force Claude's Kompile bridge to stdio");
             assertEquals("true", kompile.path("env")
                     .path(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV).asText());
+
+            McpToolInjection.removeTools(launchConfig);
+            assertFalse(Files.exists(launchConfig));
+            assertEquals(originalText, Files.readString(configPath));
+        } finally {
+            McpToolInjection.removeTools(launchConfig);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    void projectStartsRegistrationOutlivesAgentLaunchesAndKeepsConcurrentMcpEdits() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("project-start-work"));
+        Path binary = createExecutable("project-start-kompile");
+        Path configPath = workDir.resolve(".mcp.json");
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode original = mapper.createObjectNode();
+        original.putObject("mcpServers").putObject("project-tools")
+                .put("command", "project-mcp");
+        Files.writeString(configPath,
+                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(original));
+        Path registration = null;
+
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            registration = McpToolInjection.injectProjectMcpJson(workDir);
+            assertEquals(configPath, registration);
+            JsonNode kompile = mapper.readTree(configPath.toFile()).path("mcpServers").path("kompile");
+            assertEquals(binary.toString(), kompile.path("command").asText());
+            assertEquals("true", kompile.path("env")
+                    .path(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV).asText());
+
+            // A Claude Code launch used to restore the shared file's backup on its way in
+            // and out, which removed the live registration from every session in the project.
+            String registered = Files.readString(configPath);
+            McpToolInjection.removeTools(McpToolInjection.injectTools(workDir, "claude", null));
+            assertEquals(registered, Files.readString(configPath));
+
+            // Any other agent's launch cleaned up after crashed injections by restoring the
+            // backup beside a .mcp.json that carries the Kompile server, which is what a live
+            // registration looks like.
+            McpToolInjection.removeTools(McpToolInjection.injectTools(workDir, "opencode", null));
+            assertEquals(registered, Files.readString(configPath));
+            assertTrue(Files.exists(workDir.resolve(".mcp.json.kompile-backup")),
+                    "the registration keeps the backup it restores from");
 
             ObjectNode lateServer = mapper.createObjectNode().put("command", "late-mcp");
             new McpConfigStore(workDir).put("late-tools", lateServer,
                     McpConfigStore.Scope.PROJECT, false);
 
-            McpToolInjection.removeTools(configPath);
+            McpToolInjection.removeTools(registration);
+            registration = null;
             JsonNode restored = mapper.readTree(configPath.toFile()).path("mcpServers");
             assertTrue(restored.has("project-tools"));
             assertTrue(restored.has("late-tools"));
             assertFalse(restored.has("kompile"));
         } finally {
-            McpToolInjection.removeTools(configPath);
+            McpToolInjection.removeTools(registration);
             restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    void aClaudeLaunchReachesARunningAppOverATypedSseEntry() throws Exception {
+        Path workDir = Files.createDirectories(tempDir.resolve("claude-sse-work"));
+        Path launchConfig = null;
+        try {
+            launchConfig = McpToolInjection.injectTools(
+                    workDir, "claude", "http://localhost:8080/mcp/sse");
+
+            JsonNode kompile = new ObjectMapper().readTree(launchConfig.toFile())
+                    .path("mcpServers").path("kompile");
+            // Claude Code skips an SSE server whose type is missing, without saying so.
+            assertEquals("sse", kompile.path("type").asText());
+            assertEquals("http://localhost:8080/mcp/sse", kompile.path("url").asText());
+            assertFalse(kompile.has("command"));
+            assertFalse(Files.exists(workDir.resolve(".mcp.json")));
+        } finally {
+            McpToolInjection.removeTools(launchConfig);
         }
     }
 
@@ -350,6 +443,142 @@ class McpToolInjectionTest {
             restoreProperty("user.home", previousHome);
             restoreProperty("kompile.pi.adapter.path", previousAdapter);
         }
+    }
+
+    @Test
+    void aDelegatedClaudesKompileServerRunsOnStdioAsItsParticipant() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("claude-workflow-work"));
+        Path binary = createExecutable("claude-workflow-kompile");
+        Path launchConfig = null;
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            launchConfig = McpToolInjection.injectTools(
+                    workDir, "claude", "http://localhost:8080/mcp/sse", workerIdentity());
+            assertFalse(Files.exists(workDir.resolve(".mcp.json")));
+
+            JsonNode kompile = new ObjectMapper().readTree(launchConfig.toFile()).path("mcpServers").path("kompile");
+            assertEquals(binary.toString(), kompile.path("command").asText());
+            // kompile-app's SSE server knows no teams; only the stdio server enforces them.
+            assertFalse(kompile.has("url"));
+            JsonNode env = kompile.path("env");
+            assertEquals(4, env.size());
+            assertEquals("wf", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME).asText());
+            assertEquals("worker", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT).asText());
+            assertEquals("s1", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION).asText());
+            assertEquals("true", env.path(McpBundleToolLoader.HOST_LOADS_PROJECT_ENV).asText());
+        } finally {
+            McpToolInjection.removeTools(launchConfig);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    void aDelegatedCodexCarriesItsParticipantInItsConfigAndOnItsCommandLine() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("codex-workflow-work"));
+        Path binary = createExecutable("codex-workflow-kompile");
+        Path configFile = null;
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            configFile = McpToolInjection.injectTools(
+                    workDir, "codex", "http://localhost:8080/mcp/sse", workerIdentity());
+
+            String toml = Files.readString(configFile);
+            assertTrue(toml.contains("\n[mcp_servers.kompile.env]\n"
+                    + WorkflowTeamEnforcement.ENV_WORKFLOW_NAME + " = \"wf\"\n"
+                    + WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT + " = \"worker\"\n"
+                    + WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION + " = \"s1\"\n"), toml);
+
+            List<String> overrides = McpToolInjection.codexCommandLineOverrides(workDir, workerIdentity());
+            assertEquals(List.of(
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_NAME + "=\"wf\"",
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT + "=\"worker\"",
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION + "=\"s1\""),
+                    overrides.subList(4, overrides.size()));
+        } finally {
+            McpToolInjection.removeTools(configFile);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    void anActiveWorkflowRunsTheLeadsKompileServerOnStdioAsTheLead() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("lead-work"));
+        Path binary = createExecutable("lead-kompile");
+        Path launchConfig = null;
+        WorkflowTeam team = new WorkflowTeam("wf-lead", 1, "designer",
+                Map.of(
+                        "designer", new WorkflowTeam.Participant("designer", "architect",
+                                "cli", List.of("read", "plan", "delegate"), List.of("reviewer")),
+                        "reviewer", new WorkflowTeam.Participant("reviewer", "reviewer",
+                                "cli", List.of("read", "validate"), List.of())),
+                Map.of("review", "reviewer"), null, null);
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            WorkflowSessionContext.activate(WorkflowTeamSnapshot.resolve(team, new RoleManager(workDir)));
+
+            launchConfig = McpToolInjection.injectTools(workDir, "claude", "http://localhost:8080/mcp/sse");
+            JsonNode kompile = new ObjectMapper().readTree(launchConfig.toFile()).path("mcpServers").path("kompile");
+            assertFalse(kompile.has("url"));
+            assertEquals("wf-lead", kompile.path("env").path(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME).asText());
+            assertEquals("designer",
+                    kompile.path("env").path(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT).asText());
+
+            List<String> lead = McpToolInjection.codexCommandLineOverrides(workDir);
+            assertEquals(List.of(
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_NAME + "=\"wf-lead\"",
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT + "=\"designer\""),
+                    lead.subList(4, lead.size()));
+            // A delegate's launch carries its own participant, not the lead's.
+            List<String> delegate = McpToolInjection.codexCommandLineOverrides(workDir,
+                    WorkflowSessionContext.inheritableEnvironment("reviewer"));
+            assertEquals(List.of(
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_NAME + "=\"wf-lead\"",
+                    "-c", "mcp_servers.kompile.env." + WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT + "=\"reviewer\""),
+                    delegate.subList(4, delegate.size()));
+        } finally {
+            WorkflowSessionContext.activate(null);
+            McpToolInjection.removeTools(launchConfig);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    @Test
+    void openCodeCarriesTheParticipantInTheLayoutItsVersionReads() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        Path workDir = Files.createDirectories(tempDir.resolve("opencode-workflow-work"));
+        Path binary = createExecutable("opencode-workflow-kompile");
+        Path written = null;
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            written = McpToolInjection.injectTools(
+                    workDir, "opencode", "http://localhost:8080/mcp/sse", workerIdentity());
+
+            // OpenCode 1.x reads opencode.json's "mcp" entries and their "environment";
+            // the legacy .opencode.json reads "mcpServers" and "env".
+            boolean current = written.getFileName().toString().equals("opencode.json");
+            JsonNode kompile = new ObjectMapper().readTree(written.toFile())
+                    .path(current ? "mcp" : "mcpServers").path("kompile");
+            assertFalse(kompile.has("url"));
+            JsonNode env = kompile.path(current ? "environment" : "env");
+            assertEquals("wf", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME).asText());
+            assertEquals("worker", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT).asText());
+            assertEquals("s1", env.path(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION).asText());
+        } finally {
+            McpToolInjection.removeTools(written);
+            restoreProperty("kompile.cli.binary", previousBinary);
+        }
+    }
+
+    /** The launch environment of a delegate run as participant {@code worker} of workflow {@code wf}. */
+    private static Map<String, String> workerIdentity() {
+        Map<String, String> env = new LinkedHashMap<>();
+        env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME, "wf");
+        env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT, "worker");
+        env.put(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION, "s1");
+        return env;
     }
 
     private static void restoreProperty(String name, String value) {

@@ -7,6 +7,8 @@ import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowLaunch;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeamSnapshot;
@@ -75,6 +77,8 @@ public class StdioTaskTool {
             "with its own context window, then returns a summary.\n\n" +
             "Available agents: codex (default), claude, opencode, gemini, qwen, pi. Roles customize the prompt and " +
             "model defaults without disabling tools, edits, execution, or delegation.\n" +
+            "In a workflow team, pass purpose (or a team role) and no agent or model: the team picks the " +
+            "participant, whose CLI agent, model, and thinking the task runs on.\n" +
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
             "The subagent runs once and returns — it cannot send follow-up messages.";
@@ -110,6 +114,9 @@ public class StdioTaskTool {
         var role = props.putObject("role");
         role.put("type", "string");
         role.put("description", "Optional role to assign to the subagent. When omitted, the agent's persisted role assignment is used. Roles may define prompt, model, and thinking defaults; all tools remain enabled.");
+        var purpose = props.putObject("purpose");
+        purpose.put("type", "string");
+        purpose.put("description", "Workflow teams only: the routing purpose (e.g. implement, review). The team picks the participant, whose CLI agent, model, and thinking the task runs on.");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
@@ -122,7 +129,8 @@ public class StdioTaskTool {
         if (context != null && context.isAborted()) return ToolResult.error("Task cancelled");
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
-        String requestedAgent = String.valueOf(arguments.getOrDefault("agent", DEFAULT_AGENT))
+        Object explicitAgent = arguments.get("agent");
+        String requestedAgent = String.valueOf(explicitAgent != null ? explicitAgent : DEFAULT_AGENT)
                 .toLowerCase(Locale.ROOT);
         String model = (String) arguments.get("model");
         String thinking = (String) arguments.get("thinking");
@@ -133,7 +141,13 @@ public class StdioTaskTool {
         }
 
         // ── Workflow team enforcement (harness-owned identity) ─────────────
-        WorkflowTeamEnforcement workflow = workflowEnforcement(workDir, roleManager);
+        WorkflowTeamEnforcement workflow;
+        try {
+            workflow = workflowEnforcement(workDir, roleManager);
+        } catch (IllegalStateException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        String participant = null;
         if (workflow != null) {
             WorkflowTeamEnforcement.ToolDecision toolDecision =
                     workflow.evaluateToolUse("task");
@@ -146,13 +160,21 @@ public class StdioTaskTool {
             if (decision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied denied) {
                 return ToolResult.error(denied.reason());
             }
-            WorkflowTeamEnforcement.DelegationDecision.Allowed allowed =
-                    (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision;
-            // The workflow owns the destination: apply the resolved participant's role
-            // and drop model/thinking selectors that would contradict it.
-            roleName = allowed.resolvedRole();
-            model = null;
-            thinking = null;
+            // The team owns the destination: the resolved participant's role, CLI
+            // agent, model, and thinking are what the child runs.
+            ParticipantLaunch launch;
+            try {
+                launch = participantLaunch(workflow.team(),
+                        (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision,
+                        explicitAgent != null ? requestedAgent : null, model, thinking);
+            } catch (IllegalArgumentException e) {
+                return ToolResult.error(e.getMessage());
+            }
+            participant = launch.participant();
+            requestedAgent = launch.agent();
+            roleName = launch.role();
+            model = launch.model();
+            thinking = launch.thinking();
         }
 
         if (!isSupportedAgent(requestedAgent)) {
@@ -172,6 +194,7 @@ public class StdioTaskTool {
             .roleName(roleName)
             .modelOverride(model)
             .thinkingOverride(thinking)
+            .workflowParticipant(participant)
             .build();
 
         System.err.println("\u001B[32m  ⟳ Spawning " + displayName + " subagent: " + desc + "\u001B[0m");
@@ -190,7 +213,7 @@ public class StdioTaskTool {
                 effectiveRole = effectiveRoleName == null ? null : roleManager.getRole(effectiveRoleName);
             }
             AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
-                    requestedAgent, java.nio.file.Path.of("."), model, thinking,
+                    requestedAgent, workDir != null ? workDir : Path.of("."), model, thinking,
                     effectiveRole != null ? effectiveRole.getAgentDefaultsFor(requestedAgent) : null);
             String effectiveModel = selection.model();
             String effectiveThinking = selection.thinking();
@@ -205,7 +228,7 @@ public class StdioTaskTool {
             metadata.put("fallbacksUsed", "0");
             if (workflow != null) {
                 metadata.put("workflow", workflow.team().name());
-                metadata.put("workflowParticipant", workflow.callerParticipant());
+                metadata.put("workflowParticipant", participant);
             }
             return ToolResult.success("task:" + requestedAgent, result, metadata);
         } catch (RateLimitException e) {
@@ -270,56 +293,152 @@ public class StdioTaskTool {
     // ── Workflow team support ───────────────────────────────────────────────
 
     /**
-     * Resolves the active workflow enforcement for this process. Identity comes
-     * from the environment (set by the harness), never from tool arguments; a
-     * participant variable without a matching workflow file means the session
-     * was started outside a workflow and enforcement stays off.
+     * Resolves the active workflow enforcement for this process, or {@code null}
+     * outside a workflow. Identity comes from the harness, never from tool
+     * arguments: the in-process session context (the chat lead, whose JVM cannot
+     * mutate its own environment, with the gates the user approved), else the
+     * environment a delegated server process inherited.
+     *
+     * @throws IllegalStateException when a workflow is configured but cannot be
+     *         resolved; delegation then fails closed rather than running unenforced
      */
     static WorkflowTeamEnforcement workflowEnforcement(Path workDir, RoleManager roleManager) {
-        if (workDir == null) return null;
-        // In-process session context first (the harness-owned chat lead whose JVM
-        // cannot mutate its own environment), then the inherited environment (a
-        // delegated child server process). Tool arguments can never supply
-        // identity in either path.
-        ai.kompile.cli.main.chat.workflow.WorkflowSessionContext context =
-                ai.kompile.cli.main.chat.workflow.WorkflowSessionContext.current();
+        WorkflowSessionContext context = WorkflowSessionContext.current();
         if (context != null) {
-            return workflowEnforcementWith(workDir, roleManager, context.snapshot().team());
+            return context.enforcement();
         }
-        String workflowName = System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
-        if (workflowName == null || workflowName.isBlank()) return null;
-        try {
-            WorkflowTeam team = WorkflowTeamStore.get(workDir, workflowName);
-            if (team == null) return null;
-            return workflowEnforcementWith(workDir, roleManager, team);
-        } catch (IOException e) {
-            // A configured workflow that cannot be read must fail closed, not open.
-            throw new IllegalStateException("Workflow '" + workflowName
-                    + "' is configured but could not be read: " + e.getMessage(), e);
-        }
+        return inheritedEnforcement(workDir != null ? workDir : Path.of("").toAbsolutePath(), roleManager,
+                System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME),
+                System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_PARTICIPANT),
+                System.getenv(WorkflowTeamEnforcement.ENV_WORKFLOW_SESSION));
     }
 
-    /** Enforcement for an already-resolved team; shared by the env-driven path and tests. */
+    /**
+     * Enforcement for a server launched as {@code participant} of workflow
+     * {@code workflowName} in chat session {@code sessionId} (a blank participant
+     * is the lead). The session's recorded team is the one enforced: if the
+     * stored definition is changed outside this chat after the session started,
+     * delegation fails closed until a new chat session starts rather than
+     * switching to rules the session did not start under. The gates the user
+     * approved in that session are re-read on every call. {@code null} when no
+     * workflow is named.
+     *
+     * @throws IllegalStateException when the named team, session, or participant
+     *         cannot be resolved, or the team changed since the session started
+     */
+    static WorkflowTeamEnforcement inheritedEnforcement(Path workDir, RoleManager roleManager,
+                                                        String workflowName, String participant,
+                                                        String sessionId) {
+        if (workflowName == null || workflowName.isBlank()) return null;
+        String name = workflowName.trim();
+        String session = sessionId == null || sessionId.isBlank() ? null : sessionId.trim();
+        WorkflowTeamSnapshot snapshot;
+        try {
+            snapshot = WorkflowSessionContext.restore(session, workDir);
+            if (snapshot == null) {
+                WorkflowTeam team = WorkflowTeamStore.get(workDir, name);
+                if (team == null) {
+                    throw new IllegalStateException("Workflow '" + name + "' is not defined in "
+                            + WorkflowTeamStore.path(workDir) + "; refusing to delegate outside it.");
+                }
+                snapshot = storedSnapshot(workDir, roleManager, team);
+            }
+        } catch (IOException e) {
+            // A configured workflow that cannot be read must fail closed, not open.
+            throw new IllegalStateException("Workflow '" + name
+                    + "' is configured but could not be read: " + e.getMessage(), e);
+        }
+        WorkflowTeam team = snapshot.team();
+        if (!WorkflowTeam.key(team.name()).equals(WorkflowTeam.key(name))) {
+            throw new IllegalStateException("Chat session " + session + " runs workflow '" + team.name()
+                    + "', not '" + name + "'; refusing to delegate.");
+        }
+        String caller = participant == null || participant.isBlank() ? team.lead() : WorkflowTeam.key(participant);
+        if (team.participant(caller) == null) {
+            throw new IllegalStateException("Workflow '" + team.name() + "' has no participant '" + caller
+                    + "'; refusing to delegate.");
+        }
+        WorkflowTeamEnforcement enforcement = WorkflowTeamEnforcement.forCaller(snapshot, caller, session);
+        WorkflowSessionContext.satisfiedGates(session).forEach(enforcement::satisfyGate);
+        return enforcement;
+    }
+
+    /** Enforcement for an already-resolved team, as this process's inherited participant. */
     static WorkflowTeamEnforcement workflowEnforcementWith(Path workDir, RoleManager roleManager,
                                                            WorkflowTeam team) {
-        // Fail closed: every referenced role must exist before any delegation runs.
-        team.participants().values().forEach(participant -> {
-            if (roleManager != null && roleManager.getRole(participant.role()) == null) {
+        return WorkflowTeamEnforcement.forCaller(storedSnapshot(workDir, roleManager, team),
+                WorkflowTeamEnforcement.resolveCallerParticipant(team));
+    }
+
+    /** The stored team's snapshot. Fails closed unless every referenced role exists. */
+    private static WorkflowTeamSnapshot storedSnapshot(Path workDir, RoleManager roleManager, WorkflowTeam team) {
+        RoleManager roles = roleManager != null ? roleManager : new RoleManager(workDir);
+        Map<String, String> resolved = new LinkedHashMap<>();
+        for (WorkflowTeam.Participant participant : team.participants().values()) {
+            if (roles.getRole(participant.role()) == null) {
                 throw new IllegalStateException("Workflow '" + team.name() + "' participant '"
                         + participant.id() + "' references unknown role '" + participant.role()
                         + "'. Create the role or fix the workflow before delegating.");
             }
-        });
-        return WorkflowTeamEnforcement.forCaller(
-                new WorkflowTeamSnapshot(team, resolveRoles(team), null),
-                WorkflowTeamEnforcement.resolveCallerParticipant(team));
+            resolved.put(participant.id(), participant.role());
+        }
+        return new WorkflowTeamSnapshot(team, resolved, null);
     }
 
-    private static Map<String, String> resolveRoles(WorkflowTeam team) {
-        Map<String, String> roles = new LinkedHashMap<>();
-        team.participants().values().forEach(participant ->
-                roles.put(participant.id(), participant.role()));
-        return roles;
+    /** What a workflow delegation launches: the participant, its role, CLI agent, model, and thinking. */
+    record ParticipantLaunch(String participant, String role, String agent, String model, String thinking) {}
+
+    /**
+     * The launch for the participant a workflow resolved. A participant bound to
+     * a model runs as that binding's CLI agent on that model; an explicit agent,
+     * model, or thinking that contradicts the binding is refused rather than
+     * silently replaced, so the lead learns what the team assigned. An unbound
+     * participant runs the requested selectors (agent defaulting to codex).
+     *
+     * @param agent the explicitly requested agent, or {@code null}
+     * @throws IllegalArgumentException when the request contradicts the binding,
+     *         or no supported CLI agent runs it
+     */
+    static ParticipantLaunch participantLaunch(WorkflowTeam team,
+                                               WorkflowTeamEnforcement.DelegationDecision.Allowed allowed,
+                                               String agent, String model, String thinking) {
+        WorkflowTeam.Participant participant = team.participant(allowed.resolvedParticipant());
+        String role = allowed.resolvedRole() != null ? allowed.resolvedRole() : participant.role();
+        String requestedAgent = blankToNull(agent);
+        String requestedModel = blankToNull(model);
+        String requestedThinking = blankToNull(thinking);
+        WorkflowTeam.ModelBinding binding = participant.model();
+        if (binding == null) {
+            return new ParticipantLaunch(participant.id(), role,
+                    requestedAgent != null ? requestedAgent.toLowerCase(Locale.ROOT) : DEFAULT_AGENT,
+                    requestedModel, requestedThinking);
+        }
+        String subject = "Workflow '" + team.name() + "' runs participant '" + participant.id() + "'";
+        String hint = " The user can change its model with /workflow model " + participant.id() + ".";
+        String boundAgent = WorkflowLaunch.agentFor(binding);
+        if (boundAgent == null) {
+            throw new IllegalArgumentException(subject + " on " + binding.label()
+                    + ", which no supported CLI agent runs." + hint);
+        }
+        if (requestedAgent != null && !requestedAgent.equalsIgnoreCase(boundAgent)) {
+            throw new IllegalArgumentException(subject + " as the " + boundAgent
+                    + " CLI agent; omit agent (requested " + requestedAgent + ")." + hint);
+        }
+        if (requestedModel != null && !requestedModel.equals(binding.model())) {
+            throw new IllegalArgumentException(subject + " on " + binding.label()
+                    + "; omit model (requested " + requestedModel + ")." + hint);
+        }
+        if (requestedThinking != null && binding.thinking() != null
+                && !requestedThinking.equalsIgnoreCase(binding.thinking())) {
+            throw new IllegalArgumentException(subject + " with thinking " + binding.thinking()
+                    + "; omit thinking (requested " + requestedThinking + ")." + hint);
+        }
+        return new ParticipantLaunch(participant.id(), role, boundAgent, binding.model(),
+                requestedThinking != null ? requestedThinking : binding.thinking());
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     static boolean isAgentMissing(String result) {

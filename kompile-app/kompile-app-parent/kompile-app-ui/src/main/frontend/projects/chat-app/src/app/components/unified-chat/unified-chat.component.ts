@@ -29,7 +29,7 @@ import { CommandConfigDialogComponent, CommandConfigDialogData } from '../comman
 
 // Services
 import { ConversationalRagService } from '@shared/services/conversational-rag.service';
-import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction } from '@shared/services/local-agent-chat.service';
+import { LocalAgentChatService, ContextBudget, CompactChatResponse, HarnessControlAction, HarnessControlReply, WorkflowTeam } from '@shared/services/local-agent-chat.service';
 import { AgentService } from '@shared/services/agent.service';
 import { ChatStorageService } from '@shared/services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '@shared/services/chat-history.service';
@@ -39,7 +39,7 @@ import { ModelContextService } from '@shared/services/model-context.service';
 import { WebSocketService } from '@shared/services/websocket.service';
 import { SystemPromptService } from '@shared/services/system-prompt.service';
 import { SystemPrompt } from '@shared/models/system-prompt.models';
-import { MarkdownRendererService, MessageSegment } from '@shared/services/markdown-renderer.service';
+import { MarkdownRendererService, MessageSegment, ToolCallView } from '@shared/services/markdown-renderer.service';
 import { MonitorEvent } from '@shared/models/monitor-models';
 
 // Models
@@ -62,7 +62,8 @@ import {
   RagServiceStatus,
   ChatFolder,
   ActiveModelContext,
-  MessageAttachment
+  MessageAttachment,
+  ToolUseEvent
 } from '@shared/models/api-models';
 import { ReasoningTrailDto } from '@shared/services/kb-grounding.service';
 
@@ -114,6 +115,8 @@ interface UnifiedMessage extends CommandMessageMetadata {
   sources?: any[];
   _sourcesExpanded?: boolean;
   reasoningTrails?: ReasoningTrailDto[];
+  /** Kompile harness tool calls in run order; each renders as the CLI's row where it ran. */
+  toolUses?: ToolUseEvent[];
   latencyMs?: number;
   tokenCount?: number;
   attachments?: MessageAttachment[];
@@ -1286,7 +1289,12 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   harnessControlPending = false;
   harnessControlMessage = '';
   harnessProcessOutput = '';
-  /** Messages typed while streaming without live controls; sent when the run completes. */
+  /** The last /command the live harness answered (/processes, /jobs, …), shown until dismissed. */
+  liveCommandOutput: { command: string; text: string; ok: boolean } | null = null;
+  /**
+   * Messages typed while streaming without live controls, and built-in commands the live run
+   * defers; sent when the run completes.
+   */
   queuedMessages: string[] = [];
 
   /**
@@ -1315,7 +1323,57 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentChatService.liveInputHistory = [];
     this.harnessControlMessage = '';
     this.harnessProcessOutput = '';
+    this.liveCommandOutput = null;
     this.subagentInputs = Object.create(null);
+    this.workflowApprovalMessage = '';
+  }
+
+  /** The id the harness keys this chat's session by; sendAgentMessage sends the same one. */
+  private harnessSessionKey(): string | undefined {
+    return this.currentSession?.id || this.agentSession?.id;
+  }
+  /** The workflow team the displayed session was started with, or null when it has none. */
+  get workflowTeam(): WorkflowTeam | null {
+    return this.agentChatService.getWorkflowTeam?.(this.harnessSessionKey()) ?? null;
+  }
+  get workflowRoutes(): { purpose: string; target: string }[] {
+    return Object.entries(this.workflowTeam?.routing || {}).map(([purpose, target]) => ({ purpose, target }));
+  }
+  /** The team's gates in the order they block, as the terminal team summary lists them. */
+  get workflowGates(): { label: string; name: string; approved: boolean }[] {
+    const gates = this.workflowTeam?.gates;
+    if (!gates) return [];
+    return [
+      { label: 'Implementation begins after', name: gates.implementationRequires },
+      { label: 'Workflow completes after', name: gates.completionRequires }
+    ].filter((gate): gate is { label: string; name: string } => !!gate.name)
+      .map(gate => ({ ...gate, approved: gates.approved.includes(gate.name) }));
+  }
+  get workflowGatesAwaiting(): number { return this.workflowGates.filter(gate => !gate.approved).length; }
+  trackWorkflowRoute(_index: number, route: { purpose: string }): string { return route.purpose; }
+  trackWorkflowGate(_index: number, gate: { label: string }): string { return gate.label; }
+  workflowApprovalPending = false;
+  workflowApprovalMessage = '';
+
+  /**
+   * Approves a gate of the displayed session's workflow team, as /workflow approve does in the
+   * terminal: the live run takes it at once, and between runs it is recorded for the next run.
+   */
+  async approveWorkflowGate(gate?: string): Promise<void> {
+    const sessionId = this.harnessSessionKey();
+    if (!sessionId || this.workflowApprovalPending) return;
+    this.workflowApprovalPending = true;
+    this.workflowApprovalMessage = 'Approving gate…';
+    let message: string;
+    try {
+      message = (await this.agentChatService.approveWorkflowGate(sessionId, gate, this.agentWorkingDirectory())).message;
+    } catch (error) {
+      message = error instanceof Error ? error.message : 'Gate approval failed';
+    }
+    this.workflowApprovalPending = false;
+    // An answer for a session this view no longer shows is not this session's status.
+    this.workflowApprovalMessage = this.harnessSessionKey() === sessionId ? message : '';
+    if (!this.harnessViewDestroyed) this.cdr.detectChanges();
   }
 
   handleSubagentKey(event: KeyboardEvent, id: string, composer: boolean): void {
@@ -1341,6 +1399,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       const reply = await this.agentChatService.sendHarnessControl(action, targetId, text);
       this.harnessControlMessage = reply.message;
       if (reply.output !== undefined) this.harnessProcessOutput = reply.output;
+      if (action === 'command' && text !== undefined) this.applyCommandReply(text, reply);
       if (action === 'input' && reply.ok && this.userInput === text) this.userInput = '';
       if (action === 'subagent_input' && reply.ok && targetId && this.subagentInputs[targetId] === text)
         this.subagentInputs[targetId] = '';
@@ -1350,6 +1409,22 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       this.harnessControlPending = false;
       if (!this.harnessViewDestroyed) this.cdr.detectChanges();
     }
+  }
+
+  /**
+   * A /command typed during a live run, handled as the CLI REPL handles it: a command the live
+   * harness answers prints its text, one that resolves to model input joins the turn queue, and
+   * a built-in that changes session state waits here and sends when the run finishes.
+   */
+  private applyCommandReply(command: string, reply: HarnessControlReply): void {
+    if (reply.deferred) {
+      this.queuedMessages.push(command);
+    } else if (!reply.queued) {
+      this.liveCommandOutput = { command: command.trim(), text: reply.message, ok: reply.ok };
+      this.harnessControlMessage = '';
+    }
+    // A failed command stays in the composer so it can be corrected.
+    if ((reply.ok || reply.deferred) && this.userInput === command) this.userInput = '';
   }
 
   @HostListener('document:keydown', ['$event'])
@@ -1421,8 +1496,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     if (!this.userInput.trim() || this.isLoading || this.isCompacting || this.transcriptReadOnly) return;
     if (this.isStreaming) {
       if (this.liveControlsReady) {
-        // Live run: forward through the harness input control (CLI queue).
-        void this.sendHarnessControl('input', undefined, this.userInput);
+        // Live run: a /command goes to the harness as typed in the CLI; other text joins the
+        // CLI's input queue for the next turn boundary.
+        const text = this.userInput;
+        void this.sendHarnessControl(text.trimStart().startsWith('/') ? 'command' : 'input', undefined, text);
       } else {
         // No live controls (queued run / reconnect pending): park the message
         // locally and send it when the stream completes. Typing stays possible.
@@ -1547,6 +1624,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       }
     });
 
+    // Harness tool calls: the streaming answer's cards, updated as each call starts and completes.
+    const toolCallsSub = this.agentChatService.getToolCalls?.().subscribe(calls => {
+      const lastMsg = this.messages[this.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && lastMsg.isStreaming) {
+        lastMsg.toolUses = calls;
+        this.shouldScrollToBottom = true;
+      }
+    });
+
     // Subscribe to chat stats (token metrics)
     const statsSub = this.agentChatService.getChatStats().subscribe((stats) => {
       const lastMsg = this.messages[this.messages.length - 1];
@@ -1598,6 +1684,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         if (msg.reasoningTrails && msg.reasoningTrails.length > 0) {
           lastMsg.reasoningTrails = msg.reasoningTrails;
         }
+        if (msg.toolUses?.length) {
+          lastMsg.toolUses = msg.toolUses;
+        }
         if (msg.role !== 'SYSTEM' && msg.tokenMetrics) {
           lastMsg.tokenMetrics = msg.tokenMetrics;
         }
@@ -1642,6 +1731,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     // Store subs so cancelStreaming() can clean them up
     this.activeStreamingSubs = [contentSub, completeSub, errorSub, statsSub];
     if (liveMessagesSub) this.activeStreamingSubs.push(liveMessagesSub);
+    if (toolCallsSub) this.activeStreamingSubs.push(toolCallsSub);
 
     // Add placeholder assistant message
     const assistantMessage: UnifiedMessage = {
@@ -3156,7 +3246,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   // Keep only the latest content per message, including during streaming.
   private renderedMarkdownCache = new Map<string, { content: string; html: SafeHtml }>();
-  private segmentCache = new Map<string, { content: string; isStreaming: boolean; segments: MessageSegment[] }>();
+  private segmentCache = new Map<string, { content: string; isStreaming: boolean; toolUses?: ToolUseEvent[]; segments: MessageSegment[] }>();
 
   getRenderedMarkdown(message: UnifiedMessage): SafeHtml {
     const content = message.content || '';
@@ -3171,10 +3261,15 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   getMessageSegments(message: UnifiedMessage): MessageSegment[] {
     const content = message.content || '';
     const isStreaming = !!message.isStreaming;
+    // Only harness calls carry a status; other lanes echo their calls into the answer text.
+    const calls = message.toolUses?.some(call => call.status) ? message.toolUses : undefined;
     const cached = this.segmentCache.get(message.id);
-    if (cached?.content === content && cached.isStreaming === isStreaming) return cached.segments;
+    if (cached?.content === content && cached.isStreaming === isStreaming && cached.toolUses === calls) {
+      return cached.segments;
+    }
 
-    const segments = this.markdownRenderer.parseMessageSegments(content, isStreaming);
+    const segments = calls ? this.interleaveToolCalls(content, calls, isStreaming)
+      : this.markdownRenderer.parseMessageSegments(content, isStreaming);
     // Appending a chunk need not re-render earlier text/thinking blocks. Reuse
     // their SafeHtml too, so Angular does not replace unchanged innerHTML nodes.
     segments.forEach((segment, index) => {
@@ -3184,8 +3279,46 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       }
     });
     this.renderSegments(segments);
-    this.cacheLatest(this.segmentCache, message.id, { content, isStreaming, segments });
+    this.cacheLatest(this.segmentCache, message.id, { content, isStreaming, toolUses: calls, segments });
     return segments;
+  }
+
+  /**
+   * The answer with each harness tool call's card at the point in the text where it ran, as the
+   * CLI prints the call's row between the text before and after it. Offsets count answer text
+   * only, so a leading reasoning block stays above every card.
+   */
+  private interleaveToolCalls(content: string, calls: ToolUseEvent[], isStreaming: boolean): MessageSegment[] {
+    let answerStart = 0;
+    if (content.startsWith('<thinking>')) {
+      const close = content.indexOf('</thinking>');
+      answerStart = close < 0 ? content.length : close + '</thinking>'.length;
+      if (content.startsWith('\n\n', answerStart)) answerStart += 2;
+    }
+    const answer = content.substring(answerStart);
+    const segments = this.markdownRenderer.parseMessageSegments(content.substring(0, answerStart), isStreaming);
+    let cursor = 0;
+    calls.map((call, index) => ({ call, index, at: Math.min(Math.max(call.textOffset ?? answer.length, 0), answer.length) }))
+      .sort((a, b) => a.at - b.at || a.index - b.index)
+      .forEach(({ call, at }) => {
+        segments.push(...this.markdownRenderer.parseMessageSegments(answer.substring(cursor, at), false));
+        segments.push({ type: 'tool_call', content: '', toolCall: this.toolCallView(call, isStreaming) });
+        cursor = at;
+      });
+    segments.push(...this.markdownRenderer.parseMessageSegments(answer.substring(cursor), isStreaming));
+    return segments;
+  }
+
+  /** Tool call views by event: a completed call's highlighted sections render once. */
+  private toolCallViews = new WeakMap<ToolUseEvent, ToolCallView>();
+
+  private toolCallView(call: ToolUseEvent, isStreaming: boolean): ToolCallView {
+    const cached = this.toolCallViews.get(call);
+    // A call still open when its run stops renders as stopped, not running.
+    if (cached && (cached.state === 'running') === (call.status !== 'completed' && isStreaming)) return cached;
+    const view = this.markdownRenderer.renderToolCall(call, isStreaming);
+    this.toolCallViews.set(call, view);
+    return view;
   }
 
   private cacheLatest<T>(cache: Map<string, T>, id: string, value: T): void {
@@ -3381,6 +3514,18 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     { command: '/ultracode', description: 'Show or toggle Claude Code ultracode' },
     { command: '/skills', description: 'List available skills' }
   ];
+  // Process commands: the live harness answers them mid-run (WebHarnessControls.command); between runs the CLI
+  // answers from the processes this session's runs recorded and those other sessions share (WebCommandResolver).
+  readonly liveSlashCommands = [
+    { command: '/processes', description: 'Show processes & subagents' },
+    { command: '/activity', description: 'Show local work or the live project-agent dashboard' },
+    { command: '/process-output', description: 'View process output' },
+    { command: '/process-status', description: 'Show process or watcher status' },
+    { command: '/process-kill', description: 'Kill a running process' },
+    { command: '/jobs', description: 'List background jobs' },
+    { command: '/jobs-remove', description: 'Remove a background job' },
+    { command: '/jobs-clear', description: 'Clear all jobs' }
+  ];
   slashMenuOpen = false;
   slashSelectedIndex = 0;
 
@@ -3389,7 +3534,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         || (this.isStreaming && !this.liveControlsReady)
         || !/^\/[a-z-]*$/i.test(this.userInput)) return [];
     const prefix = this.userInput.toLowerCase();
-    return this.slashCommands.filter(item => item.command.startsWith(prefix));
+    return [...this.liveSlashCommands, ...this.slashCommands].filter(item => item.command.startsWith(prefix));
   }
 
   dismissSlashMenu(): void {

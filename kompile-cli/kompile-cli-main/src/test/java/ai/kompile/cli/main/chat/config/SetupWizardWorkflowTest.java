@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.testing.TemporaryUserHome;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeamStore;
 import ai.kompile.cli.main.chat.workflow.WorkflowWizard;
@@ -25,6 +26,7 @@ import org.jline.reader.LineReader;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -35,8 +37,10 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * The plain `kompile chat` path MUST surface the workflow question. With no
  * saved workflows the wizard offers templates that create roles and save the
- * team — a user is never asked to hand-edit chat-workflows.json.
+ * team — a user is never asked to hand-edit chat-workflows.json. Roles are
+ * created in the user's home, so the class runs in a temporary one.
  */
+@TemporaryUserHome
 class SetupWizardWorkflowTest {
 
     @TempDir
@@ -111,6 +115,7 @@ class SetupWizardWorkflowTest {
     void savedWorkflowsListFirstAndSelectDirectly() throws Exception {
         WorkflowTeam team = WorkflowWizardTestHelper.designerWorkersTemplate();
         assertTrue(WorkflowTeamStore.save(project, team, true));
+        createTemplateRoles(project);
         SetupWizard.WorkflowSelection selection =
                 SetupWizard.chooseWorkflow(reader("1"), project);
         assertNotNull(selection.snapshot());
@@ -126,6 +131,16 @@ class SetupWizardWorkflowTest {
         assertNull(skipped.snapshot());
         assertTrue(SetupWizard.selectWorkflow(reader(), project).cancelled());
         assertTrue(SetupWizard.selectWorkflow(reader("y", "q"), project).cancelled());
+    }
+
+    /** A saved team activates only when its roles exist, as they do once the template has run. */
+    private static void createTemplateRoles(Path project) throws IOException {
+        RoleManager roleManager = new RoleManager(project);
+        for (WorkflowWizard.RoleDefinition role : WorkflowWizard.designerWorkerRoles()) {
+            if (roleManager.getRole(role.name()) == null) {
+                roleManager.createRole(role.name(), role.name(), role.description(), "workflow", role.systemPrompt());
+            }
+        }
     }
 
     /** Shared template builder so tests don't each hand-build the team. */

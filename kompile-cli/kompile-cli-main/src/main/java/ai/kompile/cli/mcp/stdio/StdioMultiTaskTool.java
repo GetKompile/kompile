@@ -5,8 +5,8 @@ import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
-import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -78,6 +78,9 @@ public class StdioMultiTaskTool {
             "different roles do not require serial dispatch. Top-level role/model/thinking provide defaults. " +
             "agent_count defaults to 1 per subtask; increase it only to duplicate that subtask's prompt, not to enable parallelism. " +
             "Unlike quorum_task (same prompt for independent judgments), multi_task assigns distinct work.\n\n" +
+            "In a workflow team, give each subtask a purpose (or a team role) and no agent or model: the team picks " +
+            "its participant, whose CLI agent, model, and thinking the subtask runs on, and the whole batch must fit " +
+            "the team's concurrent-worker limit.\n\n" +
             "Example:\n" +
             "{\"description\":\"Inspect independent modules\",\"subtasks\":[" +
             "{\"name\":\"api\",\"prompt\":\"Read-only: inspect API validation and report file:line findings.\"}," +
@@ -134,6 +137,10 @@ public class StdioMultiTaskTool {
         var subRole = itemProps.putObject("role");
         subRole.put("type", "string");
         subRole.put("description", "Optional role for this subtask. Overrides the top-level role; when both are omitted, the agent's persisted role assignment is used.");
+
+        var subPurpose = itemProps.putObject("purpose");
+        subPurpose.put("type", "string");
+        subPurpose.put("description", "Workflow teams only: this subtask's routing purpose (e.g. implement, review). The team picks the participant, whose CLI agent, model, and thinking the subtask runs on.");
 
         var subModel = itemProps.putObject("model");
         subModel.put("type", "string");
@@ -217,46 +224,53 @@ public class StdioMultiTaskTool {
         }
 
         // ── Workflow team enforcement: validate the WHOLE batch before any launch ──
-        WorkflowTeamEnforcement workflow = StdioTaskTool.workflowEnforcement(workDir, roleManager);
+        WorkflowTeamEnforcement workflow;
+        try {
+            workflow = StdioTaskTool.workflowEnforcement(workDir, roleManager);
+        } catch (IllegalStateException e) {
+            return ToolResult.error(e.getMessage());
+        }
+        // The launch the workflow assigned each subtask; null outside a workflow. Workflow
+        // subtasks launch from this, never from the selectors in their arguments.
+        List<StdioTaskTool.ParticipantLaunch> launches = new ArrayList<>(Collections.nCopies(subtasks.size(), null));
         if (workflow != null) {
             WorkflowTeamEnforcement.ToolDecision toolDecision = workflow.evaluateToolUse("multi_task");
             if (!toolDecision.allowed()) {
                 return ToolResult.error(toolDecision.reason());
             }
             List<String> batchErrors = new ArrayList<>();
-            List<Map<String, Object>> resolvedSubtasks = new ArrayList<>();
+            int batchInstances = 0;
             for (int i = 0; i < subtasks.size(); i++) {
                 Map<String, Object> subtask = subtasks.get(i);
-                String purpose = (String) subtask.get("purpose");
-                String subRole = (String) subtask.getOrDefault("role", defaultRole);
-                WorkflowTeamEnforcement.DelegationDecision decision =
-                        workflow.evaluateDelegation(purpose, subRole);
+                String label = "subtask[" + i + "] '" + subtask.getOrDefault("name", "?") + "': ";
+                WorkflowTeamEnforcement.DelegationDecision decision = workflow.evaluateDelegation(
+                        (String) subtask.get("purpose"), (String) subtask.getOrDefault("role", defaultRole));
                 if (decision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied denied) {
-                    batchErrors.add("subtask[" + i + "] '" + subtask.getOrDefault("name", "?") + "': "
-                            + denied.reason());
+                    batchErrors.add(label + denied.reason());
                     continue;
                 }
-                WorkflowTeamEnforcement.DelegationDecision.Allowed allowed =
-                        (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision;
-                WorkflowTeamEnforcement.DelegationDecision batchDecision =
-                        workflow.evaluateBatchSize(resolveAgentCount(subtask, defaultAgentCount));
-                if (batchDecision instanceof WorkflowTeamEnforcement.DelegationDecision.Denied deniedBatch) {
-                    batchErrors.add("subtask[" + i + "] '" + subtask.getOrDefault("name", "?") + "': "
-                            + deniedBatch.reason());
+                Set<String> requestedAgents = requestedAgents(subtask);
+                if (requestedAgents.size() > 1) {
+                    batchErrors.add(label + "a workflow subtask runs as one participant; give at most one agent"
+                            + " (requested " + String.join(", ", requestedAgents) + ").");
                     continue;
                 }
-                // The workflow owns the destination: force the resolved role and clear
-                // per-subtask selectors so the participant assignment is authoritative.
-                Map<String, Object> rewritten = new LinkedHashMap<>(subtask);
-                rewritten.put("role", allowed.resolvedRole());
-                rewritten.remove("model");
-                rewritten.remove("thinking");
-                rewritten.remove("agent");
-                rewritten.remove("agents");
-                rewritten.remove("agent_count");
-                rewritten.put("agent_count", 1);
-                rewritten.put("agent", SUPPORTED_AGENTS.get(0));
-                resolvedSubtasks.add(rewritten);
+                try {
+                    launches.set(i, StdioTaskTool.participantLaunch(workflow.team(),
+                            (WorkflowTeamEnforcement.DelegationDecision.Allowed) decision,
+                            requestedAgents.isEmpty() ? null : requestedAgents.iterator().next(),
+                            resolveModel(subtask, defaultModel), resolveThinking(subtask, defaultThinking)));
+                } catch (IllegalArgumentException e) {
+                    batchErrors.add(label + e.getMessage());
+                    continue;
+                }
+                batchInstances += resolveAgentCount(subtask, defaultAgentCount);
+            }
+            // The concurrent-worker limit covers every instance the batch runs at once.
+            if (batchErrors.isEmpty() && workflow.evaluateBatchSize(batchInstances)
+                    instanceof WorkflowTeamEnforcement.DelegationDecision.Denied deniedBatch) {
+                batchErrors.add(deniedBatch.reason()
+                        + " Send fewer subtasks per batch, or delegate one at a time with task.");
             }
             if (!batchErrors.isEmpty()) {
                 // One invalid assignment rejects the entire batch; nobody launches.
@@ -264,20 +278,31 @@ public class StdioMultiTaskTool {
                         + "' rejected this batch before launch:\n- "
                         + String.join("\n- ", batchErrors));
             }
-            subtasks = resolvedSubtasks;
+        }
+        List<SubtaskLaunch> plans = new ArrayList<>();
+        for (int i = 0; i < subtasks.size(); i++) {
+            Map<String, Object> st = subtasks.get(i);
+            StdioTaskTool.ParticipantLaunch launch = launches.get(i);
+            int count = resolveAgentCount(st, defaultAgentCount);
+            plans.add(launch != null
+                    ? new SubtaskLaunch(List.of(launch.agent()), count, launch.role(), launch.model(),
+                            launch.thinking(), launch.participant())
+                    : new SubtaskLaunch(resolveAgentTypes(st), count, (String) st.getOrDefault("role", defaultRole),
+                            resolveModel(st, defaultModel), resolveThinking(st, defaultThinking), null));
         }
 
         System.err.println("\u001B[32m  ⟳ Multi-task: " + desc + " (" + subtasks.size() + " subtasks)\u001B[0m");
         for (int i = 0; i < subtasks.size(); i++) {
             Map<String, Object> st = subtasks.get(i);
+            SubtaskLaunch plan = plans.get(i);
             String name = (String) st.getOrDefault("name", "subtask-" + i);
-            List<String> agentTypes = resolveAgentTypes(st);
-            int taskAgentCount = resolveAgentCount(st, defaultAgentCount);
-            String agentLabel = String.join(", ", agentTypes);
+            int taskAgentCount = plan.count();
+            String agentLabel = (plan.participant() != null ? plan.participant() + " as " : "")
+                    + String.join(", ", plan.agents());
             String countSuffix = taskAgentCount > 1 ? " x" + taskAgentCount : "";
-            String model = resolveModel(st, defaultModel);
-            String thinking = resolveThinking(st, defaultThinking);
-            String role = (String) st.getOrDefault("role", defaultRole);
+            String model = plan.model();
+            String thinking = plan.thinking();
+            String role = plan.role();
             System.err.println("\u001B[2m    [" + (i + 1) + "] " + name + " → " + agentLabel + countSuffix
                 + " (model: " + displayModel(model) + ", thinking: " + displayThinking(thinking)
                 + ", role: " + displayRole(role) + ")\u001B[0m");
@@ -286,8 +311,8 @@ public class StdioMultiTaskTool {
 
         // Calculate total instances across all subtasks (agent types × instances per type)
         int totalInstances = 0;
-        for (Map<String, Object> st : subtasks) {
-            totalInstances += resolveAgentTypes(st).size() * resolveAgentCount(st, defaultAgentCount);
+        for (SubtaskLaunch plan : plans) {
+            totalInstances += plan.agents().size() * plan.count();
         }
         ExecutorService executor = Executors.newFixedThreadPool(totalInstances);
         List<SubtaskFuture> futures = new ArrayList<>();
@@ -295,23 +320,22 @@ public class StdioMultiTaskTool {
         try {
         for (int i = 0; i < subtasks.size(); i++) {
             Map<String, Object> st = subtasks.get(i);
+            SubtaskLaunch plan = plans.get(i);
             String name = (String) st.getOrDefault("name", "subtask-" + i);
             String prompt = (String) st.getOrDefault("prompt", "");
-            String role = (String) st.getOrDefault("role", defaultRole);
-            String model = resolveModel(st, defaultModel);
-            String thinking = resolveThinking(st, defaultThinking);
-            List<String> agentTypes = resolveAgentTypes(st);
-            int taskAgentCount = resolveAgentCount(st, defaultAgentCount);
+            String model = plan.model();
+            String thinking = plan.thinking();
+            List<String> agentTypes = plan.agents();
+            int taskAgentCount = plan.count();
 
             if (prompt.isEmpty()) {
-                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, thinking, 1, 0,
+                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, thinking, plan.participant(), 1, 0,
                     CompletableFuture.completedFuture(SubtaskResult.failed("(empty prompt)"))));
                 continue;
             }
 
             final String fName = name;
             final String fPrompt = prompt;
-            final String fRole = role;
             int totalPerSubtask = agentTypes.size() * taskAgentCount;
 
             for (String agentType : agentTypes) {
@@ -328,9 +352,10 @@ public class StdioMultiTaskTool {
                     } else {
                         instanceName = name + "/" + agentType + "#" + (instanceIdx + 1);
                     }
-                    futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, totalPerSubtask, instanceIdx,
-                        CompletableFuture.supplyAsync(() -> runSubtask(
-                                fName, fPrompt, fAgent, fRole, model, thinking, context), executor)));
+                    futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, plan.participant(),
+                        totalPerSubtask, instanceIdx,
+                        CompletableFuture.supplyAsync(() -> runSubtask(fName, fPrompt, fAgent, plan.role(),
+                                model, thinking, plan.participant(), context), executor)));
                 }
             }
         }
@@ -347,9 +372,7 @@ public class StdioMultiTaskTool {
 
         for (SubtaskFuture sf : futures) {
             fullOutput.append("---\n\n");
-            fullOutput.append("## ").append(sf.name).append(" (agent: ").append(sf.agent)
-                .append(", model: ").append(displayModel(sf.model))
-                .append(", thinking: ").append(displayThinking(sf.thinking)).append(")\n\n");
+            fullOutput.append("## ").append(sf.name).append(" (").append(launchLabel(sf)).append(")\n\n");
 
             try {
                 SubtaskResult result = sf.future.get(10, TimeUnit.MINUTES);
@@ -357,9 +380,8 @@ public class StdioMultiTaskTool {
                     case COMPLETED -> {
                         succeeded++;
                         fullOutput.append(result.output).append("\n\n");
-                        summaryOutput.append("- **").append(sf.name).append("** (agent: ").append(sf.agent)
-                            .append(", model: ").append(displayModel(sf.model))
-                            .append(", thinking: ").append(displayThinking(sf.thinking)).append("): ")
+                        summaryOutput.append("- **").append(sf.name).append("** (").append(launchLabel(sf))
+                            .append("): ")
                             .append(truncateForSummary(result.output, 200)).append("\n");
                     }
                     case TIMED_OUT -> {
@@ -497,6 +519,24 @@ public class StdioMultiTaskTool {
         return role == null || role.isBlank() ? "none" : role;
     }
 
+    /** The launch a result reports; the workflow participant leads when there is one. */
+    private static String launchLabel(SubtaskFuture sf) {
+        return (sf.participant != null ? "participant: " + sf.participant + ", " : "")
+                + "agent: " + sf.agent + ", model: " + displayModel(sf.model)
+                + ", thinking: " + displayThinking(sf.thinking);
+    }
+
+    /** The agents a subtask names, lowercased, with {@link #resolveAgentTypes}'s precedence; empty when none. */
+    private static Set<String> requestedAgents(Map<String, Object> subtask) {
+        Set<String> agents = new LinkedHashSet<>();
+        if (subtask.get("agents") instanceof List<?> list && !list.isEmpty()) {
+            list.forEach(agent -> agents.add(String.valueOf(agent).trim().toLowerCase(Locale.ROOT)));
+        } else if (subtask.get("agent") instanceof String agent && !agent.isBlank()) {
+            agents.add(agent.trim().toLowerCase(Locale.ROOT));
+        }
+        return agents;
+    }
+
     @SuppressWarnings("unchecked")
     public static String dispatchPlan(Map<String, Object> arguments) {
         Object subtasksObj = arguments.get("subtasks");
@@ -510,6 +550,9 @@ public class StdioMultiTaskTool {
         String defaultModel = (String) arguments.get("model");
         String defaultThinking = (String) arguments.get("thinking");
         String defaultRole = (String) arguments.get("role");
+        // In a workflow the team, not these arguments, picks each subtask's participant and launch.
+        String workflowName = WorkflowSessionContext.inheritableEnvironment()
+                .get(WorkflowTeamEnforcement.ENV_WORKFLOW_NAME);
 
         StringBuilder plan = new StringBuilder("**Dispatch plan**\n");
         int totalInstances = 0;
@@ -517,10 +560,19 @@ public class StdioMultiTaskTool {
             if (!(rawSubtasks.get(i) instanceof Map<?, ?> rawSubtask)) continue;
             Map<String, Object> subtask = (Map<String, Object>) rawSubtask;
             String name = (String) subtask.getOrDefault("name", "subtask-" + i);
-            List<String> agents = resolveAgentTypes(subtask);
             int count = resolveAgentCount(subtask, defaultCount);
-            totalInstances += agents.size() * count;
             String role = (String) subtask.getOrDefault("role", defaultRole);
+            if (workflowName != null) {
+                totalInstances += count;
+                plan.append("- **").append(name).append("**: purpose=")
+                    .append(displayRole((String) subtask.get("purpose")))
+                    .append(", role=").append(displayRole(role));
+                if (count > 1) plan.append(" x").append(count);
+                plan.append("\n");
+                continue;
+            }
+            List<String> agents = resolveAgentTypes(subtask);
+            totalInstances += agents.size() * count;
             String model = resolveModel(subtask, defaultModel);
             String thinking = resolveThinking(subtask, defaultThinking);
             plan.append("- **").append(name).append("**: agent=")
@@ -530,12 +582,16 @@ public class StdioMultiTaskTool {
                 .append(", thinking=").append(displayThinking(thinking))
                 .append(", role=").append(displayRole(role)).append("\n");
         }
+        if (workflowName != null) {
+            plan.append("- **Workflow** '").append(workflowName)
+                .append("' picks each subtask's participant, CLI agent, and model; the results name them\n");
+        }
         plan.append("- **Total agent instances**: ").append(totalInstances).append("\n");
         return plan.toString();
     }
 
     private SubtaskResult runSubtask(String name, String prompt, String requestedAgent, String roleName,
-                                       String model, String thinking, ToolContext context) {
+                                       String model, String thinking, String participant, ToolContext context) {
         if (context != null && context.isAborted()) return SubtaskResult.failed("Task cancelled");
         // A single-provider dispatch surfaces provider failures instead of silently cascading.
         List<String> agentsToTry = List.of(requestedAgent);
@@ -549,6 +605,7 @@ public class StdioMultiTaskTool {
                     .roleName(roleName)
                     .modelOverride(model)
                     .thinkingOverride(thinking)
+                    .workflowParticipant(participant)
                     .build();
 
                 String result = StdioTaskTool.runWithCancellation(
@@ -642,21 +699,27 @@ public class StdioMultiTaskTool {
         }
     }
 
+    /** What one subtask launches: each agent {@code count} times, on this role, model, and thinking. */
+    private record SubtaskLaunch(List<String> agents, int count, String role, String model, String thinking,
+                                 String participant) {}
+
     private static class SubtaskFuture {
         final String name;
         final String agent;
         final String model;
         final String thinking;
+        final String participant;
         final int totalInstances;
         final int instanceIndex;
         final Future<SubtaskResult> future;
 
-        SubtaskFuture(String name, String agent, String model, String thinking,
+        SubtaskFuture(String name, String agent, String model, String thinking, String participant,
                       int totalInstances, int instanceIndex, Future<SubtaskResult> future) {
             this.name = name;
             this.agent = agent;
             this.model = model;
             this.thinking = thinking;
+            this.participant = participant;
             this.totalInstances = totalInstances;
             this.instanceIndex = instanceIndex;
             this.future = future;

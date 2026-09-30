@@ -13,6 +13,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -273,6 +275,91 @@ class OpenCodeServeClientTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void restTurnReportsEachModelRequestOfTheSessionAsAStep() throws Exception {
+        List<Integer> steps = new CopyOnWriteArrayList<>();
+        CountDownLatch lastFrameSeen = new CountDownLatch(1);
+        CountDownLatch turnOver = new CountDownLatch(1);
+        ExecutorService handlers = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(handlers);
+        server.createContext("/event", exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            OutputStream sse = exchange.getResponseBody();
+            try {
+                for (String frame : List.of(
+                        stepPart("session-steps", "{\"type\":\"step-start\",\"id\":\"prt-1\"}"),
+                        // OpenCode may send a part again when it updates it.
+                        stepPart("session-steps", "{\"type\":\"step-start\",\"id\":\"prt-1\"}"),
+                        stepPart("session-steps", "{\"type\":\"step-finish\",\"id\":\"prt-2\",\"reason\":\"tool-calls\"}"),
+                        stepPart("session-steps", "{\"type\":\"step-start\",\"id\":\"prt-3\"}"),
+                        // A subagent's child session runs steps of its own.
+                        stepPart("child-session", "{\"type\":\"step-start\",\"id\":\"prt-9\"}"),
+                        "{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"session-steps\","
+                                + "\"info\":{\"role\":\"assistant\",\"tokens\":{\"input\":5,\"output\":1,"
+                                + "\"cache\":{\"read\":0,\"write\":0}}}}}")) {
+                    sse.write(("data: " + frame + "\n\n").getBytes(StandardCharsets.UTF_8));
+                }
+                sse.flush();
+                turnOver.await(10, TimeUnit.SECONDS);
+            } catch (IOException | InterruptedException expected) {
+                // The client closed the stream when the turn ended.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/session/session-steps/message", exchange -> {
+            try {
+                // Answer once the event lane delivered its last frame.
+                lastFrameSeen.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] response = """
+                    {"info":{"id":"m1"},"parts":[{"type":"text","text":"stepped"}]}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try (OpenCodeServeClient client = new OpenCodeServeClient(
+                objectMapper, Path.of("."), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "session-steps")) {
+            OpenCodeServeClient.ActivityListener listener = new OpenCodeServeClient.ActivityListener() {
+                @Override
+                public void onToolStart(String callId, String name, String input) { }
+
+                @Override
+                public void onToolComplete(String callId, String name, String output,
+                                           int exitCode, boolean error) { }
+
+                @Override
+                public void onTokenUsage(long input, long output, long cacheRead, long cacheCreation) {
+                    lastFrameSeen.countDown();
+                }
+
+                @Override
+                public void onSteps(int count) {
+                    steps.add(count);
+                }
+            };
+
+            assertEquals("stepped", client.send("opencode-go/deepseek-v4-pro", null,
+                    null, "step twice", ignored -> { }, listener));
+            assertEquals(List.of(1, 1), steps, "one step per step-start part of this session");
+        } finally {
+            turnOver.countDown();
+            server.stop(0);
+            handlers.shutdownNow();
+        }
+    }
+
+    private static String stepPart(String sessionId, String part) {
+        return "{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\""
+                + sessionId + "\",\"part\":" + part + "}}";
     }
 
     @Test

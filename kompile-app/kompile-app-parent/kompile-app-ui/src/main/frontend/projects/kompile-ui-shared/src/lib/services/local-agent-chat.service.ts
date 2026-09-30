@@ -81,6 +81,12 @@ export interface HarnessActivityEntry {
   state: string;
   command?: string;
   output?: string;
+  /** Process kind label: command, judge, enforcer, mcp, or shared (published by another session). */
+  kind?: string;
+  /** False when this run can read the process but not stop it (a shared process). */
+  killable?: boolean;
+  /** Owning session of a shared process. */
+  owner?: string;
 }
 export interface HarnessSubagent extends HarnessActivityEntry {
   type: string;
@@ -95,7 +101,7 @@ export interface HarnessActivity {
   tasks: HarnessActivityEntry[];
   subagents?: HarnessSubagent[];
 }
-export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'input' | 'subagent_input' | 'subagent_cancel';
+export type HarnessControlAction = 'background' | 'process_list' | 'process_output' | 'process_kill' | 'input' | 'command' | 'subagent_input' | 'subagent_cancel' | 'workflow_approve';
 export interface HarnessReconnectBookmark {
   runId: string;
   browserSessionId: string;
@@ -114,7 +120,41 @@ export interface HarnessControlReply {
   action: HarnessControlAction;
   ok: boolean;
   message: string;
+  targetId?: string;
   output?: string;
+  /** command: a terminal-session built-in; it runs when the live run finishes. */
+  deferred?: boolean;
+  /** command: resolved to model input and queued for the next turn boundary. */
+  queued?: boolean;
+  /** workflow_approve: the gate approved, and every gate of the team approved so far. */
+  gate?: string;
+  approved?: string[];
+}
+
+/** A participant of a session's workflow team; its model appears by label only. */
+export interface WorkflowTeamParticipant {
+  id: string;
+  role?: string;
+  model?: string;
+  capabilities?: string[];
+  /** Present when the participant may delegate; empty means to nobody. */
+  delegatesTo?: string[];
+}
+/** The workflow team a session was started with, as its harness session event reports it. */
+export interface WorkflowTeam {
+  name: string;
+  version?: number;
+  lead: string;
+  /** Lead first. */
+  participants: WorkflowTeamParticipant[];
+  routing?: Record<string, string>;
+  gates: { implementationRequires?: string; completionRequires?: string; approved: string[] };
+  maxConcurrentWorkers?: number;
+}
+/** The harness's answer to a gate approval, whichever way it was delivered. */
+export interface WorkflowApprovalOutcome {
+  ok: boolean;
+  message: string;
 }
 
 export interface TokenMetrics {
@@ -205,6 +245,7 @@ export class LocalAgentChatService extends BaseService {
 
   // Event streams (following build-orchestrator pattern)
   private toolUse$ = new Subject<ToolUseEvent>();
+  private toolCalls$ = new Subject<ToolUseEvent[]>();
   private result$ = new Subject<ResultEvent>();
   private filesModified$ = new Subject<string[]>();
   private sources$ = new Subject<RetrievedSource[]>();
@@ -268,6 +309,40 @@ export class LocalAgentChatService extends BaseService {
 
   private forgetReconnectBookmark(): void {
     try { sessionStorage.removeItem('kompile-live-run:' + this.browserSessionId); } catch { }
+  }
+
+  private workflowTeams = new Map<string, WorkflowTeam | null>();
+
+  /**
+   * The workflow team a chat session's harness last reported, or null when it has none. Kept for
+   * the tab, like the reconnect bookmark, so the team and its gates stay visible between runs.
+   */
+  getWorkflowTeam(browserSessionId: string | undefined): WorkflowTeam | null {
+    if (!browserSessionId) return null;
+    if (!this.workflowTeams.has(browserSessionId)) {
+      let saved: WorkflowTeam | null = null;
+      try { saved = LocalAgentChatService.workflowTeamOf(JSON.parse(sessionStorage.getItem('kompile-workflow-team:' + browserSessionId) || 'null')); }
+      catch { /* storage is optional; the next run reports the team again */ }
+      this.workflowTeams.set(browserSessionId, saved);
+    }
+    return this.workflowTeams.get(browserSessionId) ?? null;
+  }
+
+  private rememberWorkflowTeam(browserSessionId: string, team: WorkflowTeam | null): void {
+    if (!browserSessionId) return;
+    this.workflowTeams.set(browserSessionId, team);
+    try {
+      if (team) sessionStorage.setItem('kompile-workflow-team:' + browserSessionId, JSON.stringify(team));
+      else sessionStorage.removeItem('kompile-workflow-team:' + browserSessionId);
+    } catch { /* storage is optional; the next run reports the team again */ }
+  }
+
+  /** The team in a session event's workflow field, or null when the session has none. */
+  private static workflowTeamOf(value: unknown): WorkflowTeam | null {
+    const team = value as Partial<WorkflowTeam> | null;
+    return team && typeof team === 'object' && typeof team.name === 'string' && typeof team.lead === 'string'
+      && Array.isArray(team.participants) && team.participants.every(participant => typeof participant?.id === 'string')
+      && Array.isArray(team.gates?.approved) ? team as WorkflowTeam : null;
   }
 
   async stopReconnectRun(browserSessionId: string): Promise<void> {
@@ -355,7 +430,6 @@ export class LocalAgentChatService extends BaseService {
     if (!Number.isSafeInteger(data.turnId) || data.turnId <= this.liveTurnId || !this.liveAgent) return;
     if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
     this.thinkingBuffer = ''; // thinking is per-turn chrome; never leaks across turns
-    if (data.turnId !== this.liveTurnId + 1) throw new Error('Missing live turn boundary');
     if (data.source !== 'initial') {
       const input = createUserMessage(session.id, data.text || '');
       input.id = `${this.currentProcessId}-turn-${data.turnId}-input`;
@@ -379,8 +453,14 @@ export class LocalAgentChatService extends BaseService {
     const runId = this.currentProcessId;
     if (!runId || !this.liveControlsReady) throw new Error('No live harness run');
     if (this.pendingControls.size >= 8) throw new Error('Wait for pending controls');
-    if ((action === 'input' || action === 'subagent_input') && (!text?.trim() || text.trimStart().startsWith('/'))) 
-      throw new Error('Send slash commands after the live run finishes');
+    if (action === 'input' || action === 'command' || action === 'subagent_input') {
+      // Slash text is only ever a command: never model input, never a child's follow-up.
+      if (!text?.trim()) throw new Error('Nothing to send');
+      if ((action === 'command') !== text.trimStart().startsWith('/'))
+        throw new Error(action === 'command' ? 'A command starts with /'
+          : action === 'input' ? 'Send slash commands with the command action'
+          : 'Slash commands cannot be sent to a child agent');
+    }
     const requestId = `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${++this.controlSequence}`;
     const reply = new Promise<HarnessControlReply>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -406,8 +486,41 @@ export class LocalAgentChatService extends BaseService {
     });
     void delivery;
     const result = await reply;
-    if (action === 'input' && result.ok && text) this.liveInputHistory.push(text);
+    // A command that resolved to model input waits in the same queue as typed input.
+    if (text && ((action === 'input' && result.ok) || (action === 'command' && result.queued === true)))
+      this.liveInputHistory.push(text);
     return result;
+  }
+
+  /**
+   * Approves a gate of a chat session's workflow team, as /workflow approve does in the terminal;
+   * no gate approves the one that blocks next. The session's connected run takes it through its
+   * live controls; between runs a one-shot harness records it for the next run. Either way the
+   * kept team then lists every gate approved so far.
+   */
+  async approveWorkflowGate(browserSessionId: string, gate?: string, workingDirectory?: string): Promise<WorkflowApprovalOutcome> {
+    const name = gate?.trim() || undefined;
+    let outcome: WorkflowApprovalOutcome;
+    let approved: unknown;
+    if (this.currentProcessId && this.liveControlsReady && this.browserSessionId === browserSessionId) {
+      const reply = await this.sendHarnessControl('workflow_approve', undefined, name);
+      outcome = { ok: reply.ok, message: reply.message };
+      approved = reply.approved;
+    } else {
+      const response = await fetch(`${this.backendUrl}/agents/chat/workflow/approve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: browserSessionId, ...(workingDirectory ? { workingDirectory } : {}), ...(name ? { gate: name } : {}) })
+      });
+      const result = await response.json().catch(() => null);
+      const ok = response.ok && result?.ok === true;
+      outcome = { ok, message: typeof result?.message === 'string' && result.message ? result.message
+        : ok ? 'Gate approved' : `Gate approval failed (HTTP ${response.status})` };
+      approved = result?.approved;
+    }
+    const team = this.getWorkflowTeam(browserSessionId);
+    if (outcome.ok && team && Array.isArray(approved) && approved.every(entry => typeof entry === 'string'))
+      this.rememberWorkflowTeam(browserSessionId, { ...team, gates: { ...team.gates, approved: [...approved] } });
+    return outcome;
   }
 
   private closeHarnessControls(): void {
@@ -481,8 +594,8 @@ export class LocalAgentChatService extends BaseService {
   private renderThinkingPrefix(): string {
     if (this.thinkingBuffer.length === 0) return '';
     // While thinking is the only content the block is still open (renderer
-    // shows a live cursor); once answer text follows, close it.
-    return this.getCurrentContent().length === 0
+    // shows a live cursor); once answer text or a tool call follows, close it.
+    return this.getCurrentContent().length === 0 && !this.currentStreamingMessage?.toolUses?.length
       ? '<thinking>' + this.thinkingBuffer
       : '<thinking>' + this.thinkingBuffer + '</thinking>\n\n';
   }
@@ -696,7 +809,9 @@ export class LocalAgentChatService extends BaseService {
 
       const emitContentUpdate = () => {
         const fullContent = this.getCurrentContent();
-        this.streamingContentRaw$.next({ content: fullContent, epoch: this.contentEpoch });
+        // The view shows the turn's reasoning above its answer, as the CLI does. The stored
+        // message keeps the answer alone until the turn ends: reconnect resumes from it.
+        this.streamingContentRaw$.next({ content: this.renderThinkingPrefix() + fullContent, epoch: this.contentEpoch });
 
         // Update message in session
         if (this.currentStreamingMessage) {
@@ -737,6 +852,8 @@ export class LocalAgentChatService extends BaseService {
                   model: parsed.model
                 };
                 this.storageService.updateSession(session);
+                // The team the session started with; a resumed run restores it. None: no team.
+                this.rememberWorkflowTeam(this.browserSessionId, LocalAgentChatService.workflowTeamOf(parsed.workflow));
                 break;
 
               case 'queued':
@@ -812,12 +929,7 @@ export class LocalAgentChatService extends BaseService {
                 // renderer shows the same collapsible thinking UI as the CLI REPL.
                 if (typeof parsed === 'string' && parsed.length > 0) {
                   this.thinkingBuffer += parsed;
-                  const message = this.currentStreamingMessage;
-                  if (message) {
-                    message.content = this.renderThinkingPrefix() + this.getCurrentContent();
-                    this.storageService.updateSession(session);
-                    emitContentUpdate();
-                  }
+                  if (this.currentStreamingMessage) emitContentUpdate();
                 }
                 break;
 
@@ -844,16 +956,14 @@ export class LocalAgentChatService extends BaseService {
                 currentEventType = 'message'; // Reset before returning
                 return; // Exit early
 
-              case 'tool_use':
+              case 'tool_use': {
                 console.debug('[LocalAgentChat] Tool use:', parsed);
-                this.toolUse$.next(parsed as ToolUseEvent);
-                if (this.currentStreamingMessage) {
-                  if (!this.currentStreamingMessage.toolUses) {
-                    this.currentStreamingMessage.toolUses = [];
-                  }
-                  this.currentStreamingMessage.toolUses.push(parsed);
-                }
+                const call = this.toToolCall(parsed);
+                this.toolUse$.next(call);
+                this.recordToolCall(call);
+                if (this.thinkingBuffer) emitContentUpdate(); // closes the reasoning block above the call
                 break;
+              }
 
               case 'tool_result':
                 console.debug('[LocalAgentChat] Tool completed:', parsed);
@@ -862,6 +972,8 @@ export class LocalAgentChatService extends BaseService {
                   numTurns: 0,
                   isError: parsed.ok === false
                 });
+                // Harness completions carry the CLI's row and detail for the call's card.
+                if (parsed.status) this.recordToolCall(this.toToolCall(parsed));
                 break;
 
               case 'result':
@@ -1015,7 +1127,9 @@ export class LocalAgentChatService extends BaseService {
         this.currentStreamingMessage.content = this.renderThinkingPrefix()
           + this.liveTurnTexts.join('\n\n');
       } else if (data.content) {
-        this.currentStreamingMessage.content = data.content;
+        // The run's result text carries no reasoning: keep the streamed block above it, closed.
+        this.currentStreamingMessage.content = (this.thinkingBuffer
+          ? '<thinking>' + this.thinkingBuffer + '</thinking>\n\n' : '') + data.content;
       } else if (this.thinkingBuffer.length > 0) {
         // Thinking streamed but no answer text (e.g. turn ended during reasoning):
         // keep the reasoning visible instead of dropping it.
@@ -1035,6 +1149,38 @@ export class LocalAgentChatService extends BaseService {
       this.finalizeStreaming();
       if (completed) this.streamingComplete$.next(completed);
     }
+  }
+
+  /** A tool event as stored on its message; the answer length so far anchors its card. */
+  private toToolCall(parsed: any): ToolUseEvent {
+    return {
+      ...parsed,
+      tool: parsed.tool ?? parsed.toolName ?? '',
+      input: typeof parsed.input === 'string' ? parsed.input : parsed.input === undefined ? '' : JSON.stringify(parsed.input),
+      textOffset: this.getCurrentContent().length
+    };
+  }
+
+  /**
+   * The harness sends started then completed per call. A completion merges into its started
+   * call by callId, or into the latest open call of that tool when the model gave no id.
+   * Each change stores a fresh array, so views holding the previous one see the update.
+   */
+  private recordToolCall(call: ToolUseEvent): void {
+    const message = this.currentStreamingMessage;
+    // Only harness calls are kept: other lanes echo their calls into the answer text.
+    if (!message || !call.status) return;
+    const calls = message.toolUses ?? [];
+    let index = -1;
+    if (call.status === 'completed') {
+      for (let i = calls.length - 1; i >= 0 && index < 0; i--) {
+        const open = calls[i];
+        if (open.status === 'started' && (call.callId ? open.callId === call.callId : open.tool === call.tool)) index = i;
+      }
+    }
+    message.toolUses = index < 0 ? [...calls, call] : calls.map((open, i) => i !== index ? open
+      : { ...open, status: call.status, ok: call.ok, durationMs: call.durationMs, detail: call.detail });
+    this.toolCalls$.next(message.toolUses);
   }
 
   private handleCommandOutcome(session: LocalAgentSession, outcome: CommandOutcome): void {
@@ -1504,6 +1650,11 @@ export class LocalAgentChatService extends BaseService {
 
   getToolUse(): Observable<ToolUseEvent> {
     return this.toolUse$.asObservable();
+  }
+
+  /** The streaming message's tool calls, re-emitted whole after each tool event. */
+  getToolCalls(): Observable<ToolUseEvent[]> {
+    return this.toolCalls$.asObservable();
   }
 
   getResult(): Observable<ResultEvent> {

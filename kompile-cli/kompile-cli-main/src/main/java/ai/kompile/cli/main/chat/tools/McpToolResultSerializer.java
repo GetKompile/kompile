@@ -5,13 +5,54 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import java.util.LinkedHashMap;
 
 /** Shared MCP wire representation for local {@link ToolResult} values. */
 public final class McpToolResultSerializer {
 
+    private static final TypeReference<LinkedHashMap<String, Object>> METADATA_TYPE =
+            new TypeReference<>() { };
+
     private McpToolResultSerializer() {
+    }
+
+    /**
+     * Read back the {@code structuredContent} of {@link #toMcpCallResult} from an MCP
+     * client that hands the model that object serialized as the tool result text, as
+     * Claude Code does. Returns null unless {@code text} is exactly such an object, so
+     * any other output keeps rendering as received.
+     */
+    public static ToolResult fromStructuredContentText(ObjectMapper mapper, String text,
+                                                       boolean error) {
+        if (text == null) return null;
+        String json = text.strip();
+        if (!json.startsWith("{") || !json.endsWith("}")) return null;
+        JsonNode structured;
+        try {
+            structured = mapper.readTree(json);
+        } catch (JsonProcessingException e) {
+            return null;
+        }
+        if (structured == null || !structured.isObject()) return null;
+        JsonNode title = structured.get("title");
+        JsonNode output = structured.get("output");
+        JsonNode metadata = structured.get("metadata");
+        if (structured.size() != (title == null ? 2 : 3)
+                || (title != null && !title.isTextual())
+                || output == null || !output.isTextual()
+                || metadata == null || !metadata.isObject()) {
+            return null;
+        }
+        LinkedHashMap<String, Object> meta = mapper.convertValue(metadata, METADATA_TYPE);
+        // Streamed live to the MCP client, not to whoever reads the result back.
+        meta.remove(ToolResult.OUTPUT_STREAMED_METADATA);
+        return new ToolResult(title == null ? "" : title.asText(), output.asText(), meta, error);
     }
 
     public static ObjectNode toMcpCallResult(ObjectMapper mapper, ToolResult result) {

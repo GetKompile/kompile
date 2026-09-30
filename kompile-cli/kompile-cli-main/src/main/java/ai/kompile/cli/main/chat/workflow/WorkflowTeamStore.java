@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -51,7 +52,7 @@ public final class WorkflowTeamStore {
         JsonNode workflows = root.path("workflows");
         List<String> names = new ArrayList<>();
         workflows.fieldNames().forEachRemaining(names::add);
-        java.util.Collections.sort(names);
+        Collections.sort(names);
         for (String name : names) {
             try {
                 result.add(MAPPER.treeToValue(workflows.get(name), WorkflowTeam.class));
@@ -68,16 +69,38 @@ public final class WorkflowTeamStore {
         return node == null ? null : MAPPER.treeToValue(node, WorkflowTeam.class);
     }
 
-    /** Returns false rather than silently replacing a same-name workflow. */
+    /**
+     * Returns false rather than silently replacing a same-name workflow. A
+     * replacement that changes the definition (participants, models, edges,
+     * gates) is stored under the next version, so sessions pinned to the old
+     * definition refuse to resume under different rules; re-saving an identical
+     * definition keeps the stored version. Read the stored version back with
+     * {@link #get}.
+     */
     public static synchronized boolean save(Path projectRoot, WorkflowTeam workflow, boolean replace)
             throws IOException {
         ObjectNode root = read(projectRoot);
         ObjectNode workflows = object(root, "workflows");
         String key = WorkflowTeam.key(workflow.name());
-        if (workflows.has(key) && !replace) return false;
-        workflows.set(key, MAPPER.valueToTree(workflow));
+        JsonNode existing = workflows.get(key);
+        if (existing != null && !replace) return false;
+        workflows.set(key, MAPPER.valueToTree(versioned(existing, workflow)));
         write(projectRoot, root);
         return true;
+    }
+
+    private static WorkflowTeam versioned(JsonNode existing, WorkflowTeam workflow) {
+        if (existing == null) return workflow;
+        int storedVersion = Math.max(1, existing.path("version").asInt(1));
+        try {
+            WorkflowTeam stored = MAPPER.treeToValue(existing, WorkflowTeam.class);
+            if (stored.equals(workflow.withVersion(stored.version()))) {
+                return workflow.withVersion(stored.version());
+            }
+        } catch (IOException | RuntimeException unparseable) {
+            // A hand-edited entry that no longer parses is replaced under a newer version.
+        }
+        return workflow.version() > storedVersion ? workflow : workflow.withVersion(storedVersion + 1);
     }
 
     public static synchronized boolean delete(Path projectRoot, String name) throws IOException {

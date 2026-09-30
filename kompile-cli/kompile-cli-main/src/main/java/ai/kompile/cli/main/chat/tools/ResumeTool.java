@@ -2617,8 +2617,8 @@ public class ResumeTool implements CliTool {
                         agentCommand, agent, true, effectiveWorkDir);
             }
 
-            // Configure MCP tools before launching. Codex receives invocation-local
-            // overrides so concurrent resumes never race through ~/.codex/config.toml.
+            // Configure MCP tools before launching. Codex and Claude Code receive
+            // invocation-local config so concurrent resumes never race through a shared file.
             String sseUrl = resolveResumeMcpSseUrl(agent);
             try {
                 injectedSettingsFile = configureNativeResumeMcp(
@@ -2924,7 +2924,7 @@ public class ResumeTool implements CliTool {
             terminal.close();
             terminalClosed = true;
 
-            List<String> agentCommand = buildAgentResumeCommand(agent, exportResult);
+            List<String> agentCommand = buildAgentResumeCommand(agent, exportResult, injectedSettingsFile);
             if (agentCommand.isEmpty()) {
                 throw new IllegalArgumentException("Resume command is empty for agent: " + agent);
             }
@@ -3858,8 +3858,12 @@ public class ResumeTool implements CliTool {
      * For agents that use subcommands (like codex), permission bypass flags are
      * inserted BEFORE the subcommand so they are correctly positioned.
      * Returns the full command as a list suitable for ProcessBuilder.
+     *
+     * @param injectedSettingsFile the file {@code McpToolInjection.injectTools} returned,
+     *                             or null when no tools were injected
      */
-    private List<String> buildAgentResumeCommand(String agent, ConversationExporter.ExportResult exportResult) {
+    private List<String> buildAgentResumeCommand(String agent, ConversationExporter.ExportResult exportResult,
+                                                 Path injectedSettingsFile) {
         List<String> agentCommand = new ArrayList<>();
         String[] resumeParts = exportResult.getResumeCommand().split("\\s+");
         if (resumeParts.length == 0 || resumeParts[0].isEmpty()) {
@@ -3870,16 +3874,15 @@ public class ResumeTool implements CliTool {
         agentCommand.add(resumeParts[0]);
 
         // Pi loads MCP support as an extension rather than from the working-directory
-        // config alone. Keep the extension argument before --session/other resume args.
-        if (ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
-            try {
-                agentCommand.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
-                        exportResult.getWorkingDirectory() != null
-                                ? exportResult.getWorkingDirectory()
-                                : Path.of(System.getProperty("user.dir")), agent));
-            } catch (IOException e) {
-                throw new IllegalArgumentException("Could not provision Pi MCP adapter", e);
-            }
+        // config alone, and Claude Code reads the config written for this launch. Keep
+        // those arguments before --session/other resume args.
+        try {
+            agentCommand.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                    exportResult.getWorkingDirectory() != null
+                            ? exportResult.getWorkingDirectory()
+                            : Path.of(System.getProperty("user.dir")), agent, injectedSettingsFile));
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Could not provision Pi MCP adapter", e);
         }
 
         // For agents where bypass flags must come before the subcommand,
@@ -3919,8 +3922,8 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Configure MCP access for a native resume. Codex's config is process-local because
-     * rewriting the shared global config races with concurrent Kompile processes.
+     * Configure MCP access for a native resume. Codex's and Claude Code's configs are
+     * process-local because rewriting a shared config races with concurrent Kompile processes.
      *
      * @return the settings file to restore after exit, or {@code null} for Codex
      */
@@ -3938,11 +3941,8 @@ public class ResumeTool implements CliTool {
         }
         Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
                 workingDirectory, agent, sseUrl);
-        if (ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
-            List<String> overrides = ai.kompile.cli.main.chat.mcp.McpToolInjection
-                    .commandLineOverrides(workingDirectory, agent);
-            agentCommand.addAll(1, overrides);
-        }
+        agentCommand.addAll(1, ai.kompile.cli.main.chat.mcp.McpToolInjection
+                .commandLineOverrides(workingDirectory, agent, settingsFile));
         return settingsFile;
     }
 

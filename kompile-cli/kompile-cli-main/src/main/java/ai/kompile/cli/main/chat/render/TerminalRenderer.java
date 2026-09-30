@@ -71,6 +71,9 @@ public class TerminalRenderer {
      */
     private static final int MAX_INLINE_TOOL_DETAIL_CHARS = 2_400;
     private static final int MAX_INLINE_TOOL_DETAIL_LINES = 48;
+    /** Closes a detail section cut at the inline bounds — in the terminal and in the web chat. */
+    public static final String DETAIL_TRUNCATED_NOTE = "… (tool detail truncated at "
+            + MAX_INLINE_TOOL_DETAIL_CHARS + " chars / " + MAX_INLINE_TOOL_DETAIL_LINES + " lines)";
 
     // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
@@ -227,54 +230,25 @@ public class TerminalRenderer {
 
     private String renderToolCallComplete(String toolName, String rawInput, ToolResult result,
                                           boolean includeDetail) {
-        String cleanName = stripMcpPrefix(toolName);
-        String displayName = prettifyToolName(toolName);
-        String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
-        StringBuilder sb = new StringBuilder();
-        String action = prettifyToolInput(cleanName, rawInput, 96);
-        Map<String, Object> meta = result.getMetadata();
-
-        if (result.isError()) {
-            sb.append("  ").append(icon).append(" ").append(bold(red(displayName)));
-            if (!action.isBlank()) {
-                sb.append(" ").append(dim(action));
-            }
-            sb.append(" ").append(red("✗"));
-            String errorPreview = result.isOutputStreamed()
-                    ? "" : truncatePreview(result.getOutput(), 120);
-            if (!errorPreview.isBlank()) {
-                sb.append(" ").append(red(errorPreview));
-            }
-        } else {
-            sb.append("  ").append(icon).append(" ").append(bold(green(displayName)));
-            if (!action.isBlank()) {
-                sb.append(" ").append(dim(action));
-            }
-            sb.append(" ").append(green("✓"));
-
-            // Show title if present
-            if (result.getTitle() != null && !result.getTitle().isEmpty()
-                    && !"error".equals(result.getTitle())
-                    && !result.getTitle().equals(action)) {
-                sb.append(" ").append(dim(truncatePreview(result.getTitle(), 96)));
-            }
-
-            // Show metadata summary
-            if (!meta.isEmpty()) {
-                sb.append(" ").append(dim(renderMetadata(meta)));
-            }
-
-            // Show output preview for certain tools
-            String output = result.getOutput();
-            if (!result.isOutputStreamed() && output != null && !output.isEmpty()) {
-                if (shouldShowPreview(cleanName, meta)
-                        || ((result.getTitle() == null || result.getTitle().isBlank()) && meta.isEmpty())) {
-                    String preview = firstOutputLine(output, 140);
-                    if (!preview.isBlank()) {
-                        sb.append(" ").append(dim("· " + preview));
-                    }
-                }
-            }
+        String icon = TOOL_ICONS.getOrDefault(stripMcpPrefix(toolName), "▸");
+        ToolRow row = toolRow(toolName, rawInput, result, result.isOutputStreamed());
+        StringBuilder sb = new StringBuilder("  ").append(icon).append(" ")
+                .append(row.ok() ? bold(green(row.displayName())) : bold(red(row.displayName())));
+        if (!row.action().isBlank()) {
+            sb.append(" ").append(dim(row.action()));
+        }
+        sb.append(" ").append(row.ok() ? green("✓") : red("✗"));
+        if (row.errorPreview() != null) {
+            sb.append(" ").append(red(row.errorPreview()));
+        }
+        if (row.title() != null) {
+            sb.append(" ").append(dim(row.title()));
+        }
+        if (row.metadata() != null) {
+            sb.append(" ").append(dim(row.metadata()));
+        }
+        if (row.preview() != null) {
+            sb.append(" ").append(dim("· " + row.preview()));
         }
 
         if (includeDetail) {
@@ -295,16 +269,105 @@ public class TerminalRenderer {
     public String renderToolResultDetail(String toolName, String rawInput, ToolResult result) {
         if (result == null || result.isOutputStreamed()) return "";
 
-        String cleanName = stripMcpPrefix(toolName);
         StringBuilder detail = new StringBuilder();
+        for (DetailSection section : toolResultDetailSections(toolName, rawInput, result)) {
+            // Every block starts on its own line; a result block used to be glued
+            // onto the last line of the diff above it.
+            if (detail.length() > 0) detail.append('\n');
+            detail.append("  ").append(dim("↳ " + section.label() + ":"));
+            for (DetailLine line : section.lines()) {
+                // Lines were cut on printable text; styling afterwards means escape
+                // sequences are never sliced mid-span.
+                String visible = ansiEnabled && line.hint() != null
+                        ? highlighter.highlight(line.text(), line.hint()) : line.text();
+                detail.append("\n     ").append(section.diff() ? colorDiffLine(visible) : visible);
+            }
+            if (section.truncated()) {
+                detail.append("\n     ").append(dim(DETAIL_TRUNCATED_NOTE));
+            }
+        }
+        return detail.toString();
+    }
+
+    /**
+     * The completion row of a tool call as data: what {@link #renderToolCallComplete} prints,
+     * unstyled, so other transports (the web chat) show the same row. {@code metadata} is null
+     * when the result has none and can be blank when every key is filtered; {@code title},
+     * {@code preview} and {@code errorPreview} are null when absent.
+     */
+    public record ToolRow(String displayName, String action, boolean ok, String title,
+                          String metadata, String preview, String errorPreview) { }
+
+    /**
+     * @param outputShownLive the viewer already saw the output stream live, so the row repeats
+     *                        none of it — the terminal passes {@link ToolResult#isOutputStreamed()},
+     *                        a client that never saw the stream passes false
+     */
+    public static ToolRow toolRow(String toolName, String rawInput, ToolResult result,
+                                  boolean outputShownLive) {
+        String cleanName = stripMcpPrefix(toolName);
+        // Row text comes from the model's input and the tool's output. Keep it printable so a
+        // colored or cursor-moving result cannot restyle or clear the screen that prints it.
+        String displayName = printableToolOutput(prettifyToolName(toolName));
+        String action = printableToolOutput(prettifyToolInput(cleanName, rawInput, 96));
+        if (result.isError()) {
+            String errorPreview = outputShownLive ? ""
+                    : truncatePreview(printableToolOutput(result.getOutput()), 120);
+            return new ToolRow(displayName, action, false, null, null, null,
+                    errorPreview.isBlank() ? null : errorPreview);
+        }
+        Map<String, Object> meta = result.getMetadata();
+        String title = result.getTitle();
+        String shownTitle = title != null && !title.isEmpty() && !"error".equals(title)
+                && !title.equals(action) ? truncatePreview(printableToolOutput(title), 96) : null;
+        // Output preview for command/search tools, or when nothing else summarizes the result.
+        String preview = null;
+        String output = result.getOutput();
+        if (!outputShownLive && output != null && !output.isEmpty()
+                && (shouldShowPreview(cleanName, meta)
+                    || ((title == null || title.isBlank()) && meta.isEmpty()))) {
+            String first = firstOutputLine(printableToolOutput(output), 140);
+            if (!first.isBlank()) preview = first;
+        }
+        return new ToolRow(displayName, action, true, shownTitle,
+                meta.isEmpty() ? null : printableToolOutput(renderMetadata(meta)), preview, null);
+    }
+
+    /**
+     * One bounded block of a tool call's detail: the edit diff, written content, or the result
+     * body. {@code lineScoped} marks lines whose hints were inferred from each line itself
+     * (search hits, compiler output): they are unrelated fragments and style independently,
+     * so an unclosed quote or comment on one cannot run into the next.
+     */
+    public record DetailSection(String label, boolean diff, boolean truncated, boolean lineScoped,
+                                List<DetailLine> lines) { }
+
+    /**
+     * One visible detail line, printable (see {@link #printableToolOutput}). {@code hint} names
+     * the file whose language styles the line (a path or bare filename; null = unstyled). Diff
+     * lines are colored by prefix instead.
+     */
+    public record DetailLine(String text, String hint) { }
+
+    /**
+     * The detail body as data, under the same bounds and with the same highlight hints the
+     * terminal uses — the single source for {@link #renderToolResultDetail} and the web chat.
+     * Unlike the terminal it ignores {@link ToolResult#isOutputStreamed()}: whether streamed
+     * output was already seen depends on the viewer.
+     */
+    public static List<DetailSection> toolResultDetailSections(String toolName, String rawInput,
+                                                               ToolResult result) {
+        if (result == null) return List.of();
+        String cleanName = stripMcpPrefix(toolName);
+        List<DetailSection> sections = new ArrayList<>(2);
         List<String> changeLines = renderEditDiffLines(toolName, rawInput);
         if (!changeLines.isEmpty()) {
-            appendBoundedDetailLines(detail, "diff", changeLines, true, null);
+            addBoundedSection(sections, "diff", changeLines, true, null, false, false);
         } else if ("write".equals(cleanName)) {
             List<String> contentLines = renderWriteContentLines(rawInput);
             if (!contentLines.isEmpty()) {
-                appendBoundedDetailLines(detail, "content", contentLines, false,
-                        languageFromRawInput(rawInput));
+                addBoundedSection(sections, "content", contentLines, false,
+                        languageFromRawInput(rawInput), false, false);
             }
         }
 
@@ -319,13 +382,13 @@ public class TerminalRenderer {
             boolean hintUsable = languageHint != null
                     && SyntaxHighlighter.familyForFilename(languageHint)
                             != SyntaxHighlighter.Family.NONE;
-            appendBoundedDetailLines(detail, label,
+            addBoundedSection(sections, label,
                     List.of(output.stripTrailing().split("\\R", -1)), false,
                     hintUsable ? languageHint : null,
                     !hintUsable && isContentTool(cleanName),
                     "read_batch".equals(cleanName));
         }
-        return detail.toString();
+        return sections;
     }
 
     /**
@@ -385,7 +448,8 @@ public class TerminalRenderer {
         return rendered.toString();
     }
 
-    private static String printableToolOutput(String output) {
+    /** Tool output without ANSI escapes or control characters other than line breaks and tabs. */
+    public static String printableToolOutput(String output) {
         String stripped = AnsiConstants.stripAnsi(output == null ? "" : output);
         StringBuilder safe = new StringBuilder(stripped.length());
         stripped.codePoints().forEach(codePoint -> {
@@ -410,74 +474,52 @@ public class TerminalRenderer {
         }
     }
 
-    private void appendBoundedDetailLines(StringBuilder detail, String label,
-                                          List<String> lines, boolean diff) {
-        appendBoundedDetailLines(detail, label, lines, diff, null, false, false);
-    }
-
-    private void appendBoundedDetailLines(StringBuilder detail, String label,
-                                          List<String> lines, boolean diff,
-                                          String languageHint) {
-        appendBoundedDetailLines(detail, label, lines, diff, languageHint, false, false);
-    }
-
-    private void appendBoundedDetailLines(StringBuilder detail, String label,
+    private static void addBoundedSection(List<DetailSection> sections, String label,
                                           List<String> lines, boolean diff,
                                           String languageHint, boolean perLineHints,
                                           boolean batchSectionHints) {
         if (lines == null || lines.isEmpty()) return;
-        detail.append("  ").append(dim("↳ " + label + ":"));
+        List<DetailLine> shown = new ArrayList<>(Math.min(lines.size(), MAX_INLINE_TOOL_DETAIL_LINES));
         int shownChars = 0;
-        int shownLines = 0;
         boolean truncated = false;
-        boolean stylable = ansiEnabled && !diff;
-        boolean inferPerLine = stylable && perLineHints && languageHint == null;
+        boolean inferPerLine = !diff && perLineHints && languageHint == null;
         boolean inferBatchSections = inferPerLine && batchSectionHints;
         String sectionLanguageHint = null;
         boolean insideBatchSection = false;
         for (String line : lines) {
             if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS
-                    || shownLines >= MAX_INLINE_TOOL_DETAIL_LINES) {
+                    || shown.size() >= MAX_INLINE_TOOL_DETAIL_LINES) {
                 truncated = true;
                 break;
             }
-            String plainLine = AsciiRenderer.stripAnsi(line == null ? "" : line).strip();
+            // Printable before the cut: the bounds count what is shown, a tool's own escape
+            // sequence is never sliced or styled into, and every client shows the same text.
+            String raw = printableToolOutput(line);
+            String plainLine = raw.strip();
             boolean batchSectionHeader = inferBatchSections && plainLine.startsWith("== ");
             if (batchSectionHeader) {
                 insideBatchSection = true;
                 sectionLanguageHint = languageFromBatchSectionHeader(plainLine);
             }
             int remaining = MAX_INLINE_TOOL_DETAIL_CHARS - shownChars;
-            String visible = line == null ? "" : line;
+            String visible = raw;
             if (visible.length() > remaining) {
                 visible = visible.substring(0, remaining);
                 truncated = true;
             }
-            // Truncate on the RAW text, then apply syntax styling afterwards so
-            // escape sequences can never be sliced mid-span and the character
-            // budget keeps counting visible characters.
-            if (stylable) {
-                // read_batch bodies inherit their enclosing file header; other
-                // path-bearing outputs infer a recognized family per line.
-                String hint = languageHint;
-                if (inferPerLine && !batchSectionHeader) {
-                    hint = inferBatchSections && insideBatchSection
-                            ? sectionLanguageHint
-                            : SyntaxHighlighter.filenameFromToolResultLine(line);
-                }
-                if (hint != null) {
-                    visible = highlighter.highlight(visible, hint);
-                }
+            // read_batch bodies inherit their enclosing file header; other
+            // path-bearing outputs infer a recognized family per line.
+            String hint = languageHint;
+            if (inferPerLine && !batchSectionHeader) {
+                hint = inferBatchSections && insideBatchSection
+                        ? sectionLanguageHint
+                        : SyntaxHighlighter.filenameFromToolResultLine(raw);
             }
-            detail.append("\n     ").append(diff ? colorDiffLine(visible) : visible);
-            shownChars += line == null ? 0 : line.length();
-            shownLines++;
+            shown.add(new DetailLine(visible, hint));
+            shownChars += raw.length();
         }
-        if (truncated) {
-            detail.append("\n     ").append(dim("… (tool detail truncated at "
-                    + MAX_INLINE_TOOL_DETAIL_CHARS + " chars / "
-                    + MAX_INLINE_TOOL_DETAIL_LINES + " lines)"));
-        }
+        sections.add(new DetailSection(label, diff, truncated, inferPerLine && !inferBatchSections,
+                List.copyOf(shown)));
     }
 
     private static boolean isContentTool(String toolName) {
@@ -653,7 +695,7 @@ public class TerminalRenderer {
     }
 
     /** Extract edit/patch input into diff-like lines for the detailed transcript. */
-    private List<String> renderEditDiffLines(String toolName, String rawInput) {
+    private static List<String> renderEditDiffLines(String toolName, String rawInput) {
         String cleanName = stripMcpPrefix(toolName);
         if (!Set.of("edit", "edit_batch", "edit_patch", "patch").contains(cleanName)
                 || rawInput == null || rawInput.isBlank()) {
@@ -955,6 +997,17 @@ public class TerminalRenderer {
     public String renderCompactionNotice(int tokensBefore, int tokensAfter) {
         return "\n" + dim("  ─── context compacted · portable history estimate: ~" + tokensBefore
                 + " → ~" + tokensAfter + " tokens; provider context not measured ───") + "\n";
+    }
+
+    /**
+     * Render a compaction the provider ran on a session it owns. The trigger and
+     * the size before are shown when reported; the size after is not known.
+     */
+    public String renderProviderCompactionNotice(String provider, String trigger, long tokensBefore) {
+        StringBuilder text = new StringBuilder("  ─── context compacted by ").append(provider);
+        if (trigger != null && !trigger.isBlank()) text.append(" (").append(trigger.strip()).append(')');
+        if (tokensBefore > 0) text.append(" · ").append(tokensBefore).append(" tokens before");
+        return "\n" + dim(text.append(" ───").toString()) + "\n";
     }
 
     // ========================================================================
@@ -1545,7 +1598,7 @@ public class TerminalRenderer {
     // Utility methods
     // ========================================================================
 
-    private boolean shouldShowPreview(String toolName, Map<String, Object> meta) {
+    private static boolean shouldShowPreview(String toolName, Map<String, Object> meta) {
         // Show preview for bash (command output), errors, and short results
         String lower = toolName != null ? toolName.toLowerCase() : "";
         return "bash".equals(lower) ||
@@ -1553,7 +1606,7 @@ public class TerminalRenderer {
                 "glob".equals(lower);
     }
 
-    private String renderMetadata(Map<String, Object> meta) {
+    private static String renderMetadata(Map<String, Object> meta) {
         StringBuilder sb = new StringBuilder("(");
         boolean first = true;
         for (Map.Entry<String, Object> entry : meta.entrySet()) {

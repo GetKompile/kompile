@@ -24,6 +24,10 @@ import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.*;
+import ai.kompile.cli.main.chat.workflow.WorkflowLaunch;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeam;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -76,6 +80,10 @@ public class DirectSubagentRunner implements SubagentRunner {
         private final String modelOverride;
         private final DirectSubagentSupervision supervision;
         private final DirectSubagentCompactor compactor;
+        /** The workflow participant this child runs as; {@code null} outside a workflow team. */
+        private final WorkflowTeamEnforcement workflow;
+        /** How rows name this child (see {@link DirectSubagentRunner#displayName}). */
+        private final String label;
         private final AtomicInteger overflowRecoveryCount = new AtomicInteger();
         private final ConcurrentLinkedQueue<String> followUps = new ConcurrentLinkedQueue<>();
         private final AtomicBoolean running = new AtomicBoolean(false);
@@ -89,7 +97,8 @@ public class DirectSubagentRunner implements SubagentRunner {
                               DirectLlmClient client, String systemPrompt,
                               String modelOverride, AtomicBoolean cancelled,
                               DirectSubagentSupervision supervision,
-                              DirectSubagentCompactor compactor) {
+                              DirectSubagentCompactor compactor,
+                              WorkflowTeamEnforcement workflow, String label) {
             this.id = id;
             this.agent = agent;
             this.parentContext = parentContext;
@@ -99,6 +108,8 @@ public class DirectSubagentRunner implements SubagentRunner {
             this.cancelled = cancelled;
             this.supervision = supervision;
             this.compactor = compactor;
+            this.workflow = workflow;
+            this.label = label;
         }
     }
 
@@ -117,6 +128,7 @@ public class DirectSubagentRunner implements SubagentRunner {
         this.lifecycleListener = listener;
     }
 
+
     @Override
     public void setReminderManager(ReminderManager reminderManager) {
         this.reminderManager = reminderManager;
@@ -133,8 +145,20 @@ public class DirectSubagentRunner implements SubagentRunner {
                 + UUID.randomUUID();
         // Create an isolated, retained LLM history for this subagent while
         // sharing the parent turn's cancellation signal. Retention is what lets
-        // the selected subagent accept later follow-up messages.
-        ChatConfig childConfig = chatConfig.copy();
+        // the selected subagent accept later follow-up messages. A workflow
+        // participant runs on its bound model with that route's own credential.
+        WorkflowTeamEnforcement workflow =
+                WorkflowSessionContext.participantEnforcement(agent.getWorkflowParticipant(), parentContext);
+        WorkflowTeam.ModelBinding binding = workflow == null ? null
+                : workflow.team().participant(workflow.callerParticipant()).model();
+        String label = displayName(agent, workflow == null ? null : workflow.callerParticipant(), binding);
+        ChatConfig childConfig = WorkflowLaunch.configFor(chatConfig, binding);
+        if (binding != null && !childConfig.isValid()) {
+            throw new IllegalArgumentException("Workflow participant '" + workflow.callerParticipant()
+                    + "' runs on " + binding.label() + ", which is not usable here (no stored credential "
+                    + "or endpoint). Configure it with kompile chat --setup, or the user can change the "
+                    + "participant's model with /workflow model " + workflow.callerParticipant() + ".");
+        }
         String model = agent.resolveModel(childConfig.getModel());
         if (!agent.isModelAllowed(model)) {
             throw new IllegalArgumentException("Model is not allowed for " + agent.getName() + ": " + model);
@@ -161,6 +185,10 @@ public class DirectSubagentRunner implements SubagentRunner {
             systemPrompt = systemPrompt.isBlank()
                     ? projectPrompt : systemPrompt.strip() + "\n\n" + projectPrompt;
         }
+        if (workflow != null) {
+            systemPrompt = systemPrompt.isBlank()
+                    ? workflow.participantBrief() : systemPrompt.strip() + "\n\n" + workflow.participantBrief();
+        }
         DirectSubagentSupervision.Contract contract = parentContext.getSubagentSupervision();
         if (contract == null) {
             // Standalone callers still use local workflow configuration, captured once.
@@ -179,7 +207,7 @@ public class DirectSubagentRunner implements SubagentRunner {
         DirectSession session = new DirectSession(
                 subagentId, agent, parentContext, subClient,
                 systemPrompt, agent.getModelOverride(), subagentCancelled,
-                new DirectSubagentSupervision(contract, toolRegistry, objectMapper), compactor);
+                new DirectSubagentSupervision(contract, toolRegistry, objectMapper), compactor, workflow, label);
         if (lifecycleListener != null) {
             subClient.setOutputConsumer(sessionContext.wrapConsumer(chunk -> emitOutput(subagentId, chunk)));
         }
@@ -189,10 +217,10 @@ public class DirectSubagentRunner implements SubagentRunner {
         session.ownerThread = Thread.currentThread();
         // Publish the row only after its cancellation handle is registered.
         if (lifecycleListener != null) {
-            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
+            lifecycleListener.onSubagentStart(subagentId, label, StringUtils.truncate(prompt, 60));
         }
         emitActivity(subagentId, "starting",
-                renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
+                renderer.renderSubagentStart(label, StringUtils.truncate(prompt, 80)),
                 parentContext);
         String reminderContent = ReminderManager.reminderBlockContent(prompt);
         if (reminderContent != null) {
@@ -205,11 +233,23 @@ public class DirectSubagentRunner implements SubagentRunner {
         } catch (Exception e) {
             notifyStatus(subagentId, "failed · " + e.getClass().getSimpleName());
             emitActivity(subagentId, "failed · " + e.getClass().getSimpleName(),
-                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
+                    renderer.renderSubagentError(label, e.getMessage()), parentContext);
             throw e;
         } finally {
             finishRun(session);
         }
+    }
+
+    /**
+     * How rows name a child: a workflow participant the way its delegation line does,
+     * {@code participant (role on provider/model)}, else the agent. Package-private for
+     * {@link ServerSubagentRunner} and tests.
+     */
+    static String displayName(AgentConfig agent, String participant, WorkflowTeam.ModelBinding binding) {
+        if (participant == null || participant.isBlank()) return agent.getName();
+        String role = agent.getRoleName() != null && !agent.getRoleName().isBlank()
+                ? agent.getRoleName() : agent.getName();
+        return participant + " (" + role + (binding != null ? " on " + binding.label() : "") + ")";
     }
 
     private String runConversation(DirectSession session, String prompt, long startTime) throws Exception {
@@ -233,7 +273,7 @@ public class DirectSubagentRunner implements SubagentRunner {
             if (session.cancelled.get() || session.parentContext.isAborted()) {
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
-                        renderer.renderSubagentError(session.agent.getName(), "Aborted"),
+                        renderer.renderSubagentError(session.label, "Aborted"),
                         session.parentContext);
                 return fullResponse + "\n[Subagent aborted]";
             }
@@ -255,7 +295,7 @@ public class DirectSubagentRunner implements SubagentRunner {
             if (session.compactor.preventiveNeeded(outboundMessage)) {
                 int shrunkBodies = session.compactor.shrinkInPlace(session.client);
                 emitActivity(session.id, "compacting",
-                        renderer.renderSubagentStatus(session.agent.getName(),
+                        renderer.renderSubagentStatus(session.label,
                                 shrunkBodies > 0
                                         ? "context nearing the model limit; pruned " + shrunkBodies + " old bodies"
                                         : "context nearing the model limit"),
@@ -287,7 +327,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                 session.compactor.rollbackTo(requestStart);
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
-                        renderer.renderSubagentError(session.agent.getName(), "Aborted"),
+                        renderer.renderSubagentError(session.label, "Aborted"),
                         session.parentContext);
                 return fullResponse + "\n[Subagent aborted]";
             }
@@ -302,7 +342,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                         > MAX_OVERFLOW_RECOVERIES) {
                     notifyStatus(session.id, "failed · context overflow");
                     emitActivity(session.id, "failed · context overflow",
-                            renderer.renderSubagentError(session.agent.getName(),
+                            renderer.renderSubagentError(session.label,
                                     "Context still exceeded after compaction"),
                             session.parentContext);
                     throw new IllegalStateException(
@@ -313,7 +353,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                                 session.modelOverride,
                                 "Recover from a provider context-window rejection");
                 emitActivity(session.id, "compacting",
-                        renderer.renderSubagentStatus(session.agent.getName(),
+                        renderer.renderSubagentStatus(session.label,
                                 committed.committed()
                                         ? "provider rejected the request as too long; compacted child context"
                                         : "provider rejected the request as too long; no reduction possible: "
@@ -384,6 +424,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                         toolRegistry
                 );
                 subContext.markSupervisedChild();
+                subContext.bindWorkflow(session.workflow);
                 subContext.linkAbortCheck(
                         () -> session.cancelled.get() || session.parentContext.isAborted());
                 subContext.setOutputConsumer(session.parentContext.getOutputConsumer());
@@ -453,7 +494,7 @@ public class DirectSubagentRunner implements SubagentRunner {
 
         notifyStatus(session.id, "completed");
         emitActivity(session.id, "completed",
-                renderer.renderSubagentComplete(session.agent.getName(), durationMs),
+                renderer.renderSubagentComplete(session.label, durationMs),
                 session.parentContext);
 
         return finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;
@@ -502,7 +543,7 @@ public class DirectSubagentRunner implements SubagentRunner {
         if (activeTool != null) activeTool.abort();
         notifyStatus(session.id, "cancelling");
         emitActivity(session.id, "cancelling",
-                renderer.renderSubagentError(session.agent.getName(), "Cancelled by user"),
+                renderer.renderSubagentError(session.label, "Cancelled by user"),
                 session.parentContext);
         Thread owner = session.ownerThread;
         if (owner != null && owner != Thread.currentThread()) owner.interrupt();
@@ -532,7 +573,7 @@ public class DirectSubagentRunner implements SubagentRunner {
             session.ownerThread = Thread.currentThread();
             if (lifecycleListener != null) {
                 lifecycleListener.onSubagentStart(
-                        session.id, session.agent.getName(), "Interactive follow-up");
+                        session.id, session.label, "Interactive follow-up");
             }
             try {
                 String result;
@@ -542,7 +583,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                     result = "Subagent follow-up failed: " + AgenticChatLoop.describeThrowable(e);
                     notifyStatus(session.id, "failed · " + e.getClass().getSimpleName());
                     emitActivity(session.id, "failed · " + e.getClass().getSimpleName(),
-                            renderer.renderSubagentError(session.agent.getName(), e.getMessage()),
+                            renderer.renderSubagentError(session.label, e.getMessage()),
                             session.parentContext);
                 }
                 // Publish before releasing ownership: a live host must not observe

@@ -206,9 +206,13 @@ public class ProcessManagementTool implements CliTool {
             String exitStr = entry.getExitCode() != null ? String.valueOf(entry.getExitCode()) : "-";
             String cmd = StringUtils.truncateToLength(entry.getCommand(), 40);
             String pidStr = entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-";
+            // A SHARED row mirrors another session's process: name its owner, not "local".
+            String owner = entry.getKind() != BackgroundProcessManager.ProcessKind.SHARED ? "local"
+                    : StringUtils.truncateToLength(firstNonBlank(entry.getMetadata().get("ownerAgent"),
+                    entry.getMetadata().get("ownerSessionId"), "shared"), 10);
             sb.append(String.format("%-12s %-10s %-9s %-8s %-10s %-12s %-6s %s\n",
                     entry.getId(),
-                    "local",
+                    owner,
                     entry.getKind().label(),
                     pidStr,
                     entry.getState(),
@@ -285,7 +289,7 @@ public class ProcessManagementTool implements CliTool {
             BackgroundProcessManager.ProcessEntry entry =
                     processManager.launchMonitored(command, description,
                             context.getWorkingDirectory(), monitorMessage);
-            publishProcess(entry, context, resource.resourceClass());
+            publishProcess(entry, context, resource.resourceClass(), monitorMessage);
 
             String output = String.format("Launched background process:\n" +
                             "  ID:      %s\n" +
@@ -320,6 +324,13 @@ public class ProcessManagementTool implements CliTool {
         BackgroundProcessManager.ProcessEntry entry = processManager.get(processId);
         if (entry == null) {
             return ToolResult.error("Process not found: " + processId);
+        }
+        if (entry.getKind() == BackgroundProcessManager.ProcessKind.SHARED) {
+            // A mirror follows the owner's true state; only the owning session can stop it.
+            return ToolResult.error("Process " + processId + " belongs to "
+                    + firstNonBlank(entry.getMetadata().get("ownerAgent"),
+                    entry.getMetadata().get("ownerSessionId"), "another session")
+                    + "; only its owning session can stop it");
         }
 
         if (!entry.isRunning()) {
@@ -441,10 +452,12 @@ public class ProcessManagementTool implements CliTool {
         BackgroundProcessManager.ProcessEntry entry = processManager.get(processId);
         if (entry != null) {
             syncProcessState(entry);
+            // A mirrored entry is another session's process, not one this session owns.
+            String scope = entry.getKind() == BackgroundProcessManager.ProcessKind.SHARED ? "shared" : "local";
 
             StringBuilder sb = new StringBuilder();
             sb.append("Process: ").append(entry.getId()).append("\n");
-            sb.append("  Scope:       local\n");
+            sb.append("  Scope:       ").append(scope).append("\n");
             sb.append("  Kind:        ").append(entry.getKind().label()).append("\n");
             sb.append("  PID:         ").append(entry.getPid() > 0 ? String.valueOf(entry.getPid()) : "-").append("\n");
             sb.append("  State:       ").append(entry.getState()).append("\n");
@@ -468,7 +481,7 @@ public class ProcessManagementTool implements CliTool {
                     Map.of("processId", processId,
                             "state", entry.getState().name(),
                             "pid", entry.getPid(),
-                            "scope", "local"));
+                            "scope", scope));
         }
 
         ProcessCoordEntry shared = findSharedProcess(processId);
@@ -517,6 +530,7 @@ public class ProcessManagementTool implements CliTool {
             return ToolResult.error("Process " + processId
                     + " cannot be monitored or exited during registration");
         }
+        if (coordinator != null) coordinator.updateProcessMonitor(processId, true, monitor.message());
         String detail = "Monitoring " + processId + ". This agent will be woken when it exits."
                 + (monitor.message().isBlank() ? ""
                 : "\nWake-up instructions: " + monitor.message());
@@ -532,6 +546,7 @@ public class ProcessManagementTool implements CliTool {
         if (!processManager.removeMonitor(processId)) {
             return ToolResult.error("No active monitor for process: " + processId);
         }
+        if (coordinator != null) coordinator.updateProcessMonitor(processId, false, null);
         return ToolResult.success("unmonitored " + processId,
                 "Cancelled the completion monitor for " + processId + ".",
                 Map.of("processId", processId));
@@ -568,7 +583,8 @@ public class ProcessManagementTool implements CliTool {
                 Map.of("removed", removed));
     }
 
-    private void publishProcess(BackgroundProcessManager.ProcessEntry entry, ToolContext context, String resourceClass) {
+    private void publishProcess(BackgroundProcessManager.ProcessEntry entry, ToolContext context,
+                                String resourceClass, String monitorMessage) {
         if (coordinator == null || entry == null) return;
         var agent = context != null ? context.getAgent() : null;
         String roleName = null;
@@ -581,6 +597,10 @@ public class ProcessManagementTool implements CliTool {
                 entry.getOutputFile() != null ? entry.getOutputFile().toString() : null,
                 null, roleName, entry.getKind().label(), entry.getStartTime(),
                 entry.getEndTime(), entry.getExitCode(), resourceClass);
+        // Every launch is monitored. Publishing that lets the session that started
+        // this one (a chat whose agent reaches this tool through the MCP server)
+        // wake when the process ends, as a local monitor wakes this session.
+        coordinator.updateProcessMonitor(entry.getId(), true, monitorMessage);
         // A very short command can exit between reading the state above and the
         // coordination file becoming visible. One post-publication sync closes
         // that race; later exits are covered by the registered listener.
@@ -596,9 +616,15 @@ public class ProcessManagementTool implements CliTool {
     private List<ProcessCoordEntry> sharedProcessEntries(List<BackgroundProcessManager.ProcessEntry> localEntries) {
         if (coordinator == null) return List.of();
         Set<String> localIds = new HashSet<>();
+        // SharedProcessMirror rows already list these, keyed ownerSession/processId.
+        Set<String> mirrored = new HashSet<>();
         if (localEntries != null) {
             for (BackgroundProcessManager.ProcessEntry entry : localEntries) {
                 localIds.add(entry.getId());
+                if (entry.getKind() == BackgroundProcessManager.ProcessKind.SHARED) {
+                    mirrored.add(firstNonBlank(entry.getMetadata().get("ownerSessionId")) + "/"
+                            + firstNonBlank(entry.getMetadata().get("sharedProcessId")));
+                }
             }
         }
         String localSession = coordinator.getSessionId();
@@ -608,7 +634,7 @@ public class ProcessManagementTool implements CliTool {
                 if (entry == null || entry.getProcessId() == null) continue;
                 boolean localMirror = firstNonBlank(entry.getSessionId()).equals(localSession)
                         && localIds.contains(entry.getProcessId());
-                if (!localMirror) {
+                if (!localMirror && !mirrored.contains(firstNonBlank(entry.getSessionId()) + "/" + entry.getProcessId())) {
                     shared.add(entry);
                 }
             }

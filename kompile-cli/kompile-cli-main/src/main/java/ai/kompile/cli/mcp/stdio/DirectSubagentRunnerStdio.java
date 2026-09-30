@@ -27,6 +27,7 @@ import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
+import ai.kompile.cli.main.chat.workflow.WorkflowSessionContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -186,7 +187,7 @@ public class DirectSubagentRunnerStdio {
         }
 
         return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
-                launchDefaults.model(), launchDefaults.thinking());
+                launchDefaults.model(), launchDefaults.thinking(), agent.getWorkflowParticipant());
     }
 
     String executeManagedSubagent(String agentName, String effectivePrompt,
@@ -198,6 +199,23 @@ public class DirectSubagentRunnerStdio {
     String executeManagedSubagent(String agentName, String effectivePrompt,
                                   int currentDepth, boolean injectMcpTools,
                                   String modelOverride, String thinkingOverride) throws Exception {
+        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
+                modelOverride, thinkingOverride, null);
+    }
+
+    /**
+     * @param workflowParticipant the workflow participant the child runs as, or {@code null}
+     *                            when it acts as this process (no workflow, or not a delegate)
+     */
+    String executeManagedSubagent(String agentName, String effectivePrompt,
+                                  int currentDepth, boolean injectMcpTools,
+                                  String modelOverride, String thinkingOverride,
+                                  String workflowParticipant) throws Exception {
+        // Workflow team identity: the child is enforced as the participant it was
+        // delegated to, resolved by the harness and never from prompt content. With
+        // no participant it inherits this process's identity. A chat lead (whose JVM
+        // cannot mutate its own env) sources the values from the session context.
+        Map<String, String> workflowEnvironment = WorkflowSessionContext.inheritableEnvironment(workflowParticipant);
         long startTime = System.currentTimeMillis();
         cancelSignal.set(false);
         waitingThread = Thread.currentThread();
@@ -233,12 +251,7 @@ public class DirectSubagentRunnerStdio {
         env.putAll(extraEnvironment);
         env.put("KOMPILE_SUBAGENT_DEPTH", String.valueOf(currentDepth + 1));
         env.put("KOMPILE_AGENT_NAME", agentName);
-        // Workflow team identity: children inherit the delegating participant's
-        // environment untouched; enforcement in the child resolves identity from
-        // these values, never from prompt content. A chat lead (whose JVM cannot
-        // mutate its own env) sources the values from the session context.
-        env.putAll(ai.kompile.cli.main.chat.workflow.WorkflowSessionContext
-                .inheritableEnvironment());
+        env.putAll(workflowEnvironment);
         runner.setExtraEnvironment(env);
         runner.setOutputConsumer(line -> {
             synchronized (captured) {

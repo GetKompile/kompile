@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.DirectSubagentSupervision;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.workflow.WorkflowTeamEnforcement;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -56,6 +57,7 @@ public class ToolContext {
     private boolean supervisedChild;
     private ai.kompile.cli.main.chat.enforcer.JudgeControl judgeControl;
     private boolean judgeToolCallScoped;
+    private volatile WorkflowTeamEnforcement workflow;
 
     public boolean isSupervisedChild() { return supervisedChild; }
     public ai.kompile.cli.main.chat.enforcer.JudgeControl getJudgeControl() { return judgeControl; }
@@ -75,6 +77,17 @@ public class ToolContext {
     }
 
     public void markSupervisedChild() { supervisedChild = true; }
+
+    /**
+     * Binds the workflow participant this context acts as. Every permission check
+     * then also applies that participant's capabilities, so a participant without
+     * edit rights cannot edit, write, patch, or run state-changing commands, and a
+     * chat-only participant cannot use tools at all. {@code null} unbinds.
+     */
+    public void bindWorkflow(WorkflowTeamEnforcement workflow) { this.workflow = workflow; }
+
+    /** The workflow participant this context acts as, or {@code null} outside a workflow. */
+    public WorkflowTeamEnforcement getWorkflow() { return workflow; }
 
     /**
      * File-read snapshots keyed by sessionId + path, shared process-wide. Deliberately static:
@@ -187,6 +200,7 @@ public class ToolContext {
         child.subagentSupervision = subagentSupervision;
         child.supervisedChild = supervisedChild;
         child.bindJudgeControl(judgeControl, judgeToolCallScoped);
+        child.workflow = workflow;
         return child;
     }
 
@@ -223,6 +237,13 @@ public class ToolContext {
      * if permission is denied.
      */
     public void checkPermission(String permissionKey, String description) throws ToolExecutionException {
+        WorkflowTeamEnforcement team = workflow;
+        if (team != null) {
+            WorkflowTeamEnforcement.ToolDecision decision = team.evaluateToolUse(permissionKey);
+            if (!decision.allowed()) {
+                throw new ToolExecutionException(decision.reason(), true);
+            }
+        }
         if (supervisedChild && subagentSupervision != null && subagentSupervision.ceiling() != null) {
             var level = subagentSupervision.ceiling().permissions().get(permissionKey);
             if (level != PermissionService.PermissionLevel.ALLOW) {

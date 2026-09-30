@@ -31,13 +31,24 @@ public final class ChatCommandCatalog {
             "clear restart reset reset-all compact auto-compact rag agent local-agent role fast ultracode title "
             + "memory permissions plan queue queues queue-send queue-send-all queue-remove queue-edit queue-move "
             + "queue-clear queue-status loop loop-global jobs jobs-remove jobs-clear auto-dequeue passthrough "
-            + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments")
+            + "resume resume-all mode enforce enforcer judge judge-global direction forward image file attach attachments "
+            + "activity processes process-kill process-output process-status")
             .split(" ")).collect(Collectors.toUnmodifiableSet());
+    /**
+     * Answered by the running web harness itself; between runs, from the processes the session's
+     * runs recorded and those other sessions share.
+     */
+    private static final Set<String> LIVE_RUN = Set.of("activity", "processes", "process-kill", "process-output",
+            "process-status", "jobs", "jobs-remove", "jobs-clear");
 
     public static Set<String> names() { return NAMES; }
     public static boolean isBuiltin(String name) {
         return name != null && NAMES.contains(name.toLowerCase(Locale.ROOT));
     }
+    public static boolean isLiveRunCommand(String name) {
+        return name != null && LIVE_RUN.contains(name.toLowerCase(Locale.ROOT));
+    }
+    public static Set<String> liveRunCommands() { return LIVE_RUN; }
     public static WebSupport webSupport(String name) {
         if ("help".equals(name) || "skills".equals(name) || "model".equals(name)
                 || "role".equals(name) || "fast".equals(name) || "ultracode".equals(name)
@@ -80,6 +91,11 @@ public final class ChatCommandCatalog {
                 + "global master switch (harness config) and per-session guidance (\"/judge "
                 + "feedback <text>\") persist in the same files the live CLI reads; live-session "
                 + "controls (override, approvals, restart, agent, judgements) report honestly."
+                + "\n/processes, /activity, /process-output, /process-status, /process-kill, /jobs, "
+                + "/jobs-remove and /jobs-clear answer during a live run and between runs. Between runs "
+                + "they answer from the processes this session's runs recorded and those other sessions "
+                + "share; background tasks live only as long as a run, so /jobs lists none. Other "
+                + "commands sent during a live run wait until it finishes; skills queue for the next turn."
                 + "\nUse /skills to list reusable prompts. Unsupported commands never go to a model.";
     }
 }
