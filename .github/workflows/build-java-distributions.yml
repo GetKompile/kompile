@@ -259,7 +259,7 @@ jobs:
               "${DIST_ROOT}" "${JAVA_HOME}/bin/java"
           fi
           test -f "${DIST_ROOT}/lib/kompile-cli.jar"
-          python3 - "${DIST_ROOT}/.dist-info.json" <<'PY
+          python3 - "${DIST_ROOT}/.dist-info.json" <<'PY'
           import json
           from pathlib import Path
           import sys

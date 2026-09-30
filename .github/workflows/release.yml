@@ -627,7 +627,7 @@ jobs:
             --dist-root "$HOME/.kompile" \
             --variant full \
             --platform linux-x86_64
-          python3 - "$HOME/.kompile/.dist-info.json" <<'PY
+          python3 - "$HOME/.kompile/.dist-info.json" <<'PY'
           import json
           from pathlib import Path
           import sys

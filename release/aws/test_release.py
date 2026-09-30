@@ -2265,6 +2265,82 @@ class GithubWorkflowParityTest(unittest.TestCase):
                 )
         self.assertEqual(windows_jobs, checked)
 
+    def shell_steps(self, name):
+        """Yields (line, shell, script) for every `run:` step in a workflow.
+
+        `shell` is None when the step names none. GitHub expressions become a
+        plain word, since the runner substitutes them before the shell parses
+        the script.
+        """
+        lines = (REPOSITORY / ".github" / "workflows" / name).read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines):
+            run = re.match(r"^( *)(- )?run:[ \t]*(.*)$", line)
+            if not run or not run.group(3).strip():
+                continue
+            key = len(run.group(1)) + (2 if run.group(2) else 0)
+            value = run.group(3)
+            if not value.startswith(("'", '"')):
+                value = re.sub(r"\s+#.*$", "", value)
+            self.assertFalse(value.startswith(">"), f"{name}:{number + 1} folds its script")
+            if re.fullmatch(r"\|[-+]?", value):
+                body, indent = [], None
+                for text in lines[number + 1:]:
+                    if text.strip():
+                        width = len(text) - len(text.lstrip(" "))
+                        indent = width if indent is None else indent
+                        if width < indent or width <= key:
+                            break
+                    body.append(text[indent:] if indent is not None else "")
+                script = "\n".join(body) + "\n"
+            elif value.startswith("'"):
+                script = value[1:-1].replace("''", "'") + "\n"
+            elif value.startswith('"'):
+                script = json.loads(value) + "\n"
+            else:
+                script = value + "\n"
+            step = number
+            while step > 0 and not lines[step].startswith(" " * (key - 2) + "- "):
+                step -= 1
+            end = number + 1
+            while end < len(lines) and (not lines[end].strip() or lines[end].startswith(" " * (key - 1))):
+                end += 1
+            shell = re.search(r"^ {%d}shell: *(\S+)" % key, "\n".join(lines[step:end]), re.M)
+            script = re.sub(r"\$\{\{.*?\}\}", "EXPR", script, flags=re.S)
+            yield number + 1, shell.group(1) if shell else None, script
+
+    def test_release_shell_steps_parse(self):
+        # A syntax error only surfaces when its step runs, after every build step
+        # before it. A step that names no shell runs under bash on Linux and
+        # macOS; on a Windows runner the only such step is the runner guard,
+        # which is also valid PowerShell. bash -n only warns about a heredoc that
+        # never ends, so any output fails too.
+        heredoc = re.compile(r"\bpython3?\b.*<<-?\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1")
+        scripts = heredocs = 0
+        for name in self.release_workflows():
+            for line, shell, script in self.shell_steps(name):
+                if shell not in (None, "bash", "sh"):
+                    continue
+                scripts += 1
+                parsed = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+                self.assertEqual(
+                    (0, ""), (parsed.returncode, parsed.stderr.strip()), f"{name}:{line} does not parse",
+                )
+                lines = script.splitlines()
+                for index, text in enumerate(lines):
+                    python = heredoc.search(text)
+                    if not python:
+                        continue
+                    heredocs += 1
+                    delimiter = python.group(2)
+                    self.assertIn(delimiter, lines[index + 1:], f"{name}:{line} never ends {delimiter}")
+                    body = lines[index + 1:lines.index(delimiter, index + 1)]
+                    try:
+                        compile("\n".join(body) + "\n", f"{name}:{line}", "exec")
+                    except SyntaxError as error:
+                        self.fail(f"{name}:{line} {delimiter} heredoc: {error}")
+        self.assertGreater(scripts, 100)
+        self.assertGreater(heredocs, 0)
+
     def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
         workflows = REPOSITORY / ".github" / "workflows"
         release = (workflows / "release.yml").read_text(encoding="utf-8")
