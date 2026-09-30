@@ -93,6 +93,12 @@ jobs:
           - { name: onednn-avx512, helper: onednn, extension: avx512 }
           - { name: compile, helper: compile, extension: "" }
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - uses: AutoModality/action-clean@v1
 
       - name: Cancel Previous Runs
@@ -323,6 +329,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - uses: AutoModality/action-clean@v1
 
       - name: Free Disk Space

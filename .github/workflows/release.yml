@@ -8,9 +8,10 @@
 # primary release artifact; the AOT and Linux x64 JVM jobs also publish tar.gz
 # for installer compatibility.
 #
-# Every job runs on GitHub Actions and the default labels are GitHub-hosted
-# runners. The release/aws and release/azure VM farms never build or publish
-# these assets.
+# Every job runs on GitHub Actions on GitHub-hosted runners. Each job's first
+# step fails when runner.environment is not github-hosted, whatever label a
+# runner variable names. The release/aws and release/azure VM farms never build
+# or publish these assets.
 #
 # GitHub Releases is the download source. Once the release job has published,
 # mirror-r2 (mirror-release-to-r2.yml) copies every asset and a manifest.json to
@@ -39,7 +40,7 @@
 #       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
 #   Linux x64 and macOS ARM64 can use their standard hosted defaults. Configure a
-#   larger GitHub-hosted or self-hosted label for Windows AOT until its trial passes.
+#   larger GitHub-hosted runner label for Windows AOT until its trial passes.
 #   The cross-platform JVM matrix uses the fixed GitHub-hosted labels in
 #   build-java-distributions.yml.
 #
@@ -50,8 +51,9 @@
 #   macosx-arm64 and windows-x86_64 (build-java-distributions.yml). A JVM
 #   `full` archive bundles the CLI/service JARs and a Java runtime. The release
 #   job refuses to publish when two builds produce the same asset name.
-#   Native CPU/GPU service variants remain self-hosted builds produced through
-#   build-dist.sh; they must use the same release job when enabled.
+#   Native CPU/GPU service variants are not built here. When they are added they
+#   build through build-dist.sh on GitHub-hosted runners and publish through the
+#   same release job.
 # ──────────────────────────────────────────────────────────────────────────────
 name: release
 
@@ -126,6 +128,12 @@ jobs:
       java_distribution: ${{ steps.plan.outputs.java_distribution }}
       java_platforms: ${{ steps.plan.outputs.java_platforms }}
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Resolve version and JVM matrix
         id: plan
         shell: bash
@@ -219,6 +227,12 @@ jobs:
           #   variant: cli-only
 
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Select requested native platform
         id: platform
         shell: bash
@@ -434,6 +448,12 @@ jobs:
       DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
       MAVEN_OPTS: '-Xmx6g'
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -540,6 +560,12 @@ jobs:
     needs: full-dist-linux
     runs-on: ${{ vars.KOMPILE_JAVA_RUNNER || 'ubuntu-22.04' }}
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Resolve version
         id: ver
         shell: bash
@@ -729,6 +755,12 @@ jobs:
       (github.event_name == 'push' || inputs.publish)
     environment: release
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Verify manual release tag targets this branch commit
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -811,11 +843,11 @@ jobs:
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Template: hosted / GPU variants (needs a dedicated or self-hosted runner)
+# Template: hosted / GPU variants (needs a larger GitHub-hosted runner)
 #
 #   build-hosted:
 #     name: build hosted (${{ matrix.os_id }}-${{ matrix.arch }})
-#     runs-on: [self-hosted, linux, x64, gpu]   # your capable runner labels
+#     runs-on: your-larger-github-hosted-runner   # GitHub-hosted larger/GPU runner label
 #     strategy:
 #       fail-fast: false
 #       matrix:
@@ -824,6 +856,7 @@ jobs:
 #             arch: x86_64
 #             variant: cuda            # or: hosted | cpu-intel | amd-zluda
 #     steps:
+#       # First the same "Require a GitHub-hosted runner" step as every other job.
 #       - uses: actions/checkout@v4
 #       - uses: graalvm/setup-graalvm@v1
 #         with: { java-version: '21', distribution: 'graalvm-community' }

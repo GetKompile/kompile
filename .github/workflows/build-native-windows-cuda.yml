@@ -68,6 +68,12 @@ jobs:
       CUDA_PATH: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ inputs.cudaVersion || ''12.6'' }}'
       CUDNN_ROOT_DIR: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ inputs.cudaVersion || ''12.6'' }}'
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Cancel Previous Runs
         uses: styfle/cancel-workflow-action@0.8.0
         with:

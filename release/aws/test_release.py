@@ -2161,12 +2161,41 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("release publication never moves an existing tag", source)
         self.assertNotIn("7z a -tzip", source)
 
+    RUNNER_GUARD = (
+        "      - name: Require a GitHub-hosted runner\n"
+        "        if: runner.environment != 'github-hosted'\n"
+        "        run: |\n"
+        "          echo \"::error::Release jobs run on GitHub-hosted runners only; "
+        "this runner reports '${{ runner.environment }}'.\"\n"
+        "          exit 1\n"
+    )
+
+    @staticmethod
+    def workflow_jobs(executable):
+        """Maps each job id under `jobs:` to its body text."""
+        lines = executable.splitlines()
+        jobs = {}
+        current = None
+        for line in lines[lines.index("jobs:") + 1:]:
+            header = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+            if header:
+                current = header.group(1)
+                jobs[current] = []
+            elif current is not None:
+                jobs[current].append(line)
+        return {job: "\n".join(body) + "\n" for job, body in jobs.items()}
+
     def test_release_workflows_run_on_github_hosted_runners(self):
         workflows = REPOSITORY / ".github" / "workflows"
-        for name in (
-            "release.yml", "build-java-distributions.yml", "publish-release.yml",
-            "publish-external-aws-release.yml", "mirror-release-to-r2.yml",
-        ):
+        # Follow every local reusable-workflow call from the release entry
+        # points, so a workflow a release starts calling is checked too.
+        pending = ["release.yml", "publish-release.yml", "publish-external-aws-release.yml"]
+        reached = set()
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            reached.add(name)
             executable = "\n".join(
                 line for line in (workflows / name).read_text(encoding="utf-8").splitlines()
                 if not line.lstrip().startswith("#")
@@ -2174,6 +2203,32 @@ class GithubWorkflowParityTest(unittest.TestCase):
             self.assertIn("runs-on:", executable, name)
             self.assertNotIn("self-hosted", executable, name)
             self.assertNotIn("release/azure", executable, name)
+            jobs = self.workflow_jobs(executable)
+            self.assertTrue(jobs, name)
+            for job, body in jobs.items():
+                call = re.search(r"^    uses: (\S+)\s*$", body, re.M)
+                if call:
+                    # A remote reusable workflow would run jobs this walk never sees.
+                    target = re.fullmatch(r"\./\.github/workflows/([A-Za-z0-9._-]+\.yml)", call.group(1))
+                    self.assertIsNotNone(target, f"{name}:{job} calls {call.group(1)}")
+                    pending.append(target.group(1))
+                    continue
+                self.assertIn("\n    steps:\n", "\n" + body, f"{name}:{job}")
+                first_step = ("\n" + body).split("\n    steps:\n", 1)[1]
+                self.assertTrue(
+                    first_step.startswith(self.RUNNER_GUARD),
+                    f"{name}:{job} must start with the GitHub-hosted runner guard",
+                )
+        self.assertLessEqual(
+            {
+                "release.yml", "build-java-distributions.yml", "mirror-release-to-r2.yml",
+                "publish-release.yml", "publish-external-aws-release.yml",
+                "build-native-linux-x86_64.yml", "build-native-linux-arm64.yml",
+                "build-native-mac-arm64.yml", "build-native-windows-x86_64.yml",
+                "build-native-linux-cuda.yml", "build-native-windows-cuda.yml",
+            },
+            reached,
+        )
 
     def test_canonical_release_adds_jvm_platforms_and_refuses_duplicate_assets(self):
         workflows = REPOSITORY / ".github" / "workflows"
@@ -2313,8 +2368,9 @@ esac
         lines = (
             REPOSITORY / ".github" / "workflows" / "mirror-release-to-r2.yml"
         ).read_text(encoding="utf-8").splitlines()
+        step = lines.index("      - name: Mirror release assets and manifest")
         script = []
-        for line in lines[lines.index("        run: |") + 1:]:
+        for line in lines[lines.index("        run: |", step) + 1:]:
             if line.strip() and not line.startswith(" " * 10):
                 break
             script.append(line[10:])

@@ -232,10 +232,18 @@ job uploads both forms plus stable jar names directly from the packaged JVM `lib
 dispatch with `publish=true` creates `v<version>` at the selected branch commit; tag pushes
 remain the normal final-release path. `KOMPILE_AOT_LINUX_X64_RUNNER` is optional because the
 standard Linux runner is sufficient; `KOMPILE_AOT_MACOS_ARM64_RUNNER` is likewise optional.
-Configure `KOMPILE_AOT_WINDOWS_X64_RUNNER` for a larger hosted or self-hosted machine;
+Configure `KOMPILE_AOT_WINDOWS_X64_RUNNER` with a larger GitHub-hosted runner label;
 the JVM and publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
 `KOMPILE_RELEASE_RUNNER`. Publication is attached to the
 protected `release` environment.
+
+Every job in `release.yml`, `publish-release.yml` and `publish-external-aws-release.yml`,
+and in each workflow they call, starts with a `Require a GitHub-hosted runner` step. It
+fails the job when `runner.environment` is not `github-hosted`, so a runner variable or a
+`runsOn` input cannot move a release job onto another machine.
+`test_release_workflows_run_on_github_hosted_runners` (`release/aws/test_release.py`)
+follows the reusable-workflow calls from those three workflows and checks that the step
+comes first in every job.
 
 **`install.sh`** — default variant is now `auto` (tries `full` first via HEAD request, falls
 back to `cli-only` with a printed notice). After extraction, marks the bundled runtime

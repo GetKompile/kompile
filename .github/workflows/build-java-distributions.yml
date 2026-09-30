@@ -61,6 +61,12 @@ jobs:
       platforms: ${{ steps.request.outputs.platforms }}
       matrix: ${{ steps.request.outputs.matrix }}
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Validate inputs
         id: request
         shell: bash
@@ -136,6 +142,12 @@ jobs:
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
 
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Enable Windows long paths
         if: startsWith(matrix.platform, 'windows-')
         shell: powershell

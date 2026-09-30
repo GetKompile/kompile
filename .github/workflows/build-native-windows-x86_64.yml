@@ -86,6 +86,12 @@ jobs:
           - { name: onednn-avx512, helper: onednn, extension: avx512 }
           - { name: compile, helper: compile, extension: "" }
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Cancel Previous Runs
         uses: styfle/cancel-workflow-action@0.8.0
         with:
@@ -308,6 +314,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - name: Disable Windows Defender
         continue-on-error: true
         shell: powershell

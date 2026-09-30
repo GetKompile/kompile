@@ -75,6 +75,12 @@ jobs:
       CUDA_PATH: /usr/local/cuda-${{ inputs.cudaVersion || '12.6' }}
       CUDNN_ROOT_DIR: /usr/local/cuda-${{ inputs.cudaVersion || '12.6' }}
     steps:
+      - name: Require a GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Release jobs run on GitHub-hosted runners only; this runner reports '${{ runner.environment }}'."
+          exit 1
+
       - uses: AutoModality/action-clean@v1
 
       - name: Cancel Previous Runs
