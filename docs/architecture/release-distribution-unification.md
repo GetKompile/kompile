@@ -308,6 +308,46 @@ call it: `release.yml` (`mirror-r2`, once the `release` job has published),
   fails after the release is already published. Add the secrets, then dispatch the
   workflow for that tag.
 
+### Per-classifier Java distributions in R2
+
+`build-java-distributions.yml` can also build one JVM (`--jars-only`) distribution per DL4J
+release classifier. These go to R2 beside the mirror and are never GitHub Release assets:
+
+```
+dl4j-cache/kompile/releases/<V>/java/<variant>-<classifier>/kompile-dist-<V>-<variant>-<classifier>.zip
+dl4j-cache/kompile/releases/<V>/java/<variant>-<classifier>/kompile-dist-<V>-<variant>-<classifier>.zip.sha256
+dl4j-cache/kompile/releases/<V>/java/<variant>-<classifier>/variant.json
+dl4j-cache/kompile/releases/<V>/java/manifest.json
+```
+
+- `release/github/java-matrix.json` lists the 58 `KOMPILE_PLATFORMS` classifiers of
+  `build-scripts/build-common.sh` in the same order. 39 build on the platform's GitHub-hosted
+  runner. 19 are blocked, each with a reason: Android classifiers ship as APK/AAR builds, the
+  DL4J shards named for CUDA 12.6 and 13.1 build CUDA 12.9, and DL4J publishes ZLUDA only
+  with a ROCm qualifier. `release/github/java_matrix.py` derives every build argument from the
+  resolvers in `build-common.sh` and the backend profiles in the root `pom.xml`.
+- Each classifier's job builds and smoke-tests its archive, then uploads the zip, its
+  `.sha256` and `variant.json`, checking each object's size before sending the next.
+  `variant.json` records the build fields, version, commit, run, and the archive's name, size
+  and SHA-256. It goes last, so its presence means the archive landed.
+- The collect job lists `java/` and writes `java/manifest.json` from the records built from
+  the run's commit and version whose rows still match the matrix. A classifier the run
+  planned must be recorded by that run. When one is not, the job uploads the manifest of
+  what landed and fails with exit status 3.
+- The release mirror lists only the objects directly under `<V>/`, so it leaves `java/`
+  alone.
+
+To run it, dispatch `release.yml` with `java_variants` (a comma-separated list of
+classifiers, or `all`) and `publish=false`. The classifier builds replace the JVM platform
+archives for that run, and `execution` still decides whether AOT images build.
+`build-java-distributions.yml` has its own `variants` input, but GitHub dispatches a workflow
+only once it is on the default branch, so `release.yml` is the entry point until then.
+
+```
+gh workflow run release.yml --ref <branch> -f version=<V> -f publish=false \
+  -f java_variants=linux-x86_64-avx2,windows-x86_64-onednn,macosx-arm64-mps
+```
+
 ## 8. Further design directions (suggested, not implemented)
 
 - **Busybox-style multi-call binary:** ship `bin/kompile-ingest → kompile-server` symlinks

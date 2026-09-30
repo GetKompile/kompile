@@ -11,7 +11,10 @@ name: Build Java Distributions
 #                             classifier>/ as the archive, its .sha256 and
 #                             variant.json (last). The collect job then writes
 #                             kompile/releases/<version>/java/manifest.json from
-#                             every record that matches this commit.
+#                             every record that matches this commit. Start it
+#                             by dispatching release.yml with java_variants;
+#                             GitHub dispatches a workflow only once it is on
+#                             the default branch.
 
 on:
   workflow_call:

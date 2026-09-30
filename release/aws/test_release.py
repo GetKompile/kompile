@@ -3135,6 +3135,109 @@ esac
             # Refused before sha256sum reads the archive.
             self.assertNotIn(name, completed.stdout)
 
+    def test_release_dispatch_builds_java_variants_into_r2_only(self):
+        # build-java-distributions.yml is not on the default branch, so GitHub
+        # dispatches it only through release.yml.
+        _, jobs = self.release_workflows()["release.yml"]
+        self.assertIn("java_variants: ${{ steps.plan.outputs.java_variants }}", jobs["plan"])
+        for text in (
+            "needs: plan",
+            "if: needs.plan.outputs.java_variants != ''",
+            "uses: ./.github/workflows/build-java-distributions.yml",
+            "version: ${{ needs.plan.outputs.version }}",
+            "variants: ${{ needs.plan.outputs.java_variants }}",
+            "upload_r2: true",
+            "DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}",
+            "DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}",
+            "R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}",
+            "R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}",
+        ):
+            self.assertIn(text, jobs["java-variants"])
+        # The platform archives never take the classifier list, and the release
+        # job neither waits for nor publishes the classifier builds.
+        self.assertNotIn("variants:", jobs["java-distributions"])
+        self.assertNotIn("java-variants", re.search(r"^    needs: .*$", jobs["release"], re.M).group(0))
+
+        script = self._bash_step("release.yml", 'echo "java_variants=${JAVA_VARIANTS}"')
+        if shutil.which("bash") is None:
+            self.skipTest("bash is required to run the release plan")
+
+        def plan(event="workflow_dispatch", **inputs):
+            environment = {
+                "PATH": os.environ.get("PATH", ""),
+                "EVENT_NAME": event,
+                "REF_NAME": "v1.2.3" if event == "push" else "feat/java",
+                "INPUT_VERSION": "1.2.3",
+                "INPUT_EXECUTION": "java",
+                "INPUT_DISTRIBUTION": "cli",
+                "INPUT_PLATFORMS": "linux-x86_64,linux-arm64,windows-x86_64,macosx-arm64",
+                "INPUT_JAVA_VARIANTS": "",
+                "INPUT_PUBLISH": "false",
+            }
+            environment.update(inputs)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                (root / "step.sh").write_text(script, encoding="utf-8")
+                output = root / "github_output"
+                output.touch()
+                environment["GITHUB_OUTPUT"] = str(output)
+                completed = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(root / "step.sh")],
+                    cwd=root, env=environment, capture_output=True, text=True, timeout=60,
+                )
+                lines = output.read_text(encoding="utf-8").splitlines()
+            return completed, dict(line.split("=", 1) for line in lines), len(lines)
+
+        # A tag push keeps its JVM platform archives and builds no classifiers.
+        completed, outputs, count = plan("push", INPUT_EXECUTION="", INPUT_DISTRIBUTION="",
+                                         INPUT_PLATFORMS="", INPUT_PUBLISH="")
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            {"version": "1.2.3", "java_distribution": "full",
+             "java_platforms": "linux-arm64,windows-x86_64,macosx-arm64", "java_variants": ""},
+            outputs,
+        )
+
+        completed, outputs, count = plan(INPUT_PLATFORMS=" linux-x86_64, windows-x86_64 ")
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            {"version": "1.2.3", "java_distribution": "cli",
+             "java_platforms": "linux-x86_64,windows-x86_64", "java_variants": ""},
+            outputs,
+        )
+
+        # The classifiers replace the platform archives, whatever execution
+        # asks of them; whitespace, a newline included, never reaches an output.
+        for execution in ("java", "native", "both"):
+            with self.subTest(execution=execution):
+                completed, outputs, count = plan(
+                    INPUT_EXECUTION=execution,
+                    INPUT_JAVA_VARIANTS=" linux-x86_64-avx2,\nmacosx-arm64-mps ",
+                )
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertEqual(4, count)
+                self.assertEqual(
+                    {"version": "1.2.3", "java_distribution": "", "java_platforms": "",
+                     "java_variants": "linux-x86_64-avx2,macosx-arm64-mps"},
+                    outputs,
+                )
+                self.assertIn(
+                    "Release 1.2.3: JVM distributions for linux-x86_64-avx2,macosx-arm64-mps to R2",
+                    completed.stdout,
+                )
+
+        for inputs, message in (
+            ({"INPUT_JAVA_VARIANTS": "all", "INPUT_PUBLISH": "true"},
+             "ERROR: java_variants builds distributions into R2 only; dispatch it with publish=false."),
+            ({"INPUT_JAVA_VARIANTS": "linux-x86_64-avx2;id"},
+             "ERROR: invalid java_variants: linux-x86_64-avx2;id"),
+        ):
+            with self.subTest(**inputs):
+                completed, outputs, count = plan(**inputs)
+                self.assertEqual(2, completed.returncode)
+                self.assertIn(message, completed.stderr)
+                self.assertEqual(0, count)
+
     def test_build_workflows_have_read_only_contents_permissions(self):
         for name in (
             "build-native-linux-x86_64.yml",

@@ -56,6 +56,16 @@
 #   Native CPU/GPU service variants are not built here. When they are added they
 #   build through build-dist.sh on GitHub-hosted runners and publish through the
 #   same release job.
+#
+# Per-classifier JVM distributions:
+#   A dispatch with java_variants (comma-separated classifiers from
+#   release/github/java-matrix.json, or all) builds one JVM distribution per
+#   classifier and uploads it to R2 under
+#   dl4j-cache/kompile/releases/<version>/java/ (java-variants). They replace the
+#   JVM platform archives for that run and are never published, so such a
+#   dispatch needs publish=false; execution still decides whether AOT images
+#   build. GitHub dispatches only workflows on the default branch, and this is
+#   the dispatchable entry point for build-java-distributions.yml.
 # ──────────────────────────────────────────────────────────────────────────────
 name: release
 
@@ -92,6 +102,11 @@ on:
         required: true
         type: string
         default: 'linux-x86_64,linux-arm64,windows-x86_64,macosx-arm64'
+      java_variants:
+        description: 'Comma-separated DL4J release classifiers, or all: one JVM distribution each, to R2 only, instead of the JVM platform archives'
+        required: false
+        type: string
+        default: ''
       publish:
         description: 'Create/update v<version> from the selected branch commit'
         required: true
@@ -129,6 +144,7 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       java_distribution: ${{ steps.plan.outputs.java_distribution }}
       java_platforms: ${{ steps.plan.outputs.java_platforms }}
+      java_variants: ${{ steps.plan.outputs.java_variants }}
     steps:
       - name: Require a GitHub-hosted runner
         if: runner.environment != 'github-hosted'
@@ -146,11 +162,13 @@ jobs:
           INPUT_EXECUTION: ${{ inputs.execution }}
           INPUT_DISTRIBUTION: ${{ inputs.distribution }}
           INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_JAVA_VARIANTS: ${{ inputs.java_variants }}
           INPUT_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           JAVA_DISTRIBUTION=""
           JAVA_PLATFORMS=""
+          JAVA_VARIANTS=""
           if [ "${EVENT_NAME}" = "push" ]; then
             VERSION="${REF_NAME#v}"
             # full-dist-linux owns linux-x86_64 (smoke test + standalone JARs);
@@ -159,7 +177,19 @@ jobs:
             JAVA_PLATFORMS=linux-arm64,windows-x86_64,macosx-arm64
           else
             VERSION="${INPUT_VERSION}"
-            if [ "${INPUT_EXECUTION}" = "java" ] || [ "${INPUT_EXECUTION}" = "both" ]; then
+            JAVA_VARIANTS="${INPUT_JAVA_VARIANTS//[[:space:]]/}"
+            if [ -n "${JAVA_VARIANTS}" ]; then
+              # Per-classifier distributions go to R2 in place of the JVM
+              # platform archives, so a release would have no JVM archive.
+              if [[ ! "${JAVA_VARIANTS}" =~ ^[A-Za-z0-9._,-]+$ ]]; then
+                echo "ERROR: invalid java_variants: ${JAVA_VARIANTS}" >&2
+                exit 2
+              fi
+              if [ "${INPUT_PUBLISH}" = "true" ]; then
+                echo "ERROR: java_variants builds distributions into R2 only; dispatch it with publish=false." >&2
+                exit 2
+              fi
+            elif [ "${INPUT_EXECUTION}" = "java" ] || [ "${INPUT_EXECUTION}" = "both" ]; then
               JAVA_DISTRIBUTION="${INPUT_DISTRIBUTION}"
               JAVA_PLATFORMS="${INPUT_PLATFORMS//[[:space:]]/}"
               if [ -z "${JAVA_PLATFORMS}" ]; then
@@ -183,8 +213,13 @@ jobs:
             echo "version=${VERSION}"
             echo "java_distribution=${JAVA_DISTRIBUTION}"
             echo "java_platforms=${JAVA_PLATFORMS}"
+            echo "java_variants=${JAVA_VARIANTS}"
           } >> "$GITHUB_OUTPUT"
-          echo "Release ${VERSION}: JVM ${JAVA_DISTRIBUTION:-none} on ${JAVA_PLATFORMS:-no platforms}"
+          if [ -n "${JAVA_VARIANTS}" ]; then
+            echo "Release ${VERSION}: JVM distributions for ${JAVA_VARIANTS} to R2"
+          else
+            echo "Release ${VERSION}: JVM ${JAVA_DISTRIBUTION:-none} on ${JAVA_PLATFORMS:-no platforms}"
+          fi
 
   java-distributions:
     name: Java distributions
@@ -198,6 +233,22 @@ jobs:
     secrets:
       DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
       DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
+
+  # R2 only: the release job neither needs nor publishes these.
+  java-variants:
+    name: Java distributions per classifier
+    needs: plan
+    if: needs.plan.outputs.java_variants != ''
+    uses: ./.github/workflows/build-java-distributions.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      variants: ${{ needs.plan.outputs.java_variants }}
+      upload_r2: true
+    secrets:
+      DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
+      DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
   build:
     name: build ${{ matrix.variant }} (${{ matrix.os_id }}-${{ matrix.arch }})
